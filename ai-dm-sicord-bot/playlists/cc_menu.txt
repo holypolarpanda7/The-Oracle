@@ -1,0 +1,3 @@
+# CC Menu Playlist - Character Creation Background Music
+# Add your music URLs here (YouTube, SoundCloud, direct URLs, etc.)
+https://soundcloud.com/vals-10/wow-nightsong

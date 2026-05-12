@@ -1,0 +1,7 @@
+# Dungeon Exploration Music
+# Dark, mysterious tracks for underground locations and dungeons
+
+# Add your dungeon music URLs here (YouTube, SoundCloud, etc.)
+# Example:
+# https://www.youtube.com/watch?v=example1
+# https://www.youtube.com/watch?v=example2

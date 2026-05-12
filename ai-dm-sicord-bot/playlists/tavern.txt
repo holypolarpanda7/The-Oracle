@@ -1,0 +1,7 @@
+# Tavern / Social Music
+# Warm, jovial tracks for taverns, inns, and social gatherings
+
+# Add your tavern music URLs here (YouTube, SoundCloud, etc.)
+# Example:
+# https://www.youtube.com/watch?v=example1
+# https://www.youtube.com/watch?v=example2

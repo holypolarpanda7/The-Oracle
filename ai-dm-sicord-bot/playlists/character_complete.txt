@@ -1,0 +1,8 @@
+# Character Completion / Celebration Music
+# Uplifting tracks that play when a character is successfully created
+
+# Add your celebration music URLs here (YouTube, SoundCloud, etc.)
+# Example:
+# https://www.youtube.com/watch?v=example1
+# https://www.youtube.com/watch?v=example2
+https://soundcloud.com/crankdatmusic/victory-lap-crankdat-remix

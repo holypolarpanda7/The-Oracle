@@ -1,0 +1,7 @@
+# Town / City Ambient Music
+# Peaceful, lively tracks for when players are in settlements
+
+# Add your town/city music URLs here (YouTube, SoundCloud, etc.)
+# Example:
+# https://www.youtube.com/watch?v=example1
+# https://www.youtube.com/watch?v=example2

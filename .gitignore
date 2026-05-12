@@ -1,0 +1,14 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# dotenv files
+ai-dm-sicord-bot/cred.env
+oracle-dm-backend/backend-cred.env

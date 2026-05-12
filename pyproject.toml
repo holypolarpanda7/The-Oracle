@@ -1,0 +1,24 @@
+[project]
+name = "the-oracle"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.13.2",
+    "aiosqlite>=0.21.0",
+    "alembic>=1.17.2",
+    "discord-py>=2.6.4",
+    "fastapi>=0.124.0",
+    "noise>=1.2.2",
+    "numpy>=2.4.4",
+    "pillow>=12.2.0",
+    "pydantic>=2.12.5",
+    "pynacl>=1.6.1",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
+    "sqlalchemy>=2.0.44",
+    "sqlmodel>=0.0.27",
+    "uvicorn[standard]>=0.38.0",
+    "wavelink>=3.4.1",
+]

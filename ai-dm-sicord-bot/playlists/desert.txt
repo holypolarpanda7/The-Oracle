@@ -1,0 +1,7 @@
+# Desert Exploration Music
+# Atmospheric tracks for desert regions and hot climates
+
+# Add your desert music URLs here (YouTube, SoundCloud, etc.)
+# Example:
+# https://www.youtube.com/watch?v=example1
+# https://www.youtube.com/watch?v=example2

@@ -1,0 +1,7 @@
+# Combat Music
+# Intense, action-packed tracks for battle encounters
+
+# Add your combat music URLs here (YouTube, SoundCloud, etc.)
+# Example:
+# https://www.youtube.com/watch?v=example1
+# https://www.youtube.com/watch?v=example2
