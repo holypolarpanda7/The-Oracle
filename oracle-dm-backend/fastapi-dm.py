@@ -1,4 +1,5 @@
 import os
+import json
 import re
 from pathlib import Path
 from typing import Dict, List, Literal, TypedDict, Optional
@@ -6,14 +7,14 @@ import uuid
 from contextlib import asynccontextmanager
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import Response
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # Database (SQLModel)
 from sqlmodel import SQLModel, Field, create_engine, Session, select
-from sqlalchemy import Column, JSON, String
+from sqlalchemy import Column, JSON, String, Text
 from typing import Any
 from datetime import datetime
 import sys
@@ -311,7 +312,19 @@ class Turn(TypedDict):
     content: str
 
 
+class SessionMemory(SQLModel, table=True):
+    session_id: str = Field(primary_key=True, index=True)
+    summary_text: str = Field(default="", sa_column=Column(Text, nullable=False))
+    recent_turns_json: str = Field(default="[]", sa_column=Column(Text, nullable=False))
+    meta_json: str = Field(default="{}", sa_column=Column(Text, nullable=False))
+    turn_count: int = Field(default=0, index=True)
+    compaction_count: int = Field(default=0)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 SESSIONS: Dict[str, List[Turn]] = {}
+SESSION_META: Dict[str, Dict] = {}
+SESSION_STATE_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 # Database engine (default: SQLite in project dir). Change DATABASE_URL to a Postgres URL for production.
@@ -329,8 +342,172 @@ combat = CombatTracker(engine=engine)
 image_store = ImageStore(engine=engine, world_day_fn=world.current_day)
 
 # Per-session metadata (which PC is playing) alongside the in-memory history.
-SESSION_META: Dict[str, Dict] = {}
 
+
+def _default_session_state() -> Dict[str, Any]:
+    return {
+        "summary_text": "",
+        "recent_turns": [],
+        "meta": {},
+        "turn_count": 0,
+        "compaction_count": 0,
+        "updated_at": datetime.utcnow(),
+    }
+
+
+def _parse_json_field(raw: Optional[str], default: Any) -> Any:
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except Exception:
+        return default
+
+
+def _session_state_to_cache(row: SessionMemory) -> Dict[str, Any]:
+    state = _default_session_state()
+    state["summary_text"] = row.summary_text or ""
+    state["recent_turns"] = _parse_json_field(row.recent_turns_json, [])
+    state["meta"] = _parse_json_field(row.meta_json, {})
+    state["turn_count"] = row.turn_count or 0
+    state["compaction_count"] = row.compaction_count or 0
+    state["updated_at"] = row.updated_at or datetime.utcnow()
+    return state
+
+
+def _load_session_state(session_id: str) -> Dict[str, Any]:
+    cached = SESSION_STATE_CACHE.get(session_id)
+    if cached is not None:
+        return cached
+
+    with Session(engine) as db:
+        row = db.get(SessionMemory, session_id)
+        if row is None:
+            state = _default_session_state()
+        else:
+            state = _session_state_to_cache(row)
+
+    SESSION_STATE_CACHE[session_id] = state
+    SESSIONS[session_id] = list(state["recent_turns"])
+    SESSION_META[session_id] = dict(state["meta"])
+    return state
+
+
+def _save_session_state(session_id: str, state: Dict[str, Any]) -> None:
+    state["updated_at"] = datetime.utcnow()
+    with Session(engine) as db:
+        row = db.get(SessionMemory, session_id)
+        if row is None:
+            row = SessionMemory(session_id=session_id)
+        row.summary_text = state.get("summary_text", "") or ""
+        row.recent_turns_json = json.dumps(state.get("recent_turns", []), ensure_ascii=True)
+        row.meta_json = json.dumps(state.get("meta", {}), ensure_ascii=True)
+        row.turn_count = int(state.get("turn_count", 0) or 0)
+        row.compaction_count = int(state.get("compaction_count", 0) or 0)
+        row.updated_at = state["updated_at"]
+        db.add(row)
+        db.commit()
+    SESSION_STATE_CACHE[session_id] = state
+    SESSIONS[session_id] = list(state.get("recent_turns", []))
+    SESSION_META[session_id] = dict(state.get("meta", {}))
+
+
+def _set_session_meta(session_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    state = _load_session_state(session_id)
+    state["meta"] = dict(meta)
+    _save_session_state(session_id, state)
+    return state
+
+
+def _append_turn(session_id: str, turn: Turn) -> Dict[str, Any]:
+    state = _load_session_state(session_id)
+    recent_turns = list(state.get("recent_turns", []))
+    recent_turns.append(turn)
+    state["recent_turns"] = recent_turns
+    state["turn_count"] = int(state.get("turn_count", 0) or 0) + 1
+    _save_session_state(session_id, state)
+    return state
+
+
+def _render_turns_for_summary(turns: List[Turn]) -> str:
+    lines: List[str] = []
+    for turn in turns:
+        role = turn.get("role", "player")
+        user = turn.get("user", "")
+        content = (turn.get("content", "") or "").strip()
+        if not content:
+            continue
+        prefix = "Player" if role == "player" else "DM"
+        if user and user not in ("Oracle DM", ""):
+            prefix = f"{prefix} {user}"
+        lines.append(f"- {prefix}: {content}")
+    return "\n".join(lines)
+
+
+def _session_summary_block(session_id: str) -> str:
+    state = _load_session_state(session_id)
+    summary = (state.get("summary_text") or "").strip()
+    if not summary:
+        return ""
+    return "# Session memory summary\n\n" + summary
+
+
+def _maybe_compact_session_memory(session_id: str) -> None:
+    cfg = get_config().session_memory
+    state = _load_session_state(session_id)
+    recent_turns = list(state.get("recent_turns", []))
+    if len(recent_turns) <= cfg.compaction_threshold:
+        return
+
+    keep_recent = max(1, cfg.recent_turns)
+    overflow_count = max(0, len(recent_turns) - keep_recent)
+    if overflow_count <= 0:
+        return
+
+    overflow_turns = recent_turns[:overflow_count]
+    kept_turns = recent_turns[-keep_recent:]
+
+    prior_summary = (state.get("summary_text") or "").strip()
+    summary_prompt = (
+        "You compress long-running tabletop RPG session memory for a dungeon-master assistant. "
+        "Update the running memory so future turns stay grounded after the live chat window is trimmed.\n\n"
+        "Rules:\n"
+        "- Preserve facts, unresolved quests, NPCs, locations, combat state, injuries, inventory, promises, and active mysteries.\n"
+        "- Keep it concise and durable. Prefer short paragraphs or bullets.\n"
+        "- Do not invent new facts. If something is uncertain, say so briefly.\n"
+        "- Stay under the requested length and avoid story prose.\n\n"
+        f"Current summary (may be empty):\n{prior_summary or '[none]'}\n\n"
+        f"Turns to compress:\n{_render_turns_for_summary(overflow_turns)}\n"
+    )
+
+    try:
+        merged_summary = call_openrouter_chat(
+            [
+                {"role": "system", "content": "You are a precise context compressor for an RPG memory ledger."},
+                {"role": "user", "content": summary_prompt},
+            ],
+            max_tokens=cfg.compaction_max_tokens,
+            timeout_seconds=cfg.compaction_timeout_seconds,
+        ).strip()
+    except Exception as e:
+        print(f"[session compact error] {e}")
+        merged_summary = prior_summary
+
+    if merged_summary:
+        if prior_summary and prior_summary not in merged_summary:
+            merged_summary = f"{prior_summary}\n\n{merged_summary}"
+    else:
+        merged_summary = prior_summary
+
+    merged_summary = merged_summary[: cfg.summary_max_chars].strip()
+    state["summary_text"] = merged_summary
+    state["recent_turns"] = kept_turns
+    state["compaction_count"] = int(state.get("compaction_count", 0) or 0) + 1
+    _save_session_state(session_id, state)
+
+
+def _schedule_session_compaction(background_tasks: BackgroundTasks, session_id: str) -> None:
+    background_tasks.add_task(_maybe_compact_session_memory, session_id)
 
 class Character(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -555,11 +732,13 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict]) -> list[
 
 # ----- OpenRouter LLM call -----
 
-def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
-    """
-    Call OpenRouter's chat completion endpoint with the given messages.
-    Returns the assistant's reply text.
-    """
+def call_openrouter_chat(
+    messages: List[Dict[str, str]],
+    *,
+    max_tokens: Optional[int] = None,
+    timeout_seconds: int = 60,
+) -> str:
+    """Call OpenRouter's chat completion endpoint with the given messages."""
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -572,8 +751,10 @@ def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
         "model": OPENROUTER_MODEL,
         "messages": messages,
     }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
 
-    resp = requests.post(OPENROUTER_BASE_URL, headers=headers, json=payload, timeout=60)
+    resp = requests.post(OPENROUTER_BASE_URL, headers=headers, json=payload, timeout=timeout_seconds)
     if resp.status_code != 200:
         print(f"[OpenRouter error] HTTP {resp.status_code}: {resp.text}")
         raise RuntimeError("LLM call failed")
@@ -584,6 +765,11 @@ def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
     except Exception as e:
         print(f"[OpenRouter parse error] {e} | data={data}")
         raise RuntimeError("Failed to parse LLM response")
+
+
+def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
+    """Call OpenRouter for live DM narration."""
+    return call_openrouter_chat(messages)
 
 
 # ----- "DM brain" using OpenRouter + Avrae hooks -----
@@ -600,7 +786,8 @@ def generate_dm_reply(
     rules briefs) produced by ``assemble_context``.
     """
 
-    history = SESSIONS.get(session_id, [])
+    state = _load_session_state(session_id)
+    history = list(state.get("recent_turns", []))
 
     messages: List[Dict[str, str]] = []
 
@@ -665,6 +852,10 @@ def generate_dm_reply(
 
     messages.append({"role": "system", "content": system_prompt})
 
+    summary_block = _session_summary_block(session_id)
+    if summary_block:
+        messages.append({"role": "system", "content": summary_block})
+
     # Self-authored DM best-practice guidance (config-toggleable).
     try:
         _guidance = guidance_block()
@@ -679,7 +870,8 @@ def generate_dm_reply(
             messages.append({"role": "system", "content": block})
 
     # Previous turns
-    for turn in history[-12:]:
+    recent_limit = max(1, get_config().session_memory.recent_turns)
+    for turn in history[-recent_limit:]:
         if turn["role"] == "player":
             messages.append({
                 "role": "user",
@@ -711,7 +903,8 @@ def assemble_context(session_id: str, message: str):
     ctx_obj = None
     texts: List[str] = []
 
-    meta = SESSION_META.get(session_id)
+    state = _load_session_state(session_id)
+    meta = state.get("meta", {})
     if meta and meta.get("pc_slug"):
         try:
             ctx_obj = world.get_world_context(meta["pc_slug"], message)
@@ -724,7 +917,7 @@ def assemble_context(session_id: str, message: str):
     # Inject exact stats for any monster/spell named in the action or last narration.
     try:
         scan = message
-        hist = SESSIONS.get(session_id, [])
+        hist = list(state.get("recent_turns", []))
         if hist and hist[-1]["role"] == "dm":
             scan = f"{message}\n{hist[-1]['content']}"
         mentions = rules_lib.find_mentions(scan, limit=6)
@@ -861,16 +1054,16 @@ async def root():
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(req: ChatRequest):
+async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     """
     Main entry point from the Discord bot.
     Tracks per-session history and asks the DM brain for a reply.
     """
 
-    history = SESSIONS.setdefault(req.session_id, [])
+    _load_session_state(req.session_id)
 
     # Player turn
-    history.append(Turn(role="player", user=req.username, content=req.message))
+    state = _append_turn(req.session_id, Turn(role="player", user=req.username, content=req.message))
 
     # DM reply
     try:
@@ -908,8 +1101,9 @@ async def chat_endpoint(req: ChatRequest):
         image_payloads = []
 
     # Store DM turn
-    history.append(Turn(role="dm", user="Oracle DM", content=dm_text))
-    SESSIONS[req.session_id] = history
+    state = _append_turn(req.session_id, Turn(role="dm", user="Oracle DM", content=dm_text))
+    if len(state.get("recent_turns", [])) > get_config().session_memory.compaction_threshold:
+        _schedule_session_compaction(background_tasks, req.session_id)
 
     return ChatResponse(reply=dm_text, music=music_query,
                         images=image_payloads or None)
@@ -920,12 +1114,16 @@ async def reset_endpoint(req: ResetRequest):
     Reset the story/session for a given session_id (guild:channel).
     Called by the Discord bot when !resetdm is used.
     """
-    if req.session_id in SESSIONS:
-        del SESSIONS[req.session_id]
-        print(f"[SESSION RESET] {req.session_id}")
-        return {"status": "ok", "message": f"Session {req.session_id} reset."}
-    else:
-        return {"status": "ok", "message": f"Session {req.session_id} did not exist (nothing to reset)."}
+    with Session(engine) as db:
+        row = db.get(SessionMemory, req.session_id)
+        if row is not None:
+            db.delete(row)
+            db.commit()
+    SESSION_STATE_CACHE.pop(req.session_id, None)
+    SESSIONS.pop(req.session_id, None)
+    SESSION_META.pop(req.session_id, None)
+    print(f"[SESSION RESET] {req.session_id}")
+    return {"status": "ok", "message": f"Session {req.session_id} reset."}
 
 
 @app.post("/enterworld", response_model=EnterResponse)
@@ -963,9 +1161,6 @@ async def enter_world(req: EnterRequest):
     # Create a new session id (guild-based namespace)
     session_id = f"{req.guild_id}:{uuid.uuid4().hex}"
 
-    # Seed session history with an initial player 'enter' turn
-    SESSIONS[session_id] = [Turn(role="player", user=req.username, content="ENTER_WORLD")]
-
     # Place the PC in the persistent world graph and remember it for this session.
     pc_slug = slugify(chosen.name)
     try:
@@ -978,12 +1173,14 @@ async def enter_world(req: EnterRequest):
         )
     except Exception as e:
         print(f"[enterworld place_pc error] {e}")
-    SESSION_META[session_id] = {
+    _set_session_meta(session_id, {
         "pc_slug": pc_slug,
         "user_id": req.user_id,
         "character_name": chosen.name,
         "character_id": chosen.id,
-    }
+    })
+
+    _append_turn(session_id, Turn(role="player", user=req.username, content="ENTER_WORLD"))
 
     # Ask the DM brain for an opening narration, grounded in the world slice.
     arrival = "I arrive and take in my surroundings."
@@ -1000,7 +1197,7 @@ async def enter_world(req: EnterRequest):
     intro, music_query = extract_music_cue(intro)
 
     # Store the DM turn in the session history
-    SESSIONS[session_id].append(Turn(role="dm", user="Oracle DM", content=intro))
+    _append_turn(session_id, Turn(role="dm", user="Oracle DM", content=intro))
 
     # Return a small package of data the bot can use to create a channel and start the session
     return EnterResponse(

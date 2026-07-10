@@ -180,6 +180,16 @@ class DMGuideConfig:
 
 
 @dataclass
+class SessionMemoryConfig:
+    """Bounded conversation memory for long-running DM sessions."""
+    recent_turns: int = 12
+    compaction_threshold: int = 18
+    summary_max_chars: int = 4000
+    compaction_max_tokens: int = 320
+    compaction_timeout_seconds: int = 25
+
+
+@dataclass
 class ImageryConfig:
     """Self-hosted diffusion image generation + storage for scene visuals.
 
@@ -237,6 +247,7 @@ class GameConfig:
     hazard: HazardConfig = field(default_factory=HazardConfig)
     reputation: ReputationConfig = field(default_factory=ReputationConfig)
     dm_guide: DMGuideConfig = field(default_factory=DMGuideConfig)
+    session_memory: SessionMemoryConfig = field(default_factory=SessionMemoryConfig)
     imagery: ImageryConfig = field(default_factory=ImageryConfig)
 
     def to_dict(self) -> dict:
