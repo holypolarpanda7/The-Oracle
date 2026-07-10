@@ -152,17 +152,21 @@ async def validate_and_register_character(message: discord.Message, char_data: D
     from music_control import switch_music
     
     channel = message.channel
-    # Validate level
-    if char_data["level"] < 1 or char_data["level"] > 20:
-        await channel.send(f"❌ Invalid character level: {char_data['level']} (allowed: 1-20).")
-        return False
+    # The Oracle starts every character at level 1; advancement is tracked in-system.
+    if char_data.get("level", 1) != 1:
+        await channel.send(
+            "ℹ️ The Oracle begins all heroes at **level 1** — your character will "
+            "enter the world at level 1 and level up in play."
+        )
+    char_data["level"] = 1
 
     payload = {
         "discord_user_id": user_id,
         "name": char_data["name"],
         "race": char_data.get("race"),
         "char_class": char_data.get("char_class"),
-        "level": char_data["level"],
+        "subclass": char_data.get("subclass"),
+        "level": 1,
         "stats": char_data.get("stats"),
         "ddb_url": char_data.get("ddb_url"),
         "avrae_import_text": char_data.get("avrae_import_text", ""),

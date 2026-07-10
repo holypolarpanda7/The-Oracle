@@ -20,7 +20,7 @@ import requests
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from .models import Monster, Spell
+from .models import Monster, Spell, DndClass, Subclass, SRD_SOURCE, OWNED_SOURCE
 
 RAW_BASE = "https://raw.githubusercontent.com/5e-bits/5e-database/main/src/2014/en/"
 MONSTERS_URL = RAW_BASE + "5e-SRD-Monsters.json"
@@ -184,5 +184,243 @@ def ingest_srd(
     return result
 
 
+# ----- classes & subclasses (hand-authored, offline) -----
+#
+# The 5e SRD only includes ONE subclass per class. We seed the 12 core classes
+# and their SRD subclass, PLUS non-SRD subclasses the player owns (e.g. the
+# Bladesinger from Tasha's Cauldron of Everything). Owned content is stored as
+# concise mechanical facts in our own words (feature name + level + one-line
+# effect), never verbatim book prose, and tagged with ``OWNED_SOURCE``.
+
+_CLASSES: list[dict] = [
+    {"slug": "barbarian", "name": "Barbarian", "hit_die": 12, "primary_ability": "STR",
+     "subclass_label": "Primal Path", "subclass_level": 3, "spellcasting_ability": None,
+     "saving_throws": ["STR", "CON"]},
+    {"slug": "bard", "name": "Bard", "hit_die": 8, "primary_ability": "CHA",
+     "subclass_label": "Bard College", "subclass_level": 3, "spellcasting_ability": "CHA",
+     "saving_throws": ["DEX", "CHA"]},
+    {"slug": "cleric", "name": "Cleric", "hit_die": 8, "primary_ability": "WIS",
+     "subclass_label": "Divine Domain", "subclass_level": 1, "spellcasting_ability": "WIS",
+     "saving_throws": ["WIS", "CHA"]},
+    {"slug": "druid", "name": "Druid", "hit_die": 8, "primary_ability": "WIS",
+     "subclass_label": "Druid Circle", "subclass_level": 2, "spellcasting_ability": "WIS",
+     "saving_throws": ["INT", "WIS"]},
+    {"slug": "fighter", "name": "Fighter", "hit_die": 10, "primary_ability": "STR or DEX",
+     "subclass_label": "Martial Archetype", "subclass_level": 3, "spellcasting_ability": None,
+     "saving_throws": ["STR", "CON"]},
+    {"slug": "monk", "name": "Monk", "hit_die": 8, "primary_ability": "DEX & WIS",
+     "subclass_label": "Monastic Tradition", "subclass_level": 3, "spellcasting_ability": None,
+     "saving_throws": ["STR", "DEX"]},
+    {"slug": "paladin", "name": "Paladin", "hit_die": 10, "primary_ability": "STR & CHA",
+     "subclass_label": "Sacred Oath", "subclass_level": 3, "spellcasting_ability": "CHA",
+     "saving_throws": ["WIS", "CHA"]},
+    {"slug": "ranger", "name": "Ranger", "hit_die": 10, "primary_ability": "DEX & WIS",
+     "subclass_label": "Ranger Archetype", "subclass_level": 3, "spellcasting_ability": "WIS",
+     "saving_throws": ["STR", "DEX"]},
+    {"slug": "rogue", "name": "Rogue", "hit_die": 8, "primary_ability": "DEX",
+     "subclass_label": "Roguish Archetype", "subclass_level": 3, "spellcasting_ability": None,
+     "saving_throws": ["DEX", "INT"]},
+    {"slug": "sorcerer", "name": "Sorcerer", "hit_die": 6, "primary_ability": "CHA",
+     "subclass_label": "Sorcerous Origin", "subclass_level": 1, "spellcasting_ability": "CHA",
+     "saving_throws": ["CON", "CHA"]},
+    {"slug": "warlock", "name": "Warlock", "hit_die": 8, "primary_ability": "CHA",
+     "subclass_label": "Otherworldly Patron", "subclass_level": 1, "spellcasting_ability": "CHA",
+     "saving_throws": ["WIS", "CHA"]},
+    {"slug": "wizard", "name": "Wizard", "hit_die": 6, "primary_ability": "INT",
+     "subclass_label": "Arcane Tradition", "subclass_level": 2, "spellcasting_ability": "INT",
+     "saving_throws": ["INT", "WIS"]},
+]
+
+# SRD subclass per class (one each), summarized in our own words.
+_SUBCLASSES: list[dict] = [
+    {"slug": "berserker", "name": "Path of the Berserker", "class_name": "Barbarian",
+     "source": SRD_SOURCE,
+     "description": "A barbarian who channels rage into unbridled, reckless violence.",
+     "features": [
+         {"level": 3, "name": "Frenzy", "summary": "While raging, make a bonus-action melee attack each turn; suffer exhaustion when the rage ends."},
+         {"level": 6, "name": "Mindless Rage", "summary": "Can't be charmed or frightened while raging."},
+         {"level": 10, "name": "Intimidating Presence", "summary": "Frighten a creature as an action (Wis save)."},
+         {"level": 14, "name": "Retaliation", "summary": "Reaction melee attack against a creature that damages you."},
+     ]},
+    {"slug": "college-of-lore", "name": "College of Lore", "class_name": "Bard",
+     "source": SRD_SOURCE,
+     "description": "Bards who collect secrets and lore, wielding Cutting Words to undercut foes.",
+     "features": [
+         {"level": 3, "name": "Bonus Proficiencies", "summary": "Gain proficiency with three skills of your choice."},
+         {"level": 3, "name": "Cutting Words", "summary": "Reaction: spend a Bardic Inspiration die to subtract from an enemy's roll."},
+         {"level": 6, "name": "Additional Magical Secrets", "summary": "Learn two spells from any class's list."},
+         {"level": 14, "name": "Peerless Skill", "summary": "Add a Bardic Inspiration die to your own ability check."},
+     ]},
+    {"slug": "life-domain", "name": "Life Domain", "class_name": "Cleric",
+     "source": SRD_SOURCE,
+     "description": "Clerics devoted to healing and the vitality of the living.",
+     "features": [
+         {"level": 1, "name": "Disciple of Life", "summary": "Healing spells restore extra HP (2 + spell level)."},
+         {"level": 1, "name": "Bonus Proficiency", "summary": "Proficiency with heavy armor."},
+         {"level": 2, "name": "Channel Divinity: Preserve Life", "summary": "Restore HP equal to 5x cleric level, split among creatures."},
+         {"level": 6, "name": "Blessed Healer", "summary": "Healing others also heals you."},
+         {"level": 8, "name": "Divine Strike", "summary": "Weapon attacks deal +1d8 radiant damage (2d8 at 14th)."},
+         {"level": 17, "name": "Supreme Healing", "summary": "Healing dice are treated as their maximum value."},
+     ]},
+    {"slug": "circle-of-the-land", "name": "Circle of the Land", "class_name": "Druid",
+     "source": SRD_SOURCE,
+     "description": "Druids drawing power from a chosen terrain, gaining bonus spells.",
+     "features": [
+         {"level": 2, "name": "Natural Recovery", "summary": "Recover some spell slots on a short rest."},
+         {"level": 3, "name": "Circle Spells", "summary": "Bonus always-prepared spells tied to your chosen land."},
+         {"level": 6, "name": "Land's Stride", "summary": "Move through nonmagical difficult terrain freely; advantage vs. plant hazards."},
+         {"level": 10, "name": "Nature's Ward", "summary": "Immune to charm/fright by elementals and fey; can't be poisoned/diseased."},
+         {"level": 14, "name": "Nature's Sanctuary", "summary": "Beasts and plants must save to attack you."},
+     ]},
+    {"slug": "champion", "name": "Champion", "class_name": "Fighter",
+     "source": SRD_SOURCE,
+     "description": "A martial archetype focused on raw physical prowess and critical strikes.",
+     "features": [
+         {"level": 3, "name": "Improved Critical", "summary": "Weapon attacks crit on a 19-20."},
+         {"level": 7, "name": "Remarkable Athlete", "summary": "Add half proficiency to Str/Dex/Con checks; longer running jumps."},
+         {"level": 10, "name": "Additional Fighting Style", "summary": "Choose a second Fighting Style."},
+         {"level": 15, "name": "Superior Critical", "summary": "Weapon attacks crit on a 18-20."},
+         {"level": 18, "name": "Survivor", "summary": "Regain HP each turn while bloodied and above 0."},
+     ]},
+    {"slug": "way-of-the-open-hand", "name": "Way of the Open Hand", "class_name": "Monk",
+     "source": SRD_SOURCE,
+     "description": "Masters of unarmed combat who manipulate a foe's ki and body.",
+     "features": [
+         {"level": 3, "name": "Open Hand Technique", "summary": "Flurry of Blows can knock prone, push 15 ft, or deny reactions (save)."},
+         {"level": 6, "name": "Wholeness of Body", "summary": "Action: heal yourself HP equal to 3x monk level, once per long rest."},
+         {"level": 11, "name": "Tranquility", "summary": "Begin each day under a sanctuary-like effect until you attack."},
+         {"level": 17, "name": "Quivering Palm", "summary": "Set lethal vibrations; later spend ki to force a devastating Con save."},
+     ]},
+    {"slug": "oath-of-devotion", "name": "Oath of Devotion", "class_name": "Paladin",
+     "source": SRD_SOURCE,
+     "description": "Paladins bound to the ideals of honor, virtue, and justice.",
+     "features": [
+         {"level": 3, "name": "Channel Divinity: Sacred Weapon / Turn the Unholy", "summary": "Bless a weapon with +Cha to hit and light, or turn fiends and undead."},
+         {"level": 7, "name": "Aura of Devotion", "summary": "You and nearby allies can't be charmed."},
+         {"level": 15, "name": "Purity of Spirit", "summary": "Always under a protection-from-evil-and-good effect."},
+         {"level": 20, "name": "Holy Nimbus", "summary": "Emanate sunlight that damages fiends/undead and aids your saves."},
+     ]},
+    {"slug": "hunter", "name": "Hunter", "class_name": "Ranger",
+     "source": SRD_SOURCE,
+     "description": "A ranger archetype specialized in slaying dangerous prey.",
+     "features": [
+         {"level": 3, "name": "Hunter's Prey", "summary": "Choose Colossus Slayer, Giant Killer, or Horde Breaker."},
+         {"level": 7, "name": "Defensive Tactics", "summary": "Choose Escape the Horde, Multiattack Defense, or Steel Will."},
+         {"level": 11, "name": "Multiattack", "summary": "Choose Volley (AoE ranged) or Whirlwind Attack (AoE melee)."},
+         {"level": 15, "name": "Superior Hunter's Defense", "summary": "Choose a powerful defensive reaction such as Evasion or Stand Against the Tide."},
+     ]},
+    {"slug": "thief", "name": "Thief", "class_name": "Rogue",
+     "source": SRD_SOURCE,
+     "description": "A roguish archetype of nimble burglars and daring climbers.",
+     "features": [
+         {"level": 3, "name": "Fast Hands", "summary": "Use Cunning Action to Sleight of Hand, use objects, or disarm traps."},
+         {"level": 3, "name": "Second-Story Work", "summary": "Faster climbing; longer running jumps."},
+         {"level": 9, "name": "Supreme Sneak", "summary": "Advantage on Stealth if you move no more than half speed."},
+         {"level": 13, "name": "Use Magic Device", "summary": "Ignore class, race, and level requirements on magic items."},
+         {"level": 17, "name": "Thief's Reflexes", "summary": "Take two turns during the first round of combat."},
+     ]},
+    {"slug": "draconic-bloodline", "name": "Draconic Bloodline", "class_name": "Sorcerer",
+     "source": SRD_SOURCE,
+     "description": "A sorcerer whose innate magic springs from draconic ancestry.",
+     "features": [
+         {"level": 1, "name": "Dragon Ancestor", "summary": "Choose a dragon type; gain doubled proficiency on Cha checks with dragons."},
+         {"level": 1, "name": "Draconic Resilience", "summary": "+1 HP per level and unarmored AC 13 + Dex."},
+         {"level": 6, "name": "Elemental Affinity", "summary": "Add Cha to one damage roll of your ancestry's element; optionally gain resistance."},
+         {"level": 14, "name": "Dragon Wings", "summary": "Sprout wings and gain a flying speed."},
+         {"level": 18, "name": "Draconic Presence", "summary": "Aura that charms or frightens nearby creatures (save)."},
+     ]},
+    {"slug": "the-fiend", "name": "The Fiend", "class_name": "Warlock",
+     "source": SRD_SOURCE,
+     "description": "A warlock pact with a fiend of the Lower Planes.",
+     "features": [
+         {"level": 1, "name": "Dark One's Blessing", "summary": "Gain temporary HP when you reduce an enemy to 0 HP."},
+         {"level": 6, "name": "Dark One's Own Luck", "summary": "Add 1d10 to an ability check or save once per short rest."},
+         {"level": 10, "name": "Fiendish Resilience", "summary": "Choose a damage type to resist after a rest."},
+         {"level": 14, "name": "Hurl Through Hell", "summary": "Banish a hit creature through the Lower Planes for 10d10 psychic damage."},
+     ]},
+    {"slug": "school-of-evocation", "name": "School of Evocation", "class_name": "Wizard",
+     "source": SRD_SOURCE,
+     "description": "Wizards who shape raw elemental energy into devastating spells.",
+     "features": [
+         {"level": 2, "name": "Evocation Savant", "summary": "Copy evocation spells into your book at half time and cost."},
+         {"level": 2, "name": "Sculpt Spells", "summary": "Carve safe pockets so allies avoid your area spells."},
+         {"level": 6, "name": "Potent Cantrip", "summary": "Damage cantrips still deal half on a successful save."},
+         {"level": 10, "name": "Empowered Evocation", "summary": "Add Int modifier to one damage roll of an evocation spell."},
+         {"level": 14, "name": "Overchannel", "summary": "Deal maximum damage with a leveled spell, at the cost of backlash if overused."},
+     ]},
+    # ---- Owned, non-SRD ----
+    {"slug": "bladesinger", "name": "Bladesinger", "class_name": "Wizard",
+     "source": OWNED_SOURCE,
+     "description": ("An elven Arcane Tradition of warrior-mages who blend swordplay and "
+                     "spellcraft into a single graceful martial art. (Owned: Tasha's "
+                     "Cauldron of Everything.)"),
+     "features": [
+         {"level": 2, "name": "Training in War and Song", "summary": "Gain proficiency with light armor, one one-handed melee weapon, and the Performance skill."},
+         {"level": 2, "name": "Bladesong", "summary": "Bonus action to activate (prof-bonus uses/long rest, ~1 min): +Int to AC, +Int to Concentration saves, +10 ft speed, and advantage on Acrobatics while unarmored."},
+         {"level": 6, "name": "Extra Attack", "summary": "Attack twice when taking the Attack action; may replace one attack with a cantrip."},
+         {"level": 10, "name": "Song of Defense", "summary": "While Bladesong is active, expend a spell slot as a reaction to reduce damage by 5 per slot level."},
+         {"level": 14, "name": "Song of Victory", "summary": "While Bladesong is active, add your Int modifier to melee weapon damage."},
+     ]},
+    {"slug": "way-of-the-long-death", "name": "Way of the Long Death", "class_name": "Monk",
+     "source": OWNED_SOURCE,
+     "description": ("A Monastic Tradition of monks obsessed with the mechanics of dying, "
+                     "turning the study of death into a deadly fighting style. (Owned: "
+                     "Sword Coast Adventurer's Guide.)"),
+     "features": [
+         {"level": 3, "name": "Touch of Death", "summary": "When you reduce a creature within 5 ft to 0 HP, gain temporary HP equal to Wis modifier + monk level (min 1)."},
+         {"level": 6, "name": "Hour of Reaping", "summary": "Action: each creature within 30 ft that can see you must succeed on a Wisdom save or be frightened until the end of your next turn."},
+         {"level": 11, "name": "Mastery of Death", "summary": "When reduced to 0 HP, expend 1 ki point (no action) to drop to 1 HP instead."},
+         {"level": 17, "name": "Touch of the Long Death", "summary": "Action: touch a creature within 5 ft and spend 1-10 ki; it makes a Con save, taking 2d10 necrotic per ki spent (half on success)."},
+     ]},
+]
+
+
+def seed_classes_and_subclasses(
+    engine: Optional[Engine] = None,
+    database_url: Optional[str] = None,
+) -> dict:
+    """Seed the core classes + their subclasses (incl. owned non-SRD ones).
+
+    Offline and idempotent (upsert by ``index_slug``). Returns counts.
+    """
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+
+    result = {"classes_new": 0, "classes_total": len(_CLASSES),
+              "subclasses_new": 0, "subclasses_total": len(_SUBCLASSES)}
+
+    by_slug = {c["slug"]: c for c in _CLASSES}
+
+    with Session(engine) as s:
+        for c in _CLASSES:
+            mapped = DndClass(
+                index_slug=c["slug"], name=c["name"], hit_die=c.get("hit_die"),
+                primary_ability=c.get("primary_ability"),
+                subclass_label=c.get("subclass_label"),
+                subclass_level=c.get("subclass_level", 3),
+                spellcasting_ability=c.get("spellcasting_ability"),
+                saving_throws=c.get("saving_throws"),
+                description=c.get("description"),
+                source=c.get("source", SRD_SOURCE),
+            )
+            if _upsert(s, DndClass, c["slug"], mapped):
+                result["classes_new"] += 1
+
+        for sub in _SUBCLASSES:
+            parent = by_slug.get(sub["class_name"].lower())
+            mapped = Subclass(
+                index_slug=sub["slug"], name=sub["name"], class_name=sub["class_name"],
+                class_slug=parent["slug"] if parent else None,
+                features=sub.get("features"), description=sub.get("description"),
+                source=sub.get("source", SRD_SOURCE),
+            )
+            if _upsert(s, Subclass, sub["slug"], mapped):
+                result["subclasses_new"] += 1
+        s.commit()
+
+    return result
+
+
 if __name__ == "__main__":
     print(ingest_srd())
+    print(seed_classes_and_subclasses())

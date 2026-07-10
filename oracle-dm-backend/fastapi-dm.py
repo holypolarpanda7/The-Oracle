@@ -26,8 +26,10 @@ from eight_card_system import WorldGraph
 from eight_card_system.graph import slugify
 from eight_card_system.seed import seed_starter_world, place_pc
 from eight_card_system.extraction import extract_and_apply
-from rules import RulesLibrary, format_monster_brief, format_spell_brief, ingest_srd
-from dice import ability_check, roll as dice_roll
+from rules import RulesLibrary, format_monster_brief, format_spell_brief, ingest_srd, seed_classes_and_subclasses, level_up_report
+from rules.models import Subclass, DndClass
+from combat import CombatTracker, Condition
+from dice import ability_check, ability_modifier, roll as dice_roll
 
 # ----- Env loading -----
 
@@ -70,6 +72,16 @@ async def lifespan(app: FastAPI):
             print(f"[Startup] Ingested SRD rules: {counts}")
     except Exception as e:
         print(f"[Startup] SRD ingest skipped (offline?): {e}")
+
+    # Seed classes + subclasses (offline; includes owned non-SRD like Bladesinger).
+    try:
+        with Session(engine) as _s:
+            has_classes = _s.exec(select(Subclass)).first() is not None
+        if not has_classes:
+            cls_counts = seed_classes_and_subclasses(engine=engine)
+            print(f"[Startup] Seeded classes/subclasses: {cls_counts}")
+    except Exception as e:
+        print(f"[Startup] Class seed skipped: {e}")
 
     yield
     # Shutdown: Add cleanup logic here if needed
@@ -124,6 +136,7 @@ class RegisterCharacterRequest(BaseModel):
     name: str
     race: Optional[str] = None
     char_class: Optional[str] = None
+    subclass: Optional[str] = None
     level: int = 1
     stats: Optional[Dict[str, int]] = None
     ddb_url: Optional[str] = None
@@ -135,6 +148,48 @@ class RegisterCharacterRequest(BaseModel):
 
 class CheckCharacterRequest(BaseModel):
     discord_user_id: str
+
+
+class LevelUpRequest(BaseModel):
+    character_id: int
+    # Provide when the character reaches the level that chooses a subclass, or to
+    # (re)assign one. Validated against the class's subclass level + roster.
+    subclass: Optional[str] = None
+
+
+class CombatStartRequest(BaseModel):
+    session_id: str
+    name: str = "Encounter"
+
+
+class CombatAddRequest(BaseModel):
+    encounter_id: int
+    kind: str = "monster"  # pc | npc | monster
+    name: Optional[str] = None
+    monster_slug: Optional[str] = None
+    count: int = 1
+    roll_hp: bool = False
+    character_id: Optional[int] = None
+    max_hp: Optional[int] = None
+    armor_class: Optional[int] = None
+    dex_mod: int = 0
+    initiative: int = 0
+
+
+class CombatDamageRequest(BaseModel):
+    combatant_id: int
+    amount: int
+
+
+class CombatConditionRequest(BaseModel):
+    combatant_id: int
+    condition: str
+    remove: bool = False
+
+
+class CombatConcentrationRequest(BaseModel):
+    combatant_id: int
+    spell: Optional[str] = None
 
 
 
@@ -160,6 +215,8 @@ engine = create_engine(DATABASE_URL, echo=False, connect_args=connect_args)
 # Shared subsystems on the same DB: persistent world graph + SRD rules reference.
 world = WorldGraph(engine=engine)
 rules_lib = RulesLibrary(engine=engine)
+# Initiative-ordered combat state tracker (PCs, NPCs, monsters).
+combat = CombatTracker(engine=engine)
 
 # Per-session metadata (which PC is playing) alongside the in-memory history.
 SESSION_META: Dict[str, Dict] = {}
@@ -176,6 +233,7 @@ class Character(SQLModel, table=True):
     name: str = Field(sa_column=Column(String, nullable=False))
     race: Optional[str] = Field(default=None, sa_column=Column(String))
     char_class: Optional[str] = Field(default=None, sa_column=Column(String))
+    subclass: Optional[str] = Field(default=None, sa_column=Column(String))
     level: int = Field(default=1)
 
     # Flexible JSON fields for spells/inventory/stats
@@ -332,7 +390,10 @@ def generate_dm_reply(
         "Using provided context:\n"
         "- A 'World state' block and/or a 'Rules reference' block may be supplied.\n"
         "- Treat them as ground truth. Keep NPCs, places, and facts consistent with them.\n"
-        "- Use the EXACT numbers in the Rules reference for monster stats and spells.\n\n"
+        "- Use the EXACT numbers in the Rules reference for monster stats and spells.\n"
+        "- A 'Combat' block may list the initiative order with each creature's current\n"
+        "  HP, AC, and conditions. When present, respect the turn order and those HP\n"
+        "  totals; narrate the fight around them and don't contradict the numbers.\n\n"
         "Dice - you roll them yourself; NEVER ask the player to roll or mention Avrae:\n"
         "- When an action needs a roll, emit a hook and the system fills in the result:\n"
         "    [[ROLL: 1d20+5 | Stealth | DC 15]]   for an ability check or saving throw\n"
@@ -439,10 +500,19 @@ async def chat_endpoint(req: ChatRequest):
 
     # DM reply
     try:
+        # Ground the turn in the local world slice, referenced rules, and — if a
+        # fight is underway — the live initiative/HP board.
+        _, ctx_texts = assemble_context(req.session_id, req.message)
+        active_enc = combat.get_active(req.session_id)
+        if active_enc:
+            board = combat.render(active_enc.id)
+            if board.strip():
+                ctx_texts.append(board)
         dm_text = generate_dm_reply(
             session_id=req.session_id,
             username=req.username,
             message=req.message,
+            extra_context=ctx_texts,
         )
     except Exception as e:
         print(f"[DM error] {e}")
@@ -520,7 +590,7 @@ async def enter_world(req: EnterRequest):
             chosen.name,
             discord_user_id=req.user_id,
             location_slug="the-silver-tankard",
-            attributes={"race": chosen.race, "class": chosen.char_class, "level": chosen.level},
+            attributes={"race": chosen.race, "class": chosen.char_class, "subclass": chosen.subclass, "level": chosen.level},
         )
     except Exception as e:
         print(f"[enterworld place_pc error] {e}")
@@ -574,11 +644,14 @@ async def register_character(req: RegisterCharacterRequest):
     if req.source and req.source not in ("avrae", "guided", "manual"):
         raise HTTPException(status_code=400, detail="Invalid source. Allowed: avrae, guided, manual.")
 
-    # Level validation: general rule 1-20; if guided, require level == 1
-    if req.level < 1 or req.level > 20:
-        raise HTTPException(status_code=400, detail="Invalid level (allowed: 1-20).")
-    if req.source == "guided" and req.level != 1:
-        raise HTTPException(status_code=400, detail="Guided creation must produce a level 1 character.")
+    # Level validation: characters are always CREATED at level 1. Advancement is
+    # tracked in-system via the /level_up flow (SRD-based), so any import or manual
+    # entry must start at level 1.
+    if req.level != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Characters must be created at level 1. Use /level_up to advance.",
+        )
 
     # Validate stats if present
     if req.stats:
@@ -601,6 +674,7 @@ async def register_character(req: RegisterCharacterRequest):
             name=req.name,
             race=req.race,
             char_class=req.char_class,
+            subclass=req.subclass,
             level=req.level,
             stats=req.stats,
             ddb_url=req.ddb_url,
@@ -623,8 +697,259 @@ async def check_character(req: CheckCharacterRequest):
         stmt = select(Character).where(Character.discord_user_id == req.discord_user_id)
         characters = session.exec(stmt).all()
     
-    char_list = [{"id": c.id, "name": c.name, "level": c.level, "char_class": c.char_class, "race": c.race} for c in characters]
+    char_list = [{"id": c.id, "name": c.name, "level": c.level, "char_class": c.char_class, "subclass": c.subclass, "race": c.race} for c in characters]
     return {"has_character": len(characters) > 0, "characters": char_list}
+
+
+# ----- Character progression (SRD level-up) -----
+
+def _con_mod(char: Character) -> int:
+    stats = char.stats or {}
+    con = stats.get("constitution") or stats.get("con") or stats.get("CON")
+    return ability_modifier(con)
+
+
+def _get_class_row(session: Session, class_name: Optional[str]) -> Optional[DndClass]:
+    if not class_name:
+        return None
+    key = class_name.strip().lower()
+    row = session.exec(select(DndClass).where(DndClass.index_slug == key)).first()
+    if row:
+        return row
+    for c in session.exec(select(DndClass)).all():
+        if c.name.lower() == key:
+            return c
+    return None
+
+
+def _subclasses_for(session: Session, cls: DndClass) -> list[Subclass]:
+    rows = list(session.exec(select(Subclass).where(Subclass.class_slug == cls.index_slug)).all())
+    if rows:
+        return rows
+    return list(session.exec(select(Subclass).where(Subclass.class_name == cls.name)).all())
+
+
+def _find_subclass(session: Session, cls: DndClass, name: str) -> Optional[Subclass]:
+    key = name.strip().lower()
+    for sc in _subclasses_for(session, cls):
+        if sc.name.lower() == key or sc.index_slug == key:
+            return sc
+    return None
+
+
+def _progression(session: Session, char: Character, target_subclass: Optional[str], apply: bool) -> dict:
+    cls = _get_class_row(session, char.char_class)
+    if cls is None:
+        raise HTTPException(status_code=400, detail=f"Unknown class for character: {char.char_class!r}")
+
+    new_level = char.level + 1
+    if new_level > 20:
+        raise HTTPException(status_code=400, detail="Character is already level 20 (max).")
+
+    options = _subclasses_for(session, cls)
+    option_list = [{"name": s.name, "slug": s.index_slug, "source": s.source} for s in options]
+
+    chosen_name = char.subclass
+    chosen_row: Optional[Subclass] = None
+    if target_subclass:
+        chosen_row = _find_subclass(session, cls, target_subclass)
+        if chosen_row is None:
+            raise HTTPException(status_code=400, detail=f"{target_subclass!r} is not a {cls.name} subclass.")
+        if new_level < cls.subclass_level:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{cls.name} chooses its {cls.subclass_label or 'subclass'} at level {cls.subclass_level}.",
+            )
+        chosen_name = chosen_row.name
+    elif char.subclass:
+        chosen_row = _find_subclass(session, cls, char.subclass)
+
+    features = chosen_row.features if chosen_row else None
+    report = level_up_report(
+        class_name=cls.name, hit_die=cls.hit_die, subclass_level=cls.subclass_level,
+        subclass_name=chosen_name, subclass_features=features,
+        con_mod=_con_mod(char), old_level=char.level, new_level=new_level,
+    )
+
+    subclass_required = bool(report.get("subclass_choice_due")) and not chosen_name
+    # Don't advance until the required subclass choice is made.
+    did_apply = apply and not subclass_required
+
+    if did_apply:
+        char.level = new_level
+        if target_subclass and chosen_row:
+            char.subclass = chosen_row.name
+        char.updated_at = datetime.utcnow()
+        session.add(char)
+        session.commit()
+        session.refresh(char)
+
+    return {
+        "character_id": char.id,
+        "name": char.name,
+        "class": cls.name,
+        "subclass": char.subclass,
+        "current_level": char.level,
+        "next_level": new_level,
+        "applied": did_apply,
+        "subclass_label": cls.subclass_label,
+        "subclass_level": cls.subclass_level,
+        "subclass_required": subclass_required,
+        "subclass_options": option_list,
+        "report": report,
+    }
+
+
+@app.get("/character/{character_id}/progression")
+async def character_progression(character_id: int):
+    """Preview (without applying) the SRD changes for this character's next level."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        return _progression(session, char, target_subclass=None, apply=False)
+
+
+@app.post("/level_up")
+async def level_up(req: LevelUpRequest):
+    """Advance a character one level, following SRD guidance.
+
+    If the new level is where the class chooses its subclass and none is provided,
+    the level is NOT applied — the response returns ``subclass_required`` plus the
+    available subclass options (including owned non-SRD ones) so the caller can
+    resubmit with a choice.
+    """
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        return _progression(session, char, target_subclass=req.subclass, apply=True)
+
+
+@app.get("/class_options/{class_name}")
+async def class_options(class_name: str):
+    """List a class's subclasses (name, source) and the level it chooses one at."""
+    with Session(engine) as session:
+        cls = _get_class_row(session, class_name)
+        if not cls:
+            raise HTTPException(status_code=404, detail=f"Unknown class: {class_name!r}")
+        options = _subclasses_for(session, cls)
+        return {
+            "class": cls.name,
+            "subclass_label": cls.subclass_label,
+            "subclass_level": cls.subclass_level,
+            "subclasses": [{"name": s.name, "slug": s.index_slug, "source": s.source} for s in options],
+        }
+
+
+# ----- Combat state tracker -----
+
+@app.post("/combat/start")
+async def combat_start(req: CombatStartRequest):
+    enc = combat.start_encounter(req.session_id, req.name)
+    return {"status": "ok", "encounter": combat.state(enc.id)}
+
+
+@app.post("/combat/add")
+async def combat_add(req: CombatAddRequest):
+    try:
+        if req.monster_slug:
+            created = combat.add_from_monster(
+                req.encounter_id, req.monster_slug, count=req.count, roll_hp=req.roll_hp
+            )
+            return {"status": "ok", "added": [c.id for c in created], "encounter": combat.state(req.encounter_id)}
+        if not req.name or req.max_hp is None:
+            raise HTTPException(status_code=400, detail="Non-monster combatants need 'name' and 'max_hp'.")
+        c = combat.add_combatant(
+            req.encounter_id, req.name, kind=req.kind, max_hp=req.max_hp,
+            armor_class=req.armor_class, dex_mod=req.dex_mod, initiative=req.initiative,
+            character_id=req.character_id,
+        )
+        return {"status": "ok", "added": [c.id], "encounter": combat.state(req.encounter_id)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/combat/{encounter_id}/roll_initiative")
+async def combat_roll_initiative(encounter_id: int, reroll: bool = False):
+    combat.roll_initiative(encounter_id, reroll=reroll)
+    return {"status": "ok", "encounter": combat.state(encounter_id)}
+
+
+@app.post("/combat/{encounter_id}/next")
+async def combat_next(encounter_id: int):
+    enc, cur = combat.next_turn(encounter_id)
+    if not enc:
+        raise HTTPException(status_code=404, detail="Encounter not found.")
+    return {"status": "ok", "current_combatant_id": cur.id if cur else None, "encounter": combat.state(encounter_id)}
+
+
+@app.post("/combat/damage")
+async def combat_damage(req: CombatDamageRequest):
+    try:
+        return {"status": "ok", "combatant": combat.apply_damage(req.combatant_id, req.amount)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/combat/heal")
+async def combat_heal(req: CombatDamageRequest):
+    try:
+        return {"status": "ok", "combatant": combat.heal(req.combatant_id, req.amount)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/combat/temp_hp")
+async def combat_temp_hp(req: CombatDamageRequest):
+    try:
+        return {"status": "ok", "combatant": combat.set_temp_hp(req.combatant_id, req.amount)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/combat/condition")
+async def combat_condition(req: CombatConditionRequest):
+    try:
+        if req.remove:
+            combatant = combat.remove_condition(req.combatant_id, req.condition)
+        else:
+            combatant = combat.add_condition(req.combatant_id, req.condition)
+        return {"status": "ok", "combatant": combatant}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/combat/concentration")
+async def combat_concentration(req: CombatConcentrationRequest):
+    try:
+        return {"status": "ok", "combatant": combat.set_concentration(req.combatant_id, req.spell)}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/combat/active/{session_id}")
+async def combat_active(session_id: str):
+    enc = combat.get_active(session_id)
+    if not enc:
+        return {"active": False}
+    return {"active": True, "encounter": combat.state(enc.id), "board": combat.render(enc.id)}
+
+
+@app.get("/combat/{encounter_id}/state")
+async def combat_state(encounter_id: int):
+    state = combat.state(encounter_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Encounter not found.")
+    return {"encounter": state, "board": combat.render(encounter_id)}
+
+
+@app.post("/combat/{encounter_id}/end")
+async def combat_end(encounter_id: int):
+    enc = combat.end_encounter(encounter_id)
+    if not enc:
+        raise HTTPException(status_code=404, detail="Encounter not found.")
+    return {"status": "ok", "encounter": combat.state(encounter_id)}
 
 
 if __name__ == "__main__":

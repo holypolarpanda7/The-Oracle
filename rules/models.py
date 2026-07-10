@@ -20,6 +20,9 @@ from sqlalchemy import Column, JSON, String, Float, Integer, Boolean
 from sqlmodel import Field, SQLModel
 
 SRD_SOURCE = "SRD 5.1 (CC-BY-4.0)"
+# Content the player legally owns (purchased books) but that is NOT in the SRD.
+# Stored as concise mechanical facts in our own wording, never verbatim prose.
+OWNED_SOURCE = "Owned (non-SRD)"
 
 
 class Monster(SQLModel, table=True):
@@ -105,6 +108,61 @@ class Spell(SQLModel, table=True):
     higher_level: Optional[str] = Field(default=None, sa_column=Column(String))
 
     source: str = Field(default=SRD_SOURCE, sa_column=Column(String))
+    raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class DndClass(SQLModel, table=True):
+    """A character class (Fighter, Wizard, ...) — the mechanical essentials only."""
+    __tablename__ = "rules_class"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    index_slug: str = Field(sa_column=Column(String, nullable=False, unique=True, index=True))
+    name: str = Field(sa_column=Column(String, nullable=False, index=True))
+
+    hit_die: Optional[int] = Field(default=None, sa_column=Column(Integer))   # e.g. 6, 8, 10, 12
+    primary_ability: Optional[str] = Field(default=None, sa_column=Column(String))
+    # The label a class gives its subclass choice (e.g. "Arcane Tradition").
+    subclass_label: Optional[str] = Field(default=None, sa_column=Column(String))
+    # The level at which this class chooses its subclass (SRD: 1, 2, or 3).
+    subclass_level: int = Field(default=3, sa_column=Column(Integer))
+    spellcasting_ability: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    saving_throws: Optional[Any] = Field(default=None, sa_column=Column(JSON))   # ["STR","CON"]
+    description: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
+    raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Subclass(SQLModel, table=True):
+    """A subclass/archetype (Champion, Bladesinger, ...).
+
+    Non-SRD subclasses the player owns (e.g. Bladesinger from Tasha's) are stored
+    with ``source = OWNED_SOURCE`` and concise, self-authored feature summaries so
+    the DM brain knows they exist without reproducing book prose.
+    """
+    __tablename__ = "rules_subclass"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    index_slug: str = Field(sa_column=Column(String, nullable=False, unique=True, index=True))
+    name: str = Field(sa_column=Column(String, nullable=False, index=True))
+
+    class_name: str = Field(sa_column=Column(String, nullable=False, index=True))  # e.g. "Wizard"
+    class_slug: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+
+    # List of {"level": int, "name": str, "summary": str}
+    features: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    description: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
     raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
     created_at: datetime = Field(default_factory=datetime.utcnow)

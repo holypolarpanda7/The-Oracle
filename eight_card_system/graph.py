@@ -19,7 +19,10 @@ from typing import Iterable, Optional, Union
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from .models import Entity, Relation, WorldEvent, WorldMeta, RelationType
+from .models import (
+    Entity, Relation, WorldEvent, WorldMeta, RelationType,
+    TimeOfDay, describe_date, DAYS_PER_MONTH,
+)
 
 EntityRef = Union[int, str, Entity]
 
@@ -55,6 +58,7 @@ class WorldContext:
     relations: list[Relation]
     events: list[WorldEvent]
     world_day: int
+    date_str: str = ""
 
     def render(self) -> str:
         """Compact text block to inject into the DM prompt."""
@@ -64,7 +68,8 @@ class WorldContext:
             e = by_id.get(eid)
             return e.name if e else f"#{eid}"
 
-        lines: list[str] = [f"# World state (day {self.world_day})"]
+        header = self.date_str or f"day {self.world_day}"
+        lines: list[str] = [f"# World state ({header})"]
 
         if self.location:
             desc = (self.location.attributes or {}).get("description", "")
@@ -84,8 +89,10 @@ class WorldContext:
             "item": "Notable items",
             "quest": "Active threads",
             "place": "Nearby places",
+            "deity": "Powers & faiths",
+            "lore": "Rumors & lore",
         }
-        for etype in ("npc", "place", "faction", "item", "quest"):
+        for etype in ("npc", "place", "faction", "item", "quest", "deity", "lore"):
             group = buckets.get(etype)
             if not group:
                 continue
@@ -129,16 +136,60 @@ class WorldGraph:
             meta = s.get(WorldMeta, 1)
             return meta.world_day if meta else 0
 
+    def current_date_str(self) -> str:
+        """Human-facing Calendar-of-Harptos date/time string."""
+        with Session(self.engine) as s:
+            meta = self._ensure_meta(s)
+            return describe_date(meta)
+
+    def _ensure_meta(self, s: Session) -> WorldMeta:
+        meta = s.get(WorldMeta, 1)
+        if meta is None:
+            meta = WorldMeta(id=1)
+            s.add(meta)
+            s.commit()
+            s.refresh(meta)
+        return meta
+
+    @staticmethod
+    def _roll_day(meta: WorldMeta, n: int = 1) -> None:
+        """Advance the calendar by ``n`` days in place (12 months x 30 days)."""
+        for _ in range(max(0, n)):
+            meta.world_day += 1
+            meta.day_of_month += 1
+            if meta.day_of_month > DAYS_PER_MONTH:
+                meta.day_of_month = 1
+                meta.month += 1
+                if meta.month > 12:
+                    meta.month = 1
+                    meta.year += 1
+
     def advance_day(self, n: int = 1) -> int:
         with Session(self.engine) as s:
-            meta = s.get(WorldMeta, 1)
-            if meta is None:
-                meta = WorldMeta(id=1, world_day=0)
-            meta.world_day += n
+            meta = self._ensure_meta(s)
+            self._roll_day(meta, n)
+            meta.time_of_day = TimeOfDay.DAWN
             meta.updated_at = datetime.utcnow()
             s.add(meta)
             s.commit()
             return meta.world_day
+
+    def advance_time(self, steps: int = 1) -> str:
+        """Advance the clock by coarse segments; wrapping past night rolls a day."""
+        with Session(self.engine) as s:
+            meta = self._ensure_meta(s)
+            order = TimeOfDay.ORDER
+            idx = order.index(meta.time_of_day) if meta.time_of_day in order else 0
+            for _ in range(max(0, steps)):
+                idx += 1
+                if idx >= len(order):
+                    idx = 0
+                    self._roll_day(meta, 1)
+            meta.time_of_day = order[idx]
+            meta.updated_at = datetime.utcnow()
+            s.add(meta)
+            s.commit()
+            return meta.time_of_day
 
     # ----- entity CRUD -----
 
@@ -148,6 +199,7 @@ class WorldGraph:
         type: str,
         *,
         slug: Optional[str] = None,
+        subtype: Optional[str] = None,
         status: str = "active",
         attributes: Optional[dict] = None,
         tags: Optional[list] = None,
@@ -162,6 +214,8 @@ class WorldGraph:
             if existing:
                 existing.name = name
                 existing.status = status
+                if subtype is not None:
+                    existing.subtype = subtype
                 if attributes is not None:
                     existing.attributes = {**(existing.attributes or {}), **attributes}
                 if tags is not None:
@@ -174,7 +228,7 @@ class WorldGraph:
                 s.refresh(existing)
                 return existing
             ent = Entity(
-                name=name, type=type, slug=slug, status=status,
+                name=name, type=type, slug=slug, subtype=subtype, status=status,
                 attributes=attributes or {}, tags=tags or [],
                 discord_user_id=discord_user_id, created_day=day,
             )
@@ -320,6 +374,8 @@ class WorldGraph:
         with Session(self.engine) as s:
             pc_e = self._resolve_entity(s, pc)
             day = self._day(s)
+            meta = s.get(WorldMeta, 1)
+            date_str = describe_date(meta) if meta else ""
 
             location = None
             anchors: set[int] = set()
@@ -333,7 +389,7 @@ class WorldGraph:
             anchors |= self._match_named_entities(s, action_text)
 
             if not anchors:
-                return WorldContext(location, set(), [], [], [], day)
+                return WorldContext(location, set(), [], [], [], day, date_str)
 
             visited, rels = self._bfs(s, anchors, hops)
 
@@ -352,6 +408,7 @@ class WorldGraph:
                 relations=rels,
                 events=events,
                 world_day=day,
+                date_str=date_str,
             )
 
     # ----- internals -----

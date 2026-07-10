@@ -33,8 +33,87 @@ class EntityType:
     QUEST = "quest"
     EVENT = "event"      # a notable happening promoted to a first-class node
     PC = "pc"            # player character (mirror of backend Character)
+    DEITY = "deity"      # gods/powers worshipped in the world (Faerûn pantheon)
+    LORE = "lore"        # a rumor, secret, clue, or piece of knowledge
 
-    ALL = {PLACE, NPC, FACTION, ITEM, QUEST, EVENT, PC}
+    ALL = {PLACE, NPC, FACTION, ITEM, QUEST, EVENT, PC, DEITY, LORE}
+
+
+class PlaceScale:
+    """Suggested ``subtype`` values for PLACE entities (largest -> smallest)."""
+    PLANE = "plane"
+    CONTINENT = "continent"
+    REGION = "region"
+    SETTLEMENT = "settlement"   # city / town / village
+    DISTRICT = "district"
+    BUILDING = "building"
+    ROOM = "room"
+    WILDS = "wilds"
+    DUNGEON = "dungeon"
+    POI = "poi"                 # generic point of interest
+
+    ALL = {PLANE, CONTINENT, REGION, SETTLEMENT, DISTRICT, BUILDING, ROOM,
+           WILDS, DUNGEON, POI}
+
+
+class ItemRarity:
+    """Suggested rarity stored in an ITEM entity's ``attributes['rarity']``."""
+    COMMON = "common"
+    UNCOMMON = "uncommon"
+    RARE = "rare"
+    VERY_RARE = "very_rare"
+    LEGENDARY = "legendary"
+    ARTIFACT = "artifact"
+
+    ALL = {COMMON, UNCOMMON, RARE, VERY_RARE, LEGENDARY, ARTIFACT}
+
+
+class QuestState:
+    """Lifecycle of a QUEST entity, stored in ``attributes['state']``."""
+    OFFERED = "offered"     # known/available but not taken
+    ACTIVE = "active"       # accepted and in progress
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    ALL = {OFFERED, ACTIVE, COMPLETED, FAILED}
+
+
+class Attitude:
+    """NPC social attitude toward the party (5e social-interaction scale).
+
+    Stored on a KNOWS/relation's ``attributes['attitude']`` or an NPC's
+    ``attributes['attitude']``.
+    """
+    HOSTILE = "hostile"
+    UNFRIENDLY = "unfriendly"
+    INDIFFERENT = "indifferent"
+    FRIENDLY = "friendly"
+    HELPFUL = "helpful"
+
+    ALL = {HOSTILE, UNFRIENDLY, INDIFFERENT, FRIENDLY, HELPFUL}
+
+
+class TimeOfDay:
+    """Coarse time-of-day segments used by the world clock."""
+    DAWN = "dawn"
+    MORNING = "morning"
+    MIDDAY = "midday"
+    AFTERNOON = "afternoon"
+    DUSK = "dusk"
+    NIGHT = "night"
+
+    # Ordered for advancing the clock; wrapping past NIGHT rolls to a new day.
+    ORDER = [DAWN, MORNING, MIDDAY, AFTERNOON, DUSK, NIGHT]
+    ALL = set(ORDER)
+
+
+# Calendar of Harptos month names (Faerûn), 12 months of 30 days each. These are
+# factual world labels, not book prose. Override for a different setting.
+HARPTOS_MONTHS = [
+    "Hammer", "Alturiak", "Ches", "Tarsakh", "Mirtul", "Kythorn",
+    "Flamerule", "Eleasis", "Eleint", "Marpenoth", "Uktar", "Nightal",
+]
+DAYS_PER_MONTH = 30
 
 
 class RelationType:
@@ -51,10 +130,17 @@ class RelationType:
     OWNS = "owns"                    # entity -> item
     INVOLVES = "involves"            # quest/event -> any entity
     LOCATED_AT = "located_at"        # quest/event anchored to a place
+    # religion / governance / commerce / knowledge
+    WORSHIPS = "worships"            # npc/pc/faction -> deity
+    GOVERNS = "governs"              # faction/npc -> place
+    SELLS = "sells"                  # npc/faction -> item
+    GIVES_QUEST = "gives_quest"      # npc/faction -> quest
+    KNOWS_ABOUT = "knows_about"      # npc/pc -> lore/any (information held)
 
     ALL = {
         LOCATED_IN, ADJACENT_TO, PART_OF, MEMBER_OF, ALLIED_WITH,
         HOSTILE_TO, KNOWS, OWNS, INVOLVES, LOCATED_AT,
+        WORSHIPS, GOVERNS, SELLS, GIVES_QUEST, KNOWS_ABOUT,
     }
 
     # Relation types that are symmetric (traversed both ways for adjacency logic)
@@ -70,6 +156,8 @@ class Entity(SQLModel, table=True):
     name: str = Field(sa_column=Column(String, nullable=False, index=True))
     # Stable, url-safe handle for lookups/references (e.g. "millbrook").
     slug: str = Field(sa_column=Column(String, nullable=False, index=True))
+    # Finer classification within a type (e.g. place->"tavern", item->"weapon").
+    subtype: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
 
     # active / dead / destroyed / hidden / departed ...
     status: str = Field(default="active", sa_column=Column(String, index=True))
@@ -124,9 +212,29 @@ class WorldEvent(SQLModel, table=True):
 
 
 class WorldMeta(SQLModel, table=True):
-    """Single-row table holding global world state (current in-world day)."""
+    """Single-row table holding global world state (the in-world clock).
+
+    ``world_day`` is an absolute day counter (day 0 = campaign start). The
+    calendar fields (``year``/``month``/``day_of_month``/``time_of_day``) are a
+    human-facing Calendar-of-Harptos view kept in sync by ``WorldGraph``.
+    """
     __tablename__ = "world_meta"
 
     id: Optional[int] = Field(default=1, primary_key=True)
     world_day: int = Field(default=0)
+
+    # Calendar of Harptos view of the current date/time.
+    year: int = Field(default=1492)              # Dalereckoning (DR)
+    month: int = Field(default=1)                # 1..12 index into HARPTOS_MONTHS
+    day_of_month: int = Field(default=1)         # 1..30
+    time_of_day: str = Field(default=TimeOfDay.MORNING, sa_column=Column(String))
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+def describe_date(meta: "WorldMeta") -> str:
+    """Render a WorldMeta as e.g. 'morning of 5 Mirtul, 1492 DR (day 12)'."""
+    idx = max(1, min(12, meta.month)) - 1
+    month_name = HARPTOS_MONTHS[idx]
+    return (f"{meta.time_of_day} of {meta.day_of_month} {month_name}, "
+            f"{meta.year} DR (day {meta.world_day})")

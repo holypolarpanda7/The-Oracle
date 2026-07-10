@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .graph import WorldGraph
-from .models import EntityType, RelationType
+from .models import EntityType, RelationType, PlaceScale, QuestState, Attitude
 
 
 def seed_starter_world(graph: WorldGraph) -> dict:
@@ -23,7 +23,7 @@ def seed_starter_world(graph: WorldGraph) -> dict:
 
     # --- Places ---
     greenfields = e(
-        "Greenfields", EntityType.PLACE,
+        "Greenfields", EntityType.PLACE, subtype=PlaceScale.REGION,
         attributes={
             "description": "A patchwork of farmland and low hills at the frontier's edge.",
             "scale": "region",
@@ -31,15 +31,17 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         tags=["region", "frontier", "rural"],
     )
     millbrook = e(
-        "Millbrook", EntityType.PLACE,
+        "Millbrook", EntityType.PLACE, subtype=PlaceScale.SETTLEMENT,
         attributes={
             "description": "A modest walled town on the Mill River, last stop before the wilds.",
             "scale": "town",
+            "population": 900,
+            "government": "town council",
         },
         tags=["town", "walled", "river"],
     )
     tankard = e(
-        "The Silver Tankard", EntityType.PLACE,
+        "The Silver Tankard", EntityType.PLACE, subtype="tavern",
         attributes={
             "description": "A warm, smoke-stained tavern that doubles as Millbrook's meeting hall.",
             "scale": "poi",
@@ -47,18 +49,37 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         tags=["tavern", "poi", "social"],
     )
     market = e(
-        "Millbrook Market", EntityType.PLACE,
+        "Millbrook Market", EntityType.PLACE, subtype="market",
         attributes={"description": "A cramped square of stalls and haggling.", "scale": "poi"},
         tags=["market", "poi", "trade"],
     )
+    temple = e(
+        "Shrine of the Great Mother", EntityType.PLACE, subtype="temple",
+        attributes={
+            "description": "A humble field-stone shrine to Chauntea tended by Millbrook's farmers.",
+            "scale": "poi",
+        },
+        tags=["temple", "poi", "faith"],
+    )
     duskwood = e(
-        "Duskwood", EntityType.PLACE,
+        "Duskwood", EntityType.PLACE, subtype=PlaceScale.WILDS,
         attributes={
             "description": "An old forest east of Millbrook where the light never quite reaches.",
             "scale": "wilds",
             "danger": "moderate",
         },
         tags=["forest", "wilds", "dangerous"],
+    )
+
+    # --- Deity ---
+    chauntea = e(
+        "Chauntea", EntityType.DEITY,
+        attributes={
+            "description": "The Great Mother, goddess of agriculture and the harvest.",
+            "domain": "agriculture, life, plenty",
+            "alignment": "neutral good",
+        },
+        tags=["deity", "life", "harvest"],
     )
 
     # --- Factions ---
@@ -74,6 +95,7 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         attributes={
             "description": "The Silver Tankard's keeper — sharp-eyed, hears everything.",
             "disposition": "friendly",
+            "attitude": Attitude.FRIENDLY,
             "role": "tavernkeeper",
         },
         tags=["npc", "tavern", "information"],
@@ -83,6 +105,7 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         attributes={
             "description": "Weathered captain of Millbrook's small guard.",
             "disposition": "gruff",
+            "attitude": Attitude.INDIFFERENT,
             "role": "guard captain",
         },
         tags=["npc", "guard", "authority"],
@@ -92,6 +115,7 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         attributes={
             "description": "A hermit who trades in Duskwood herbs and unsettling rumors.",
             "disposition": "wary",
+            "attitude": Attitude.UNFRIENDLY,
             "role": "hermit",
         },
         tags=["npc", "hermit", "duskwood"],
@@ -109,10 +133,20 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         "The Missing Merchant", EntityType.QUEST,
         attributes={
             "description": "A trader bound for Millbrook never arrived. Marta wants to know why.",
-            "state": "open",
+            "state": QuestState.OFFERED,
             "hook": "Ask around the Silver Tankard.",
         },
         tags=["quest", "mystery"],
+    )
+
+    # --- Lore / rumor ---
+    duskwood_lights = e(
+        "Rumor: lights in Duskwood", EntityType.LORE,
+        attributes={
+            "description": "Farmers swear pale lights drift among the Duskwood trees after dark.",
+            "reliability": "unconfirmed",
+        },
+        tags=["rumor", "duskwood", "clue"],
     )
 
     R = RelationType
@@ -120,6 +154,7 @@ def seed_starter_world(graph: WorldGraph) -> dict:
     graph.add_relation(millbrook, R.PART_OF, greenfields)
     graph.add_relation(tankard, R.PART_OF, millbrook)
     graph.add_relation(market, R.PART_OF, millbrook)
+    graph.add_relation(temple, R.PART_OF, millbrook)
     graph.add_relation(duskwood, R.ADJACENT_TO, millbrook)
     graph.add_relation(millbrook, R.PART_OF, greenfields)
 
@@ -131,10 +166,19 @@ def seed_starter_world(graph: WorldGraph) -> dict:
 
     # Social / org
     graph.add_relation(aldric, R.MEMBER_OF, council)
+    graph.add_relation(council, R.GOVERNS, millbrook)
     graph.add_relation(marta, R.KNOWS, aldric)
     graph.add_relation(marta, R.KNOWS, ferran)
 
+    # Faith
+    graph.add_relation(marta, R.WORSHIPS, chauntea)
+
+    # Knowledge / rumor: Ferran is the one who spreads the Duskwood rumor.
+    graph.add_relation(ferran, R.KNOWS_ABOUT, duskwood_lights)
+    graph.add_relation(duskwood_lights, R.LOCATED_AT, duskwood)
+
     # Quest wiring
+    graph.add_relation(marta, R.GIVES_QUEST, missing_merchant)
     graph.add_relation(missing_merchant, R.LOCATED_AT, millbrook)
     graph.add_relation(missing_merchant, R.INVOLVES, marta)
     graph.add_relation(missing_merchant, R.INVOLVES, ferran)
@@ -149,9 +193,11 @@ def seed_starter_world(graph: WorldGraph) -> dict:
 
     return {
         "greenfields": greenfields, "millbrook": millbrook, "tankard": tankard,
-        "market": market, "duskwood": duskwood, "council": council,
+        "market": market, "temple": temple, "duskwood": duskwood,
+        "chauntea": chauntea, "council": council,
         "marta": marta, "aldric": aldric, "ferran": ferran,
         "ledger": ledger, "missing_merchant": missing_merchant,
+        "duskwood_lights": duskwood_lights,
     }
 
 
