@@ -92,6 +92,8 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+    # Optional AI-recommended ambient-music search query for the current scene.
+    music: Optional[str] = None
 
 
 class ResetRequest(BaseModel):
@@ -113,6 +115,8 @@ class EnterResponse(BaseModel):
     world_snippet: Optional[str] = None
     starting_region: Optional[str] = None
     characters: Optional[List[str]] = None
+    # Optional AI-recommended opening ambient-music search query.
+    music: Optional[str] = None
 
 
 class RegisterCharacterRequest(BaseModel):
@@ -248,6 +252,25 @@ def resolve_roll_hooks(text: str) -> str:
     return ROLL_HOOK_PATTERN.sub(repl, text)
 
 
+MUSIC_HOOK_PATTERN = re.compile(r"\[\[MUSIC:(.+?)\]\]", re.IGNORECASE)
+
+
+def extract_music_cue(text: str) -> tuple[str, Optional[str]]:
+    """Pull the DM's ambient-music recommendation out of the narration.
+
+    The model emits ``[[MUSIC: keywords]]`` when the scene's mood/location
+    changes. We strip the hook from what the player sees and return the search
+    query so the bot can play a matching background track. Returns
+    ``(clean_text, query_or_None)``; if several cues appear, the last one wins.
+    """
+    queries = [m.group(1).strip() for m in MUSIC_HOOK_PATTERN.finditer(text)]
+    clean = MUSIC_HOOK_PATTERN.sub("", text)
+    # Collapse blank lines left behind by a hook that sat on its own line.
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    query = queries[-1] if queries else None
+    return clean, query
+
+
 # ----- OpenRouter LLM call -----
 
 def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
@@ -315,6 +338,15 @@ def generate_dm_reply(
         "    [[ROLL: 1d20+5 | Stealth | DC 15]]   for an ability check or saving throw\n"
         "    [[ROLL: 2d6+3 | Greataxe damage]]     for damage or a generic roll\n"
         "- Put ONLY the hook (never invent a result). The roller substitutes the outcome inline.\n"
+        "\n"
+        "Ambient music - set the mood, at most ONE cue per reply:\n"
+        "- When the scene's location or mood changes (entering a new area, combat begins, a\n"
+        "  hushed or tense moment), emit a single hook that the system uses to play matching\n"
+        "  background music:\n"
+        "    [[MUSIC: dark dungeon tension]]   or   [[MUSIC: lively medieval tavern]]\n"
+        "- Use 3-6 evocative keywords (place + mood); imagine instrumental/ambient scoring.\n"
+        "- Emit it ONLY when the ambiance meaningfully changes; otherwise omit it entirely.\n"
+        "- Put the hook on its own line. It is removed from what the player sees.\n"
     )
 
     messages.append({"role": "system", "content": system_prompt})
@@ -419,11 +451,14 @@ async def chat_endpoint(req: ChatRequest):
             "Try again in a moment."
         )
 
+    # Separate the AI's ambient-music recommendation from the narration.
+    dm_text, music_query = extract_music_cue(dm_text)
+
     # Store DM turn
     history.append(Turn(role="dm", user="Oracle DM", content=dm_text))
     SESSIONS[req.session_id] = history
 
-    return ChatResponse(reply=dm_text)
+    return ChatResponse(reply=dm_text, music=music_query)
 
 @app.post("/reset")
 async def reset_endpoint(req: ResetRequest):
@@ -506,6 +541,9 @@ async def enter_world(req: EnterRequest):
         print(f"[enterworld DM error] {e}")
         intro = "The Oracle is silent for a moment. (failed to generate intro)"
 
+    # Pull the opening ambient-music cue out of the intro (if the DM set one).
+    intro, music_query = extract_music_cue(intro)
+
     # Store the DM turn in the session history
     SESSIONS[session_id].append(Turn(role="dm", user="Oracle DM", content=intro))
 
@@ -518,6 +556,7 @@ async def enter_world(req: EnterRequest):
         world_snippet=f"{chosen.name} arrives at the edge of the {getattr(chosen, 'home_region', 'Greenfields')}",
         starting_region=getattr(chosen, 'home_region', 'Greenfields'),
         characters=[c.name for c in chars],
+        music=music_query,
     )
 
 

@@ -35,8 +35,12 @@ async def register_character_backend(payload: Dict, register_url: str) -> Dict:
             return {"ok": False, "error": str(e)}
 
 
-async def call_backend(message_text: str, session_id: str, user_id: str, username: str, backend_url: str) -> str:
-    """Call the DM backend for a conversational reply."""
+async def call_backend(message_text: str, session_id: str, user_id: str, username: str, backend_url: str) -> Dict:
+    """Call the DM backend for a conversational reply.
+
+    Returns a dict: {"reply": str, "music": Optional[str]} where "music" is the
+    AI-recommended ambient-music search query for the current scene (or None).
+    """
     payload = {
         "session_id": session_id,
         "user_id": user_id,
@@ -49,15 +53,15 @@ async def call_backend(message_text: str, session_id: str, user_id: str, usernam
             async with session.post(backend_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data.get("reply", "The Oracle is silent...")
+                    return {"reply": data.get("reply", "The Oracle is silent..."), "music": data.get("music")}
                 else:
-                    return f"The Oracle is troubled (HTTP {resp.status})..."
+                    return {"reply": f"The Oracle is troubled (HTTP {resp.status})...", "music": None}
         except aiohttp.ClientError as e:
             print(f"[call_backend error] {e}")
-            return "The Oracle's connection falters..."
+            return {"reply": "The Oracle's connection falters...", "music": None}
         except Exception as e:
             print(f"[call_backend error] {e}")
-            return "The Oracle is silent..."
+            return {"reply": "The Oracle is silent...", "music": None}
 
 
 async def reset_backend_session(session_id: str, reset_url: str) -> str:

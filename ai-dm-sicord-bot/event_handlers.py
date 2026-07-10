@@ -332,6 +332,19 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
     user_id = str(message.author.id)
     username = message.author.display_name
     
-    dm_reply = await backend_integration.call_backend(user_text, session_id, user_id, username, bot.backend_url)
+    result = await backend_integration.call_backend(user_text, session_id, user_id, username, bot.backend_url)
+    dm_reply = result.get("reply", "The Oracle is silent...")
+    music_query = result.get("music")
 
     await message.channel.send(dm_reply)
+
+    # If the DM recommended scene music and the player is in a voice channel,
+    # play a matching ambient track there (looped until the scene changes).
+    if music_query:
+        voice_state = getattr(message.author, "voice", None)
+        voice_channel = voice_state.channel if voice_state else None
+        if voice_channel is not None:
+            try:
+                await music_player.play_query_in_channel(voice_channel, music_query)
+            except Exception as e:
+                print(f"[music] Failed to play scene music '{music_query}': {e}")

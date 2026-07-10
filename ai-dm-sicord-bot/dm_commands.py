@@ -6,6 +6,7 @@ from discord.ext import commands
 
 import backend_integration
 import character_creation
+import music_player
 
 
 def is_admin(user: discord.abc.User, admin_id: str) -> bool:
@@ -62,6 +63,18 @@ async def enter_world_command(ctx: commands.Context, character_name: str, check_
             f"{welcome}\n\n"
             f"*Session ID: `{session_id}`*"
         )
+
+        # Kick off scene-appropriate opening music if the DM recommended one
+        # and the player is sitting in a voice channel.
+        music_query = result.get("music")
+        if music_query:
+            voice_state = getattr(ctx.author, "voice", None)
+            voice_channel = voice_state.channel if voice_state else None
+            if voice_channel is not None:
+                try:
+                    await music_player.play_query_in_channel(voice_channel, music_query)
+                except Exception as e:
+                    print(f"[music] Failed to play opening scene music '{music_query}': {e}")
     else:
         error = result.get("error", "Unknown error")
         await ctx.send(f"❌ Failed to enter world: {error}")

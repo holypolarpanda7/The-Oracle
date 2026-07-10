@@ -216,6 +216,69 @@ async def play_music_in_channel(voice_channel: discord.VoiceChannel, playlist_na
                 pass
 
 
+async def play_query_in_channel(voice_channel: discord.VoiceChannel, query: str, *, volume: int = 30):
+    """Play a single searched track (looped) for an AI-recommended scene.
+
+    Unlike ``play_music_in_channel`` (which loads a fixed playlist file), this
+    plays one track resolved from a search query and loops it until the scene
+    changes. If already connected to this channel, it swaps to the new track
+    without disconnecting; otherwise it connects first.
+    """
+    try:
+        first = query.strip().split(" ", 1)[0]
+        # Accept explicit sources (ytsearch:, https://...); default to YouTube search.
+        if "://" in query or ":" in first:
+            search = query.strip()
+        else:
+            search = f"ytsearch:{query.strip()}"
+
+        # Ensure we have a live player in this channel.
+        player = active_players.get(voice_channel.id)
+        if player is None or not player.connected:
+            existing = voice_channel.guild.voice_client
+            if existing is not None:
+                try:
+                    await existing.disconnect(force=True)
+                except Exception as e:
+                    print(f"[music] Could not clean up old voice client: {e}")
+                await asyncio.sleep(1.0)
+
+            player = None
+            last_err: Optional[Exception] = None
+            for attempt in range(1, 4):
+                try:
+                    player = await voice_channel.connect(cls=wavelink.Player, timeout=20.0)
+                    break
+                except Exception as e:
+                    last_err = e
+                    print(f"[music] Connect attempt {attempt}/3 failed: {e}")
+                    await asyncio.sleep(1.5)
+            if player is None:
+                raise last_err or RuntimeError("Unable to connect to voice channel")
+
+            active_players[voice_channel.id] = player
+            await player.set_volume(volume)
+
+        # Resolve the query into a playable track.
+        tracks = await wavelink.Playable.search(search)
+        if not tracks:
+            print(f"[music] No results for scene query '{search}'")
+            return
+        track = tracks[0] if isinstance(tracks, list) else tracks
+
+        # Swap to the new scene track: clear the queue and replace playback.
+        current_playlists[voice_channel.id] = f"scene:{query.strip()}"
+        try:
+            player.queue.clear()
+        except Exception:
+            pass
+        await player.play(track)
+        print(f"[music] Scene music -> {track.title}  (query: {query.strip()})")
+
+    except Exception as e:
+        print(f"[music] Error in play_query_in_channel: {e}")
+
+
 async def stop_music_in_channel(voice_channel_id: int):
     """Stop music and disconnect from voice channel."""
     if voice_channel_id in active_players:
@@ -263,7 +326,13 @@ async def on_wavelink_track_end(payload: wavelink.TrackEndEventPayload):
     if voice_channel_id not in active_players:
         return
 
-    # Re-queue the finished track at the end so the playlist loops forever
+    # Only loop when a track ended naturally. Ignore "replaced" (scene swap),
+    # "stopped", and failure reasons so scene changes don't re-queue stale tracks.
+    reason = getattr(payload, "reason", "finished")
+    if str(reason).lower() != "finished":
+        return
+
+    # Re-queue the finished track at the end so the current track/playlist loops forever
     # without ever disconnecting from voice (which caused reconnect races).
     if payload.track is not None:
         try:
