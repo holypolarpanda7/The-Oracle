@@ -88,6 +88,10 @@ class Combatant(SQLModel, table=True):
     temp_hp: int = Field(default=0, sa_column=Column(Integer))
     armor_class: Optional[int] = Field(default=None, sa_column=Column(Integer))
 
+    # Cover against ranged/targeted effects: none | half (+2 AC/Dex) |
+    # three-quarters (+5) | total (can't be targeted).
+    cover: str = Field(default="none", sa_column=Column(String))
+
     conditions: Optional[Any] = Field(default=None, sa_column=Column(JSON))     # list[str]
     concentration: Optional[str] = Field(default=None, sa_column=Column(String))  # what they concentrate on
     defeated: bool = Field(default=False, sa_column=Column(Boolean))

@@ -90,6 +90,68 @@ class EncumbranceConfig:
 
 
 @dataclass
+class SurvivalConfig:
+    """Rations/water, exhaustion, weather, travel, and light knobs."""
+    enabled: bool = True
+    # Provisions consumed per creature per day.
+    food_per_day: float = 1.0             # pounds of food
+    water_per_day: float = 1.0            # gallons of water
+    # Grace period before deprivation starts causing exhaustion.
+    days_without_food_before_exhaustion: int = 3
+    days_without_water_before_exhaustion: int = 1
+    # Forced march: travelling beyond this many hours/day risks exhaustion.
+    forced_march_hours: int = 8
+    forced_march_dc: int = 10
+    # Environmental hazard saving-throw DCs (Constitution).
+    extreme_cold_dc: int = 10             # per hour without cold-weather gear
+    extreme_heat_dc_base: int = 5         # +1 per hour (see extreme_heat_dc_per_hour)
+    extreme_heat_dc_per_hour: int = 1
+    strong_wind_ranged_disadvantage: bool = True
+    frigid_water_dc: int = 10
+    # Overland travel pace in miles/hour and hours travelled per day.
+    pace_miles_per_hour: dict[str, float] = field(default_factory=lambda: {
+        "fast": 4.0, "normal": 3.0, "slow": 2.0,
+    })
+    travel_hours_per_day: int = 8
+    # Foraging & navigation base DCs (terrain modifiers added at runtime).
+    forage_dc: int = 10
+    forage_yield_multiplier: float = 1.0  # scales food/water found
+    navigation_dc: int = 10
+    # Light-source burn times (minutes of fuel).
+    torch_minutes: int = 60
+    lantern_minutes: int = 360
+    candle_minutes: int = 60
+    # Long rest reduces exhaustion by 1 only if the character ate & drank.
+    exhaustion_recovery_needs_food: bool = True
+    # Provisions a freshly created character starts with.
+    starting_rations: int = 5
+    starting_water: int = 5
+
+
+@dataclass
+class HazardConfig:
+    """Diseases, traps, and madness (owned, self-authored content)."""
+    enabled: bool = True
+    disease_save_dc_default: int = 11
+    trap_detect_dc_default: int = 15
+    trap_disarm_dc_default: int = 15
+    madness_enabled: bool = True
+
+
+@dataclass
+class ReputationConfig:
+    """Faction renown thresholds (standing label -> minimum renown)."""
+    enabled: bool = True
+    thresholds: dict[str, int] = field(default_factory=lambda: {
+        "unknown": 0,
+        "known": 3,
+        "accepted": 10,
+        "respected": 25,
+        "honored": 50,
+    })
+
+
+@dataclass
 class GameConfig:
     profile: str = "normal"
     progression: ProgressionConfig = field(default_factory=ProgressionConfig)
@@ -98,6 +160,9 @@ class GameConfig:
     bastion: BastionConfig = field(default_factory=BastionConfig)
     rest: RestConfig = field(default_factory=RestConfig)
     encumbrance: EncumbranceConfig = field(default_factory=EncumbranceConfig)
+    survival: SurvivalConfig = field(default_factory=SurvivalConfig)
+    hazard: HazardConfig = field(default_factory=HazardConfig)
+    reputation: ReputationConfig = field(default_factory=ReputationConfig)
 
     def to_dict(self) -> dict:
         return _dataclass_to_dict(self)
@@ -112,6 +177,11 @@ DIFFICULTY_PRESETS: dict[str, dict] = {
                     "lifestyle_cost_multiplier": 0.5, "starting_gold": 50},
         "crafting": {"progress_multiplier": 2.0},
         "bastion": {"cost_multiplier": 0.75, "gold_income_multiplier": 1.25},
+        # Survival stays on but forgiving: easier saves, richer foraging.
+        "survival": {"days_without_food_before_exhaustion": 5, "extreme_cold_dc": 8,
+                     "extreme_heat_dc_base": 3, "forced_march_dc": 8, "frigid_water_dc": 8,
+                     "forage_dc": 8, "forage_yield_multiplier": 1.5, "navigation_dc": 8},
+        "hazard": {"disease_save_dc_default": 9, "trap_detect_dc_default": 12},
     },
     "normal": {},  # the dataclass defaults are the "normal" baseline
     "hard": {
@@ -120,6 +190,12 @@ DIFFICULTY_PRESETS: dict[str, dict] = {
                     "lifestyle_cost_multiplier": 1.5},
         "crafting": {"progress_multiplier": 0.75},
         "bastion": {"cost_multiplier": 1.25, "gold_income_multiplier": 0.85},
+        "survival": {"days_without_food_before_exhaustion": 2, "extreme_cold_dc": 12,
+                     "extreme_heat_dc_base": 7, "forced_march_dc": 12, "frigid_water_dc": 12,
+                     "forage_dc": 13, "forage_yield_multiplier": 0.75, "navigation_dc": 13},
+        "hazard": {"disease_save_dc_default": 13, "trap_detect_dc_default": 17,
+                   "trap_disarm_dc_default": 17},
+        "encumbrance": {"variant": "standard"},
     },
     "gritty": {
         "progression": {"xp_multiplier": 0.5},
@@ -129,6 +205,14 @@ DIFFICULTY_PRESETS: dict[str, dict] = {
         "bastion": {"cost_multiplier": 1.5, "gold_income_multiplier": 0.75},
         "rest": {"variant": "gritty", "short_rest_hours": 8, "long_rest_hours": 168},
         "encumbrance": {"variant": "standard"},
+        # Unforgiving wilderness: deprivation bites fast, saves are brutal.
+        "survival": {"days_without_food_before_exhaustion": 1,
+                     "days_without_water_before_exhaustion": 0,
+                     "extreme_cold_dc": 15, "extreme_heat_dc_base": 10, "forced_march_dc": 14,
+                     "frigid_water_dc": 15, "forage_dc": 15, "forage_yield_multiplier": 0.5,
+                     "navigation_dc": 15},
+        "hazard": {"disease_save_dc_default": 15, "trap_detect_dc_default": 18,
+                   "trap_disarm_dc_default": 18},
     },
 }
 

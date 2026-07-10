@@ -40,7 +40,7 @@ from rules import (
 )
 from rules.models import Subclass, DndClass, Item, SrdEntry
 from combat import CombatTracker, Condition
-from dice import ability_check, ability_modifier, roll as dice_roll
+from dice import ability_check, ability_modifier, roll as dice_roll, proficiency_bonus_for_level
 from game_config import get_config
 from economy import (
     empty_purse,
@@ -64,6 +64,36 @@ from bastion import (
     get_facility,
 )
 from bastion.models import Bastion, FacilityInstance, BastionEvent
+from survival import (
+    consume_day,
+    add_exhaustion,
+    remove_exhaustion,
+    describe_exhaustion,
+    short_rest as survival_short_rest,
+    long_rest as survival_long_rest,
+    encumbrance_status,
+    generate_weather,
+    hazards_from_weather,
+    active_hazard_tags,
+    travel as survival_travel,
+    navigation_dc,
+    forage as survival_forage,
+    source_spec,
+    burn as light_burn,
+)
+from hazards import (
+    contract_disease,
+    disease_recovery_check,
+    trap_detect,
+    trap_disarm,
+    roll_madness,
+    Affliction,
+)
+from reputation import (
+    describe_standing,
+    adjust_renown,
+    Reputation,
+)
 
 # ----- Env loading -----
 
@@ -295,6 +325,22 @@ class Character(SQLModel, table=True):
     pp: int = Field(default=0)
     lifestyle: str = Field(default="modest", sa_column=Column(String))
 
+    # Survival state: HP pool, Hit Dice, death saves, exhaustion, provisions.
+    max_hp: int = Field(default=0)
+    current_hp: int = Field(default=0)
+    hit_die: str = Field(default="d8", sa_column=Column(String))
+    hit_dice_total: int = Field(default=1)
+    hit_dice_remaining: int = Field(default=1)
+    exhaustion: int = Field(default=0)
+    rations: int = Field(default=0)
+    water: int = Field(default=0)
+    days_without_food: int = Field(default=0)
+    days_without_water: int = Field(default=0)
+    death_save_successes: int = Field(default=0)
+    death_save_failures: int = Field(default=0)
+    stable: bool = Field(default=True)
+    inspiration: bool = Field(default=False)
+
     # Flexible JSON fields for spells/inventory/stats
     tags: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     stats: Optional[Any] = Field(default=None, sa_column=Column(JSON))
@@ -455,7 +501,14 @@ def generate_dm_reply(
         "  totals; narrate the fight around them and don't contradict the numbers.\n"
         "- A 'Character resources' block may show the PC's coin purse, lifestyle, level,\n"
         "  and bastion. Respect their wealth: don't hand out or deduct coin the block\n"
-        "  doesn't support, and price goods sensibly against their purse.\n\n"
+        "  doesn't support, and price goods sensibly against their purse.\n"
+        "- That block may also show survival state: current/max HP, Hit Dice, exhaustion,\n"
+        "  rations and water, active afflictions (diseases/madness), current weather and\n"
+        "  environmental hazards, and faction reputation. Treat these as ground truth:\n"
+        "  reflect a wounded, exhausted, hungry, diseased, or well-regarded character in\n"
+        "  your narration, and let harsh weather and hazards matter. Do NOT invent HP or\n"
+        "  resource changes yourself — describe the fiction and emit roll hooks; the\n"
+        "  system applies mechanical changes.\n\n"
         "Dice - you roll them yourself; NEVER ask the player to roll or mention Avrae:\n"
         "- When an action needs a roll, emit a hook and the system fills in the result:\n"
         "    [[ROLL: 1d20+5 | Stealth | DC 15]]   for an ability check or saving throw\n"
@@ -548,6 +601,24 @@ def assemble_context(session_id: str, message: str):
     return ctx_obj, texts
 
 
+def _region_climate(home_region: Optional[str]) -> str:
+    """Best-effort climate for a named region (defaults to temperate)."""
+    if not home_region:
+        return "temperate"
+    r = home_region.lower()
+    if any(k in r for k in ("frost", "ice", "north", "tundra", "glacier", "winter")):
+        return "arctic"
+    if any(k in r for k in ("desert", "sand", "dune", "waste", "scorch")):
+        return "desert"
+    if any(k in r for k in ("coast", "harbor", "harbour", "port", "shore", "bay")):
+        return "coastal"
+    if any(k in r for k in ("jungle", "tropic", "rainforest", "marsh")):
+        return "tropical"
+    if any(k in r for k in ("mountain", "peak", "highland", "crag", "summit")):
+        return "mountain"
+    return "temperate"
+
+
 def _character_resource_block(character_id: int) -> str:
     """A compact 'Character resources' block for the DM prompt."""
     with Session(engine) as session:
@@ -563,6 +634,64 @@ def _character_resource_block(character_id: int) -> str:
         lines.append(lvl_line)
         lines.append(f"Purse: {format_purse(purse)} (~{gp_value(purse):g} gp)")
         lines.append(f"Lifestyle: {char.lifestyle}")
+
+        # Survival state (HP, exhaustion, provisions) when enabled.
+        cfg = get_config()
+        if cfg.survival.enabled:
+            hp_line = f"HP: {char.current_hp}/{char.max_hp}"
+            if char.current_hp <= 0 and not char.stable:
+                hp_line += (f" — DYING (death saves "
+                            f"{char.death_save_successes}✓/{char.death_save_failures}✗)")
+            elif char.current_hp <= 0:
+                hp_line += " — unconscious but stable"
+            lines.append(hp_line)
+            lines.append(
+                f"Hit Dice: {char.hit_dice_remaining}/{char.hit_dice_total}{char.hit_die}")
+            if char.exhaustion:
+                lines.append(f"Exhaustion: {describe_exhaustion(char.exhaustion)}")
+            lines.append(f"Provisions: {char.rations} rations, {char.water} water")
+            if char.inspiration:
+                lines.append("Has Inspiration.")
+
+            # Current weather at the PC's region.
+            try:
+                day = world.current_day()
+                month = ((day // 30) % 12) + 1
+                climate = _region_climate(char.home_region)
+                weather = generate_weather(day, climate=climate, month=month)
+                lines.append(f"Weather: {weather['summary']}")
+                tags = active_hazard_tags(weather)
+                if tags:
+                    lines.append("Environmental hazards: " + ", ".join(tags))
+            except Exception as e:
+                print(f"[weather block error] {e}")
+
+        # Active afflictions (diseases / madness).
+        if cfg.hazard.enabled:
+            afflictions = session.exec(
+                select(Affliction).where(
+                    Affliction.character_id == character_id,
+                    Affliction.active == True,  # noqa: E712
+                )
+            ).all()
+            if afflictions:
+                names = ", ".join(
+                    f"{a.name}" + (f" ({a.severity})" if a.severity else "")
+                    for a in afflictions
+                )
+                lines.append(f"Afflictions: {names}")
+
+        # Faction reputation.
+        if cfg.reputation.enabled:
+            reps = session.exec(
+                select(Reputation).where(Reputation.character_id == character_id)
+            ).all()
+            if reps:
+                parts = [
+                    f"{r.faction_name}: {describe_standing(r.renown)['standing']} ({r.renown})"
+                    for r in reps
+                ]
+                lines.append("Reputation: " + "; ".join(parts))
 
         bastion = session.exec(
             select(Bastion).where(Bastion.character_id == character_id)
@@ -769,6 +898,16 @@ async def register_character(req: RegisterCharacterRequest):
         # Decide approval: auto-approve Avrae imports and guided creations, otherwise follow approve flag
         approved_flag = bool(req.approve) or (req.source in ("avrae", "guided"))
 
+        # Derive starting survival state from class hit die + Constitution.
+        cls_row = _get_class_row(session, req.char_class)
+        hit_die = f"d{cls_row.hit_die}" if cls_row and cls_row.hit_die else "d8"
+        die_faces = int(hit_die[1:])
+        con_mod = ability_modifier((req.stats or {}).get("constitution")
+                                   or (req.stats or {}).get("con")
+                                   or (req.stats or {}).get("CON"))
+        start_hp = max(1, die_faces + con_mod)
+        surv = get_config().survival
+
         char = Character(
             discord_user_id=req.discord_user_id,
             name=req.name,
@@ -782,6 +921,13 @@ async def register_character(req: RegisterCharacterRequest):
             avrae_import_text=req.avrae_import_text,
             approved=approved_flag,
             home_region=req.home_region,
+            max_hp=start_hp,
+            current_hp=start_hp,
+            hit_die=hit_die,
+            hit_dice_total=1,
+            hit_dice_remaining=1,
+            rations=surv.starting_rations,
+            water=surv.starting_water,
         )
 
         session.add(char)
@@ -1596,6 +1742,562 @@ async def bastion_facilities_for_level(level: int):
         "facilities": [
             {k: v for k, v in f.items() if k != "source"} for f in facilities_for_level(level)
         ],
+    }
+
+
+# ===================== Survival & exploration ==============================
+
+def _ability_mod(char: Character, *names: str) -> int:
+    stats = char.stats or {}
+    for n in names:
+        for key in (n, n[:3], n.upper(), n[:3].upper(), n.capitalize()):
+            if key in stats and stats[key] is not None:
+                return ability_modifier(stats[key])
+    return 0
+
+
+def _passive_score(char: Character, ability: str, *, proficient: bool = False) -> int:
+    mod = _ability_mod(char, ability)
+    pb = proficiency_bonus_for_level(char.level) if proficient else 0
+    return 10 + mod + pb
+
+
+class ConsumeDayRequest(BaseModel):
+    character_id: int
+    rations_consumed: Optional[int] = None   # defaults to config food_per_day
+    water_consumed: Optional[int] = None
+    advance_world: bool = True
+
+
+@app.post("/survival/consume_day")
+async def survival_consume_day(req: ConsumeDayRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        result = consume_day(
+            rations=char.rations,
+            water=char.water,
+            days_without_food=char.days_without_food,
+            days_without_water=char.days_without_water,
+            exhaustion=char.exhaustion,
+        )
+        char.rations = result["rations"]
+        char.water = result["water"]
+        char.days_without_food = result["days_without_food"]
+        char.days_without_water = result["days_without_water"]
+        char.exhaustion = result["exhaustion"]
+        session.add(char)
+        session.commit()
+        end_day = world.current_day()
+        if req.advance_world:
+            try:
+                end_day = world.advance_day(1)
+            except Exception:
+                pass
+        return {"status": "ok", "result": result, "world_day": end_day}
+
+
+class ProvisionRequest(BaseModel):
+    character_id: int
+    rations_delta: int = 0
+    water_delta: int = 0
+
+
+@app.post("/survival/provisions")
+async def survival_provisions(req: ProvisionRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        char.rations = max(0, char.rations + req.rations_delta)
+        char.water = max(0, char.water + req.water_delta)
+        session.add(char)
+        session.commit()
+        session.refresh(char)
+        return {"status": "ok", "rations": char.rations, "water": char.water}
+
+
+class TravelRequest(BaseModel):
+    distance_miles: float
+    pace: str = "normal"
+    terrain: str = "road"
+
+
+@app.post("/survival/travel")
+async def survival_travel_endpoint(req: TravelRequest):
+    return {
+        "travel": survival_travel(req.distance_miles, pace=req.pace, terrain=req.terrain),
+        "navigation": navigation_dc(req.terrain),
+    }
+
+
+class ForageRequest(BaseModel):
+    terrain: str = "grassland"
+    foragers: int = 1
+
+
+@app.post("/survival/forage")
+async def survival_forage_endpoint(req: ForageRequest):
+    return survival_forage(req.terrain, foragers=req.foragers)
+
+
+@app.get("/survival/weather")
+async def survival_weather(region: Optional[str] = None, climate: Optional[str] = None):
+    day = world.current_day()
+    month = ((day // 30) % 12) + 1
+    clim = climate or _region_climate(region)
+    weather = generate_weather(day, climate=clim, month=month)
+    return {
+        "world_day": day,
+        "climate": clim,
+        "weather": weather,
+        "hazards": active_hazard_tags(weather),
+    }
+
+
+class LightBurnRequest(BaseModel):
+    kind: str = "torch"
+    minutes_remaining: int
+    minutes_elapsed: int
+
+
+@app.post("/survival/light")
+async def survival_light(req: LightBurnRequest):
+    return {
+        "spec": source_spec(req.kind),
+        "result": light_burn(req.kind, req.minutes_remaining, req.minutes_elapsed),
+    }
+
+
+class ExhaustionRequest(BaseModel):
+    character_id: int
+    delta: int = 0
+    set_to: Optional[int] = None
+
+
+@app.post("/survival/exhaustion")
+async def survival_exhaustion(req: ExhaustionRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        if req.set_to is not None:
+            char.exhaustion = max(0, min(6, req.set_to))
+        elif req.delta >= 0:
+            char.exhaustion = add_exhaustion(char.exhaustion, req.delta)
+        else:
+            char.exhaustion = remove_exhaustion(char.exhaustion, -req.delta)
+        session.add(char)
+        session.commit()
+        session.refresh(char)
+        return {"status": "ok", "exhaustion": char.exhaustion,
+                "description": describe_exhaustion(char.exhaustion)}
+
+
+class RestRequest(BaseModel):
+    character_id: int
+    spend_hit_dice: int = 0    # short rest only
+    ate_and_drank: bool = True  # long rest only
+
+
+@app.post("/survival/short_rest")
+async def survival_short_rest_endpoint(req: RestRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        result = survival_short_rest(
+            current_hp=char.current_hp,
+            max_hp=char.max_hp,
+            hit_die=char.hit_die,
+            hit_dice_remaining=char.hit_dice_remaining,
+            con_mod=_con_mod(char),
+            spend=req.spend_hit_dice,
+        )
+        char.current_hp = result["current_hp"]
+        char.hit_dice_remaining = result["hit_dice_remaining"]
+        session.add(char)
+        session.commit()
+        return {"status": "ok", "result": result}
+
+
+@app.post("/survival/long_rest")
+async def survival_long_rest_endpoint(req: RestRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        result = survival_long_rest(
+            current_hp=char.current_hp,
+            max_hp=char.max_hp,
+            hit_dice_total=char.hit_dice_total,
+            hit_dice_remaining=char.hit_dice_remaining,
+            exhaustion=char.exhaustion,
+            ate_and_drank=req.ate_and_drank,
+        )
+        char.current_hp = result["current_hp"]
+        char.hit_dice_remaining = result["hit_dice_remaining"]
+        char.exhaustion = result["exhaustion"]
+        # A long rest resets deprivation if fed and watered.
+        if req.ate_and_drank:
+            char.days_without_food = 0
+            char.days_without_water = 0
+        char.death_save_successes = 0
+        char.death_save_failures = 0
+        char.stable = True
+        session.add(char)
+        session.commit()
+        return {"status": "ok", "result": result}
+
+
+class DamageHealRequest(BaseModel):
+    character_id: int
+    amount: int   # positive = damage, negative = heal
+
+
+@app.post("/survival/hp")
+async def survival_hp(req: DamageHealRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        note = ""
+        if req.amount >= 0:
+            char.current_hp -= req.amount
+            if char.current_hp <= 0:
+                char.current_hp = 0
+                char.stable = False
+                char.death_save_successes = 0
+                char.death_save_failures = 0
+                note = "Dropped to 0 HP — dying and unstable."
+        else:
+            healed = -req.amount
+            was_down = char.current_hp <= 0
+            char.current_hp = min(char.max_hp, char.current_hp + healed)
+            if was_down and char.current_hp > 0:
+                char.stable = True
+                char.death_save_successes = 0
+                char.death_save_failures = 0
+                note = "Revived above 0 HP."
+        session.add(char)
+        session.commit()
+        session.refresh(char)
+        return {"status": "ok", "current_hp": char.current_hp, "max_hp": char.max_hp,
+                "stable": char.stable, "note": note}
+
+
+class DeathSaveRequest(BaseModel):
+    character_id: int
+    result: str  # success | failure | crit_success | crit_failure
+
+
+@app.post("/survival/death_save")
+async def survival_death_save(req: DeathSaveRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        outcome = ""
+        r = req.result.lower()
+        if r == "crit_success":
+            char.current_hp = 1
+            char.stable = True
+            char.death_save_successes = 0
+            char.death_save_failures = 0
+            outcome = "Natural 20 — regains 1 HP and is conscious!"
+        elif r == "crit_failure":
+            char.death_save_failures = min(3, char.death_save_failures + 2)
+            outcome = "Natural 1 — counts as two failures."
+        elif r == "success":
+            char.death_save_successes = min(3, char.death_save_successes + 1)
+        elif r == "failure":
+            char.death_save_failures = min(3, char.death_save_failures + 1)
+        else:
+            raise HTTPException(status_code=400, detail="result must be success/failure/crit_success/crit_failure.")
+        dead = char.death_save_failures >= 3
+        stabilized = char.death_save_successes >= 3
+        if stabilized and not dead:
+            char.stable = True
+            char.death_save_successes = 0
+            char.death_save_failures = 0
+            outcome = outcome or "Three successes — stabilized at 0 HP."
+        session.add(char)
+        session.commit()
+        session.refresh(char)
+        return {
+            "status": "ok",
+            "successes": char.death_save_successes,
+            "failures": char.death_save_failures,
+            "dead": dead,
+            "stable": char.stable,
+            "current_hp": char.current_hp,
+            "outcome": outcome,
+        }
+
+
+class InspirationRequest(BaseModel):
+    character_id: int
+    grant: bool = True
+
+
+@app.post("/survival/inspiration")
+async def survival_inspiration(req: InspirationRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        char.inspiration = bool(req.grant)
+        session.add(char)
+        session.commit()
+        return {"status": "ok", "inspiration": char.inspiration}
+
+
+@app.get("/character/{character_id}/survival")
+async def character_survival(character_id: int):
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        return {
+            "hp": {"current": char.current_hp, "max": char.max_hp},
+            "hit_dice": {"remaining": char.hit_dice_remaining, "total": char.hit_dice_total,
+                         "die": char.hit_die},
+            "exhaustion": char.exhaustion,
+            "exhaustion_desc": describe_exhaustion(char.exhaustion),
+            "provisions": {"rations": char.rations, "water": char.water,
+                           "days_without_food": char.days_without_food,
+                           "days_without_water": char.days_without_water},
+            "death_saves": {"successes": char.death_save_successes,
+                            "failures": char.death_save_failures, "stable": char.stable},
+            "inspiration": char.inspiration,
+            "encumbrance": encumbrance_status(_ability_mod(char, "strength") * 2 + 10,
+                                              _carried_weight(char)),
+            "passive_perception": _passive_score(char, "wisdom"),
+            "passive_investigation": _passive_score(char, "intelligence"),
+            "passive_insight": _passive_score(char, "wisdom"),
+        }
+
+
+def _carried_weight(char: Character) -> float:
+    inv = char.inventory or []
+    total = 0.0
+    if isinstance(inv, list):
+        for it in inv:
+            if isinstance(it, dict):
+                total += float(it.get("weight", 0) or 0) * float(it.get("quantity", 1) or 1)
+    return total
+
+
+# ===================== Hazards (diseases / traps / madness) ================
+
+class ContractDiseaseRequest(BaseModel):
+    character_id: int
+    disease_slug: str
+
+
+@app.post("/hazards/disease/contract")
+async def hazards_contract_disease(req: ContractDiseaseRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        info = contract_disease(req.disease_slug, world_day=world.current_day())
+        if "error" in info:
+            raise HTTPException(status_code=404, detail=info["error"])
+        aff = Affliction(
+            character_id=char.id,
+            kind="disease",
+            slug=req.disease_slug,
+            name=info["name"],
+            description=info["description"],
+            onset_day=info["onset_day"],
+            active=True,
+            notes=info.get("effect"),
+        )
+        session.add(aff)
+        session.commit()
+        session.refresh(aff)
+        return {"status": "ok", "affliction": aff.model_dump(), "info": info}
+
+
+class DiseaseSaveRequest(BaseModel):
+    affliction_id: int
+    save_succeeded: bool
+    consecutive_successes: int = 0
+
+
+@app.post("/hazards/disease/save")
+async def hazards_disease_save(req: DiseaseSaveRequest):
+    with Session(engine) as session:
+        aff = session.get(Affliction, req.affliction_id)
+        if not aff or aff.kind != "disease":
+            raise HTTPException(status_code=404, detail="Disease affliction not found.")
+        result = disease_recovery_check(
+            aff.slug, save_succeeded=req.save_succeeded,
+            consecutive_successes=req.consecutive_successes)
+        if result.get("cured"):
+            aff.active = False
+            session.add(aff)
+            session.commit()
+        return {"status": "ok", "result": result}
+
+
+class CureRequest(BaseModel):
+    affliction_id: int
+
+
+@app.post("/hazards/cure")
+async def hazards_cure(req: CureRequest):
+    with Session(engine) as session:
+        aff = session.get(Affliction, req.affliction_id)
+        if not aff:
+            raise HTTPException(status_code=404, detail="Affliction not found.")
+        aff.active = False
+        session.add(aff)
+        session.commit()
+        return {"status": "ok", "cured": aff.name}
+
+
+class TrapDetectRequest(BaseModel):
+    trap_slug: str
+    passive_perception: int
+
+
+@app.post("/hazards/trap/detect")
+async def hazards_trap_detect(req: TrapDetectRequest):
+    result = trap_detect(req.trap_slug, req.passive_perception)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+class TrapDisarmRequest(BaseModel):
+    trap_slug: str
+    check_total: int
+
+
+@app.post("/hazards/trap/disarm")
+async def hazards_trap_disarm(req: TrapDisarmRequest):
+    result = trap_disarm(req.trap_slug, check_total=req.check_total)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+class MadnessRequest(BaseModel):
+    character_id: Optional[int] = None
+    severity: str = "short"
+    persist: bool = False
+
+
+@app.post("/hazards/madness")
+async def hazards_madness(req: MadnessRequest):
+    result = roll_madness(req.severity)
+    if not result.get("enabled"):
+        return result
+    if req.persist and req.character_id:
+        with Session(engine) as session:
+            char = session.get(Character, req.character_id)
+            if not char:
+                raise HTTPException(status_code=404, detail="Character not found.")
+            aff = Affliction(
+                character_id=char.id,
+                kind="madness",
+                severity=result["severity"],
+                name=f"{result['severity'].title()} madness",
+                description=result["description"],
+                onset_day=world.current_day(),
+                active=True,
+                notes=result["effect"],
+            )
+            session.add(aff)
+            session.commit()
+            session.refresh(aff)
+            result["affliction"] = aff.model_dump()
+    return result
+
+
+@app.get("/character/{character_id}/afflictions")
+async def character_afflictions(character_id: int):
+    with Session(engine) as session:
+        rows = session.exec(
+            select(Affliction).where(
+                Affliction.character_id == character_id,
+                Affliction.active == True,  # noqa: E712
+            )
+        ).all()
+        return {"afflictions": [a.model_dump() for a in rows]}
+
+
+# ===================== Reputation ==========================================
+
+class RenownRequest(BaseModel):
+    character_id: int
+    faction_slug: str
+    faction_name: Optional[str] = None
+    delta: int
+
+
+@app.post("/reputation/adjust")
+async def reputation_adjust(req: RenownRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        rep = session.exec(
+            select(Reputation).where(
+                Reputation.character_id == req.character_id,
+                Reputation.faction_slug == req.faction_slug,
+            )
+        ).first()
+        if not rep:
+            rep = Reputation(
+                character_id=req.character_id,
+                faction_slug=req.faction_slug,
+                faction_name=req.faction_name or req.faction_slug.replace("-", " ").title(),
+                renown=0,
+            )
+        result = adjust_renown(rep.renown, req.delta)
+        rep.renown = result["renown"]
+        rep.updated_at = datetime.utcnow()
+        session.add(rep)
+        session.commit()
+        session.refresh(rep)
+        return {"status": "ok", "reputation": rep.model_dump(), "result": result}
+
+
+@app.get("/character/{character_id}/reputation")
+async def character_reputation(character_id: int):
+    with Session(engine) as session:
+        rows = session.exec(
+            select(Reputation).where(Reputation.character_id == character_id)
+        ).all()
+        return {
+            "reputations": [
+                {**r.model_dump(), "standing": describe_standing(r.renown)}
+                for r in rows
+            ]
+        }
+
+
+# ===================== Combat cover ========================================
+
+class CoverRequest(BaseModel):
+    combatant_id: int
+    cover: str  # none | half | three-quarters | total
+
+
+@app.post("/combat/cover")
+async def combat_set_cover(req: CoverRequest):
+    try:
+        combatant = combat.set_cover(req.combatant_id, req.cover)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "status": "ok",
+        "combatant": combatant,
+        "effective_ac": combat.effective_ac(req.combatant_id),
     }
 
 

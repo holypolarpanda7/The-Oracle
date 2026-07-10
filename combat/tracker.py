@@ -350,6 +350,30 @@ class CombatTracker:
             s.refresh(c)
             return _combatant_dict(c)
 
+    _COVER_AC_BONUS = {"none": 0, "half": 2, "three-quarters": 5, "total": 0}
+
+    def set_cover(self, combatant_id: int, cover: str) -> dict:
+        cover = (cover or "none").lower()
+        if cover not in self._COVER_AC_BONUS:
+            raise ValueError(
+                "cover must be one of: none, half, three-quarters, total")
+        with Session(self.engine) as s:
+            c = s.get(Combatant, combatant_id)
+            if not c:
+                raise ValueError("Unknown combatant")
+            c.cover = cover
+            s.add(c)
+            s.commit()
+            s.refresh(c)
+            return _combatant_dict(c)
+
+    def effective_ac(self, combatant_id: int) -> Optional[int]:
+        """AC including any cover bonus (None if the combatant has no AC set)."""
+        c = self.get_combatant(combatant_id)
+        if not c or c.armor_class is None:
+            return None
+        return c.armor_class + self._COVER_AC_BONUS.get(c.cover or "none", 0)
+
     # ----- views -----
 
     def state(self, encounter_id: int) -> dict:
@@ -390,6 +414,8 @@ class CombatTracker:
             extras = list(c.conditions or [])
             if c.concentration:
                 extras.append(f"concentrating: {c.concentration}")
+            if c.cover and c.cover != "none":
+                extras.append(f"{c.cover} cover")
             if c.defeated:
                 extras.append("DOWN")
             if extras:
@@ -412,6 +438,7 @@ def _combatant_dict(c: Combatant) -> dict:
         "current_hp": c.current_hp,
         "temp_hp": c.temp_hp,
         "armor_class": c.armor_class,
+        "cover": c.cover,
         "conditions": list(c.conditions or []),
         "concentration": c.concentration,
         "defeated": c.defeated,
