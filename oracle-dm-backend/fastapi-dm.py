@@ -26,10 +26,44 @@ from eight_card_system import WorldGraph
 from eight_card_system.graph import slugify
 from eight_card_system.seed import seed_starter_world, place_pc
 from eight_card_system.extraction import extract_and_apply
-from rules import RulesLibrary, format_monster_brief, format_spell_brief, ingest_srd, seed_classes_and_subclasses, level_up_report
-from rules.models import Subclass, DndClass
+from rules import (
+    RulesLibrary,
+    format_monster_brief,
+    format_spell_brief,
+    format_item_brief,
+    format_reference_brief,
+    ingest_srd,
+    ingest_items,
+    ingest_reference,
+    seed_classes_and_subclasses,
+    level_up_report,
+)
+from rules.models import Subclass, DndClass, Item, SrdEntry
 from combat import CombatTracker, Condition
 from dice import ability_check, ability_modifier, roll as dice_roll
+from game_config import get_config
+from economy import (
+    empty_purse,
+    add_coins,
+    subtract_cost,
+    to_cp,
+    gp_to_cp,
+    gp_value,
+    format_purse,
+    resolve_downtime,
+    start_crafting,
+    advance_crafting,
+)
+from economy.models import DowntimeLog, CraftingProject
+from bastion import (
+    can_own_bastion,
+    facilities_for_level,
+    facility_cost_gp,
+    resolve_bastion_turn,
+    min_bastion_level,
+    get_facility,
+)
+from bastion.models import Bastion, FacilityInstance, BastionEvent
 
 # ----- Env loading -----
 
@@ -72,6 +106,22 @@ async def lifespan(app: FastAPI):
             print(f"[Startup] Ingested SRD rules: {counts}")
     except Exception as e:
         print(f"[Startup] SRD ingest skipped (offline?): {e}")
+
+    # Seed SRD equipment + magic items if empty (best-effort; needs network).
+    try:
+        if rules_lib.count().get("items", 0) == 0:
+            item_counts = ingest_items(engine=engine)
+            print(f"[Startup] Ingested SRD items: {item_counts}")
+    except Exception as e:
+        print(f"[Startup] Item ingest skipped (offline?): {e}")
+
+    # Sweep the broad SRD mechanics (conditions, skills, feats, races, ...).
+    try:
+        if rules_lib.count().get("reference", 0) == 0:
+            ref_counts = ingest_reference(engine=engine)
+            print(f"[Startup] Ingested SRD reference: {ref_counts}")
+    except Exception as e:
+        print(f"[Startup] Reference ingest skipped (offline?): {e}")
 
     # Seed classes + subclasses (offline; includes owned non-SRD like Bladesinger).
     try:
@@ -235,6 +285,15 @@ class Character(SQLModel, table=True):
     char_class: Optional[str] = Field(default=None, sa_column=Column(String))
     subclass: Optional[str] = Field(default=None, sa_column=Column(String))
     level: int = Field(default=1)
+    xp: int = Field(default=0)
+
+    # Coin purse (SRD denominations) + downtime lifestyle tier.
+    cp: int = Field(default=0)
+    sp: int = Field(default=0)
+    ep: int = Field(default=0)
+    gp: int = Field(default=0)
+    pp: int = Field(default=0)
+    lifestyle: str = Field(default="modest", sa_column=Column(String))
 
     # Flexible JSON fields for spells/inventory/stats
     tags: Optional[Any] = Field(default=None, sa_column=Column(JSON))
@@ -393,7 +452,10 @@ def generate_dm_reply(
         "- Use the EXACT numbers in the Rules reference for monster stats and spells.\n"
         "- A 'Combat' block may list the initiative order with each creature's current\n"
         "  HP, AC, and conditions. When present, respect the turn order and those HP\n"
-        "  totals; narrate the fight around them and don't contradict the numbers.\n\n"
+        "  totals; narrate the fight around them and don't contradict the numbers.\n"
+        "- A 'Character resources' block may show the PC's coin purse, lifestyle, level,\n"
+        "  and bastion. Respect their wealth: don't hand out or deduct coin the block\n"
+        "  doesn't support, and price goods sensibly against their purse.\n\n"
         "Dice - you roll them yourself; NEVER ask the player to roll or mention Avrae:\n"
         "- When an action needs a roll, emit a hook and the system fills in the result:\n"
         "    [[ROLL: 1d20+5 | Stealth | DC 15]]   for an ability check or saving throw\n"
@@ -476,7 +538,44 @@ def assemble_context(session_id: str, message: str):
     except Exception as e:
         print(f"[rules mention error] {e}")
 
+    # Character resources: coin purse, lifestyle, level/XP, and any bastion.
+    if meta and meta.get("character_id"):
+        try:
+            texts.append(_character_resource_block(meta["character_id"]))
+        except Exception as e:
+            print(f"[resource context error] {e}")
+
     return ctx_obj, texts
+
+
+def _character_resource_block(character_id: int) -> str:
+    """A compact 'Character resources' block for the DM prompt."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            return ""
+        purse = {"cp": char.cp, "sp": char.sp, "ep": char.ep, "gp": char.gp, "pp": char.pp}
+        lines = ["# Character resources"]
+        prog = get_config().progression
+        lvl_line = f"Level {char.level}"
+        if not prog.milestone_leveling:
+            lvl_line += f" ({char.xp} XP)"
+        lines.append(lvl_line)
+        lines.append(f"Purse: {format_purse(purse)} (~{gp_value(purse):g} gp)")
+        lines.append(f"Lifestyle: {char.lifestyle}")
+
+        bastion = session.exec(
+            select(Bastion).where(Bastion.character_id == character_id)
+        ).first()
+        if bastion:
+            facs = session.exec(
+                select(FacilityInstance).where(FacilityInstance.bastion_id == bastion.id)
+            ).all()
+            fac_names = ", ".join(f.name for f in facs) or "no special facilities yet"
+            lines.append(
+                f"Bastion: {bastion.name} (turn {bastion.turns_taken}) — {fac_names}"
+            )
+        return "\n".join(lines)
 
 
 # ----- Routes -----
@@ -598,6 +697,7 @@ async def enter_world(req: EnterRequest):
         "pc_slug": pc_slug,
         "user_id": req.user_id,
         "character_name": chosen.name,
+        "character_id": chosen.id,
     }
 
     # Ask the DM brain for an opening narration, grounded in the world slice.
@@ -676,6 +776,7 @@ async def register_character(req: RegisterCharacterRequest):
             char_class=req.char_class,
             subclass=req.subclass,
             level=req.level,
+            gp=get_config().economy.starting_gold,
             stats=req.stats,
             ddb_url=req.ddb_url,
             avrae_import_text=req.avrae_import_text,
@@ -950,6 +1051,552 @@ async def combat_end(encounter_id: int):
     if not enc:
         raise HTTPException(status_code=404, detail="Encounter not found.")
     return {"status": "ok", "encounter": combat.state(encounter_id)}
+
+
+# ===================== Rules lookup (items + reference) =====================
+
+@app.get("/rules/item/{ref}")
+async def rules_item(ref: str):
+    it = rules_lib.get_item(ref)
+    if not it:
+        raise HTTPException(status_code=404, detail=f"Item '{ref}' not found.")
+    return {"item": it.model_dump(exclude={"raw"}), "brief": format_item_brief(it)}
+
+
+@app.get("/rules/items")
+async def rules_items(
+    q: str = "",
+    category: Optional[str] = None,
+    max_cost_gp: Optional[float] = None,
+    rarity: Optional[str] = None,
+    limit: int = 20,
+):
+    items = rules_lib.search_items(
+        q, category=category, max_cost_gp=max_cost_gp, rarity=rarity, limit=limit
+    )
+    return {"count": len(items), "items": [format_item_brief(i) for i in items]}
+
+
+@app.get("/rules/reference/{category}/{ref}")
+async def rules_reference_entry(category: str, ref: str):
+    e = rules_lib.get_reference(category, ref)
+    if not e:
+        raise HTTPException(status_code=404, detail=f"{category}/{ref} not found.")
+    return {"entry": e.model_dump(exclude={"data"}), "brief": format_reference_brief(e)}
+
+
+@app.get("/rules/reference")
+async def rules_reference_search(q: str = "", category: Optional[str] = None, limit: int = 20):
+    entries = rules_lib.search_reference(q, category=category, limit=limit)
+    return {"count": len(entries), "entries": [format_reference_brief(e) for e in entries]}
+
+
+# ===================== Economy (coins, buying, downtime, crafting) =========
+
+def _char_purse(char: Character) -> Dict[str, int]:
+    return {"cp": char.cp, "sp": char.sp, "ep": char.ep, "gp": char.gp, "pp": char.pp}
+
+
+def _apply_purse(char: Character, purse: Dict[str, int]) -> None:
+    char.cp = int(purse.get("cp", 0))
+    char.sp = int(purse.get("sp", 0))
+    char.ep = int(purse.get("ep", 0))
+    char.gp = int(purse.get("gp", 0))
+    char.pp = int(purse.get("pp", 0))
+
+
+def _apply_cp_delta(char: Character, cp_delta: int) -> None:
+    """Add/subtract copper from a character's purse, re-minting change."""
+    from economy.currency import from_cp
+
+    total = to_cp(_char_purse(char)) + int(cp_delta)
+    if total < 0:
+        raise HTTPException(status_code=400, detail="Insufficient funds for this transaction.")
+    _apply_purse(char, from_cp(total))
+
+
+class CoinAdjustRequest(BaseModel):
+    character_id: int
+    # Any subset of denominations; positive adds, negative removes.
+    cp: int = 0
+    sp: int = 0
+    ep: int = 0
+    gp: int = 0
+    pp: int = 0
+    reason: Optional[str] = None
+
+
+class BuyRequest(BaseModel):
+    character_id: int
+    item: str  # slug or name
+    quantity: int = 1
+
+
+class SellRequest(BaseModel):
+    character_id: int
+    item: str
+    quantity: int = 1
+
+
+class DowntimeRequest(BaseModel):
+    character_id: int
+    activity: str
+    days: int
+    lifestyle_tier: Optional[str] = None
+    extra_cost_gp: float = 0.0
+    earnings_gp: float = 0.0
+    advance_world: bool = True
+
+
+class CraftingStartRequest(BaseModel):
+    character_id: int
+    item: str  # slug or name (its market cost sets the project size)
+    is_magic: bool = False
+    pay_materials: bool = True
+
+
+class CraftingAdvanceRequest(BaseModel):
+    project_id: int
+    days: int
+    advance_world: bool = True
+
+
+@app.get("/character/{character_id}/purse")
+async def character_purse(character_id: int):
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        purse = _char_purse(char)
+        return {"purse": purse, "gp_value": gp_value(purse), "display": format_purse(purse)}
+
+
+@app.post("/economy/adjust")
+async def economy_adjust(req: CoinAdjustRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        delta = {"cp": req.cp, "sp": req.sp, "ep": req.ep, "gp": req.gp, "pp": req.pp}
+        new_purse = add_coins(_char_purse(char), delta)
+        if to_cp(new_purse) < 0:
+            raise HTTPException(status_code=400, detail="Adjustment would make the purse negative.")
+        _apply_purse(char, new_purse)
+        session.add(char)
+        session.commit()
+        session.refresh(char)
+        return {"status": "ok", "purse": _char_purse(char), "display": format_purse(_char_purse(char))}
+
+
+@app.post("/economy/buy")
+async def economy_buy(req: BuyRequest):
+    it = rules_lib.get_item(req.item)
+    if not it or it.cost_gp is None:
+        raise HTTPException(status_code=404, detail=f"Priced item '{req.item}' not found.")
+    if req.quantity < 1:
+        raise HTTPException(status_code=400, detail="quantity must be >= 1")
+    unit_cp = round(it.cost_gp * get_config().economy.item_cost_multiplier * 100)
+    total_cp = unit_cp * req.quantity
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        try:
+            new_purse = subtract_cost(_char_purse(char), total_cp)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        _apply_purse(char, new_purse)
+        session.add(char)
+        session.commit()
+        return {
+            "status": "ok",
+            "item": it.name,
+            "quantity": req.quantity,
+            "spent_gp": round(total_cp / 100, 2),
+            "purse": _char_purse(char),
+            "display": format_purse(_char_purse(char)),
+        }
+
+
+@app.post("/economy/sell")
+async def economy_sell(req: SellRequest):
+    it = rules_lib.get_item(req.item)
+    if not it or it.cost_gp is None:
+        raise HTTPException(status_code=404, detail=f"Priced item '{req.item}' not found.")
+    if req.quantity < 1:
+        raise HTTPException(status_code=400, detail="quantity must be >= 1")
+    econ = get_config().economy
+    unit_cp = round(it.cost_gp * econ.item_cost_multiplier * econ.sell_price_ratio * 100)
+    total_cp = unit_cp * req.quantity
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        _apply_cp_delta(char, total_cp)
+        session.add(char)
+        session.commit()
+        return {
+            "status": "ok",
+            "item": it.name,
+            "quantity": req.quantity,
+            "earned_gp": round(total_cp / 100, 2),
+            "purse": _char_purse(char),
+            "display": format_purse(_char_purse(char)),
+        }
+
+
+@app.post("/downtime")
+async def downtime(req: DowntimeRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        tier = req.lifestyle_tier or char.lifestyle or "modest"
+        try:
+            result = resolve_downtime(
+                req.activity,
+                req.days,
+                lifestyle_tier=tier,
+                extra_cost_gp=req.extra_cost_gp,
+                earnings_gp=req.earnings_gp,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        start_day = world.current_day()
+        _apply_cp_delta(char, result["cp_delta"])
+
+        end_day = start_day
+        if req.advance_world and req.days > 0:
+            try:
+                end_day = world.advance_day(req.days)
+            except Exception:
+                end_day = start_day
+
+        log = DowntimeLog(
+            character_id=char.id,
+            activity=result["activity"],
+            days=req.days,
+            start_day=start_day,
+            end_day=end_day,
+            cp_delta=result["cp_delta"],
+            result_summary=result["summary"],
+        )
+        session.add(log)
+        session.add(char)
+        session.commit()
+        return {
+            "status": "ok",
+            "result": result,
+            "purse": _char_purse(char),
+            "display": format_purse(_char_purse(char)),
+            "start_day": start_day,
+            "end_day": end_day,
+        }
+
+
+@app.post("/crafting/start")
+async def crafting_start(req: CraftingStartRequest):
+    it = rules_lib.get_item(req.item)
+    if not it or it.cost_gp is None:
+        raise HTTPException(status_code=404, detail=f"Priced item '{req.item}' not found.")
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        try:
+            plan = start_crafting(it.cost_gp, is_magic=req.is_magic)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        if req.pay_materials:
+            mat_cp = plan["materials_cp"]
+            if to_cp(_char_purse(char)) < mat_cp:
+                raise HTTPException(status_code=400, detail="Not enough coin for materials.")
+            _apply_cp_delta(char, -mat_cp)
+
+        project = CraftingProject(
+            character_id=char.id,
+            item_slug=it.index_slug,
+            item_name=it.name,
+            is_magic=req.is_magic,
+            target_cost_gp=plan["target_cost_gp"],
+            materials_gp=plan["materials_gp"],
+            progress_gp=0.0,
+            gp_per_day=plan["gp_per_day"],
+        )
+        session.add(project)
+        session.add(char)
+        session.commit()
+        session.refresh(project)
+        return {
+            "status": "ok",
+            "project_id": project.id,
+            "plan": plan,
+            "purse": _char_purse(char),
+        }
+
+
+@app.post("/crafting/advance")
+async def crafting_advance(req: CraftingAdvanceRequest):
+    with Session(engine) as session:
+        project = session.get(CraftingProject, req.project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Crafting project not found.")
+        if project.complete:
+            return {"status": "already_complete", "project": project.model_dump()}
+
+        step = advance_crafting(
+            target_cost_gp=project.target_cost_gp,
+            progress_gp=project.progress_gp,
+            gp_per_day=project.gp_per_day,
+            days=req.days,
+        )
+        project.progress_gp = step["progress_gp"]
+        project.days_spent += req.days
+        project.complete = step["complete"]
+        project.updated_at = datetime.utcnow()
+
+        end_day = None
+        if req.advance_world and req.days > 0:
+            try:
+                end_day = world.advance_day(req.days)
+            except Exception:
+                end_day = None
+
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        return {"status": "ok", "step": step, "project": project.model_dump(), "end_day": end_day}
+
+
+@app.get("/character/{character_id}/crafting")
+async def character_crafting(character_id: int):
+    with Session(engine) as session:
+        rows = session.exec(
+            select(CraftingProject).where(CraftingProject.character_id == character_id)
+        ).all()
+        return {"projects": [r.model_dump() for r in rows]}
+
+
+# ===================== XP & milestone progression ==========================
+
+class AwardXpRequest(BaseModel):
+    character_id: int
+    amount: int
+    reason: Optional[str] = None
+
+
+def _level_for_xp(xp: int) -> int:
+    prog = get_config().progression
+    thresholds = prog.xp_thresholds
+    level = 1
+    for lvl in range(1, min(prog.max_level, len(thresholds) - 1) + 1):
+        if xp >= thresholds[lvl]:
+            level = lvl
+    return level
+
+
+@app.post("/award_xp")
+async def award_xp(req: AwardXpRequest):
+    prog = get_config().progression
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        if prog.milestone_leveling:
+            return {
+                "status": "milestone",
+                "message": "Milestone leveling is enabled; XP is not tracked. Use /level_up.",
+                "xp": char.xp,
+                "level": char.level,
+            }
+        gained = int(round(req.amount * prog.xp_multiplier))
+        char.xp = max(0, char.xp + gained)
+        eligible_level = _level_for_xp(char.xp)
+        can_level = eligible_level > char.level
+        session.add(char)
+        session.commit()
+        session.refresh(char)
+        return {
+            "status": "ok",
+            "xp_awarded": gained,
+            "xp_total": char.xp,
+            "current_level": char.level,
+            "eligible_level": eligible_level,
+            "can_level_up": can_level,
+        }
+
+
+# ===================== Bastions ============================================
+
+class BastionCreateRequest(BaseModel):
+    character_id: int
+    name: str
+
+
+class BastionFacilityRequest(BaseModel):
+    bastion_id: int
+    facility_slug: str
+    pay_cost: bool = True
+
+
+class BastionOrderRequest(BaseModel):
+    facility_id: int
+    order: str
+
+
+class BastionTurnRequest(BaseModel):
+    bastion_id: int
+    advance_world: bool = True
+
+
+@app.post("/bastion/create")
+async def bastion_create(req: BastionCreateRequest):
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        if not can_own_bastion(char.level):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Bastions require level {min_bastion_level()}+ (character is {char.level}).",
+            )
+        b = Bastion(character_id=char.id, name=req.name, level_acquired=char.level)
+        session.add(b)
+        session.commit()
+        session.refresh(b)
+        return {"status": "ok", "bastion": b.model_dump()}
+
+
+@app.post("/bastion/facility")
+async def bastion_add_facility(req: BastionFacilityRequest):
+    cat = get_facility(req.facility_slug)
+    if not cat:
+        raise HTTPException(status_code=404, detail=f"Facility '{req.facility_slug}' not in catalog.")
+    with Session(engine) as session:
+        b = session.get(Bastion, req.bastion_id)
+        if not b:
+            raise HTTPException(status_code=404, detail="Bastion not found.")
+        char = session.get(Character, b.character_id)
+        if char and char.level < cat["min_level"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{cat['name']} requires level {cat['min_level']} (character is {char.level}).",
+            )
+        if req.pay_cost and char:
+            cost_cp = gp_to_cp(facility_cost_gp(req.facility_slug))
+            if to_cp(_char_purse(char)) < cost_cp:
+                raise HTTPException(status_code=400, detail="Not enough coin to build this facility.")
+            _apply_cp_delta(char, -cost_cp)
+            session.add(char)
+        fac = FacilityInstance(
+            bastion_id=b.id,
+            facility_slug=req.facility_slug,
+            name=cat["name"],
+            facility_type="special",
+            space=cat.get("space"),
+        )
+        session.add(fac)
+        session.commit()
+        session.refresh(fac)
+        return {"status": "ok", "facility": fac.model_dump()}
+
+
+@app.post("/bastion/order")
+async def bastion_set_order(req: BastionOrderRequest):
+    with Session(engine) as session:
+        fac = session.get(FacilityInstance, req.facility_id)
+        if not fac:
+            raise HTTPException(status_code=404, detail="Facility not found.")
+        fac.current_order = req.order
+        session.add(fac)
+        session.commit()
+        session.refresh(fac)
+        return {"status": "ok", "facility": fac.model_dump()}
+
+
+@app.post("/bastion/turn")
+async def bastion_turn(req: BastionTurnRequest):
+    with Session(engine) as session:
+        b = session.get(Bastion, req.bastion_id)
+        if not b:
+            raise HTTPException(status_code=404, detail="Bastion not found.")
+        facilities = session.exec(
+            select(FacilityInstance).where(
+                FacilityInstance.bastion_id == b.id, FacilityInstance.enabled == True  # noqa: E712
+            )
+        ).all()
+        fac_payload = [
+            {"facility_slug": f.facility_slug, "current_order": f.current_order} for f in facilities
+        ]
+        start_day = world.current_day()
+        result = resolve_bastion_turn(
+            fac_payload, world_day=start_day, turn_number=b.turns_taken + 1
+        )
+
+        # Pay income to the bastion owner.
+        char = session.get(Character, b.character_id)
+        if char and result["income_cp"]:
+            _apply_cp_delta(char, result["income_cp"])
+            session.add(char)
+
+        end_day = start_day
+        if req.advance_world and result["days"] > 0:
+            try:
+                end_day = world.advance_day(result["days"])
+            except Exception:
+                end_day = start_day
+
+        for ev in result["events"]:
+            session.add(BastionEvent(
+                bastion_id=b.id,
+                turn=result["turn_number"],
+                world_day=end_day,
+                event_type=ev["event_type"],
+                facility_slug=ev.get("facility_slug"),
+                description=ev["description"],
+                cp_delta=ev.get("cp_delta", 0),
+            ))
+        b.turns_taken += 1
+        b.last_turn_day = end_day
+        b.updated_at = datetime.utcnow()
+        session.add(b)
+        session.commit()
+        return {
+            "status": "ok",
+            "result": result,
+            "purse": _char_purse(char) if char else None,
+            "end_day": end_day,
+        }
+
+
+@app.get("/character/{character_id}/bastion")
+async def character_bastion(character_id: int):
+    with Session(engine) as session:
+        b = session.exec(
+            select(Bastion).where(Bastion.character_id == character_id)
+        ).first()
+        if not b:
+            return {"has_bastion": False, "min_level": min_bastion_level()}
+        facilities = session.exec(
+            select(FacilityInstance).where(FacilityInstance.bastion_id == b.id)
+        ).all()
+        return {
+            "has_bastion": True,
+            "bastion": b.model_dump(),
+            "facilities": [f.model_dump() for f in facilities],
+        }
+
+
+@app.get("/bastion/facilities/{level}")
+async def bastion_facilities_for_level(level: int):
+    return {
+        "level": level,
+        "facilities": [
+            {k: v for k, v in f.items() if k != "source"} for f in facilities_for_level(level)
+        ],
+    }
 
 
 if __name__ == "__main__":

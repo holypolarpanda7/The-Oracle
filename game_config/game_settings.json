@@ -1,0 +1,38 @@
+{
+  "_about": "Edit this file to tune the game. 'active_profile' selects a difficulty preset (story | normal | hard | gritty). 'overrides' tweaks individual knobs on top of that preset. Restart the backend (or call reload) to apply. Delete/rename to fall back to 'normal'.",
+  "active_profile": "normal",
+  "overrides": {
+    "_progression": {
+      "xp_multiplier": 1.0,
+      "milestone_leveling": false,
+      "max_level": 20
+    },
+    "_economy": {
+      "item_cost_multiplier": 1.0,
+      "sell_price_ratio": 0.5,
+      "lifestyle_cost_multiplier": 1.0,
+      "starting_gold": 0
+    },
+    "_crafting": {
+      "gp_per_day": 5.0,
+      "materials_ratio": 0.5,
+      "progress_multiplier": 1.0,
+      "allow_magic_item_crafting": true
+    },
+    "_bastion": {
+      "cost_multiplier": 1.0,
+      "bastion_turn_days": 7,
+      "gold_income_multiplier": 1.0,
+      "special_facility_base_cost": 5000,
+      "min_level": 5
+    },
+    "_rest": {
+      "variant": "standard",
+      "short_rest_hours": 1,
+      "long_rest_hours": 8
+    },
+    "_encumbrance": {
+      "variant": "off"
+    }
+  }
+}

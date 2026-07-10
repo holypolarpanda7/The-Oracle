@@ -20,11 +20,38 @@ import requests
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from .models import Monster, Spell, DndClass, Subclass, SRD_SOURCE, OWNED_SOURCE
+from .models import Monster, Spell, DndClass, Subclass, Item, SrdEntry, SRD_SOURCE, OWNED_SOURCE
 
 RAW_BASE = "https://raw.githubusercontent.com/5e-bits/5e-database/main/src/2014/en/"
 MONSTERS_URL = RAW_BASE + "5e-SRD-Monsters.json"
 SPELLS_URL = RAW_BASE + "5e-SRD-Spells.json"
+EQUIPMENT_URL = RAW_BASE + "5e-SRD-Equipment.json"
+MAGIC_ITEMS_URL = RAW_BASE + "5e-SRD-Magic-Items.json"
+
+# The broad "mechanics sweep": SRD categories the DM brain should be able to look
+# up by name. Stored generically in ``rules_srd_entry`` (name + desc + raw JSON).
+SRD_REFERENCE_URLS: dict[str, str] = {
+    "conditions": RAW_BASE + "5e-SRD-Conditions.json",
+    "skills": RAW_BASE + "5e-SRD-Skills.json",
+    "ability-scores": RAW_BASE + "5e-SRD-Ability-Scores.json",
+    "damage-types": RAW_BASE + "5e-SRD-Damage-Types.json",
+    "languages": RAW_BASE + "5e-SRD-Languages.json",
+    "alignments": RAW_BASE + "5e-SRD-Alignments.json",
+    "magic-schools": RAW_BASE + "5e-SRD-Magic-Schools.json",
+    "weapon-properties": RAW_BASE + "5e-SRD-Weapon-Properties.json",
+    "proficiencies": RAW_BASE + "5e-SRD-Proficiencies.json",
+    "equipment-categories": RAW_BASE + "5e-SRD-Equipment-Categories.json",
+    "feats": RAW_BASE + "5e-SRD-Feats.json",
+    "backgrounds": RAW_BASE + "5e-SRD-Backgrounds.json",
+    "races": RAW_BASE + "5e-SRD-Races.json",
+    "subraces": RAW_BASE + "5e-SRD-Subraces.json",
+    "traits": RAW_BASE + "5e-SRD-Traits.json",
+    "features": RAW_BASE + "5e-SRD-Features.json",
+    "rule-sections": RAW_BASE + "5e-SRD-Rule-Sections.json",
+}
+
+# SRD coin -> gold-piece conversion.
+_COIN_TO_GP = {"cp": 0.01, "sp": 0.1, "ep": 0.5, "gp": 1.0, "pp": 10.0}
 
 
 def get_engine(database_url: Optional[str] = None) -> Engine:
@@ -148,6 +175,162 @@ def _upsert(session: Session, model, index_slug: str, mapped) -> bool:
         return False
     session.add(mapped)
     return True
+
+
+def _upsert_entry(session: Session, mapped: SrdEntry) -> bool:
+    """Insert/update an SrdEntry by its composite ``entry_key``."""
+    existing = session.exec(
+        select(SrdEntry).where(SrdEntry.entry_key == mapped.entry_key)
+    ).first()
+    if existing:
+        data = mapped.model_dump(exclude={"id", "created_at"})
+        for k, v in data.items():
+            setattr(existing, k, v)
+        session.add(existing)
+        return False
+    session.add(mapped)
+    return True
+
+
+def _normalize_cost_gp(cost: Any) -> Optional[float]:
+    """SRD cost {'quantity': N, 'unit': 'gp'} -> float gold pieces."""
+    if not isinstance(cost, dict):
+        return None
+    qty = cost.get("quantity")
+    unit = (cost.get("unit") or "gp").lower()
+    if qty is None:
+        return None
+    return round(float(qty) * _COIN_TO_GP.get(unit, 1.0), 4)
+
+
+def _map_item(e: dict) -> Item:
+    cat = (e.get("equipment_category") or {}).get("index")
+    dmg = e.get("damage") or {}
+    two = e.get("two_handed_damage") or {}
+    rng = e.get("range") or {}
+    armor = e.get("armor_class") or {}
+    item_type = (
+        e.get("weapon_category")
+        or e.get("armor_category")
+        or (e.get("gear_category") or {}).get("name")
+        or (e.get("tool_category"))
+        or (e.get("vehicle_category"))
+    )
+    return Item(
+        index_slug=e["index"],
+        name=e["name"],
+        category=cat,
+        item_type=item_type,
+        cost_gp=_normalize_cost_gp(e.get("cost")),
+        weight=e.get("weight"),
+        damage_dice=dmg.get("damage_dice"),
+        damage_type=(dmg.get("damage_type") or {}).get("name"),
+        two_handed_damage_dice=two.get("damage_dice"),
+        range_normal=rng.get("normal"),
+        range_long=rng.get("long"),
+        properties=[p.get("name") for p in (e.get("properties") or [])] or None,
+        armor_class_base=armor.get("base"),
+        armor_dex_bonus=armor.get("dex_bonus"),
+        armor_max_dex_bonus=armor.get("max_bonus"),
+        str_minimum=e.get("str_minimum"),
+        stealth_disadvantage=e.get("stealth_disadvantage"),
+        desc=_join(e.get("desc")),
+        source=SRD_SOURCE,
+        raw=e,
+    )
+
+
+def _map_magic_item(e: dict) -> Item:
+    desc = _join(e.get("desc")) or ""
+    return Item(
+        index_slug=e["index"],
+        name=e["name"],
+        category="magic-item",
+        item_type=(e.get("equipment_category") or {}).get("name"),
+        rarity=(e.get("rarity") or {}).get("name"),
+        requires_attunement="attunement" in desc.lower(),
+        desc=desc or None,
+        source=SRD_SOURCE,
+        raw=e,
+    )
+
+
+def ingest_items(
+    engine: Optional[Engine] = None,
+    database_url: Optional[str] = None,
+    *,
+    equipment: bool = True,
+    magic_items: bool = True,
+) -> dict:
+    """Download and upsert SRD equipment + magic items. Returns counts."""
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    result = {"items_new": 0, "items_total": 0}
+
+    if equipment:
+        data = _fetch(EQUIPMENT_URL)
+        with Session(engine) as s:
+            for e in data:
+                if _upsert(s, Item, e["index"], _map_item(e)):
+                    result["items_new"] += 1
+            s.commit()
+        result["items_total"] += len(data)
+
+    if magic_items:
+        data = _fetch(MAGIC_ITEMS_URL)
+        with Session(engine) as s:
+            for e in data:
+                if _upsert(s, Item, e["index"], _map_magic_item(e)):
+                    result["items_new"] += 1
+            s.commit()
+        result["items_total"] += len(data)
+
+    return result
+
+
+def ingest_reference(
+    engine: Optional[Engine] = None,
+    database_url: Optional[str] = None,
+    *,
+    categories: Optional[list[str]] = None,
+) -> dict:
+    """Sweep the broad SRD mechanics into ``rules_srd_entry`` (one flexible table).
+
+    ``categories`` defaults to every entry in ``SRD_REFERENCE_URLS``.
+    """
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    cats = categories or list(SRD_REFERENCE_URLS.keys())
+    result: dict[str, int] = {"entries_new": 0, "entries_total": 0}
+
+    for cat in cats:
+        url = SRD_REFERENCE_URLS.get(cat)
+        if not url:
+            continue
+        try:
+            data = _fetch(url)
+        except Exception as e:  # pragma: no cover - one bad category shouldn't abort
+            print(f"[ingest_reference] skip {cat}: {e}")
+            continue
+        with Session(engine) as s:
+            for obj in data:
+                slug = obj.get("index") or obj.get("name", "").lower().replace(" ", "-")
+                entry = SrdEntry(
+                    entry_key=f"{cat}:{slug}",
+                    category=cat,
+                    index_slug=slug,
+                    name=obj.get("name", slug),
+                    desc=_join(obj.get("desc")),
+                    data=obj,
+                    source=SRD_SOURCE,
+                )
+                if _upsert_entry(s, entry):
+                    result["entries_new"] += 1
+            s.commit()
+        result["entries_total"] += len(data)
+        result[cat] = len(data)
+
+    return result
 
 
 def ingest_srd(
@@ -423,4 +606,6 @@ def seed_classes_and_subclasses(
 
 if __name__ == "__main__":
     print(ingest_srd())
+    print(ingest_items())
+    print(ingest_reference())
     print(seed_classes_and_subclasses())

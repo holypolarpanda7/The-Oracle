@@ -167,3 +167,81 @@ class Subclass(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Item(SQLModel, table=True):
+    """Equipment and magic items — the numbers economy/crafting/combat need.
+
+    Covers weapons, armor, adventuring gear, tools, mounts, trade goods (from SRD
+    Equipment) and magic items. ``cost_gp`` is normalized to gold pieces so pricing,
+    selling, and crafting math is uniform.
+    """
+    __tablename__ = "rules_item"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    index_slug: str = Field(sa_column=Column(String, nullable=False, unique=True, index=True))
+    name: str = Field(sa_column=Column(String, nullable=False, index=True))
+
+    # Broad bucket (weapon, armor, adventuring-gear, tools, mounts-and-vehicles,
+    # trade-goods, magic-item, ...) and a finer type label.
+    category: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+    item_type: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    cost_gp: Optional[float] = Field(default=None, sa_column=Column(Float, index=True))
+    weight: Optional[float] = Field(default=None, sa_column=Column(Float))
+
+    # Weapon numbers
+    damage_dice: Optional[str] = Field(default=None, sa_column=Column(String))
+    damage_type: Optional[str] = Field(default=None, sa_column=Column(String))
+    two_handed_damage_dice: Optional[str] = Field(default=None, sa_column=Column(String))
+    range_normal: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    range_long: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    properties: Optional[Any] = Field(default=None, sa_column=Column(JSON))   # list[str]
+
+    # Armor numbers
+    armor_class_base: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    armor_dex_bonus: Optional[bool] = Field(default=None, sa_column=Column(Boolean))
+    armor_max_dex_bonus: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    str_minimum: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    stealth_disadvantage: Optional[bool] = Field(default=None, sa_column=Column(Boolean))
+
+    # Magic-item bits
+    rarity: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+    requires_attunement: bool = Field(default=False, sa_column=Column(Boolean))
+
+    desc: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
+    raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SrdEntry(SQLModel, table=True):
+    """Generic SRD reference row for the broad mechanics sweep.
+
+    One flexible table backs many SRD categories (conditions, skills, damage-types,
+    backgrounds, feats, races, subraces, traits, languages, weapon-properties,
+    ability-scores, alignments, magic-schools, ...). Structured querying isn't needed
+    for these the way it is for monsters/spells/items — the DM brain just needs the
+    name + description on demand — so they share one table keyed by ``category:slug``.
+    """
+    __tablename__ = "rules_srd_entry"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Composite natural key "category:index_slug" for idempotent upserts.
+    entry_key: str = Field(sa_column=Column(String, nullable=False, unique=True, index=True))
+    category: str = Field(sa_column=Column(String, nullable=False, index=True))
+    index_slug: str = Field(sa_column=Column(String, nullable=False, index=True))
+    name: str = Field(sa_column=Column(String, nullable=False, index=True))
+
+    desc: Optional[str] = Field(default=None, sa_column=Column(String))
+    data: Optional[Any] = Field(default=None, sa_column=Column(JSON))   # raw JSON
+
+    source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

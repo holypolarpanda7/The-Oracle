@@ -13,7 +13,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from .ingest import get_engine
-from .models import Monster, Spell
+from .models import Monster, Spell, Item, SrdEntry
 
 
 def ability_modifier(score: Optional[int]) -> int:
@@ -94,7 +94,69 @@ class RulesLibrary:
         with Session(self.engine) as s:
             m = len(s.exec(select(Monster.id)).all())
             sp = len(s.exec(select(Spell.id)).all())
-        return {"monsters": m, "spells": sp}
+            it = len(s.exec(select(Item.id)).all())
+            ref = len(s.exec(select(SrdEntry.id)).all())
+        return {"monsters": m, "spells": sp, "items": it, "reference": ref}
+
+    # ----- items (equipment + magic items) -----
+
+    def get_item(self, ref: str) -> Optional[Item]:
+        with Session(self.engine) as s:
+            it = s.exec(select(Item).where(Item.index_slug == ref)).first()
+            if it:
+                return it
+            ref_l = ref.strip().lower()
+            return s.exec(select(Item).where(Item.name.ilike(ref_l))).first()  # type: ignore[attr-defined]
+
+    def search_items(
+        self,
+        query: str = "",
+        *,
+        category: Optional[str] = None,
+        max_cost_gp: Optional[float] = None,
+        rarity: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[Item]:
+        with Session(self.engine) as s:
+            stmt = select(Item)
+            if query:
+                stmt = stmt.where(Item.name.ilike(f"%{query}%"))  # type: ignore[attr-defined]
+            if category:
+                stmt = stmt.where(Item.category == category)
+            if max_cost_gp is not None:
+                stmt = stmt.where(Item.cost_gp <= max_cost_gp)
+            if rarity:
+                stmt = stmt.where(Item.rarity == rarity)
+            stmt = stmt.order_by(Item.name).limit(limit)  # type: ignore[attr-defined]
+            return list(s.exec(stmt).all())
+
+    # ----- generic SRD reference (conditions, skills, feats, races, ...) -----
+
+    def get_reference(self, category: str, ref: str) -> Optional[SrdEntry]:
+        with Session(self.engine) as s:
+            e = s.exec(
+                select(SrdEntry).where(SrdEntry.entry_key == f"{category}:{ref}")
+            ).first()
+            if e:
+                return e
+            ref_l = ref.strip().lower()
+            return s.exec(
+                select(SrdEntry).where(
+                    SrdEntry.category == category, SrdEntry.name.ilike(ref_l)  # type: ignore[attr-defined]
+                )
+            ).first()
+
+    def search_reference(
+        self, query: str = "", *, category: Optional[str] = None, limit: int = 20
+    ) -> list[SrdEntry]:
+        with Session(self.engine) as s:
+            stmt = select(SrdEntry)
+            if category:
+                stmt = stmt.where(SrdEntry.category == category)
+            if query:
+                stmt = stmt.where(SrdEntry.name.ilike(f"%{query}%"))  # type: ignore[attr-defined]
+            stmt = stmt.order_by(SrdEntry.name).limit(limit)  # type: ignore[attr-defined]
+            return list(s.exec(stmt).all())
 
     # ----- mention scanning (for auto-injecting stats the DM referenced) -----
 
@@ -194,3 +256,52 @@ def format_spell_brief(sp: Spell) -> str:
             base = slots.get(str(sp.level)) or next(iter(slots.values()))
             bits.append(f"Damage: {base} {dtype}".strip())
     return "\n".join(bits)
+
+
+def _gp_str(cost_gp: Optional[float]) -> str:
+    if cost_gp is None:
+        return "—"
+    if cost_gp == int(cost_gp):
+        return f"{int(cost_gp)} gp"
+    return f"{cost_gp:g} gp"
+
+
+def format_item_brief(it: Item) -> str:
+    """Concise item line for DM/economy context."""
+    head = f"**{it.name}**"
+    tags = [t for t in (it.category, it.item_type, it.rarity) if t]
+    if tags:
+        head += f" ({', '.join(tags)})"
+    bits = [head]
+    line2 = [f"Cost {_gp_str(it.cost_gp)}"]
+    if it.weight:
+        line2.append(f"{it.weight:g} lb")
+    if it.requires_attunement:
+        line2.append("requires attunement")
+    bits.append(" | ".join(line2))
+    if it.damage_dice:
+        dmg = f"Damage {it.damage_dice} {it.damage_type or ''}".rstrip()
+        if it.two_handed_damage_dice:
+            dmg += f" ({it.two_handed_damage_dice} two-handed)"
+        if it.properties:
+            dmg += f" [{', '.join(it.properties)}]"
+        bits.append(dmg)
+    if it.armor_class_base is not None:
+        ac = f"AC {it.armor_class_base}"
+        if it.armor_dex_bonus:
+            ac += " + Dex" + (f" (max {it.armor_max_dex_bonus})" if it.armor_max_dex_bonus else "")
+        if it.str_minimum:
+            ac += f", Str {it.str_minimum}+"
+        if it.stealth_disadvantage:
+            ac += ", Stealth disadvantage"
+        bits.append(ac)
+    return "\n".join(bits)
+
+
+def format_reference_brief(e: SrdEntry) -> str:
+    """Concise reference entry (condition, skill, feat, ...) for DM context."""
+    head = f"**{e.name}** ({e.category})"
+    desc = (e.desc or "").strip()
+    if len(desc) > 600:
+        desc = desc[:600].rsplit(" ", 1)[0] + "…"
+    return f"{head}\n{desc}" if desc else head
