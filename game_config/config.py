@@ -180,6 +180,51 @@ class DMGuideConfig:
 
 
 @dataclass
+class ImageryConfig:
+    """Self-hosted diffusion image generation + storage for scene visuals.
+
+    Talks to a local image backend (ComfyUI in API mode by default). Safety is
+    the operator's to control: the positive style and negative prompt are just
+    plain, editable strings here — no external content filter is imposed.
+    """
+    enabled: bool = True
+    # ----- generation backend -----
+    backend: str = "comfyui"                 # "comfyui" (only backend for now)
+    base_url: str = "http://127.0.0.1:8188"  # ComfyUI listen address
+    checkpoint: str = "sd_xl_base_1.0.safetensors"
+    # Optional path to a custom ComfyUI workflow JSON (API format). When set it
+    # overrides the built-in SDXL txt2img graph. Placeholders are filled in by
+    # the client (positive/negative/seed/width/height/steps/checkpoint).
+    workflow_path: Optional[str] = None
+    steps: int = 25
+    cfg_scale: float = 7.0
+    sampler: str = "euler"
+    scheduler: str = "normal"
+    gen_width: int = 1024
+    gen_height: int = 1024
+    timeout_seconds: int = 180               # generation can be slow on lowvram
+    # ----- prompt shaping (operator-controlled) -----
+    style_prompt: str = (
+        "fantasy illustration, painterly digital art, dramatic lighting, "
+        "highly detailed, concept art"
+    )
+    negative_prompt: str = (
+        "lowres, blurry, deformed, extra limbs, bad anatomy, watermark, text, "
+        "signature, jpeg artifacts"
+    )
+    # ----- storage / compression -----
+    store_width: int = 768                   # canonical images downscaled to this
+    thumb_width: int = 256
+    webp_quality: int = 82
+    max_per_bucket: int = 3                  # 3 images per (subject x context)
+    max_total_images: int = 600             # global cap; LRU-evicted beyond this
+    # ----- behavior -----
+    allow_temp: bool = True                  # player-requested throwaway images
+    max_images_per_reply: int = 2            # cap auto-generated visuals per turn
+    inject_hook_guidance: bool = True        # teach the DM the [[IMAGE]] hook
+
+
+@dataclass
 class GameConfig:
     profile: str = "normal"
     progression: ProgressionConfig = field(default_factory=ProgressionConfig)
@@ -192,8 +237,10 @@ class GameConfig:
     hazard: HazardConfig = field(default_factory=HazardConfig)
     reputation: ReputationConfig = field(default_factory=ReputationConfig)
     dm_guide: DMGuideConfig = field(default_factory=DMGuideConfig)
+    imagery: ImageryConfig = field(default_factory=ImageryConfig)
 
     def to_dict(self) -> dict:
+        return _dataclass_to_dict(self)
         return _dataclass_to_dict(self)
 
 

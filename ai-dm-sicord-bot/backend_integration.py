@@ -38,8 +38,10 @@ async def register_character_backend(payload: Dict, register_url: str) -> Dict:
 async def call_backend(message_text: str, session_id: str, user_id: str, username: str, backend_url: str) -> Dict:
     """Call the DM backend for a conversational reply.
 
-    Returns a dict: {"reply": str, "music": Optional[str]} where "music" is the
-    AI-recommended ambient-music search query for the current scene (or None).
+    Returns a dict: {"reply": str, "music": Optional[str], "images": Optional[list]}
+    where "music" is the AI-recommended ambient-music search query for the current
+    scene (or None) and "images" is a list of scene-picture payloads (base64 WebP
+    + metadata) for the bot to attach (or None).
     """
     payload = {
         "session_id": session_id,
@@ -47,21 +49,27 @@ async def call_backend(message_text: str, session_id: str, user_id: str, usernam
         "username": username,
         "message": message_text,
     }
-    
+
+    # Generous timeout: the backend may synchronously render a scene image on the
+    # local diffusion box, which can take longer than a plain text reply.
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(backend_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with session.post(backend_url, json=payload, timeout=aiohttp.ClientTimeout(total=180)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return {"reply": data.get("reply", "The Oracle is silent..."), "music": data.get("music")}
+                    return {
+                        "reply": data.get("reply", "The Oracle is silent..."),
+                        "music": data.get("music"),
+                        "images": data.get("images"),
+                    }
                 else:
-                    return {"reply": f"The Oracle is troubled (HTTP {resp.status})...", "music": None}
+                    return {"reply": f"The Oracle is troubled (HTTP {resp.status})...", "music": None, "images": None}
         except aiohttp.ClientError as e:
             print(f"[call_backend error] {e}")
-            return {"reply": "The Oracle's connection falters...", "music": None}
+            return {"reply": "The Oracle's connection falters...", "music": None, "images": None}
         except Exception as e:
             print(f"[call_backend error] {e}")
-            return {"reply": "The Oracle is silent...", "music": None}
+            return {"reply": "The Oracle is silent...", "music": None, "images": None}
 
 
 async def reset_backend_session(session_id: str, reset_url: str) -> str:

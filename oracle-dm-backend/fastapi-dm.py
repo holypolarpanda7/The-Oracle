@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 import requests
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -109,6 +110,7 @@ from dm_guide import (
     estimate_encounter,
     build_encounter,
 )
+from imagery import ImageStore, ImageResult
 # ----- Env loading -----
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -209,6 +211,8 @@ class ChatResponse(BaseModel):
     reply: str
     # Optional AI-recommended ambient-music search query for the current scene.
     music: Optional[str] = None
+    # Optional scene pictures (base64 WebP + metadata) for the bot to attach.
+    images: Optional[List[Dict[str, Any]]] = None
 
 
 class ResetRequest(BaseModel):
@@ -320,6 +324,9 @@ world = WorldGraph(engine=engine)
 rules_lib = RulesLibrary(engine=engine)
 # Initiative-ordered combat state tracker (PCs, NPCs, monsters).
 combat = CombatTracker(engine=engine)
+# Self-hosted scene imagery (diffusion-backed, offline-tolerant). World-day aware
+# so stored pictures are tagged with the in-world day they were made.
+image_store = ImageStore(engine=engine, world_day_fn=world.current_day)
 
 # Per-session metadata (which PC is playing) alongside the in-memory history.
 SESSION_META: Dict[str, Dict] = {}
@@ -457,6 +464,95 @@ def extract_music_cue(text: str) -> tuple[str, Optional[str]]:
     return clean, query
 
 
+# The DM asks for a scene picture:  [[IMAGE: kind | subject | context | look]]
+#   kind    = place | npc | creature | item
+#   subject = what it is ("dire wolf", "Jim the blacksmith", "Greenfields")
+#   context = environment/situation ("desert at dusk", "town in winter"); optional
+#   look    = intrinsic appearance details for the prompt; optional
+IMAGE_HOOK_PATTERN = re.compile(r"\[\[IMAGE:(.+?)\]\]", re.IGNORECASE)
+# A permanent appearance change / removal: wipe a subject's stored pictures.
+#   [[IMAGE-RESET: kind | subject | reason]]
+IMAGE_RESET_PATTERN = re.compile(r"\[\[IMAGE-RESET:(.+?)\]\]", re.IGNORECASE)
+
+
+def _split_hook(inner: str) -> list[str]:
+    return [p.strip() for p in inner.split("|")]
+
+
+def extract_image_hooks(text: str) -> tuple[str, list[dict], list[dict]]:
+    """Pull image + image-reset hooks out of the narration.
+
+    Returns ``(clean_text, image_requests, reset_requests)``. Both request lists
+    are dicts; the hooks are stripped from what the player sees.
+    """
+    images: list[dict] = []
+    for m in IMAGE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts or not parts[0]:
+            continue
+        images.append({
+            "kind": parts[0] if len(parts) > 0 else "creature",
+            "subject": parts[1] if len(parts) > 1 else "",
+            "context": parts[2] if len(parts) > 2 else "",
+            "look": parts[3] if len(parts) > 3 else "",
+        })
+
+    resets: list[dict] = []
+    for m in IMAGE_RESET_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        resets.append({
+            "kind": parts[0] if len(parts) > 0 else "",
+            "subject": parts[1] if len(parts) > 1 else "",
+            "reason": parts[2] if len(parts) > 2 else "",
+        })
+
+    clean = IMAGE_RESET_PATTERN.sub("", IMAGE_HOOK_PATTERN.sub("", text))
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, images, resets
+
+
+def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict]) -> list[dict]:
+    """Apply image-reset purges and render/reuse pictures for image requests.
+
+    Returns a list of transport payloads (base64 image + metadata) for the bot,
+    capped by ``ImageryConfig.max_images_per_reply``. Offline results are skipped
+    so nothing broken is shown to players.
+    """
+    cfg = get_config().imagery
+    if not cfg.enabled:
+        return []
+
+    # Permanent changes first: wipe outdated art so any re-render is fresh.
+    for rq in reset_reqs:
+        subject = rq.get("subject") or ""
+        if not subject:
+            continue
+        try:
+            removed = image_store.invalidate_subject(rq.get("kind") or "creature", subject)
+            if removed:
+                print(f"[imagery] reset '{subject}' -> purged {removed} image(s)")
+        except Exception as e:
+            print(f"[imagery] reset error for '{subject}': {e}")
+
+    payloads: list[dict] = []
+    for rq in image_reqs[: max(0, cfg.max_images_per_reply)]:
+        subject = rq.get("subject") or ""
+        if not subject:
+            continue
+        try:
+            result = image_store.ensure_image(
+                rq.get("kind") or "creature", subject,
+                look=rq.get("look") or "", context=rq.get("context") or "",
+            )
+        except Exception as e:
+            print(f"[imagery] generation error for '{subject}': {e}")
+            continue
+        if result is None or result.offline:
+            continue
+        payloads.append(result.payload())
+    return payloads
+
+
 # ----- OpenRouter LLM call -----
 
 def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
@@ -547,6 +643,25 @@ def generate_dm_reply(
         "- Emit it ONLY when the ambiance meaningfully changes; otherwise omit it entirely.\n"
         "- Put the hook on its own line. It is removed from what the player sees.\n"
     )
+
+    # Scene-imagery hook guidance (config-toggleable, only when imagery is on).
+    _img_cfg = get_config().imagery
+    if _img_cfg.enabled and _img_cfg.inject_hook_guidance:
+        system_prompt += (
+            "\nScene pictures - visualize notable new sights, sparingly:\n"
+            "- The FIRST time the party clearly sees a notable new place, NPC, or creature,\n"
+            "  emit ONE hook so the system can show an illustration:\n"
+            "    [[IMAGE: creature | dire wolf | snowy pass at dusk | lean, scarred, pale fur]]\n"
+            "    [[IMAGE: npc | Jim the blacksmith | forge in town | burly, soot-stained, graying beard]]\n"
+            "    [[IMAGE: place | Greenfields | autumn morning | rolling farmland, timber cottages]]\n"
+            "- Fields: kind (place|npc|creature|item) | subject | context (environment/season/mood) | look.\n"
+            "- The SAME subject in a different environment (a desert wolf vs a jungle wolf, an NPC in\n"
+            "  town vs in the desert) is a distinct picture: keep 'subject' stable, vary 'context'.\n"
+            "- If a subject's appearance changes PERMANENTLY (an NPC is maimed, a town burns down),\n"
+            "  emit [[IMAGE-RESET: kind | subject | reason]] so outdated pictures are cleared.\n"
+            f"- At most {_img_cfg.max_images_per_reply} image hook(s) per reply. Put each on its own line;\n"
+            "  hooks are removed from what the player sees.\n"
+        )
 
     messages.append({"role": "system", "content": system_prompt})
 
@@ -783,11 +898,21 @@ async def chat_endpoint(req: ChatRequest):
     # Separate the AI's ambient-music recommendation from the narration.
     dm_text, music_query = extract_music_cue(dm_text)
 
+    # Pull out scene-image requests (and any permanent-change resets), then
+    # render/reuse pictures for the bot to attach.
+    dm_text, image_reqs, reset_reqs = extract_image_hooks(dm_text)
+    try:
+        image_payloads = process_image_hooks(image_reqs, reset_reqs)
+    except Exception as e:
+        print(f"[imagery] hook processing failed: {e}")
+        image_payloads = []
+
     # Store DM turn
     history.append(Turn(role="dm", user="Oracle DM", content=dm_text))
     SESSIONS[req.session_id] = history
 
-    return ChatResponse(reply=dm_text, music=music_query)
+    return ChatResponse(reply=dm_text, music=music_query,
+                        images=image_payloads or None)
 
 @app.post("/reset")
 async def reset_endpoint(req: ResetRequest):
@@ -2448,6 +2573,107 @@ async def dm_encounter(req: EncounterEstimateRequest):
 async def dm_encounter_plan(req: EncounterPlanRequest):
     """Suggest an XP budget for a target difficulty and party."""
     return build_encounter(req.party_levels, req.target_difficulty)
+
+
+# ===================== Scene imagery (self-hosted diffusion) ===============
+
+class ImageEnsureRequest(BaseModel):
+    kind: str                          # place | npc | creature | item
+    subject: str
+    context: str = ""
+    look: str = ""
+    ref_slug: Optional[str] = None
+    force_new: bool = False
+
+
+class ImageTempRequest(BaseModel):
+    kind: str = "creature"
+    subject: str
+    context: str = ""
+    look: str = ""
+
+
+@app.get("/imagery/status")
+async def imagery_status():
+    """Report imagery config + whether the diffusion backend is reachable."""
+    cfg = get_config().imagery
+    available = False
+    if cfg.enabled:
+        try:
+            available = image_store._client_for(cfg).is_available()
+        except Exception:
+            available = False
+    return {
+        "enabled": cfg.enabled,
+        "backend": cfg.backend,
+        "base_url": cfg.base_url,
+        "checkpoint": cfg.checkpoint,
+        "service_available": available,
+        "max_per_bucket": cfg.max_per_bucket,
+        "stats": image_store.stats(),
+    }
+
+
+@app.post("/imagery/ensure")
+async def imagery_ensure(req: ImageEnsureRequest):
+    """Generate or reuse a stored picture for (subject x context)."""
+    cfg = get_config().imagery
+    if not cfg.enabled:
+        raise HTTPException(status_code=503, detail="Imagery is disabled in config.")
+    result = image_store.ensure_image(
+        req.kind, req.subject, look=req.look, context=req.context,
+        ref_slug=req.ref_slug, force_new=req.force_new,
+    )
+    if result is None:
+        raise HTTPException(status_code=503, detail="Imagery is disabled.")
+    if result.offline:
+        raise HTTPException(status_code=503, detail="Image service is offline.")
+    return result.payload()
+
+
+@app.post("/imagery/temp")
+async def imagery_temp(req: ImageTempRequest):
+    """Generate a throwaway image (never stored)."""
+    cfg = get_config().imagery
+    if not cfg.enabled or not cfg.allow_temp:
+        raise HTTPException(status_code=503, detail="Temp imagery is disabled.")
+    result = image_store.generate_temp(
+        req.kind, req.subject, look=req.look, context=req.context,
+    )
+    if result is None:
+        raise HTTPException(status_code=503, detail="Temp imagery is disabled.")
+    if result.offline:
+        raise HTTPException(status_code=503, detail="Image service is offline.")
+    return result.payload()
+
+
+@app.get("/imagery/entity/{kind}/{ref}")
+async def imagery_list(kind: str, ref: str, context: Optional[str] = None):
+    """List stored image metadata for a subject (optionally one context)."""
+    return {"images": image_store.list_for(kind, ref, context)}
+
+
+@app.get("/imagery/image/{image_id}")
+async def imagery_image(image_id: int, thumb: bool = False):
+    """Return the raw WebP bytes of a stored image."""
+    data = image_store.get_image_bytes(image_id, thumb=thumb)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    return Response(content=data, media_type="image/webp")
+
+
+@app.delete("/imagery/entity/{kind}/{ref}")
+async def imagery_invalidate(kind: str, ref: str, context: Optional[str] = None):
+    """Remove a subject's images (all contexts) or just one context bucket.
+
+    Use when the world evolves — an NPC is permanently changed, or a place is
+    destroyed — so stale pictures don't linger.
+    """
+    if context:
+        removed = image_store.invalidate_context(kind, ref, context)
+    else:
+        removed = image_store.invalidate_subject(kind, ref)
+    return {"status": "ok", "removed": removed}
 
 
 if __name__ == "__main__":

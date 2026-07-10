@@ -1,6 +1,10 @@
 """
 Event Handlers Module - Discord event handlers (on_ready, on_message, on_reaction_add, etc.)
 """
+import base64
+import binascii
+import io
+
 import discord
 from discord.ext import commands
 import wavelink
@@ -188,6 +192,30 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
         print(f"[on_voice_state_update error] {e}")
 
 
+def _build_scene_files(images) -> list:
+    """Turn backend image payloads (base64 WebP) into discord.File attachments."""
+    files = []
+    if not images:
+        return files
+    for idx, img in enumerate(images):
+        b64 = (img or {}).get("b64")
+        if not b64:
+            continue
+        try:
+            data = base64.b64decode(b64)
+        except (binascii.Error, ValueError) as e:
+            print(f"[imagery] bad base64 image payload: {e}")
+            continue
+        caption = (img.get("caption") or "scene")
+        safe = "".join(c for c in caption if c.isalnum() or c in ("_", "-", " ")).strip()
+        safe = safe.replace(" ", "_")[:60] or "scene"
+        files.append(discord.File(io.BytesIO(data), filename=f"{safe}_{idx}.webp"))
+        # Discord allows up to 10 attachments per message.
+        if len(files) >= 10:
+            break
+    return files
+
+
 async def on_message_handler(message: discord.Message, bot, active_dm_channels: set):
     """Handle incoming messages."""
     # Ignore messages from bots (including ourselves)
@@ -336,7 +364,9 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
     dm_reply = result.get("reply", "The Oracle is silent...")
     music_query = result.get("music")
 
-    await message.channel.send(dm_reply)
+    # Decode any scene pictures the backend produced into Discord attachments.
+    files = _build_scene_files(result.get("images"))
+    await message.channel.send(dm_reply, files=files if files else None)
 
     # If the DM recommended scene music and the player is in a voice channel,
     # play a matching ambient track there (looped until the scene changes).
