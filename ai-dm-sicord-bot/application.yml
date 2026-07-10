@@ -2,10 +2,17 @@ server: # REST and WS server
   port: 2333
   address: 0.0.0.0
 lavalink:
+  plugins:
+    # Auto-downloaded from Maven Central on startup (needs internet the first time).
+    # Replaces the broken built-in YouTube source with the maintained plugin.
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
+      snapshot: false
   server:
     password: "youshallnotpass"
     sources:
-      youtube: true
+      # Disabled: the built-in YouTube source is deprecated/broken. The plugin
+      # above handles YouTube instead.
+      youtube: false
       bandcamp: true
       soundcloud: true
       twitch: true
@@ -34,6 +41,19 @@ lavalink:
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
     gc-warnings: true
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true          # enables "ytsearch:" / "ytmsearch:" queries
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    # Clients are tried in order; this mix is the current reliable default.
+    clients:
+      - MUSIC
+      - WEB
+      - WEBEMBEDDED
+      - ANDROID_VR
 
 metrics:
   prometheus:

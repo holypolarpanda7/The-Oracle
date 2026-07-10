@@ -1,3 +1,6 @@
 # CC Menu Playlist - Character Creation Background Music
-# Add your music URLs here (YouTube, SoundCloud, direct URLs, etc.)
-https://soundcloud.com/vals-10/wow-nightsong
+# One entry per line. Supported formats (the YouTube plugin is enabled):
+#   ytsearch:your search terms                 -> plays the top YouTube result (robust)
+#   https://www.youtube.com/watch?v=VIDEO_ID    -> a specific YouTube video
+# Lines starting with # are ignored.
+ytsearch:wow nightsong ambient

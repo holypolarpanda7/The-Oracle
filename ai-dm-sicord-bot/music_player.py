@@ -150,20 +150,44 @@ async def play_music_in_channel(voice_channel: discord.VoiceChannel, playlist_na
         if voice_channel.id in active_players:
             print(f"[music] Already playing in {voice_channel.name}")
             return
-        
+
         # Load playlist
         urls = await load_playlist(playlist_name)
         if not urls:
             print(f"[music] No tracks in playlist {playlist_name}")
             return
-        
-        # Connect to voice channel
-        player: wavelink.Player = await voice_channel.connect(cls=wavelink.Player)
+
+        # Clean up any lingering voice connection in this guild first. Discord
+        # needs a moment to tear down the old voice session before we can open a
+        # new one; skipping this causes "Unable to connect" on the next connect.
+        existing = voice_channel.guild.voice_client
+        if existing is not None:
+            try:
+                await existing.disconnect(force=True)
+            except Exception as e:
+                print(f"[music] Could not clean up old voice client: {e}")
+            await asyncio.sleep(1.0)
+
+        # Connect to voice channel, retrying to survive voice-session races.
+        player: Optional[wavelink.Player] = None
+        last_err: Optional[Exception] = None
+        for attempt in range(1, 4):
+            try:
+                player = await voice_channel.connect(cls=wavelink.Player, timeout=20.0)
+                break
+            except Exception as e:
+                last_err = e
+                print(f"[music] Connect attempt {attempt}/3 failed: {e}")
+                await asyncio.sleep(1.5)
+        if player is None:
+            raise last_err or RuntimeError("Unable to connect to voice channel")
+
         active_players[voice_channel.id] = player
         current_playlists[voice_channel.id] = playlist_name
-        
+        await player.set_volume(30)
+
         print(f"[music] Connected to {voice_channel.name}, loading tracks from '{playlist_name}'...")
-        
+
         # Load and play tracks
         for url in urls:
             try:
@@ -173,19 +197,23 @@ async def play_music_in_channel(voice_channel: discord.VoiceChannel, playlist_na
                     print(f"[music] Queued: {tracks[0].title if isinstance(tracks, list) else tracks.title}")
             except Exception as e:
                 print(f"[music] Error loading track {url}: {e}")
-        
+
         # Start playback if not already playing
-        if not player.playing:
+        if not player.playing and not player.queue.is_empty:
             await player.play(player.queue.get())
             print(f"[music] Started playback in {voice_channel.name}")
-        
-        # Set volume to 30%
-        await player.set_volume(30)
-        
+
     except Exception as e:
         print(f"[music] Error in play_music_in_channel: {e}")
-        if voice_channel.id in active_players:
-            del active_players[voice_channel.id]
+        # Roll back any partial state so a retry can reconnect cleanly.
+        active_players.pop(voice_channel.id, None)
+        current_playlists.pop(voice_channel.id, None)
+        stale = voice_channel.guild.voice_client
+        if stale is not None:
+            try:
+                await stale.disconnect(force=True)
+            except Exception:
+                pass
 
 
 async def stop_music_in_channel(voice_channel_id: int):
@@ -193,13 +221,18 @@ async def stop_music_in_channel(voice_channel_id: int):
     if voice_channel_id in active_players:
         try:
             player = active_players[voice_channel_id]
-            await player.disconnect()
+            await player.disconnect(force=True)
             del active_players[voice_channel_id]
             if voice_channel_id in current_playlists:
                 del current_playlists[voice_channel_id]
             print(f"[music] Disconnected from voice channel {voice_channel_id}")
+            # Give Discord time to fully close the voice session so a later
+            # reconnect (e.g. toggling music back on) doesn't race.
+            await asyncio.sleep(1.0)
         except Exception as e:
             print(f"[music] Error stopping music: {e}")
+            active_players.pop(voice_channel_id, None)
+            current_playlists.pop(voice_channel_id, None)
 
 
 def get_active_player(voice_channel_id: int) -> Optional[wavelink.Player]:
@@ -220,23 +253,29 @@ async def on_wavelink_track_start(payload: wavelink.TrackStartEventPayload):
 
 
 async def on_wavelink_track_end(payload: wavelink.TrackEndEventPayload):
-    """Called when a track ends - play next track in queue."""
+    """Called when a track ends - loop the playlist in place (no reconnect)."""
     player = payload.player
-    
-    # If there are more tracks in queue, play next
-    if not player.queue.is_empty:
-        next_track = player.queue.get()
-        await player.play(next_track)
-        print(f"[music] Playing next track: {next_track.title}")
-    else:
-        # Queue is empty, loop the playlist
-        if player.channel and player.channel.id in active_players:
-            voice_channel = player.channel
-            playlist_name = current_playlists.get(voice_channel.id, "cc_menu")
-            print(f"[music] Playlist '{playlist_name}' ended, restarting loop...")
-            await player.disconnect()
-            del active_players[voice_channel.id]
-            if voice_channel.id in current_playlists:
-                del current_playlists[voice_channel.id]
-            # Restart the same playlist
-            await play_music_in_channel(voice_channel, playlist_name)
+    if player is None or player.channel is None:
+        return
+
+    voice_channel_id = player.channel.id
+    # If we intentionally stopped/disconnected this channel, do nothing.
+    if voice_channel_id not in active_players:
+        return
+
+    # Re-queue the finished track at the end so the playlist loops forever
+    # without ever disconnecting from voice (which caused reconnect races).
+    if payload.track is not None:
+        try:
+            await player.queue.put_wait(payload.track)
+        except Exception as e:
+            print(f"[music] Error re-queuing track: {e}")
+
+    # Advance playback (manual control keeps looping deterministic and never
+    # disconnects, so the voice session stays alive between tracks).
+    if not player.playing and not player.queue.is_empty:
+        try:
+            await player.play(player.queue.get())
+            print(f"[music] Looping playlist in channel {voice_channel_id}")
+        except Exception as e:
+            print(f"[music] Error continuing playback: {e}")

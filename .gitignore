@@ -12,3 +12,19 @@ wheels/
 # dotenv files
 ai-dm-sicord-bot/cred.env
 oracle-dm-backend/backend-cred.env
+
+# databases (runtime + throwaway demo DBs)
+*.db
+oracle-dm-backend/oracle.db
+eight_card_system/demo_world.db
+rules/demo_rules.db
+
+# launcher build artifacts (PyInstaller spec is regenerated on build)
+launcher/*.spec
+launcher/launcher_error.log
+
+# Lavalink runtime (auto-downloaded plugins + logs)
+ai-dm-sicord-bot/plugins/
+ai-dm-sicord-bot/lavalink.log
+ai-dm-sicord-bot/lavalink-error.log
+ai-dm-sicord-bot/logs/

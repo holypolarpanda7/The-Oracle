@@ -15,6 +15,19 @@ from sqlmodel import SQLModel, Field, create_engine, Session, select
 from sqlalchemy import Column, JSON, String
 from typing import Any
 from datetime import datetime
+import sys
+
+# Make the project root importable so the backend can use the shared packages.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from eight_card_system import WorldGraph
+from eight_card_system.graph import slugify
+from eight_card_system.seed import seed_starter_world, place_pc
+from eight_card_system.extraction import extract_and_apply
+from rules import RulesLibrary, format_monster_brief, format_spell_brief, ingest_srd
+from dice import ability_check, roll as dice_roll
 
 # ----- Env loading -----
 
@@ -39,6 +52,25 @@ async def lifespan(app: FastAPI):
     # Startup: Create DB tables if they do not exist
     SQLModel.metadata.create_all(engine)
     print("[Startup] Database tables created/verified")
+
+    # Seed the persistent starter world once (offline, idempotent).
+    try:
+        world.create_tables()
+        if world.get_entity("greenfields") is None:
+            seed_starter_world(world)
+            print("[Startup] Seeded starter world (Greenfields)")
+    except Exception as e:
+        print(f"[Startup] World seed skipped: {e}")
+
+    # Seed the SRD rules reference if empty (best-effort; needs network).
+    try:
+        if rules_lib.count().get("monsters", 0) == 0:
+            counts = ingest_srd(engine=engine)
+            rules_lib.refresh_index()
+            print(f"[Startup] Ingested SRD rules: {counts}")
+    except Exception as e:
+        print(f"[Startup] SRD ingest skipped (offline?): {e}")
+
     yield
     # Shutdown: Add cleanup logic here if needed
     print("[Shutdown] FastAPI shutting down")
@@ -121,6 +153,13 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'oracle.db'}")
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, echo=False, connect_args=connect_args)
 
+# Shared subsystems on the same DB: persistent world graph + SRD rules reference.
+world = WorldGraph(engine=engine)
+rules_lib = RulesLibrary(engine=engine)
+
+# Per-session metadata (which PC is playing) alongside the in-memory history.
+SESSION_META: Dict[str, Dict] = {}
+
 
 class Character(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -172,6 +211,43 @@ def render_avrae_hooks(text: str) -> str:
     return AVRAE_PATTERN.sub(repl, text)
 
 
+ROLL_HOOK_PATTERN = re.compile(r"\[\[ROLL:(.+?)\]\]", re.IGNORECASE)
+_D20_EXPR = re.compile(r"^1?d20([+-]\d+)?$", re.IGNORECASE)
+
+
+def resolve_roll_hooks(text: str) -> str:
+    """Replace [[ROLL: expr | label | DC n]] hooks with rolled results inline.
+
+    The DM model requests rolls; the backend rolls them with the internal dice
+    engine and substitutes the outcome, so the game stays in a single voice.
+    """
+    def repl(match: re.Match) -> str:
+        inner = match.group(1).strip()
+        parts = [p.strip() for p in inner.split("|")]
+        expr = parts[0] if parts else ""
+        label = parts[1] if len(parts) > 1 else ""
+        dc = None
+        if len(parts) > 2:
+            dcm = re.search(r"\d+", parts[2])
+            if dcm:
+                dc = int(dcm.group())
+        try:
+            compact = expr.replace(" ", "")
+            m = _D20_EXPR.match(compact)
+            if m and dc is not None:
+                mod = int(m.group(1)) if m.group(1) else 0
+                res = ability_check(mod, dc=dc, label=label)
+                return f"\U0001F3B2 {res.detail}"
+            r = dice_roll(expr)
+            lbl = f"{label}: " if label else ""
+            return f"\U0001F3B2 {lbl}{r.detail}"
+        except Exception as e:
+            print(f"[roll hook error] {e} in '{inner}'")
+            return match.group(0)
+
+    return ROLL_HOOK_PATTERN.sub(repl, text)
+
+
 # ----- OpenRouter LLM call -----
 
 def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
@@ -207,37 +283,46 @@ def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
 
 # ----- "DM brain" using OpenRouter + Avrae hooks -----
 
-def generate_dm_reply(session_id: str, username: str, message: str) -> str:
-    """
-    Main DM brain using OpenRouter.
-    Builds a chat history and sends it to the model.
+def generate_dm_reply(
+    session_id: str,
+    username: str,
+    message: str,
+    extra_context: Optional[List[str]] = None,
+) -> str:
+    """DM brain via OpenRouter, grounded in world state + SRD rules.
+
+    ``extra_context`` is a list of ready-to-inject text blocks (world slice,
+    rules briefs) produced by ``assemble_context``.
     """
 
     history = SESSIONS.get(session_id, [])
 
     messages: List[Dict[str, str]] = []
 
-    # System prompt: describe DM behavior AND Avrae hooks
     system_prompt = (
-        "You are an imaginative, fair, descriptive Dungeon Master for a Dungeons & Dragons-like "
-        "tabletop roleplaying game. You narrate the world, describe outcomes of actions, and play NPCs.\n\n"
+        "You are an imaginative, fair Dungeon Master for a 5e-style tabletop RPG. "
+        "You narrate the world, voice NPCs, and adjudicate the outcomes of actions.\n\n"
         "Tone & style:\n"
-        "- Gritty, grounded fantasy, but still fun and playable.\n"
-        "- 2–5 paragraphs per response, not a novel.\n"
-        "- End most responses by asking what the players do next.\n\n"
-        "Mechanics:\n"
-        "- Do NOT roll player dice yourself.\n"
-        "- When a PLAYER CHARACTER must roll (attack, skill check, saving throw, etc.), "
-        "you suggest an Avrae command using this exact hook format:\n"
-        "  [[AVRAE:!check dex save]]\n"
-        "  [[AVRAE:!attack longsword]]\n"
-        "- Only put the command inside the hook, no extra words.\n"
-        "- Prefer to put the Avrae hook at the END of your message, on its own line.\n"
-        "- For now, do NOT use any other hook types like [[ROLL:...]].\n"
-        "- Assume players are using Avrae in Discord and will type the command you suggest.\n"
+        "- Grounded, evocative fantasy; fun and playable.\n"
+        "- 2-4 short paragraphs, not a novel.\n"
+        "- End most responses by asking what the player does next.\n\n"
+        "Using provided context:\n"
+        "- A 'World state' block and/or a 'Rules reference' block may be supplied.\n"
+        "- Treat them as ground truth. Keep NPCs, places, and facts consistent with them.\n"
+        "- Use the EXACT numbers in the Rules reference for monster stats and spells.\n\n"
+        "Dice - you roll them yourself; NEVER ask the player to roll or mention Avrae:\n"
+        "- When an action needs a roll, emit a hook and the system fills in the result:\n"
+        "    [[ROLL: 1d20+5 | Stealth | DC 15]]   for an ability check or saving throw\n"
+        "    [[ROLL: 2d6+3 | Greataxe damage]]     for damage or a generic roll\n"
+        "- Put ONLY the hook (never invent a result). The roller substitutes the outcome inline.\n"
     )
 
     messages.append({"role": "system", "content": system_prompt})
+
+    # Grounding context (world slice, rules briefs).
+    for block in (extra_context or []):
+        if block and block.strip():
+            messages.append({"role": "system", "content": block})
 
     # Previous turns
     for turn in history[-12:]:
@@ -260,10 +345,45 @@ def generate_dm_reply(session_id: str, username: str, message: str) -> str:
 
     dm_raw = call_openrouter_dm(messages)
 
-    # Process Avrae hooks: turn [[AVRAE:...]] into human-readable instructions
-    dm_final = render_avrae_hooks(dm_raw)
+    # Resolve internal dice hooks ([[ROLL:...]]) inline using the dice roller.
+    return resolve_roll_hooks(dm_raw)
 
-    return dm_final
+
+def assemble_context(session_id: str, message: str):
+    """Build grounding context for a turn: the local world slice + referenced rules.
+
+    Returns ``(world_context_or_None, [text_blocks])``.
+    """
+    ctx_obj = None
+    texts: List[str] = []
+
+    meta = SESSION_META.get(session_id)
+    if meta and meta.get("pc_slug"):
+        try:
+            ctx_obj = world.get_world_context(meta["pc_slug"], message)
+            rendered = ctx_obj.render()
+            if rendered.strip():
+                texts.append(rendered)
+        except Exception as e:
+            print(f"[world context error] {e}")
+
+    # Inject exact stats for any monster/spell named in the action or last narration.
+    try:
+        scan = message
+        hist = SESSIONS.get(session_id, [])
+        if hist and hist[-1]["role"] == "dm":
+            scan = f"{message}\n{hist[-1]['content']}"
+        mentions = rules_lib.find_mentions(scan, limit=6)
+        if mentions:
+            briefs = [
+                format_monster_brief(obj) if kind == "monster" else format_spell_brief(obj)
+                for kind, obj in mentions
+            ]
+            texts.append("# Rules reference (exact numbers)\n\n" + "\n\n".join(briefs))
+    except Exception as e:
+        print(f"[rules mention error] {e}")
+
+    return ctx_obj, texts
 
 
 # ----- Routes -----
@@ -357,9 +477,31 @@ async def enter_world(req: EnterRequest):
     # Seed session history with an initial player 'enter' turn
     SESSIONS[session_id] = [Turn(role="player", user=req.username, content="ENTER_WORLD")]
 
-    # Ask the DM brain to produce an opening narration
+    # Place the PC in the persistent world graph and remember it for this session.
+    pc_slug = slugify(chosen.name)
     try:
-        intro = generate_dm_reply(session_id=session_id, username=req.username, message="I enter the world.")
+        place_pc(
+            world,
+            chosen.name,
+            discord_user_id=req.user_id,
+            location_slug="the-silver-tankard",
+            attributes={"race": chosen.race, "class": chosen.char_class, "level": chosen.level},
+        )
+    except Exception as e:
+        print(f"[enterworld place_pc error] {e}")
+    SESSION_META[session_id] = {
+        "pc_slug": pc_slug,
+        "user_id": req.user_id,
+        "character_name": chosen.name,
+    }
+
+    # Ask the DM brain for an opening narration, grounded in the world slice.
+    arrival = "I arrive and take in my surroundings."
+    _ctx_obj, ctx_texts = assemble_context(session_id, arrival)
+    try:
+        intro = generate_dm_reply(
+            session_id=session_id, username=req.username, message=arrival, extra_context=ctx_texts,
+        )
     except Exception as e:
         print(f"[enterworld DM error] {e}")
         intro = "The Oracle is silent for a moment. (failed to generate intro)"
@@ -444,3 +586,9 @@ async def check_character(req: CheckCharacterRequest):
     
     char_list = [{"id": c.id, "name": c.name, "level": c.level, "char_class": c.char_class, "race": c.race} for c in characters]
     return {"has_character": len(characters) > 0, "characters": char_list}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8000")))
