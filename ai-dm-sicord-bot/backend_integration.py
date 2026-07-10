@@ -2,7 +2,12 @@
 Backend Integration Module - Handles all HTTP communication with the FastAPI backend.
 """
 import aiohttp
-from typing import Dict
+from typing import Dict, List, Optional, Tuple
+
+
+def _api_base(backend_url: str) -> str:
+    """Derive the backend root (drops the trailing endpoint segment, e.g. /chat)."""
+    return backend_url.rsplit("/", 1)[0]
 
 
 async def check_character_in_db(user_id: str, check_url: str):
@@ -105,3 +110,120 @@ async def enter_world_backend(user_id: str, character_name: str, enter_url: str)
         except Exception as e:
             print(f"[enter_world_backend error] {e}")
             return {"ok": False, "error": str(e)}
+
+
+# ==================== Character sheet / inventory / portrait ====================
+
+async def resolve_character(
+    user_id: str, check_url: str, name: Optional[str] = None
+) -> Tuple[Optional[dict], List[dict]]:
+    """Find the player's character (by name, else the only/first one).
+
+    Returns ``(chosen_or_None, all_characters)``.
+    """
+    _, characters = await check_character_in_db(user_id, check_url)
+    if not characters:
+        return None, []
+    if name:
+        low = name.strip().lower()
+        for c in characters:
+            if str(c.get("name", "")).lower() == low:
+                return c, characters
+        for c in characters:
+            if low in str(c.get("name", "")).lower():
+                return c, characters
+        return None, characters
+    return characters[0], characters
+
+
+async def get_character_sheet(character_id: int, backend_url: str) -> Optional[dict]:
+    """GET the rendered character sheet from the backend."""
+    url = f"{_api_base(backend_url)}/character/{character_id}/sheet"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                print(f"[get_character_sheet] HTTP {resp.status}")
+        except Exception as e:
+            print(f"[get_character_sheet error] {e}")
+    return None
+
+
+async def get_inventory(character_id: int, backend_url: str) -> Optional[dict]:
+    """GET the character's inventory list from the backend."""
+    url = f"{_api_base(backend_url)}/character/{character_id}/inventory"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                print(f"[get_inventory] HTTP {resp.status}")
+        except Exception as e:
+            print(f"[get_inventory error] {e}")
+    return None
+
+
+async def get_portrait(character_id: int, backend_url: str) -> Optional[dict]:
+    """GET the character's current portrait payload, or None if none stored."""
+    url = f"{_api_base(backend_url)}/character/{character_id}/portrait"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"[get_portrait error] {e}")
+    return None
+
+
+async def generate_portrait(
+    character_id: int, backend_url: str, *, description: str = "", look: str = ""
+) -> Dict:
+    """Ask the backend to generate/regenerate a portrait. Portrait rendering can be
+    slow on the local diffusion box, so use a generous timeout."""
+    url = f"{_api_base(backend_url)}/character/{character_id}/portrait/generate"
+    payload = {"character_id": character_id, "description": description, "look": look}
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=300)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                detail = await _error_detail(resp)
+                return {"error": detail, "status": resp.status}
+        except Exception as e:
+            print(f"[generate_portrait error] {e}")
+            return {"error": str(e)}
+
+
+async def upload_portrait(
+    character_id: int, backend_url: str, b64_image: str, *, caption: str = ""
+) -> Dict:
+    """Upload a player-supplied portrait (base64-encoded image bytes)."""
+    url = f"{_api_base(backend_url)}/character/{character_id}/portrait/upload"
+    payload = {"character_id": character_id, "b64": b64_image, "caption": caption}
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=60)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                detail = await _error_detail(resp)
+                return {"error": detail, "status": resp.status}
+        except Exception as e:
+            print(f"[upload_portrait error] {e}")
+            return {"error": str(e)}
+
+
+async def _error_detail(resp) -> str:
+    """Best-effort extraction of a FastAPI error detail string."""
+    try:
+        data = await resp.json()
+        if isinstance(data, dict) and data.get("detail"):
+            return str(data["detail"])
+    except Exception:
+        pass
+    return f"HTTP {resp.status}"

@@ -319,6 +319,117 @@ class ImageStore:
             generated=True, temp=True, seed=seed,
         )
 
+    # ----- provided (uploaded) images + single-slot portraits -----
+
+    def store_provided_image(
+        self,
+        kind: str,
+        subject: str,
+        raw_bytes: bytes,
+        *,
+        caption: str = "",
+        context: str = "",
+        ref_slug: Optional[str] = None,
+        replace: bool = False,
+    ) -> ImageResult:
+        """Persist caller-supplied image bytes (e.g. a player's uploaded portrait).
+
+        Encodes to WebP like generated art. When ``replace`` is set, the whole
+        (kind, ref, context) bucket is wiped first so the subject keeps a single
+        current image. Does not require the diffusion backend to be online.
+        """
+        cfg = self._cfg()
+        kind = normalize_kind(kind)
+        ref = slugify(ref_slug or subject)
+        ckey = context_key(context)
+
+        enc = encode_webp(
+            raw_bytes, store_width=cfg.store_width, thumb_width=cfg.thumb_width,
+            quality=cfg.webp_quality,
+        )
+        if replace:
+            self.invalidate_context(kind, ref, context)
+
+        row = EntityImage(
+            kind=kind, ref_slug=ref, context_key=ckey,
+            caption=caption or subject, prompt=None, descriptor_hash=None,
+            image=enc.data, thumb=enc.thumb, width=enc.width, height=enc.height,
+            byte_size=enc.byte_size, seed=None, world_day=self._world_day(),
+            use_count=1,
+        )
+        with Session(self.engine) as s:
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            self._enforce_global_cap(s, cfg)
+            s.commit()
+            image_id = row.id
+
+        return ImageResult(
+            kind=kind, ref_slug=ref, context_key=ckey, caption=caption or subject,
+            image=enc.data, width=enc.width, height=enc.height, image_id=image_id,
+            generated=False, stored=True,
+        )
+
+    def get_latest(
+        self, kind: str, ref: str, context: str = ""
+    ) -> Optional[ImageResult]:
+        """Return the most recently created stored image for (kind, ref, context)."""
+        kind = normalize_kind(kind)
+        ref = slugify(ref)
+        ckey = context_key(context)
+        with Session(self.engine) as s:
+            stmt = (
+                select(EntityImage)
+                .where(
+                    EntityImage.kind == kind,
+                    EntityImage.ref_slug == ref,
+                    EntityImage.context_key == ckey,
+                )
+                .order_by(EntityImage.created_at.desc())
+            )
+            row = s.exec(stmt).first()
+            if row is None:
+                return None
+            return ImageResult(
+                kind=row.kind, ref_slug=row.ref_slug, context_key=row.context_key,
+                caption=row.caption or ref, image=row.image, width=row.width,
+                height=row.height, image_id=row.id, reused=True, stored=True,
+                seed=row.seed,
+            )
+
+    def set_portrait_from_bytes(
+        self, character_name: str, raw_bytes: bytes, *, caption: str = ""
+    ) -> ImageResult:
+        """Store a player-supplied portrait (single slot, replaces any prior)."""
+        return self.store_provided_image(
+            ImageKind.PC, character_name, raw_bytes,
+            caption=caption or f"{character_name} (portrait)",
+            context="portrait", replace=True,
+        )
+
+    def generate_portrait(
+        self, character_name: str, *, description: str = "", look: str = ""
+    ) -> Optional[ImageResult]:
+        """Render + store a portrait for a PC (single slot, replaces any prior).
+
+        Returns ``None`` when imagery is disabled and an ``offline`` result when
+        the diffusion backend is unreachable (nothing stored in that case).
+        """
+        cfg = self._cfg()
+        if not cfg.enabled:
+            return None
+        # Wipe the current portrait so a regenerate truly replaces it.
+        self.invalidate_context(ImageKind.PC, character_name, "portrait")
+        return self.ensure_image(
+            ImageKind.PC, character_name,
+            look=look or description, context="portrait", force_new=True,
+        )
+
+    def get_portrait(self, character_name: str) -> Optional[ImageResult]:
+        """Return the current stored portrait for a PC, if any."""
+        return self.get_latest(ImageKind.PC, character_name, "portrait")
+
     # ----- invalidation / eviction -----
 
     def invalidate_subject(self, kind: str, ref: str) -> int:

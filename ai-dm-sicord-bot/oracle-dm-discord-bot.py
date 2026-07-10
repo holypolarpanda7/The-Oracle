@@ -14,6 +14,7 @@ import character_creation
 import backend_integration
 import dm_commands
 import event_handlers
+import character_display
 
 
 # Load env vars
@@ -141,6 +142,122 @@ async def enter_world(ctx: commands.Context, *, character_name: str = None):
     else:
         # Enter world
         await dm_commands.enter_world_command(ctx, character_name, CHECK_CHARACTER_URL, ENTER_URL)
+
+
+@bot.command(name="sheet")
+async def sheet(ctx: commands.Context, *, character_name: str = None):
+    """Show your character sheet (rendered from your live character record)."""
+    user_id = str(ctx.author.id)
+    chosen, characters = await backend_integration.resolve_character(
+        user_id, CHECK_CHARACTER_URL, character_name)
+    if not chosen:
+        if characters and character_name:
+            names = ", ".join(c.get("name", "?") for c in characters)
+            await ctx.send(f"❓ I couldn't find a character named **{character_name}**. "
+                           f"You have: {names}")
+        else:
+            await ctx.send("📜 You don't have a character yet. Use `!enterworld` to create one.")
+        return
+    async with ctx.typing():
+        data = await backend_integration.get_character_sheet(chosen["id"], BACKEND_URL)
+    if not data:
+        await ctx.send("⚠️ I couldn't retrieve that character sheet right now.")
+        return
+    embed, portrait_file = character_display.build_sheet_embed(data)
+    if portrait_file:
+        await ctx.send(embed=embed, file=portrait_file)
+    else:
+        await ctx.send(embed=embed)
+
+
+@bot.command(name="inventory", aliases=["inv"])
+async def inventory(ctx: commands.Context, *, character_name: str = None):
+    """Show your character's inventory."""
+    user_id = str(ctx.author.id)
+    chosen, characters = await backend_integration.resolve_character(
+        user_id, CHECK_CHARACTER_URL, character_name)
+    if not chosen:
+        if characters and character_name:
+            names = ", ".join(c.get("name", "?") for c in characters)
+            await ctx.send(f"❓ I couldn't find a character named **{character_name}**. "
+                           f"You have: {names}")
+        else:
+            await ctx.send("🎒 You don't have a character yet. Use `!enterworld` to create one.")
+        return
+    async with ctx.typing():
+        data = await backend_integration.get_inventory(chosen["id"], BACKEND_URL)
+    if not data:
+        await ctx.send("⚠️ I couldn't retrieve that inventory right now.")
+        return
+    await ctx.send(embed=character_display.build_inventory_embed(data))
+
+
+@bot.command(name="portrait")
+async def portrait(ctx: commands.Context, *, description: str = None):
+    """Set your character's portrait: attach an image to upload one, or provide a
+    description to have one generated. With no argument, shows the current portrait."""
+    user_id = str(ctx.author.id)
+    chosen, characters = await backend_integration.resolve_character(
+        user_id, CHECK_CHARACTER_URL, None)
+    if not chosen:
+        await ctx.send("🖼️ You don't have a character yet. Use `!enterworld` to create one.")
+        return
+    char_id, char_name = chosen["id"], chosen.get("name", "Your character")
+
+    # 1) Uploaded image attachment -> store it as the portrait.
+    image_att = next(
+        (a for a in ctx.message.attachments
+         if (a.content_type or "").startswith("image/")
+         or a.filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))),
+        None,
+    )
+    if image_att:
+        async with ctx.typing():
+            raw = await image_att.read()
+            import base64 as _b64
+            result = await backend_integration.upload_portrait(
+                char_id, BACKEND_URL, _b64.b64encode(raw).decode("ascii"),
+                caption=f"{char_name} (portrait)")
+        if result.get("error"):
+            await ctx.send(f"⚠️ Couldn't save that portrait: {result['error']}")
+            return
+        embed, portrait_file = character_display.build_portrait_embed(result, char_name)
+        if portrait_file:
+            await ctx.send("✅ Portrait saved!", embed=embed, file=portrait_file)
+        else:
+            await ctx.send("✅ Portrait saved!")
+        return
+
+    # 2) Description provided -> generate a portrait.
+    if description:
+        await ctx.send("🎨 Painting your portrait — this can take a moment...")
+        async with ctx.typing():
+            result = await backend_integration.generate_portrait(
+                char_id, BACKEND_URL, description=description)
+        if result.get("error"):
+            await ctx.send(f"⚠️ Couldn't generate a portrait: {result['error']}")
+            return
+        embed, portrait_file = character_display.build_portrait_embed(result, char_name)
+        view = character_display.PortraitView(
+            char_id, char_name, BACKEND_URL, ctx.author.id, description=description)
+        if portrait_file:
+            await ctx.send(embed=embed, file=portrait_file, view=view)
+        else:
+            await ctx.send(embed=embed, view=view)
+        return
+
+    # 3) No argument -> show the current portrait if one exists.
+    data = await backend_integration.get_portrait(char_id, BACKEND_URL)
+    if not data:
+        await ctx.send(
+            f"🖼️ **{char_name}** has no portrait yet. Attach an image with `!portrait`, "
+            f"or use `!portrait <description>` to have one generated.")
+        return
+    embed, portrait_file = character_display.build_portrait_embed(data, char_name)
+    if portrait_file:
+        await ctx.send(embed=embed, file=portrait_file)
+    else:
+        await ctx.send(embed=embed)
 
 
 # ==================== MAIN ====================

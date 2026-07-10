@@ -31,15 +31,17 @@ class ImageKind:
     NPC = "npc"            # -> world Entity.slug (type npc)
     CREATURE = "creature"  # -> rules Monster.index_slug (or owned slug)
     ITEM = "item"          # -> world Entity.slug / rules Item
+    PC = "pc"              # -> backend Character.name slug (player portrait)
 
-    ALL = {PLACE, NPC, CREATURE, ITEM}
+    ALL = {PLACE, NPC, CREATURE, ITEM, PC}
 
 
 def normalize_kind(kind: str) -> str:
     k = (kind or "").strip().lower()
     aliases = {"monster": ImageKind.CREATURE, "beast": ImageKind.CREATURE,
                "location": ImageKind.PLACE, "person": ImageKind.NPC,
-               "character": ImageKind.NPC}
+               "character": ImageKind.NPC, "player": ImageKind.PC,
+               "portrait": ImageKind.PC, "hero": ImageKind.PC}
     k = aliases.get(k, k)
     return k if k in ImageKind.ALL else ImageKind.CREATURE
 

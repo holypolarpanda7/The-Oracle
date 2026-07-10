@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import base64
 from pathlib import Path
 from typing import Dict, List, Literal, TypedDict, Optional
 import uuid
@@ -804,10 +805,67 @@ def generate_dm_reply(
         "- Use the EXACT numbers in the Rules reference for monster stats and spells.\n"
         "- A 'Combat' block may list the initiative order with each creature's current\n"
         "  HP, AC, and conditions. When present, respect the turn order and those HP\n"
-        "  totals; narrate the fight around them and don't contradict the numbers.\n"
+        "  totals; narrate the fight around them and don't contradict the numbers. Apply\n"
+        "  each listed condition's effects (see the conditions rules below).\n"
         "- A 'Character resources' block may show the PC's coin purse, lifestyle, level,\n"
         "  and bastion. Respect their wealth: don't hand out or deduct coin the block\n"
         "  doesn't support, and price goods sensibly against their purse.\n"
+        "- That block ends with an 'Inventory:' line listing exactly what the PC carries.\n"
+        "  Treat it as the truth about their gear. Before letting the player attack with a\n"
+        "  weapon, drink a potion, read a scroll, or otherwise use an item, CHECK that it\n"
+        "  appears in their inventory. If they try to use something they don't have (e.g.\n"
+        "  'I swing my sword' with no sword listed), don't allow it: gently point out they\n"
+        "  aren't carrying it and ask what they actually do (improvise, use fists, draw a\n"
+        "  different listed weapon, etc.). Natural, always-available actions (unarmed\n"
+        "  strikes, shoving, spells they know) are fine without an inventory entry.\n"
+        "- A 'Physical limits' line gives the PC's speed, jump distances, lift/carry, and\n"
+        "  reach WITHOUT magic or special items. Enforce these as hard limits:\n"
+        "  * Movement: a creature can move up to its Speed on its turn (double if it Dashes,\n"
+        "    using its action). It cannot cross more distance than that in one turn, and\n"
+        "    climbing, swimming, or crawling through difficult terrain costs double movement.\n"
+        "  * Jumping: a long jump clears at most the listed feet (a running start is needed\n"
+        "    for the full distance; only half without ~10 ft of runway). A high jump reaches\n"
+        "    only the listed height. Don't let a PC leap onto a rooftop, chasm, or wall that\n"
+        "    exceeds these numbers unless they have a relevant spell, item, or class feature.\n"
+        "  * Lifting/carrying/forcing: a PC can't lift, drag, or hurl objects beyond their\n"
+        "    push/drag/lift limit, and hauling near capacity slows them.\n"
+        "  * Reach: melee reach is 5 ft (10 ft only with a reach weapon); they can't strike\n"
+        "    or grab something farther away.\n"
+        "  When a player attempts a physical feat NEAR the edge of these limits, call for an\n"
+        "  ability check (usually Strength (Athletics) or Dexterity (Acrobatics)) at a DC that\n"
+        "  reflects the difficulty via a [[ROLL]] hook. When an attempt EXCEEDS what is\n"
+        "  physically possible without augmentation, don't allow it — explain the limit in the\n"
+        "  fiction (the ledge is simply too high) and invite a feasible alternative (find a\n"
+        "  ladder, take the stairs, cast a spell, grapple up in stages). Also keep other\n"
+        "  physics honest: unsupported creatures fall (~3d6 per 10 ft, capped) and take time\n"
+        "  to act; a character can't be two places at once, act while unconscious, or use a\n"
+        "  reaction they've already spent. Reward clever, plausible plans; refuse the\n"
+        "  impossible.\n"
+        "- Conditions bind EVERY creature — the PC, NPCs, and monsters alike. Before you let\n"
+        "  anyone act (or resolve an action against them), check their conditions (the Combat\n"
+        "  block lists them in a fight; otherwise track any you've narrated) and honor the\n"
+        "  mechanical effects:\n"
+        "  * Prone: attacks at disadvantage; melee attackers against it have advantage,\n"
+        "    ranged have disadvantage; standing up costs half its movement.\n"
+        "  * Grappled / Restrained: Speed becomes 0. Restrained also = attacks at disadvantage,\n"
+        "    attacks against it at advantage, Dex saves at disadvantage.\n"
+        "  * Incapacitated: no actions, bonus actions, or reactions at all.\n"
+        "  * Stunned: incapacitated, can't move, auto-fails Str/Dex saves, attacks against it\n"
+        "    have advantage. Paralyzed / Unconscious: as stunned, and any hit from within 5 ft\n"
+        "    is a critical hit (unconscious also drops what it holds and falls prone).\n"
+        "  * Petrified: incapacitated, unaware, resistant to all damage, immune to poison/disease.\n"
+        "  * Blinded: can't see, auto-fails sight checks, attacks at disadvantage and attacks\n"
+        "    against it at advantage. Deafened: can't hear, auto-fails hearing checks.\n"
+        "  * Poisoned: disadvantage on attack rolls and ability checks.\n"
+        "  * Frightened: disadvantage on checks and attacks while the source is in sight, and it\n"
+        "    can't willingly move closer to the source.\n"
+        "  * Charmed: can't attack the charmer or target them with harmful effects; the charmer\n"
+        "    has advantage on social checks with it.\n"
+        "  * Invisible: can't be seen without special senses (heavily obscured for locating);\n"
+        "    attacks at advantage, attacks against it at disadvantage.\n"
+        "  Don't let a stunned, paralyzed, or unconscious creature take actions, a grappled one\n"
+        "  walk away, or a blinded one make a clean ranged shot. When a condition ends or a save\n"
+        "  applies, resolve it with a [[ROLL]] hook rather than assuming the outcome.\n"
         "- That block may also show survival state: current/max HP, Hit Dice, exhaustion,\n"
         "  rations and water, active afflictions (diseases/madness), current weather and\n"
         "  environmental hazards, and faction reputation. Treat these as ground truth:\n"
@@ -895,7 +953,33 @@ def generate_dm_reply(
     return resolve_roll_hooks(dm_raw)
 
 
-def assemble_context(session_id: str, message: str):
+def _resolve_session_character(session_id: str, user_id: str) -> Optional[int]:
+    """Bind a character to a session when meta lacks one, by the player's user id.
+
+    Picks the player's most recently created character and records its id (plus
+    pc_slug when available) into the session meta so subsequent turns are cheap.
+    Returns the character id, or ``None`` if the player has no character.
+    """
+    if not user_id:
+        return None
+    with Session(engine) as session:
+        char = session.exec(
+            select(Character)
+            .where(Character.discord_user_id == user_id)
+            .order_by(Character.id.desc())
+        ).first()
+    if not char:
+        return None
+    state = _load_session_state(session_id)
+    meta_update: Dict[str, Any] = dict(state.get("meta", {}) or {})
+    meta_update["character_id"] = char.id
+    meta_update.setdefault("user_id", user_id)
+    _set_session_meta(session_id, meta_update)
+    return char.id
+
+
+def assemble_context(session_id: str, message: str, user_id: Optional[str] = None):
+
     """Build grounding context for a turn: the local world slice + referenced rules.
 
     Returns ``(world_context_or_None, [text_blocks])``.
@@ -905,6 +989,15 @@ def assemble_context(session_id: str, message: str):
 
     state = _load_session_state(session_id)
     meta = state.get("meta", {})
+
+    # If this session has no character bound (e.g. the in-game session_id differs
+    # from the one enterworld created), fall back to the player's character so the
+    # resource/inventory block and equipment guardrails still apply.
+    if (not meta or not meta.get("character_id")) and user_id:
+        resolved = _resolve_session_character(session_id, user_id)
+        if resolved:
+            state = _load_session_state(session_id)
+            meta = state.get("meta", {})
     if meta and meta.get("pc_slug"):
         try:
             ctx_obj = world.get_world_context(meta["pc_slug"], message)
@@ -956,6 +1049,246 @@ def _region_climate(home_region: Optional[str]) -> str:
     if any(k in r for k in ("mountain", "peak", "highland", "crag", "summit")):
         return "mountain"
     return "temperate"
+
+
+def _inventory_items(char: Character) -> List[Dict[str, Any]]:
+    """Normalize the character's JSON inventory into a list of item dicts."""
+    items: List[Dict[str, Any]] = []
+    for raw in (char.inventory or []):
+        if isinstance(raw, str):
+            items.append({"name": raw, "quantity": 1})
+        elif isinstance(raw, dict):
+            name = raw.get("name") or raw.get("item") or "Unknown item"
+            item = dict(raw)
+            item["name"] = name
+            item.setdefault("quantity", raw.get("qty", 1) or 1)
+            items.append(item)
+    return items
+
+
+def _format_inventory(char: Character) -> Dict[str, Any]:
+    """Structured inventory payload rendered from the character's stored items."""
+    items = _inventory_items(char)
+    lines: List[str] = []
+    for it in items:
+        qty = it.get("quantity", 1) or 1
+        name = it.get("name", "Unknown item")
+        parts = [f"{qty}x {name}" if qty and qty != 1 else name]
+        extras = []
+        if it.get("equipped"):
+            extras.append("equipped")
+        if it.get("weight"):
+            try:
+                extras.append(f"{float(it['weight']):g} lb")
+            except (TypeError, ValueError):
+                pass
+        if it.get("notes"):
+            extras.append(str(it["notes"]))
+        if extras:
+            parts.append(f"({', '.join(extras)})")
+        lines.append(" ".join(parts))
+    purse = {"cp": char.cp, "sp": char.sp, "ep": char.ep, "gp": char.gp, "pp": char.pp}
+    return {
+        "character_id": char.id,
+        "name": char.name,
+        "items": items,
+        "lines": lines,
+        "carried_weight": round(_carried_weight(char), 2),
+        "purse": purse,
+        "purse_text": format_purse(purse),
+    }
+
+
+def _equipment_summary(char: Character) -> str:
+    """One-line 'what the player is carrying/wielding' summary for the DM prompt."""
+    items = _inventory_items(char)
+    if not items:
+        return "Inventory: (empty — the player carries no listed gear)"
+    names = []
+    for it in items:
+        qty = it.get("quantity", 1) or 1
+        nm = it.get("name", "item")
+        names.append(f"{qty}x {nm}" if qty and qty != 1 else nm)
+    return "Inventory: " + ", ".join(names)
+
+
+# Base walking speed by race (ft). Small races and dwarves move 25; a few move
+# faster. Anything unlisted defaults to 30. Matches 5e defaults.
+_RACE_SPEEDS = {
+    "dwarf": 25, "hill dwarf": 25, "mountain dwarf": 25, "duergar": 25,
+    "halfling": 25, "lightfoot halfling": 25, "stout halfling": 25,
+    "gnome": 25, "forest gnome": 25, "rock gnome": 25, "deep gnome": 25,
+    "wood elf": 35, "tabaxi": 30, "aarakocra": 25, "centaur": 40,
+}
+
+
+def _ability_score(char: Character, *names: str) -> int:
+    """Raw ability score (defaults to 10) from the character's stats blob."""
+    stats = char.stats or {}
+    for n in names:
+        for key in (n, n[:3], n.upper(), n[:3].upper(), n.capitalize()):
+            if key in stats and stats[key] is not None:
+                try:
+                    return int(stats[key])
+                except (TypeError, ValueError):
+                    return 10
+    return 10
+
+
+def _base_walk_speed(char: Character) -> int:
+    race = (char.race or "").strip().lower()
+    if race in _RACE_SPEEDS:
+        return _RACE_SPEEDS[race]
+    # Fuzzy match (e.g. "High Elf" contains no listed key -> default 30).
+    for key, spd in _RACE_SPEEDS.items():
+        if key in race:
+            return spd
+    return 30
+
+
+def _exhaustion_speed_multiplier(level: Optional[int]) -> float:
+    lvl = int(level or 0)
+    if lvl >= 5:
+        return 0.0
+    if lvl >= 2:
+        return 0.5
+    return 1.0
+
+
+def _physical_capabilities(char: Character) -> Dict[str, Any]:
+    """Derive movement, jump, and lift limits so the DM can gate physical feats.
+
+    Values follow 5e defaults: jumps scale off Strength, carrying and push/drag/
+    lift scale off the Strength SCORE, and speed is reduced by encumbrance and
+    exhaustion. These are what a PC can do WITHOUT magic or special items.
+    """
+    str_score = _ability_score(char, "strength")
+    str_mod = ability_modifier(str_score)
+
+    speed = _base_walk_speed(char)
+    notes: List[str] = []
+
+    # Encumbrance speed penalty (only when the variant is enabled in config).
+    try:
+        enc = encumbrance_status(str_score, _carried_weight(char))
+        pen = int(enc.get("speed_penalty_ft", 0) or 0)
+        if pen:
+            speed = max(0, speed - pen)
+            notes.append(enc.get("note", ""))
+        if enc.get("over_capacity") or enc.get("status") == "overloaded":
+            notes.append("Over carrying capacity — movement severely limited.")
+    except Exception:
+        pass
+
+    # Exhaustion speed effect (halved at 2, zero at 5).
+    mult = _exhaustion_speed_multiplier(char.exhaustion)
+    if mult < 1.0:
+        speed = int(speed * mult)
+        notes.append("Exhaustion reduces speed.")
+
+    long_jump_run = str_score
+    high_jump_run = max(0, 3 + str_mod)
+    return {
+        "walk_speed_ft": speed,
+        "run_speed_ft": speed * 2,           # Dash action doubles movement
+        "climb_swim_speed_ft": speed // 2,   # costs double movement w/o a speed
+        "long_jump_running_ft": long_jump_run,
+        "long_jump_standing_ft": long_jump_run // 2,
+        "high_jump_running_ft": high_jump_run,
+        "high_jump_standing_ft": high_jump_run // 2,
+        "carrying_capacity_lb": str_score * 15,
+        "push_drag_lift_lb": str_score * 30,
+        "max_reach_ft": 5,                   # Medium reach without a reach weapon
+        "notes": [n for n in notes if n],
+    }
+
+
+def _physical_capabilities_summary(char: Character) -> str:
+    """Compact 'what the body can do' block for the DM prompt (physics guardrails)."""
+    cap = _physical_capabilities(char)
+    parts = [
+        f"Speed {cap['walk_speed_ft']} ft (Dash {cap['run_speed_ft']} ft; "
+        f"climb/swim {cap['climb_swim_speed_ft']} ft)",
+        f"Jump: long {cap['long_jump_running_ft']} ft running / "
+        f"{cap['long_jump_standing_ft']} ft standing, high "
+        f"{cap['high_jump_running_ft']} ft running / "
+        f"{cap['high_jump_standing_ft']} ft standing",
+        f"Lift/carry: {cap['carrying_capacity_lb']} lb capacity, "
+        f"{cap['push_drag_lift_lb']} lb push/drag/lift",
+        f"Reach {cap['max_reach_ft']} ft",
+    ]
+    line = "Physical limits (no magic/items): " + "; ".join(parts) + "."
+    if cap["notes"]:
+        line += " " + " ".join(cap["notes"])
+    return line
+
+
+def _portrait_base_look(char: Character) -> str:
+    """A short appearance seed (race/class/subclass) to anchor a PC portrait."""
+    parts: List[str] = []
+    if char.race:
+        parts.append(str(char.race))
+    if char.char_class:
+        cls = str(char.char_class)
+        if char.subclass:
+            cls = f"{char.subclass} {cls}"
+        parts.append(cls)
+    return ", ".join(parts)
+
+
+def _build_character_sheet(char: Character) -> Dict[str, Any]:
+    """Render a D&D-Beyond-style character sheet from stored data (no AI)."""
+    stats = char.stats or {}
+    abil_order = ["strength", "dexterity", "constitution",
+                  "intelligence", "wisdom", "charisma"]
+    pb = proficiency_bonus_for_level(char.level)
+    abilities: Dict[str, Any] = {}
+    for a in abil_order:
+        score = None
+        for key in (a, a[:3], a.capitalize(), a[:3].capitalize(), a.upper()):
+            if key in stats and stats[key] is not None:
+                score = stats[key]
+                break
+        if score is None:
+            score = 10
+        mod = ability_modifier(score)
+        abilities[a] = {
+            "score": score,
+            "modifier": mod,
+            "modifier_text": f"{mod:+d}",
+        }
+    purse = {"cp": char.cp, "sp": char.sp, "ep": char.ep, "gp": char.gp, "pp": char.pp}
+    inv = _format_inventory(char)
+    return {
+        "id": char.id,
+        "name": char.name,
+        "race": char.race,
+        "char_class": char.char_class,
+        "subclass": char.subclass,
+        "level": char.level,
+        "xp": char.xp,
+        "proficiency_bonus": pb,
+        "abilities": abilities,
+        "combat": {
+            "current_hp": char.current_hp,
+            "max_hp": char.max_hp,
+            "hit_die": char.hit_die,
+            "hit_dice_remaining": char.hit_dice_remaining,
+            "hit_dice_total": char.hit_dice_total,
+            "exhaustion": char.exhaustion,
+            "inspiration": bool(char.inspiration),
+            "passive_perception": _passive_score(char, "wisdom"),
+        },
+        "physical": _physical_capabilities(char),
+        "purse": purse,
+        "purse_text": format_purse(purse),
+        "spells": char.spells or [],
+        "inventory": inv["items"],
+        "inventory_lines": inv["lines"],
+        "carried_weight": inv["carried_weight"],
+        "home_region": char.home_region,
+        "notes": char.notes,
+    }
 
 
 def _character_resource_block(character_id: int) -> str:
@@ -1043,6 +1376,14 @@ def _character_resource_block(character_id: int) -> str:
             lines.append(
                 f"Bastion: {bastion.name} (turn {bastion.turns_taken}) — {fac_names}"
             )
+
+        # Carried equipment — the DM must check this before letting the player
+        # use a weapon/item/tool they don't actually have.
+        lines.append(_equipment_summary(char))
+
+        # Physical limits — movement, jumps, lifting, reach — so the DM can gate
+        # feats of athletics that are impossible without magic or special items.
+        lines.append(_physical_capabilities_summary(char))
         return "\n".join(lines)
 
 
@@ -1069,7 +1410,7 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     try:
         # Ground the turn in the local world slice, referenced rules, and — if a
         # fight is underway — the live initiative/HP board.
-        _, ctx_texts = assemble_context(req.session_id, req.message)
+        _, ctx_texts = assemble_context(req.session_id, req.message, user_id=req.user_id)
         active_enc = combat.get_active(req.session_id)
         if active_enc:
             board = combat.render(active_enc.id)
@@ -2790,6 +3131,18 @@ class ImageTempRequest(BaseModel):
     look: str = ""
 
 
+class PortraitGenerateRequest(BaseModel):
+    character_id: int
+    description: str = ""   # free-text look ("weathered half-elf ranger, green cloak")
+    look: str = ""          # optional structured appearance override
+
+
+class PortraitUploadRequest(BaseModel):
+    character_id: int
+    b64: str                # base64-encoded PNG/JPEG/WebP bytes
+    caption: str = ""
+
+
 @app.get("/imagery/status")
 async def imagery_status():
     """Report imagery config + whether the diffusion backend is reachable."""
@@ -2871,6 +3224,88 @@ async def imagery_invalidate(kind: str, ref: str, context: Optional[str] = None)
     else:
         removed = image_store.invalidate_subject(kind, ref)
     return {"status": "ok", "removed": removed}
+
+
+# ----- Character sheet / inventory / portrait (rendered from the DB) -----
+
+@app.get("/character/{character_id}/sheet")
+async def character_sheet(character_id: int):
+    """Return a rendered character sheet (structured data straight from the DB)."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        sheet = _build_character_sheet(char)
+    portrait = image_store.get_portrait(sheet["name"])
+    sheet["portrait"] = portrait.payload() if portrait else None
+    return sheet
+
+
+@app.get("/character/{character_id}/inventory")
+async def character_inventory(character_id: int):
+    """Return the character's inventory list, rendered from stored items."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        return _format_inventory(char)
+
+
+@app.post("/character/{character_id}/portrait/generate")
+async def character_portrait_generate(character_id: int, req: PortraitGenerateRequest):
+    """Generate (or regenerate) a portrait for the character from a description."""
+    cfg = get_config().imagery
+    if not cfg.enabled:
+        raise HTTPException(status_code=503, detail="Imagery is disabled in config.")
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        name = char.name
+        base_look = _portrait_base_look(char)
+    look = " ".join(p for p in (base_look, req.look or req.description) if p).strip()
+    result = image_store.generate_portrait(name, description=req.description, look=look)
+    if result is None:
+        raise HTTPException(status_code=503, detail="Imagery is disabled.")
+    if result.offline:
+        raise HTTPException(status_code=503, detail="Image service is offline.")
+    return result.payload()
+
+
+@app.post("/character/{character_id}/portrait/upload")
+async def character_portrait_upload(character_id: int, req: PortraitUploadRequest):
+    """Store a player-supplied portrait image (base64 PNG/JPEG/WebP)."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        name = char.name
+    try:
+        raw = base64.b64decode(req.b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image data.")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty image data.")
+    try:
+        result = image_store.set_portrait_from_bytes(
+            name, raw, caption=req.caption or f"{name} (portrait)")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not process image: {e}")
+    return result.payload()
+
+
+@app.get("/character/{character_id}/portrait")
+async def character_portrait_get(character_id: int):
+    """Return the character's current portrait, or 404 if none is stored."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        name = char.name
+    portrait = image_store.get_portrait(name)
+    if portrait is None:
+        raise HTTPException(status_code=404, detail="No portrait stored for this character.")
+    return portrait.payload()
 
 
 if __name__ == "__main__":

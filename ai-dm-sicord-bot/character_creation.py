@@ -146,6 +146,55 @@ async def extract_character_from_avrae_embed(message: discord.Message) -> Option
     return char_data
 
 
+def _registration_succeeded(result: Dict) -> bool:
+    """Robustly detect a successful registration from the backend response.
+
+    The backend returns ``{"status": "ok", "character_id": ...}`` (no ``ok`` key),
+    so check for a character id / ok status rather than a single flag.
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("error"):
+        return False
+    return bool(result.get("character_id")
+                or result.get("status") == "ok"
+                or result.get("ok"))
+
+
+async def _offer_portrait_setup(channel, player, result: Dict, char_name: str, backend_url: str):
+    """After creation, invite the player to add a character portrait (DM preferred)."""
+    character_id = result.get("character_id") if isinstance(result, dict) else None
+    if not character_id:
+        return
+    try:
+        import character_display
+    except Exception as e:
+        print(f"[portrait setup import error] {e}")
+        return
+    view = character_display.PortraitSetupView(
+        character_id, char_name, backend_url, player.id)
+    embed = discord.Embed(
+        title="🖼️ Add a portrait?",
+        description=(
+            f"Would you like a portrait for **{char_name}**?\n\n"
+            "• **Generate from description** — describe their appearance and I'll paint one.\n"
+            "• **I'll upload one** — send your own image.\n"
+            "• **Skip for now** — add one later anytime with `!portrait`."
+        ),
+        color=0x4A6FA5,
+    )
+    # Prefer a DM so the prompt survives the ephemeral CC channel's cleanup.
+    try:
+        await player.send(embed=embed, view=view)
+        return
+    except Exception:
+        pass
+    try:
+        await channel.send(embed=embed, view=view)
+    except Exception as e:
+        print(f"[portrait setup send error] {e}")
+
+
 async def validate_and_register_character(message: discord.Message, char_data: Dict, user_id: str, backend_url: str) -> bool:
     """Validate character and register it in the backend. `message` is the Avrae message detected."""
     from backend_integration import register_character_backend
@@ -175,7 +224,7 @@ async def validate_and_register_character(message: discord.Message, char_data: D
     }
 
     result = await register_character_backend(payload, backend_url)
-    if result.get("ok"):
+    if _registration_succeeded(result):
         await channel.send(f"✅ Character **{char_data['name']}** imported and approved! You can now enter the world with `!enterworld`.")
         
         # Switch to celebration/completion music if in a CC voice channel
@@ -187,7 +236,8 @@ async def validate_and_register_character(message: discord.Message, char_data: D
                     if voice_id in music_preferences:
                         await switch_music(voice_channel, "character_complete")
                 break
-        
+
+        await _offer_portrait_setup(channel, message.author, result, char_data["name"], backend_url)
         return True
     else:
         await channel.send(f"❌ Failed to register character. Server error.")
@@ -330,9 +380,11 @@ async def finalize_guided_character(channel: discord.TextChannel, player: discor
     }
     
     result = await register_character_backend(payload, backend_url)
-    if result.get("ok"):
+    if _registration_succeeded(result):
         await channel.send(f"✅ Character **{char_data['name']}** created and approved! You can now enter the world with `!enterworld`.")
-        
+
+        await _offer_portrait_setup(channel, player, result, char_data["name"], backend_url)
+
         # Clean up state
         del guided_cc_state[channel.id]
         

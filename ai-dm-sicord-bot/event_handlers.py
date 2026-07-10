@@ -4,6 +4,7 @@ Event Handlers Module - Discord event handlers (on_ready, on_message, on_reactio
 import base64
 import binascii
 import io
+import re
 
 import discord
 from discord.ext import commands
@@ -14,6 +15,7 @@ import music_control
 import character_creation
 import backend_integration
 import dm_commands
+import character_display
 
 
 async def on_ready_handler(bot):
@@ -192,6 +194,63 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
         print(f"[on_voice_state_update error] {e}")
 
 
+# Natural-language triggers for showing the structured character sheet / inventory
+# instead of routing the message to the DM. Kept tight to avoid hijacking roleplay.
+_SHEET_PATTERNS = [
+    r"\b(show|view|see|open|display|pull up|check)\b.{0,20}\b(character\s*sheet|char\s*sheet|my\s*sheet|my\s*stats|my\s*character)\b",
+    r"\bcharacter\s*sheet\b",
+]
+_INVENTORY_PATTERNS = [
+    r"\b(show|view|see|open|display|check|list)\b.{0,20}\b(inventory|my\s*(items|gear|pack|bag|backpack|belongings|equipment))\b",
+    r"\b(what('?s| is| do i have)|whats)\b.{0,25}\b(inventory|carrying|in my (pack|bag|backpack|pockets)|on me)\b",
+    r"\b(my\s*inventory)\b",
+]
+
+
+def _matches_any(text: str, patterns) -> bool:
+    return any(re.search(p, text) for p in patterns)
+
+
+async def _maybe_handle_character_query(message, bot) -> bool:
+    """If the player asked to see their sheet or inventory, render it and return True.
+
+    Returns False when the message isn't a structured character query so normal DM
+    handling proceeds.
+    """
+    text = message.content.strip().lower()
+    if len(text) > 120:   # long free-form roleplay is never a UI request
+        return False
+
+    want_sheet = _matches_any(text, _SHEET_PATTERNS)
+    want_inv = _matches_any(text, _INVENTORY_PATTERNS)
+    if not (want_sheet or want_inv):
+        return False
+
+    user_id = str(message.author.id)
+    chosen, _ = await backend_integration.resolve_character(
+        user_id, bot.check_character_url, None)
+    if not chosen:
+        return False   # no character -> let the DM respond naturally
+
+    if want_sheet:
+        data = await backend_integration.get_character_sheet(chosen["id"], bot.backend_url)
+        if not data:
+            return False
+        embed, portrait_file = character_display.build_sheet_embed(data)
+        if portrait_file:
+            await message.channel.send(embed=embed, file=portrait_file)
+        else:
+            await message.channel.send(embed=embed)
+        return True
+
+    # inventory
+    data = await backend_integration.get_inventory(chosen["id"], bot.backend_url)
+    if not data:
+        return False
+    await message.channel.send(embed=character_display.build_inventory_embed(data))
+    return True
+
+
 def _build_scene_files(images) -> list:
     """Turn backend image payloads (base64 WebP) into discord.File attachments."""
     files = []
@@ -354,6 +413,14 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
     user_text = message.content.strip()
     if not user_text:
         return
+
+    # Short-circuit structured requests ("show my character sheet", "what's in my
+    # inventory?") to a rendered display instead of a DM narration.
+    try:
+        if await _maybe_handle_character_query(message, bot):
+            return
+    except Exception as e:
+        print(f"[character query error] {e}")
 
     # Call the backend for the DM reply
     session_id = f"dm:{message.channel.id}"

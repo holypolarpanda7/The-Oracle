@@ -19,6 +19,7 @@ _KIND_FRAMING = {
     ImageKind.NPC: "character portrait, upper body, expressive face, single figure",
     ImageKind.CREATURE: "full-body creature illustration, dynamic pose, menacing presence",
     ImageKind.ITEM: "single object study on a neutral background, museum lighting",
+    ImageKind.PC: "heroic character portrait, head and shoulders, detailed face, single figure, adventurer",
 }
 
 
