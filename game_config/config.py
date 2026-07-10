@@ -152,6 +152,34 @@ class ReputationConfig:
 
 
 @dataclass
+class DMGuideConfig:
+    """AI Dungeon Master guidance + encounter/DC helper tuning."""
+    enabled: bool = True
+    # Whether to inject the self-authored DM best-practice text into the system
+    # prompt, and how much of it ("brief" = condensed, "full" = the long form).
+    inject_guidance: bool = True
+    guidance_verbosity: str = "brief"    # "brief" | "full"
+    # Difficulty-check DC suggestions the DM should lean on.
+    dc_by_difficulty: dict[str, int] = field(default_factory=lambda: {
+        "trivial": 5, "easy": 10, "medium": 15, "hard": 20,
+        "very_hard": 25, "nearly_impossible": 30,
+    })
+    # Global nudge added to suggested DCs (e.g. +2 at gritty, -2 at story).
+    dc_bias: int = 0
+    # Per-character encounter XP budget by threat tier (self-authored curve;
+    # scaled by party level at runtime). Multiplied by difficulty_budget_mult.
+    encounter_base_budget: dict[str, int] = field(default_factory=lambda: {
+        "easy": 50, "medium": 100, "hard": 150, "deadly": 200,
+    })
+    difficulty_budget_mult: float = 1.0
+    # Multiplier applied to summed monster XP based on how many monsters there are
+    # (a mob is scarier than its raw XP). Keyed by lower-bound monster count.
+    count_multipliers: dict[str, float] = field(default_factory=lambda: {
+        "1": 1.0, "2": 1.5, "3": 2.0, "7": 2.5, "11": 3.0, "15": 4.0,
+    })
+
+
+@dataclass
 class GameConfig:
     profile: str = "normal"
     progression: ProgressionConfig = field(default_factory=ProgressionConfig)
@@ -163,6 +191,7 @@ class GameConfig:
     survival: SurvivalConfig = field(default_factory=SurvivalConfig)
     hazard: HazardConfig = field(default_factory=HazardConfig)
     reputation: ReputationConfig = field(default_factory=ReputationConfig)
+    dm_guide: DMGuideConfig = field(default_factory=DMGuideConfig)
 
     def to_dict(self) -> dict:
         return _dataclass_to_dict(self)
@@ -182,6 +211,7 @@ DIFFICULTY_PRESETS: dict[str, dict] = {
                      "extreme_heat_dc_base": 3, "forced_march_dc": 8, "frigid_water_dc": 8,
                      "forage_dc": 8, "forage_yield_multiplier": 1.5, "navigation_dc": 8},
         "hazard": {"disease_save_dc_default": 9, "trap_detect_dc_default": 12},
+        "dm_guide": {"dc_bias": -2, "difficulty_budget_mult": 1.25},
     },
     "normal": {},  # the dataclass defaults are the "normal" baseline
     "hard": {
@@ -196,6 +226,7 @@ DIFFICULTY_PRESETS: dict[str, dict] = {
         "hazard": {"disease_save_dc_default": 13, "trap_detect_dc_default": 17,
                    "trap_disarm_dc_default": 17},
         "encumbrance": {"variant": "standard"},
+        "dm_guide": {"dc_bias": 1, "difficulty_budget_mult": 0.85},
     },
     "gritty": {
         "progression": {"xp_multiplier": 0.5},
@@ -213,6 +244,7 @@ DIFFICULTY_PRESETS: dict[str, dict] = {
                      "navigation_dc": 15},
         "hazard": {"disease_save_dc_default": 15, "trap_detect_dc_default": 18,
                    "trap_disarm_dc_default": 18},
+        "dm_guide": {"dc_bias": 2, "difficulty_budget_mult": 0.7},
     },
 }
 

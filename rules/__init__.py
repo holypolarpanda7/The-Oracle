@@ -26,6 +26,13 @@ from .query import (
     format_item_brief,
     format_reference_brief,
 )
+from .owned_monsters import OWNED_MONSTERS, seed_owned_monsters, XP_BY_CR
+from .templates import (
+    MONSTER_TEMPLATES,
+    list_templates,
+    scale_monster,
+    monster_to_dict,
+)
 from .leveling import level_up_report, asi_at_level, average_hp_gain
 
 __all__ = [
@@ -49,6 +56,13 @@ __all__ = [
     "format_spell_brief",
     "format_item_brief",
     "format_reference_brief",
+    "OWNED_MONSTERS",
+    "seed_owned_monsters",
+    "XP_BY_CR",
+    "MONSTER_TEMPLATES",
+    "list_templates",
+    "scale_monster",
+    "monster_to_dict",
     "level_up_report",
     "asi_at_level",
     "average_hp_gain",

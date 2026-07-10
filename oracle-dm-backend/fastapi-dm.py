@@ -37,8 +37,14 @@ from rules import (
     ingest_reference,
     seed_classes_and_subclasses,
     level_up_report,
+    OWNED_MONSTERS,
+    seed_owned_monsters,
+    MONSTER_TEMPLATES,
+    list_templates,
+    scale_monster,
+    monster_to_dict,
 )
-from rules.models import Subclass, DndClass, Item, SrdEntry
+from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import CombatTracker, Condition
 from dice import ability_check, ability_modifier, roll as dice_roll, proficiency_bonus_for_level
 from game_config import get_config
@@ -94,7 +100,15 @@ from reputation import (
     adjust_renown,
     Reputation,
 )
-
+from dm_guide import (
+    guidance_block,
+    full_guidance,
+    brief_guidance,
+    suggest_dc,
+    dc_scale,
+    estimate_encounter,
+    build_encounter,
+)
 # ----- Env loading -----
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -162,6 +176,15 @@ async def lifespan(app: FastAPI):
             print(f"[Startup] Seeded classes/subclasses: {cls_counts}")
     except Exception as e:
         print(f"[Startup] Class seed skipped: {e}")
+
+    # Seed the owned (self-authored, non-SRD) bestiary — offline & idempotent.
+    try:
+        owned = seed_owned_monsters(engine=engine)
+        if owned.get("owned_monsters_new", 0):
+            rules_lib.refresh_index()
+        print(f"[Startup] Seeded owned monsters: {owned}")
+    except Exception as e:
+        print(f"[Startup] Owned monster seed skipped: {e}")
 
     yield
     # Shutdown: Add cleanup logic here if needed
@@ -526,6 +549,14 @@ def generate_dm_reply(
     )
 
     messages.append({"role": "system", "content": system_prompt})
+
+    # Self-authored DM best-practice guidance (config-toggleable).
+    try:
+        _guidance = guidance_block()
+        if _guidance:
+            messages.append({"role": "system", "content": _guidance})
+    except Exception:
+        pass
 
     # Grounding context (world slice, rules briefs).
     for block in (extra_context or []):
@@ -2299,6 +2330,124 @@ async def combat_set_cover(req: CoverRequest):
         "combatant": combatant,
         "effective_ac": combat.effective_ac(req.combatant_id),
     }
+
+
+# ===================== Bestiary: owned monsters & scaling ==================
+
+class ScaleMonsterRequest(BaseModel):
+    monster: str                      # slug or name (SRD or owned)
+    template: str                     # weak | tough | elite | young | boss | swarm
+    name_override: Optional[str] = None
+
+
+@app.get("/monsters/templates")
+async def monsters_templates():
+    """List the available monster-scaling templates."""
+    return {"templates": list_templates()}
+
+
+@app.get("/monsters/owned")
+async def monsters_owned():
+    """List the self-authored (non-SRD) bestiary catalog."""
+    return {
+        "count": len(OWNED_MONSTERS),
+        "monsters": [
+            {
+                "slug": m.get("index_slug"),
+                "name": m.get("name"),
+                "type": m.get("type"),
+                "challenge_rating": m.get("challenge_rating"),
+                "xp": m.get("xp"),
+                "source": m.get("source"),
+            }
+            for m in OWNED_MONSTERS
+        ],
+    }
+
+
+@app.post("/monsters/scale")
+async def monsters_scale(req: ScaleMonsterRequest):
+    """Scale a monster (SRD or owned) by a template into a new stat block."""
+    if req.template not in MONSTER_TEMPLATES:
+        raise HTTPException(status_code=400,
+                            detail=f"Unknown template '{req.template}'. Options: {list(MONSTER_TEMPLATES)}")
+    row = rules_lib.get_monster(req.monster)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Monster '{req.monster}' not found")
+    base = monster_to_dict(row)
+    try:
+        scaled = scale_monster(base, req.template, name_override=req.name_override)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "status": "ok",
+        "template": req.template,
+        "base": {"name": base.get("name"), "challenge_rating": base.get("challenge_rating")},
+        "scaled": scaled,
+        "brief": format_monster_brief(scaled) if isinstance(scaled, dict) else None,
+    }
+
+
+# ===================== DM guidance & encounter tools =======================
+
+class EncounterEstimateRequest(BaseModel):
+    party_levels: list[int]
+    monster_xps: Optional[list[int]] = None
+    monsters: Optional[list[str]] = None   # slugs/names; XP looked up if given
+
+
+class EncounterPlanRequest(BaseModel):
+    party_levels: list[int]
+    target_difficulty: str = "medium"
+
+
+@app.get("/dm/guidance")
+async def dm_guidance(verbosity: str = ""):
+    """Return the self-authored DM best-practice text."""
+    if verbosity == "full":
+        return {"guidance": full_guidance(), "verbosity": "full"}
+    if verbosity == "brief":
+        return {"guidance": brief_guidance(), "verbosity": "brief"}
+    block = guidance_block()
+    cfg = get_config().dm_guide
+    return {"guidance": block, "verbosity": cfg.guidance_verbosity, "enabled": cfg.enabled}
+
+
+@app.get("/dm/dc")
+async def dm_dc(difficulty: str = ""):
+    """Suggest a check DC for a named difficulty, or return the full ladder."""
+    if difficulty:
+        return suggest_dc(difficulty)
+    return {"scale": dc_scale()}
+
+
+@app.post("/dm/encounter")
+async def dm_encounter(req: EncounterEstimateRequest):
+    """Estimate encounter difficulty for a party from monster XP (or monster refs)."""
+    xps: list[int] = list(req.monster_xps or [])
+    resolved: list[dict] = []
+    if req.monsters:
+        for ref in req.monsters:
+            row = rules_lib.get_monster(ref)
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"Monster '{ref}' not found")
+            xp = int(row.xp or 0)
+            xps.append(xp)
+            resolved.append({"ref": ref, "name": row.name, "xp": xp,
+                             "challenge_rating": row.challenge_rating})
+    if not xps:
+        raise HTTPException(status_code=400,
+                            detail="Provide monster_xps or monsters (refs) to estimate.")
+    est = estimate_encounter(req.party_levels, xps)
+    if resolved:
+        est["monsters"] = resolved
+    return est
+
+
+@app.post("/dm/encounter/plan")
+async def dm_encounter_plan(req: EncounterPlanRequest):
+    """Suggest an XP budget for a target difficulty and party."""
+    return build_encounter(req.party_levels, req.target_difficulty)
 
 
 if __name__ == "__main__":

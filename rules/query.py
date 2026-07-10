@@ -210,8 +210,26 @@ class RulesLibrary:
 
 # ----- compact renderers for DM prompt injection -----
 
+class _AttrView:
+    """Read-only attribute access over a dict, for renderers that expect a model."""
+
+    __slots__ = ("_d",)
+
+    def __init__(self, d: dict):
+        self._d = d
+
+    def __getattr__(self, name: str):
+        return self._d.get(name)
+
+
 def format_monster_brief(m: Monster) -> str:
-    """Concise stat line for the DM/roller context."""
+    """Concise stat line for the DM/roller context.
+
+    Accepts a ``Monster`` row or a plain dict (e.g. a scaled variant) with the
+    same field names.
+    """
+    if isinstance(m, dict):
+        m = _AttrView(m)
     lines = [
         f"**{m.name}** ({m.size} {m.type}, CR {m.challenge_rating})",
         f"AC {m.armor_class}"
