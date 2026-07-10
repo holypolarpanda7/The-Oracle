@@ -1,8 +1,10 @@
 """The Oracle - one-click launcher.
 
 Starts the systems required to play:
-  1. The DM-brain backend (FastAPI / uvicorn)
-  2. The Discord bot (which itself auto-starts/stops Lavalink for music)
+  1. ComfyUI image generation (optional - only if installed; the game runs
+     fine without it, images are simply skipped)
+  2. The DM-brain backend (FastAPI / uvicorn)
+  3. The Discord bot (which itself auto-starts/stops Lavalink for music)
 
 Each service opens in its own console window. Closing this launcher window
 (or pressing Ctrl+C) shuts every service back down.
@@ -43,9 +45,21 @@ BOT_SCRIPT = "oracle-dm-discord-bot.py"
 # a space) and keeps each console window open if that service crashes.
 BACKEND_BAT = PROJECT_ROOT / "launcher" / "run_backend.bat"
 BOT_BAT = PROJECT_ROOT / "launcher" / "run_bot.bat"
+COMFYUI_BAT = PROJECT_ROOT / "launcher" / "run_comfyui.bat"
+
+# ComfyUI (self-hosted image generation) lives outside the project. Its startup
+# is optional: if the install or its venv is missing, the launcher simply skips
+# it and the imagery layer runs offline (no images, game unaffected).
+COMFYUI_HOME = Path(os.environ.get("COMFYUI_HOME", r"D:\ComfyUI"))
+COMFYUI_PYTHON = COMFYUI_HOME / ".venv" / "Scripts" / "python.exe"
+# Set ORACLE_START_COMFYUI=0 to always skip launching ComfyUI.
+START_COMFYUI = os.environ.get("ORACLE_START_COMFYUI", "1").strip() not in {"0", "false", "no", ""}
 
 HEALTH_URL = "http://127.0.0.1:8000/"
 HEALTH_TIMEOUT_SECONDS = 60
+
+COMFYUI_HEALTH_URL = "http://127.0.0.1:8188/system_stats"
+COMFYUI_TIMEOUT_SECONDS = 120
 
 # Give each service its own titled console window on Windows.
 CREATE_NEW_CONSOLE = 0x00000010
@@ -113,6 +127,27 @@ def _wait_for_backend(timeout: int = HEALTH_TIMEOUT_SECONDS) -> bool:
     return False
 
 
+def _comfyui_installed() -> bool:
+    return START_COMFYUI and COMFYUI_PYTHON.exists() and COMFYUI_BAT.exists()
+
+
+def _wait_for_comfyui(timeout: int = COMFYUI_TIMEOUT_SECONDS) -> bool:
+    print("[Oracle] waiting for ComfyUI to load the model ", end="", flush=True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urlopen(COMFYUI_HEALTH_URL, timeout=2) as resp:
+                if 200 <= resp.status < 500:
+                    print(" ready!")
+                    return True
+        except (URLError, OSError):
+            pass
+        print(".", end="", flush=True)
+        time.sleep(1.5)
+    print(" (timed out - images will start once it finishes loading)")
+    return False
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
@@ -135,6 +170,15 @@ def main() -> int:
     if problem:
         return _fail(problem)
 
+    comfyui = None
+    if _comfyui_installed():
+        comfyui = _start("ComfyUI (image generation)", COMFYUI_BAT)
+        _wait_for_comfyui()
+    elif START_COMFYUI:
+        print(f"[Oracle] ComfyUI not found at {COMFYUI_HOME} - images disabled (game runs normally).")
+    else:
+        print("[Oracle] ComfyUI startup skipped (ORACLE_START_COMFYUI=0).")
+
     backend = _start("Backend (DM brain)", BACKEND_BAT)
     _wait_for_backend()
 
@@ -142,7 +186,9 @@ def main() -> int:
 
     print()
     print("-" * 60)
-    print("  All systems launched. Two windows should now be open:")
+    print("  All systems launched. These windows should now be open:")
+    if comfyui is not None:
+        print("    * Oracle - ComfyUI (image generation)")
     print("    * Oracle - Backend (DM brain)")
     print("    * Oracle - Discord Bot + Music")
     print()
@@ -151,6 +197,8 @@ def main() -> int:
     print("-" * 60)
 
     services = [("Discord bot", bot), ("Backend", backend)]
+    if comfyui is not None:
+        services.append(("ComfyUI", comfyui))
     try:
         while True:
             time.sleep(1)
