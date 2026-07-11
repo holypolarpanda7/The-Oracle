@@ -30,6 +30,19 @@ async def cleanup_ephemeral_channel(guild: discord.Guild, channel_id: int, user_
         # Stop music if playing
         await stop_music_in_channel(channel_id)
         
+        session_data = ephemeral_cc_channels.get(channel_id, {})
+        text_channel_id = session_data.get("text_channel_id")
+
+        # Delete linked CC text channel first, if present.
+        if text_channel_id:
+            text_channel = guild.get_channel(text_channel_id)
+            if text_channel:
+                try:
+                    await text_channel.delete(reason=f"Character creation cleanup: {reason}")
+                    print(f"[cleanup] Deleted linked text channel {text_channel_id} for user {user_id}")
+                except Exception as e:
+                    print(f"[cleanup text channel error] {e}")
+
         channel = guild.get_channel(channel_id)
         if channel:
             # Try to DM the user first
@@ -59,6 +72,14 @@ async def schedule_cleanup_task(guild: discord.Guild, channel_id: int, user_id: 
     """Schedule a channel cleanup after the specified delay."""
     await asyncio.sleep(delay_seconds)
     await cleanup_ephemeral_channel(guild, channel_id, user_id)
+
+
+def find_cc_session_by_text_channel(text_channel_id: int) -> tuple[Optional[int], Optional[Dict]]:
+    """Return (voice_channel_id, session_data) for a linked CC text channel."""
+    for voice_id, data in ephemeral_cc_channels.items():
+        if data.get("text_channel_id") == text_channel_id:
+            return voice_id, data
+    return None, None
 
 
 async def extract_character_from_avrae_embed(message: discord.Message) -> Optional[Dict]:

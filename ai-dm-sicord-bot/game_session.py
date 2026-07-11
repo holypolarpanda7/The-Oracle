@@ -227,7 +227,8 @@ async def on_session_voice_join(member: discord.Member, voice_channel, bot) -> b
     prefs = music_control.music_preferences.get(voice_channel.id)
     if prefs and prefs.get("enabled"):
         try:
-            await music_player.play_music_in_channel(voice_channel, prefs.get("current_playlist", "tavern"))
+            await music_player.play_music_in_channel(
+                voice_channel, prefs.get("current_playlist", "tavern"), bot=bot)
         except Exception as e:
             print(f"[session music error] {e}")
 
@@ -270,7 +271,7 @@ async def on_session_voice_join(member: discord.Member, voice_channel, bot) -> b
     music_query = enter.get("music")
     if music_query:
         try:
-            await music_player.play_query_in_channel(voice_channel, music_query)
+            await music_player.play_query_in_channel(voice_channel, music_query, bot=bot)
         except Exception as e:
             print(f"[session opening music error] {e}")
     return True
@@ -450,7 +451,7 @@ async def handle_session_message(message: discord.Message, bot) -> bool:
         voice_channel = message.guild.get_channel(session["voice_channel_id"])
         if voice_channel is not None:
             try:
-                await music_player.play_query_in_channel(voice_channel, music_query)
+                await music_player.play_query_in_channel(voice_channel, music_query, bot=bot)
             except Exception as e:
                 print(f"[session scene music error] {e}")
     return True

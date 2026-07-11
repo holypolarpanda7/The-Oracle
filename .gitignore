@@ -15,6 +15,12 @@ oracle-dm-backend/backend-cred.env
 
 # databases (runtime + throwaway demo DBs)
 *.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.db-journal
+oracle.db
 oracle-dm-backend/oracle.db
 eight_card_system/demo_world.db
 rules/demo_rules.db
@@ -28,3 +34,6 @@ ai-dm-sicord-bot/plugins/
 ai-dm-sicord-bot/lavalink.log
 ai-dm-sicord-bot/lavalink-error.log
 ai-dm-sicord-bot/logs/
+
+# generic runtime logs
+*.log

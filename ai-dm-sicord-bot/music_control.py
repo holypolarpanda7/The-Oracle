@@ -52,7 +52,7 @@ async def toggle_music(voice_channel_id: int, bot) -> bool:
         voice_channel = bot.get_channel(voice_channel_id)
         if voice_channel:
             playlist = music_preferences[voice_channel_id]["current_playlist"]
-            await music_player.play_music_in_channel(voice_channel, playlist)
+            await music_player.play_music_in_channel(voice_channel, playlist, bot=bot)
             print(f"[music] Enabled music in channel {voice_channel_id}")
     else:
         # Turn music off

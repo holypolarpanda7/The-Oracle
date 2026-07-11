@@ -24,7 +24,9 @@ async def on_ready_handler(bot):
     print(f"Bot is online as {bot.user} (ID: {bot.user.id})")
     
     # Connect to Lavalink via music_player module
-    await music_player.setup_lavalink(bot)
+    lavalink_ok = await music_player.setup_lavalink(bot)
+    if not lavalink_ok:
+        print("[on_ready] Lavalink connection failed; music retries will occur on demand.")
     
     print("Ready to DM!")
 
@@ -184,14 +186,20 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
         # Send character creation instructions to the text channel
         print(f"[on_voice_state_update] Sending instructions to text channel: {text_channel.name}")
         
-        # Start music in the voice channel (if enabled)
+        # Start music in the voice channel (if enabled).
         if after.channel.id in music_control.music_preferences and music_control.music_preferences[after.channel.id]["enabled"]:
-            await music_player.play_music_in_channel(after.channel, "cc_menu")
+            started = await music_player.play_music_in_channel(after.channel, "cc_menu", bot=bot)
+            if not started:
+                await text_channel.send(
+                    "⚠️ I couldn't start background music right now. "
+                    "Check that the bot can connect/speak in voice, then react 🔊 to retry."
+                )
         instructions_msg = await text_channel.send(
             f"🎭 **Welcome, {member.display_name}!** 🎭\n\n"
             f"🎵 Background music is now playing in the voice channel.\n"
             f"• React with 🔇 to turn music OFF\n"
             f"• React with 🔊 to turn music back ON\n\n"
+            f"Need to stop right now? Type `!cancelcc` to close this character-creation chat + voice session immediately.\n\n"
             f"Choose your character creation path:\n\n"
             f"**✅ Import from D&D Beyond**\n"
             f"If you already have a character sheet on D&D Beyond, use Avrae to import it.\n"
@@ -233,6 +241,51 @@ _INVENTORY_PATTERNS = [
 
 def _matches_any(text: str, patterns) -> bool:
     return any(re.search(p, text) for p in patterns)
+
+
+def _is_cc_cancel_request(text: str) -> bool:
+    """True when a player asks in plain language to cancel character creation."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    # Explicit phrases first (high confidence). Intentionally avoid ambiguous
+    # "done" wording so completion chatter doesn't accidentally cancel.
+    phrases = (
+        "cancel creation",
+        "cancel character creation",
+        "stop creation",
+        "stop character creation",
+        "end creation",
+        "abort creation",
+        "cancel cc",
+        "stop cc",
+        "abort cc",
+        "i want to cancel",
+        "i want to stop",
+        "not right now",
+        "let's do this later",
+        "lets do this later",
+        "do this later",
+        "come back later",
+        "cancel for now",
+        "stop for now",
+        "never mind",
+        "nevermind",
+        "quit creation",
+    )
+    if any(p in t for p in phrases):
+        return True
+
+    # Flexible intent match: a cancel-ish verb plus character-creation context.
+    # Example: "can we pause character creation" or "end cc for now".
+    intent_words = ("cancel", "abort", "quit", "stop", "end", "pause")
+    cc_words = ("character creation", "creation", "cc", "import")
+    has_intent = any(w in t for w in intent_words)
+    has_cc_context = any(w in t for w in cc_words)
+    if has_intent and has_cc_context:
+        return True
+
+    return False
 
 
 async def _maybe_handle_character_query(message, bot) -> bool:
@@ -422,6 +475,18 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
         from datetime import datetime, timezone
         character_creation.ephemeral_cc_channels[session_voice_id]["last_message_at"] = datetime.now(timezone.utc)
 
+        # Conversational cancel in CC chat (owner only):
+        # "I want to cancel creation", "never mind", etc.
+        if str(message.author.id) == str(session_data.get("user_id")) and _is_cc_cancel_request(message.content):
+            await message.channel.send("🛑 Understood. Ending character creation now and closing this session.")
+            await character_creation.cleanup_ephemeral_channel(
+                message.guild,
+                session_voice_id,
+                str(session_data.get("user_id")),
+                reason="Cancelled by player request",
+            )
+            return
+
         # Check if we're in guided character creation mode
         if message.channel.id in character_creation.guided_cc_state:
             await character_creation.process_guided_cc_input(message.channel, message, bot.backend_url)
@@ -482,6 +547,6 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
         voice_channel = voice_state.channel if voice_state else None
         if voice_channel is not None:
             try:
-                await music_player.play_query_in_channel(voice_channel, music_query)
+                await music_player.play_query_in_channel(voice_channel, music_query, bot=bot)
             except Exception as e:
                 print(f"[music] Failed to play scene music '{music_query}': {e}")

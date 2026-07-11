@@ -125,6 +125,31 @@ async def setup_lavalink(bot: discord.Client) -> bool:
                 return False
 
 
+async def ensure_lavalink_ready(bot: Optional[discord.Client]) -> bool:
+    """Best-effort check that at least one Lavalink node is ready.
+
+    If no nodes are currently connected and a bot client is available, attempt a
+    reconnect via ``setup_lavalink`` so first-play in a fresh/test session still
+    works even after transient WS disconnects.
+    """
+    try:
+        nodes = getattr(wavelink.Pool, "nodes", None)
+        if nodes:
+            return True
+    except Exception:
+        pass
+
+    if bot is None:
+        return False
+
+    print("[Lavalink] No active node detected; attempting reconnect...")
+    try:
+        return await setup_lavalink(bot)
+    except Exception as e:
+        print(f"[Lavalink] Reconnect failed: {e}")
+        return False
+
+
 async def load_playlist(playlist_name: str) -> list[str]:
     """Load a playlist from the playlists directory."""
     playlist_path = Path(__file__).parent / "playlists" / f"{playlist_name}.txt"
@@ -143,19 +168,32 @@ async def load_playlist(playlist_name: str) -> list[str]:
     return urls
 
 
-async def play_music_in_channel(voice_channel: discord.VoiceChannel, playlist_name: str = "cc_menu"):
-    """Connect to voice channel and play music from playlist."""
+async def play_music_in_channel(
+    voice_channel: discord.VoiceChannel,
+    playlist_name: str = "cc_menu",
+    *,
+    bot: Optional[discord.Client] = None,
+) -> bool:
+    """Connect to voice channel and play music from playlist.
+
+    Returns True when playback starts (or is already active in the channel),
+    otherwise False.
+    """
     try:
+        if not await ensure_lavalink_ready(bot):
+            print("[music] Lavalink is not ready; cannot start playback")
+            return False
+
         # Check if already connected
         if voice_channel.id in active_players:
             print(f"[music] Already playing in {voice_channel.name}")
-            return
+            return True
 
         # Load playlist
         urls = await load_playlist(playlist_name)
         if not urls:
             print(f"[music] No tracks in playlist {playlist_name}")
-            return
+            return False
 
         # Clean up any lingering voice connection in this guild first. Discord
         # needs a moment to tear down the old voice session before we can open a
@@ -203,6 +241,8 @@ async def play_music_in_channel(voice_channel: discord.VoiceChannel, playlist_na
             await player.play(player.queue.get())
             print(f"[music] Started playback in {voice_channel.name}")
 
+        return bool(player.playing or not player.queue.is_empty)
+
     except Exception as e:
         print(f"[music] Error in play_music_in_channel: {e}")
         # Roll back any partial state so a retry can reconnect cleanly.
@@ -214,9 +254,16 @@ async def play_music_in_channel(voice_channel: discord.VoiceChannel, playlist_na
                 await stale.disconnect(force=True)
             except Exception:
                 pass
+        return False
 
 
-async def play_query_in_channel(voice_channel: discord.VoiceChannel, query: str, *, volume: int = 30):
+async def play_query_in_channel(
+    voice_channel: discord.VoiceChannel,
+    query: str,
+    *,
+    volume: int = 30,
+    bot: Optional[discord.Client] = None,
+) -> bool:
     """Play a single searched track (looped) for an AI-recommended scene.
 
     Unlike ``play_music_in_channel`` (which loads a fixed playlist file), this
@@ -225,6 +272,10 @@ async def play_query_in_channel(voice_channel: discord.VoiceChannel, query: str,
     without disconnecting; otherwise it connects first.
     """
     try:
+        if not await ensure_lavalink_ready(bot):
+            print("[music] Lavalink is not ready; cannot start scene music")
+            return False
+
         first = query.strip().split(" ", 1)[0]
         # Accept explicit sources (ytsearch:, https://...); default to YouTube search.
         if "://" in query or ":" in first:
@@ -263,7 +314,7 @@ async def play_query_in_channel(voice_channel: discord.VoiceChannel, query: str,
         tracks = await wavelink.Playable.search(search)
         if not tracks:
             print(f"[music] No results for scene query '{search}'")
-            return
+            return False
         track = tracks[0] if isinstance(tracks, list) else tracks
 
         # Swap to the new scene track: clear the queue and replace playback.
@@ -274,9 +325,11 @@ async def play_query_in_channel(voice_channel: discord.VoiceChannel, query: str,
             pass
         await player.play(track)
         print(f"[music] Scene music -> {track.title}  (query: {query.strip()})")
+        return True
 
     except Exception as e:
         print(f"[music] Error in play_query_in_channel: {e}")
+        return False
 
 
 async def stop_music_in_channel(voice_channel_id: int):

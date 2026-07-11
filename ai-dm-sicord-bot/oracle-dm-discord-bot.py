@@ -163,6 +163,29 @@ async def leave_session(ctx: commands.Context):
     await game_session.end_session_for_channel(ctx.channel.id, bot, reason="Player ended session")
 
 
+@bot.command(name="cancelcc", aliases=["endcc", "abortcc"])
+async def cancel_character_creation(ctx: commands.Context):
+    """Immediately close an active character-creation session (owner/admin)."""
+    voice_id, session = character_creation.find_cc_session_by_text_channel(ctx.channel.id)
+    if voice_id is None or not session:
+        await ctx.send("There's no active character-creation session in this channel.")
+        return
+
+    owner_id = str(session.get("user_id", ""))
+    requester_id = str(ctx.author.id)
+    if requester_id != owner_id and not dm_commands.is_admin(ctx.author, ADMIN_ID):
+        await ctx.send("Only the session owner (or the Oracle) can cancel this creation session.")
+        return
+
+    await ctx.send("🛑 Ending character creation now. Closing voice and chat...")
+    await character_creation.cleanup_ephemeral_channel(
+        ctx.guild,
+        voice_id,
+        owner_id,
+        reason=f"Cancelled by {ctx.author.display_name}",
+    )
+
+
 @bot.command(name="sheet")
 async def sheet(ctx: commands.Context, *, character_name: str = None):
     """Show your character sheet (rendered from your live character record)."""
