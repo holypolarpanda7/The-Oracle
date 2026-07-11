@@ -29,14 +29,34 @@ async def _log_playback_state_later(player: wavelink.Player, delay_seconds: floa
         current = getattr(player, "current", None)
         title = getattr(current, "title", None)
         channel = getattr(getattr(player, "channel", None), "id", "unknown")
+        me = getattr(player.guild, "me", None) if getattr(player, "guild", None) else None
+        voice = getattr(me, "voice", None) if me else None
         print(
             f"[music] Playback state after {delay_seconds:.1f}s: "
             f"channel={channel} connected={getattr(player, 'connected', None)} "
             f"playing={getattr(player, 'playing', None)} paused={getattr(player, 'paused', None)} "
-            f"current={title!r} position={getattr(player, 'position', None)}"
+            f"current={title!r} position={getattr(player, 'position', None)} ping={getattr(player, 'ping', None)} "
+            f"voice_channel={getattr(getattr(voice, 'channel', None), 'id', None)} "
+            f"self_mute={getattr(voice, 'self_mute', None)} self_deaf={getattr(voice, 'self_deaf', None)} "
+            f"mute={getattr(voice, 'mute', None)} deaf={getattr(voice, 'deaf', None)}"
         )
     except Exception as e:
         print(f"[music] Delayed playback-state log failed: {e}")
+
+
+def _log_discord_voice_state(player: wavelink.Player, context: str) -> None:
+    """Log the bot member's Discord voice-state flags for this guild."""
+    try:
+        me = getattr(player.guild, "me", None) if getattr(player, "guild", None) else None
+        voice = getattr(me, "voice", None) if me else None
+        print(
+            f"[music] Discord voice state ({context}): "
+            f"channel={getattr(getattr(voice, 'channel', None), 'id', None)} "
+            f"self_mute={getattr(voice, 'self_mute', None)} self_deaf={getattr(voice, 'self_deaf', None)} "
+            f"mute={getattr(voice, 'mute', None)} deaf={getattr(voice, 'deaf', None)}"
+        )
+    except Exception as e:
+        print(f"[music] Discord voice-state log failed ({context}): {e}")
 
 
 def start_lavalink_server() -> bool:
@@ -251,7 +271,12 @@ async def play_music_in_channel(
         last_err: Optional[Exception] = None
         for attempt in range(1, 4):
             try:
-                player = await voice_channel.connect(cls=wavelink.Player, timeout=20.0)
+                player = await voice_channel.connect(
+                    cls=wavelink.Player,
+                    timeout=20.0,
+                    self_deaf=False,
+                    self_mute=False,
+                )
                 break
             except Exception as e:
                 last_err = e
@@ -263,6 +288,7 @@ async def play_music_in_channel(
         active_players[voice_channel.id] = player
         current_playlists[voice_channel.id] = playlist_name
         await player.set_volume(max(0, min(100, volume)))
+        _log_discord_voice_state(player, "after connect")
 
         print(f"[music] Connected to {voice_channel.name}, loading tracks from '{playlist_name}'...")
 
@@ -346,7 +372,12 @@ async def play_query_in_channel(
             last_err: Optional[Exception] = None
             for attempt in range(1, 4):
                 try:
-                    player = await voice_channel.connect(cls=wavelink.Player, timeout=20.0)
+                    player = await voice_channel.connect(
+                        cls=wavelink.Player,
+                        timeout=20.0,
+                        self_deaf=False,
+                        self_mute=False,
+                    )
                     break
                 except Exception as e:
                     last_err = e
@@ -357,6 +388,7 @@ async def play_query_in_channel(
 
             active_players[voice_channel.id] = player
             await player.set_volume(volume)
+            _log_discord_voice_state(player, "after connect")
 
         # Resolve the query into a playable track.
         if is_url:
