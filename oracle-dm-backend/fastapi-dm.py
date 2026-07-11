@@ -524,6 +524,9 @@ class Character(SQLModel, table=True):
     subclass: Optional[str] = Field(default=None, sa_column=Column(String))
     level: int = Field(default=1)
     xp: int = Field(default=0)
+    # Flag: character has XP to level up but hasn't taken level-up options yet.
+    # Must resolve via /level_up before continuing adventure.
+    pending_level_up: bool = Field(default=False)
 
     # Coin purse (SRD denominations) + downtime lifestyle tier.
     cp: int = Field(default=0)
@@ -887,6 +890,28 @@ def generate_dm_reply(
         "  aren't carrying it and ask what they actually do (improvise, use fists, draw a\n"
         "  different listed weapon, etc.). Natural, always-available actions (unarmed\n"
         "  strikes, shoving, spells they know) are fine without an inventory entry.\n"
+        "- Guardrails apply across ALL systems (combat, exploration, social, downtime,\n"
+        "  crafting, hazards, travel). Before allowing an action, verify prerequisites:\n"
+        "  required gear/tools in inventory, required capability (class features, spells,\n"
+        "  level, movement/reach/conditions), and required fiction state (position, line of\n"
+        "  sight, free hands, etc.). If a prerequisite is missing, do not allow the action;\n"
+        "  explain what's missing and offer valid alternatives.\n"
+        "- Crafting guardrail: don't narrate crafting success if prerequisites are missing.\n"
+        "  Require relevant tools and capability for the item tier. For very rare or higher\n"
+        "  magic item crafting, require a matching recipe/formula book first.\n"
+        "- Specific hard prerequisites the backend also enforces (respect them in narration):\n"
+        "  * Disarming a mechanical trap requires thieves' tools in inventory.\n"
+        "  * Picking a lock requires thieves' tools; forcing it uses Strength instead.\n"
+        "  * Lighting/burning a light source requires carrying it (a lantern also needs oil).\n"
+        "  * Curing a disease or affliction needs a real means: a suitable spell known\n"
+        "    (e.g. lesser/greater restoration) or a fitting item — never 'cured with nothing'.\n"
+        "  * Bastions require the level minimum, funds for facilities, and one bastion per PC.\n"
+        "  * LEVEL-UP GATE: when a PC earns enough XP for a level-up during an encounter or\n"
+        "    exploration, they can't continue adventuring until they complete a long rest\n"
+        "    (which flags them as pending level-up) and then call /level_up to choose feats,\n"
+        "    ASIs, spells, or subclass. Once /level_up completes, they're ready to adventure.\n"
+
+
         "- A 'Physical limits' line gives the PC's speed, jump distances, lift/carry, and\n"
         "  reach WITHOUT magic or special items. Enforce these as hard limits:\n"
         "  * Movement: a creature can move up to its Speed on its turn (double if it Dashes,\n"
@@ -943,9 +968,17 @@ def generate_dm_reply(
         "    [[CONDITION: add | poisoned | giant spider venom | until the end of a long rest]]\n"
         "    [[CONDITION: remove | frightened]]\n"
         "  Fields: action (add/remove/clear) | condition | source (optional) | duration (optional).\n"
+        "  Put the REMOVAL TRIGGER in the duration field so you remember how it ends — e.g.\n"
+        "  'for 1 minute', 'until it takes damage', 'until the source is out of sight', 'save at\n"
+        "  end of each turn', 'until the end of a long rest'. Track that trigger and, the moment it\n"
+        "  is met (time elapses, the required action or event happens, or a [[ROLL]] save succeeds),\n"
+        "  emit the matching [[CONDITION: remove | ...]] hook and tell the player they're free of it.\n"
         "  Use it for things that outlast the moment (a lingering poison, a curse, ongoing fear);\n"
         "  don't spam it for effects that resolve within the same scene. Exhaustion is tracked\n"
         "  separately — don't emit a CONDITION hook for it.\n"
+        "  When a fight or tense encounter ENDS, recap any conditions still on the player in the\n"
+        "  narration (e.g. 'the wolves are dead, but the spider's venom still burns in your veins')\n"
+        "  so they know what lingers, and remind them of the trigger that will clear it.\n"
         "- That block may also show survival state: current/max HP, Hit Dice, exhaustion,\n"
         "  rations and water, active afflictions (diseases/madness), current weather and\n"
         "  environmental hazards, and faction reputation. Treat these as ground truth:\n"
@@ -1144,6 +1177,93 @@ def _inventory_items(char: Character) -> List[Dict[str, Any]]:
             item.setdefault("quantity", raw.get("qty", 1) or 1)
             items.append(item)
     return items
+
+
+def _normalize_item_name(name: str) -> str:
+    return re.sub(r"\s+", " ", (name or "").strip().lower())
+
+
+def _has_inventory_item(char: Character, name: str) -> bool:
+    """True if an item matching ``name`` exists in the character inventory."""
+    needle = _normalize_item_name(name)
+    if not needle:
+        return False
+    for it in _inventory_items(char):
+        nm = _normalize_item_name(str(it.get("name", "")))
+        if not nm:
+            continue
+        if nm == needle or needle in nm or nm in needle:
+            try:
+                if int(it.get("quantity", 1) or 1) >= 1:
+                    return True
+            except (TypeError, ValueError):
+                return True
+    return False
+
+
+def _add_inventory_item(char: Character, name: str, *, quantity: int = 1, extra: Optional[Dict[str, Any]] = None) -> None:
+    """Add/increment an item in the character's JSON inventory."""
+    inv = _inventory_items(char)
+    target = _normalize_item_name(name)
+    for it in inv:
+        nm = _normalize_item_name(str(it.get("name", "")))
+        if nm == target:
+            try:
+                it["quantity"] = int(it.get("quantity", 1) or 1) + quantity
+            except (TypeError, ValueError):
+                it["quantity"] = quantity
+            char.inventory = inv
+            return
+    item: Dict[str, Any] = {"name": name, "quantity": quantity}
+    if extra:
+        item.update(extra)
+    inv.append(item)
+    char.inventory = inv
+
+
+def _character_spell_names(char: Character) -> List[str]:
+    """Normalized names of spells known/prepared on the character sheet."""
+    out: List[str] = []
+    for raw in (char.spells or []):
+        if isinstance(raw, str):
+            out.append(_normalize_item_name(raw))
+        elif isinstance(raw, dict):
+            nm = raw.get("name") or raw.get("spell") or ""
+            if nm:
+                out.append(_normalize_item_name(str(nm)))
+    return [s for s in out if s]
+
+
+def _has_spell(char: Character, name: str) -> bool:
+    """True if the character knows/has prepared a spell matching ``name``."""
+    needle = _normalize_item_name(name)
+    if not needle:
+        return False
+    for nm in _character_spell_names(char):
+        if nm == needle or needle in nm or nm in needle:
+            return True
+    return False
+
+
+# Spells/effects that can end a disease or similar affliction in 5e.
+_DISEASE_CURE_SPELLS = {
+    "lesser restoration",
+    "greater restoration",
+    "protection from poison",
+    "heal",
+    "mass heal",
+    "purify food and drink",
+}
+
+# Light sources map to the inventory item that must be carried to burn one.
+_LIGHT_SOURCE_ITEMS = {
+    "torch": "torch",
+    "lantern": "lantern",
+    "hooded lantern": "hooded lantern",
+    "bullseye lantern": "bullseye lantern",
+    "candle": "candle",
+    "lamp": "lamp",
+}
 
 
 def _format_inventory(char: Character) -> Dict[str, Any]:
@@ -1600,7 +1720,21 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     Tracks per-session history and asks the DM brain for a reply.
     """
 
-    _load_session_state(req.session_id)
+    game_state = _load_session_state(req.session_id)
+
+    # Level-up gate: if character has pending level-up, block adventure.
+    char_id = game_state.get("meta", {}).get("character_id")
+    if char_id:
+        with Session(engine) as session:
+            char = session.get(Character, char_id)
+            if char and char.pending_level_up:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{char.name} has earned a level-up (XP {char.xp}). "
+                        "Complete level-up choices via /level_up before continuing."
+                    ),
+                )
 
     # Player turn
     state = _append_turn(req.session_id, Turn(role="player", user=req.username, content=req.message))
@@ -1976,7 +2110,13 @@ async def level_up(req: LevelUpRequest):
         char = session.get(Character, req.character_id)
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
-        return _progression(session, char, target_subclass=req.subclass, apply=True)
+        result = _progression(session, char, target_subclass=req.subclass, apply=True)
+        # If the level-up was successfully applied, clear the pending flag.
+        if result.get("applied"):
+            char.pending_level_up = False
+            session.add(char)
+            session.commit()
+        return result
 
 
 @app.get("/class_options/{class_name}")
@@ -2202,7 +2342,15 @@ class DowntimeRequest(BaseModel):
 
 class CraftingStartRequest(BaseModel):
     character_id: int
-    item: str  # slug or name (its market cost sets the project size)
+    item: str  # slug/name/label for what is being crafted
+    # Optional manual override when no priced rules item exists.
+    target_cost_gp: Optional[float] = None
+    # Optional display name for manual projects; falls back to ``item``.
+    item_name: Optional[str] = None
+    # Optional rarity hint for magic items when price is unknown.
+    rarity: Optional[str] = None
+    # Optional explicit tools to require; defaults are inferred from item type.
+    required_tools: Optional[List[str]] = None
     is_magic: bool = False
     pay_materials: bool = True
 
@@ -2211,6 +2359,135 @@ class CraftingAdvanceRequest(BaseModel):
     project_id: int
     days: int
     advance_world: bool = True
+
+
+class RecipeBookPurchaseRequest(BaseModel):
+    character_id: int
+    rarity: str
+    quantity: int = 1
+
+
+_MAGIC_ITEM_DEFAULT_COST_GP = {
+    "common": 100.0,
+    "uncommon": 500.0,
+    "rare": 5000.0,
+    "very rare": 50000.0,
+    "legendary": 250000.0,
+    "artifact": 500000.0,
+}
+
+# Very-rare+ items require a physical formula/tome in inventory.
+_RARITY_REQUIRES_RECIPE_BOOK = {"very rare", "legendary", "artifact"}
+
+# High-value recipe books that can be discovered or purchased in-world.
+_RECIPE_BOOK_CATALOG: Dict[str, Dict[str, Any]] = {
+    "very rare": {
+        "name": "Archcrafter's Codex (Very Rare)",
+        "cost_gp": 20000.0,
+        "notes": "Required to craft very rare magic items.",
+    },
+    "legendary": {
+        "name": "Legendwright Grimoire (Legendary)",
+        "cost_gp": 100000.0,
+        "notes": "Required to craft legendary magic items.",
+    },
+    "artifact": {
+        "name": "Mythic Artificer's Testament (Artifact)",
+        "cost_gp": 500000.0,
+        "notes": "Required to attempt artifact-grade crafting.",
+    },
+}
+
+_MAGIC_MIN_LEVEL_BY_RARITY = {
+    "common": 1,
+    "uncommon": 3,
+    "rare": 6,
+    "very rare": 11,
+    "legendary": 17,
+    "artifact": 20,
+}
+
+_CASTER_CLASSES = {
+    "bard", "cleric", "druid", "sorcerer", "warlock", "wizard",
+    "paladin", "ranger", "artificer",
+}
+
+
+def _normalize_rarity(rarity: Optional[str]) -> str:
+    val = re.sub(r"\s+", " ", str(rarity or "").strip().lower())
+    # Common variant from some sources.
+    if val == "very-rare":
+        return "very rare"
+    return val
+
+
+def _recipe_book_for_rarity(rarity: Optional[str]) -> Optional[Dict[str, Any]]:
+    return _RECIPE_BOOK_CATALOG.get(_normalize_rarity(rarity))
+
+
+def _default_crafting_tools(it: Optional[Item], *, is_magic: bool) -> List[str]:
+    """Conservative default tools by item category + magic intent."""
+    out: List[str] = []
+    cat = (it.category or "").lower() if it else ""
+    itype = (it.item_type or "").lower() if it else ""
+    if "armor" in cat or "armor" in itype or "weapon" in cat or "weapon" in itype:
+        out.append("smith's tools")
+    elif "tool" in cat or "adventuring" in cat:
+        out.append("artisan's tools")
+    else:
+        out.append("artisan's tools")
+    if is_magic:
+        out.append("arcane focus")
+    # Stable order with no duplicates.
+    seen = set()
+    deduped: List[str] = []
+    for t in out:
+        k = _normalize_item_name(t)
+        if k and k not in seen:
+            seen.add(k)
+            deduped.append(t)
+    return deduped
+
+
+def _magic_crafting_capability_error(char: Character, *, rarity: Optional[str]) -> Optional[str]:
+    """Return an explanatory guardrail error if this PC can't craft this magic tier."""
+    rarity_norm = _normalize_rarity(rarity)
+    min_level = _MAGIC_MIN_LEVEL_BY_RARITY.get(rarity_norm, 1)
+    if int(char.level or 1) < min_level:
+        return f"Crafting a {rarity_norm or 'magic'} item requires level {min_level}+ (current {char.level})."
+
+    class_name = (char.char_class or "").strip().lower()
+    has_spell_list = bool(char.spells)
+    is_caster = class_name in _CASTER_CLASSES or has_spell_list
+    if not is_caster:
+        return (
+            "Magic-item crafting requires magical capability (a spellcasting class "
+            "or known spells on the character sheet)."
+        )
+    return None
+
+
+def _magic_cost_from_rarity(rarity: Optional[str]) -> Optional[float]:
+    if not rarity:
+        return None
+    key = str(rarity).strip().lower()
+    return _MAGIC_ITEM_DEFAULT_COST_GP.get(key)
+
+
+def _infer_magic_rarity_from_cost(cost_gp: float) -> str:
+    """Rough rarity inference used only for guardrail gating when rarity is omitted."""
+    c = float(cost_gp)
+    if c >= 500000:
+        return "artifact"
+    if c >= 250000:
+        return "legendary"
+    if c >= 50000:
+        return "very rare"
+    if c >= 5000:
+        return "rare"
+    if c >= 500:
+        return "uncommon"
+    return "common"
 
 
 @app.get("/character/{character_id}/purse")
@@ -2350,14 +2627,79 @@ async def downtime(req: DowntimeRequest):
 @app.post("/crafting/start")
 async def crafting_start(req: CraftingStartRequest):
     it = rules_lib.get_item(req.item)
-    if not it or it.cost_gp is None:
-        raise HTTPException(status_code=404, detail=f"Priced item '{req.item}' not found.")
+    item_slug: Optional[str] = it.index_slug if it else None
+    item_name = (req.item_name or (it.name if it else req.item)).strip() or req.item
+    target_cost_gp: Optional[float] = None
+    cost_source = ""
+    rarity = _normalize_rarity(req.rarity or (it.rarity if it else None))
+
+    # Preferred path: use canonical rules price when available.
+    if it and it.cost_gp is not None:
+        target_cost_gp = float(it.cost_gp)
+        cost_source = "rules_item"
+    # Manual override supports crafting any custom or source-book item.
+    elif req.target_cost_gp is not None:
+        target_cost_gp = float(req.target_cost_gp)
+        cost_source = "manual"
+    # Magic fallback by rarity for entries with no explicit market price.
+    elif req.is_magic:
+        guessed = _magic_cost_from_rarity(rarity)
+        if guessed is not None:
+            target_cost_gp = guessed
+            cost_source = f"rarity:{str(rarity).strip().lower()}"
+
+    if target_cost_gp is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No craft price found for '{req.item}'. "
+                "Provide target_cost_gp (or rarity for magic items)."
+            ),
+        )
+    if target_cost_gp <= 0:
+        raise HTTPException(status_code=400, detail="target_cost_gp must be > 0")
+
+    if req.is_magic and not rarity:
+        rarity = _infer_magic_rarity_from_cost(target_cost_gp)
+
     with Session(engine) as session:
         char = session.get(Character, req.character_id)
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
+
+        # Guardrail: enforce D&D-style prerequisites before crafting begins.
+        required_tools = [t for t in (req.required_tools or _default_crafting_tools(it, is_magic=req.is_magic)) if t]
+        missing_tools = [t for t in required_tools if not _has_inventory_item(char, t)]
+        if missing_tools:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Missing required crafting tools: "
+                    + ", ".join(missing_tools)
+                    + ". Add them to inventory before crafting."
+                ),
+            )
+
+        if req.is_magic:
+            cap_error = _magic_crafting_capability_error(char, rarity=rarity)
+            if cap_error:
+                raise HTTPException(status_code=400, detail=cap_error)
+
+            # Guardrail: very rare+ crafting requires a recipe/formula book in inventory.
+            if rarity in _RARITY_REQUIRES_RECIPE_BOOK:
+                book = _recipe_book_for_rarity(rarity)
+                if not book or not _has_inventory_item(char, str(book["name"])):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Crafting {rarity} items requires the recipe book '"
+                            f"{book['name'] if book else 'required recipe book'}' in inventory. "
+                            "Find or purchase it first."
+                        ),
+                    )
+
         try:
-            plan = start_crafting(it.cost_gp, is_magic=req.is_magic)
+            plan = start_crafting(target_cost_gp, is_magic=req.is_magic)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -2369,8 +2711,8 @@ async def crafting_start(req: CraftingStartRequest):
 
         project = CraftingProject(
             character_id=char.id,
-            item_slug=it.index_slug,
-            item_name=it.name,
+            item_slug=item_slug,
+            item_name=item_name,
             is_magic=req.is_magic,
             target_cost_gp=plan["target_cost_gp"],
             materials_gp=plan["materials_gp"],
@@ -2385,7 +2727,72 @@ async def crafting_start(req: CraftingStartRequest):
             "status": "ok",
             "project_id": project.id,
             "plan": plan,
+            "cost_source": cost_source,
+            "rarity": rarity or None,
+            "required_tools": required_tools,
             "purse": _char_purse(char),
+        }
+
+
+@app.get("/crafting/recipe_books")
+async def crafting_recipe_books():
+    """List high-tier recipe books required for very-rare+ crafting."""
+    econ = get_config().economy
+    out = []
+    for rarity, info in _RECIPE_BOOK_CATALOG.items():
+        base_cost = float(info["cost_gp"])
+        final_cost = round(base_cost * econ.item_cost_multiplier, 2)
+        out.append({
+            "rarity": rarity,
+            "name": info["name"],
+            "base_cost_gp": base_cost,
+            "cost_gp": final_cost,
+            "notes": info.get("notes"),
+        })
+    return {"items": out}
+
+
+@app.post("/crafting/recipe_books/buy")
+async def crafting_recipe_book_buy(req: RecipeBookPurchaseRequest):
+    """Purchase a rare recipe book and add it to character inventory."""
+    rarity = _normalize_rarity(req.rarity)
+    entry = _recipe_book_for_rarity(rarity)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"No recipe book catalog entry for rarity '{req.rarity}'.")
+    if req.quantity < 1:
+        raise HTTPException(status_code=400, detail="quantity must be >= 1")
+
+    econ = get_config().economy
+    unit_cp = round(float(entry["cost_gp"]) * econ.item_cost_multiplier * 100)
+    total_cp = unit_cp * req.quantity
+
+    with Session(engine) as session:
+        char = session.get(Character, req.character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        try:
+            new_purse = subtract_cost(_char_purse(char), total_cp)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        _apply_purse(char, new_purse)
+        _add_inventory_item(
+            char,
+            str(entry["name"]),
+            quantity=req.quantity,
+            extra={"category": "recipe-book", "rarity": rarity, "notes": entry.get("notes") or ""},
+        )
+        session.add(char)
+        session.commit()
+
+        return {
+            "status": "ok",
+            "item": entry["name"],
+            "rarity": rarity,
+            "quantity": req.quantity,
+            "spent_gp": round(total_cp / 100, 2),
+            "purse": _char_purse(char),
+            "display": format_purse(_char_purse(char)),
         }
 
 
@@ -2513,6 +2920,14 @@ async def bastion_create(req: BastionCreateRequest):
             raise HTTPException(
                 status_code=400,
                 detail=f"Bastions require level {min_bastion_level()}+ (character is {char.level}).",
+            )
+        existing = session.exec(
+            select(Bastion).where(Bastion.character_id == char.id)
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{char.name} already owns a bastion ('{existing.name}').",
             )
         b = Bastion(character_id=char.id, name=req.name, level_acquired=char.level)
         session.add(b)
@@ -2766,10 +3181,33 @@ class LightBurnRequest(BaseModel):
     kind: str = "torch"
     minutes_remaining: int
     minutes_elapsed: int
+    # When supplied, require the light source (and any fuel) in inventory.
+    character_id: Optional[int] = None
 
 
 @app.post("/survival/light")
 async def survival_light(req: LightBurnRequest):
+    if req.character_id is not None:
+        with Session(engine) as session:
+            char = session.get(Character, req.character_id)
+            if not char:
+                raise HTTPException(status_code=404, detail="Character not found.")
+            item_name = _LIGHT_SOURCE_ITEMS.get(
+                _normalize_item_name(req.kind), req.kind
+            )
+            if not _has_inventory_item(char, item_name):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No {item_name} in inventory to light.",
+                )
+            # Lanterns burn oil; enforce a flask of oil unless one is clearly carried.
+            if "lantern" in _normalize_item_name(item_name) and not (
+                _has_inventory_item(char, "oil") or _has_inventory_item(char, "flask of oil")
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="A lantern needs a flask of oil to burn.",
+                )
     return {
         "spec": source_spec(req.kind),
         "result": light_burn(req.kind, req.minutes_remaining, req.minutes_elapsed),
@@ -2854,6 +3292,13 @@ async def survival_long_rest_endpoint(req: RestRequest):
         char.stable = True
         # Conditions flagged to end on a long rest (e.g. a poison "until long rest").
         cleared = _clear_long_rest_conditions(char)
+        # Level-up gate: after a long rest, check if they've earned a level.
+        # If so, set pending_level_up flag; they must /level_up before adventuring.
+        eligible_level = _level_for_xp(char.xp)
+        if eligible_level > char.level:
+            char.pending_level_up = True
+            result["level_up_available"] = True
+            result["eligible_level"] = eligible_level
         session.add(char)
         session.commit()
         if cleared:
@@ -3055,6 +3500,9 @@ async def hazards_disease_save(req: DiseaseSaveRequest):
 
 class CureRequest(BaseModel):
     affliction_id: int
+    # When a character self-cures, they must have the means (spell or item).
+    character_id: Optional[int] = None
+    method: Optional[str] = None
 
 
 @app.post("/hazards/cure")
@@ -3063,6 +3511,30 @@ async def hazards_cure(req: CureRequest):
         aff = session.get(Affliction, req.affliction_id)
         if not aff:
             raise HTTPException(status_code=404, detail="Affliction not found.")
+        # Guardrail: a PC ending a disease/affliction needs a real means to do it.
+        if req.character_id is not None:
+            char = session.get(Character, req.character_id)
+            if not char:
+                raise HTTPException(status_code=404, detail="Character not found.")
+            method = _normalize_item_name(req.method or "")
+            if not method:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Specify how it is cured (a spell like 'lesser restoration' "
+                        "or an item) — a PC cannot cure an affliction with nothing."
+                    ),
+                )
+            has_means = (
+                _has_spell(char, method)
+                or _has_inventory_item(char, method)
+                or (method in _DISEASE_CURE_SPELLS and _has_spell(char, method))
+            )
+            if not has_means:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{char.name} lacks the means '{req.method}' (no such spell known or item carried).",
+                )
         aff.active = False
         session.add(aff)
         session.commit()
@@ -3085,10 +3557,26 @@ async def hazards_trap_detect(req: TrapDetectRequest):
 class TrapDisarmRequest(BaseModel):
     trap_slug: str
     check_total: int
+    # When a character is supplied, enforce the tools needed to disarm a trap.
+    character_id: Optional[int] = None
+    required_tools: Optional[List[str]] = None
 
 
 @app.post("/hazards/trap/disarm")
 async def hazards_trap_disarm(req: TrapDisarmRequest):
+    # Guardrail: disarming a mechanical trap needs thieves' tools in hand.
+    if req.character_id is not None:
+        with Session(engine) as session:
+            char = session.get(Character, req.character_id)
+            if not char:
+                raise HTTPException(status_code=404, detail="Character not found.")
+            needed = [t for t in (req.required_tools or ["thieves' tools"]) if t]
+            missing = [t for t in needed if not _has_inventory_item(char, t)]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Missing required tools to disarm: " + ", ".join(missing) + ".",
+                )
     result = trap_disarm(req.trap_slug, check_total=req.check_total)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
