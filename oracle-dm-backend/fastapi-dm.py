@@ -555,6 +555,12 @@ class Character(SQLModel, table=True):
     spells: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     inventory: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
+    # Persistent conditions/status effects that carry BETWEEN encounters (e.g.
+    # poisoned until a save, frightened, a lingering curse). Exhaustion is tracked
+    # separately above as a level. Each entry: {name, source?, note?, duration?,
+    # clears_on_long_rest?, applied_day?}.
+    conditions: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
     # Source/sync
     ddb_url: Optional[str] = Field(default=None, sa_column=Column(String))
     avrae_import_text: Optional[str] = Field(default=None, sa_column=Column(String))
@@ -731,6 +737,69 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict]) -> list[
     return payloads
 
 
+# The DM applies or clears a lasting condition on the PLAYER outside the combat
+# tracker (so it persists between encounters):
+#   [[CONDITION: add | poisoned | giant spider venom | until long rest]]
+#   [[CONDITION: remove | frightened]]
+#   [[CONDITION: clear]]
+# Fields: action(add|remove|clear) | name | source (optional) | duration (optional)
+CONDITION_HOOK_PATTERN = re.compile(r"\[\[CONDITION:(.+?)\]\]", re.IGNORECASE)
+
+
+def extract_condition_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull persistent-condition hooks out of the narration.
+
+    Returns ``(clean_text, ops)`` where each op is a dict describing an add/
+    remove/clear. Hooks are stripped from what the player sees.
+    """
+    ops: list[dict] = []
+    for m in CONDITION_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "add").lower()
+        op: dict = {"action": action}
+        if action != "clear":
+            op["name"] = parts[1] if len(parts) > 1 else ""
+            if not op["name"]:
+                continue
+            if len(parts) > 2 and parts[2]:
+                op["source"] = parts[2]
+            if len(parts) > 3 and parts[3]:
+                op["duration"] = parts[3]
+        ops.append(op)
+
+    clean = CONDITION_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def apply_condition_hooks(character_id: Optional[int], ops: list[dict]) -> list[str]:
+    """Persist condition add/remove/clear ops to the character. Returns notes."""
+    if not character_id or not ops:
+        return []
+    notes: list[str] = []
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            return []
+        changed = False
+        for op in ops:
+            if _apply_condition_op(char, op):
+                changed = True
+                action = (op.get("action") or "add").lower()
+                if action == "clear":
+                    notes.append("conditions cleared")
+                elif action == "remove":
+                    notes.append(f"no longer {_normalize_condition_name(op.get('name',''))}")
+                else:
+                    notes.append(f"now {_normalize_condition_name(op.get('name',''))}")
+        if changed:
+            session.add(char)
+            session.commit()
+    return notes
+
+
 # ----- OpenRouter LLM call -----
 
 def call_openrouter_chat(
@@ -866,6 +935,17 @@ def generate_dm_reply(
         "  Don't let a stunned, paralyzed, or unconscious creature take actions, a grappled one\n"
         "  walk away, or a blinded one make a clean ranged shot. When a condition ends or a save\n"
         "  applies, resolve it with a [[ROLL]] hook rather than assuming the outcome.\n"
+        "  Conditions PERSIST between encounters. The 'Character resources' block shows an\n"
+        "  'Active conditions' line for whatever currently afflicts the player — honor it every\n"
+        "  turn, even outside a fight. When a lasting condition BEGINS or ENDS on the player\n"
+        "  outside the initiative tracker, record it so it carries forward by emitting a hook on\n"
+        "  its own line (removed from what the player sees):\n"
+        "    [[CONDITION: add | poisoned | giant spider venom | until the end of a long rest]]\n"
+        "    [[CONDITION: remove | frightened]]\n"
+        "  Fields: action (add/remove/clear) | condition | source (optional) | duration (optional).\n"
+        "  Use it for things that outlast the moment (a lingering poison, a curse, ongoing fear);\n"
+        "  don't spam it for effects that resolve within the same scene. Exhaustion is tracked\n"
+        "  separately — don't emit a CONDITION hook for it.\n"
         "- That block may also show survival state: current/max HP, Hit Dice, exhaustion,\n"
         "  rations and water, active afflictions (diseases/madness), current weather and\n"
         "  environmental hazards, and faction reputation. Treat these as ground truth:\n"
@@ -1223,6 +1303,119 @@ def _physical_capabilities_summary(char: Character) -> str:
     return line
 
 
+# The 5e conditions we recognize for persistence. Exhaustion is handled separately
+# as a numeric level, so it is intentionally NOT in this set.
+_KNOWN_CONDITIONS = {
+    "blinded", "charmed", "deafened", "frightened", "grappled", "incapacitated",
+    "invisible", "paralyzed", "petrified", "poisoned", "prone", "restrained",
+    "stunned", "unconscious",
+}
+_CONDITION_ALIASES = {
+    "scared": "frightened", "afraid": "frightened", "fear": "frightened",
+    "blind": "blinded", "deaf": "deafened", "poison": "poisoned",
+    "knocked prone": "prone", "knocked out": "unconscious", "ko": "unconscious",
+    "grapple": "grappled", "restrain": "restrained", "stun": "stunned",
+    "paralysis": "paralyzed", "petrify": "petrified", "charm": "charmed",
+}
+
+
+def _normalize_condition_name(name: str) -> str:
+    n = (name or "").strip().lower()
+    n = _CONDITION_ALIASES.get(n, n)
+    return n
+
+
+def _character_conditions(char: Character) -> List[Dict[str, Any]]:
+    """Normalize the persistent conditions blob into a list of dicts."""
+    out: List[Dict[str, Any]] = []
+    for raw in (char.conditions or []):
+        if isinstance(raw, str):
+            out.append({"name": _normalize_condition_name(raw)})
+        elif isinstance(raw, dict) and raw.get("name"):
+            entry = dict(raw)
+            entry["name"] = _normalize_condition_name(entry["name"])
+            out.append(entry)
+    return out
+
+
+def _conditions_summary(char: Character) -> Optional[str]:
+    """A 'Conditions:' line for the DM prompt, or None if the PC has none."""
+    conds = _character_conditions(char)
+    if not conds:
+        return None
+    parts = []
+    for c in conds:
+        label = c["name"]
+        extra = []
+        if c.get("source"):
+            extra.append(f"from {c['source']}")
+        if c.get("duration"):
+            extra.append(str(c["duration"]))
+        if extra:
+            label += f" ({', '.join(extra)})"
+        parts.append(label)
+    return "Active conditions (persist between encounters): " + "; ".join(parts) + "."
+
+
+def _apply_condition_op(char: Character, op: Dict[str, Any]) -> bool:
+    """Add/remove/clear a persistent condition on the character in place.
+
+    ``op`` = {action: add|remove|clear, name, source?, note?, duration?,
+    clears_on_long_rest?}. Returns True if the character's conditions changed.
+    """
+    action = (op.get("action") or "add").strip().lower()
+    conds = _character_conditions(char)
+
+    if action == "clear":
+        changed = bool(conds)
+        char.conditions = []
+        return changed
+
+    name = _normalize_condition_name(op.get("name", ""))
+    if not name:
+        return False
+
+    if action == "remove":
+        new = [c for c in conds if c["name"] != name]
+        changed = len(new) != len(conds)
+        char.conditions = new
+        return changed
+
+    # add / update
+    entry: Dict[str, Any] = {"name": name}
+    if op.get("source"):
+        entry["source"] = str(op["source"])[:120]
+    if op.get("duration"):
+        entry["duration"] = str(op["duration"])[:80]
+    if op.get("note"):
+        entry["note"] = str(op["note"])[:200]
+    dur_l = (entry.get("duration") or "").lower()
+    entry["clears_on_long_rest"] = bool(op.get("clears_on_long_rest")) or ("long rest" in dur_l)
+    try:
+        entry["applied_day"] = world.current_day()
+    except Exception:
+        pass
+    # Replace any existing entry of the same name (update semantics).
+    new = [c for c in conds if c["name"] != name]
+    new.append(entry)
+    char.conditions = new
+    return True
+
+
+def _clear_long_rest_conditions(char: Character) -> List[str]:
+    """Drop conditions flagged to end on a long rest. Returns removed names."""
+    conds = _character_conditions(char)
+    keep, removed = [], []
+    for c in conds:
+        if c.get("clears_on_long_rest"):
+            removed.append(c["name"])
+        else:
+            keep.append(c)
+    if removed:
+        char.conditions = keep
+    return removed
+
+
 def _portrait_base_look(char: Character) -> str:
     """A short appearance seed (race/class/subclass) to anchor a PC portrait."""
     parts: List[str] = []
@@ -1286,6 +1479,7 @@ def _build_character_sheet(char: Character) -> Dict[str, Any]:
         "inventory": inv["items"],
         "inventory_lines": inv["lines"],
         "carried_weight": inv["carried_weight"],
+        "conditions": _character_conditions(char),
         "home_region": char.home_region,
         "notes": char.notes,
     }
@@ -1381,6 +1575,11 @@ def _character_resource_block(character_id: int) -> str:
         # use a weapon/item/tool they don't actually have.
         lines.append(_equipment_summary(char))
 
+        # Persistent conditions/status effects carried between encounters.
+        cond_line = _conditions_summary(char)
+        if cond_line:
+            lines.append(cond_line)
+
         # Physical limits — movement, jumps, lifting, reach — so the DM can gate
         # feats of athletics that are impossible without magic or special items.
         lines.append(_physical_capabilities_summary(char))
@@ -1440,6 +1639,19 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     except Exception as e:
         print(f"[imagery] hook processing failed: {e}")
         image_payloads = []
+
+    # Persist any lasting conditions the DM applied/cleared on the PC so they
+    # carry into the next encounter.
+    dm_text, condition_ops = extract_condition_hooks(dm_text)
+    if condition_ops:
+        try:
+            state = _load_session_state(req.session_id)
+            character_id = (state.get("meta", {}) or {}).get("character_id")
+            if not character_id:
+                character_id = _resolve_session_character(req.session_id, req.user_id)
+            apply_condition_hooks(character_id, condition_ops)
+        except Exception as e:
+            print(f"[conditions] hook processing failed: {e}")
 
     # Store DM turn
     state = _append_turn(req.session_id, Turn(role="dm", user="Oracle DM", content=dm_text))
@@ -2640,8 +2852,12 @@ async def survival_long_rest_endpoint(req: RestRequest):
         char.death_save_successes = 0
         char.death_save_failures = 0
         char.stable = True
+        # Conditions flagged to end on a long rest (e.g. a poison "until long rest").
+        cleared = _clear_long_rest_conditions(char)
         session.add(char)
         session.commit()
+        if cleared:
+            result["conditions_cleared"] = cleared
         return {"status": "ok", "result": result}
 
 
@@ -3143,6 +3359,15 @@ class PortraitUploadRequest(BaseModel):
     caption: str = ""
 
 
+class CharacterConditionRequest(BaseModel):
+    action: str = "add"          # add | remove | clear
+    condition: str = ""          # e.g. "poisoned" (ignored for clear)
+    source: Optional[str] = None
+    duration: Optional[str] = None
+    note: Optional[str] = None
+    clears_on_long_rest: Optional[bool] = None
+
+
 @app.get("/imagery/status")
 async def imagery_status():
     """Report imagery config + whether the diffusion backend is reachable."""
@@ -3249,6 +3474,47 @@ async def character_inventory(character_id: int):
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
         return _format_inventory(char)
+
+
+@app.get("/character/{character_id}/conditions")
+async def character_conditions(character_id: int):
+    """List the persistent conditions currently on the character."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        return {
+            "character_id": char.id,
+            "name": char.name,
+            "conditions": _character_conditions(char),
+        }
+
+
+@app.post("/character/{character_id}/condition")
+async def character_condition(character_id: int, req: CharacterConditionRequest):
+    """Add, remove, or clear a persistent condition on the character."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        op = {
+            "action": req.action,
+            "name": req.condition,
+            "source": req.source,
+            "duration": req.duration,
+            "note": req.note,
+            "clears_on_long_rest": req.clears_on_long_rest,
+        }
+        changed = _apply_condition_op(char, op)
+        if changed:
+            session.add(char)
+            session.commit()
+            session.refresh(char)
+        return {
+            "status": "ok",
+            "changed": changed,
+            "conditions": _character_conditions(char),
+        }
 
 
 @app.post("/character/{character_id}/portrait/generate")

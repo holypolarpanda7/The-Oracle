@@ -106,6 +106,25 @@ def build_sheet_embed(sheet: dict) -> Tuple[discord.Embed, Optional[discord.File
         prog_lines.append(f"**Region** {sheet['home_region']}")
     embed.add_field(name="Progress", value="\n".join(prog_lines), inline=True)
 
+    # Active conditions/status effects (persist between encounters).
+    conditions = sheet.get("conditions") or []
+    if conditions:
+        cond_lines = []
+        for c in conditions:
+            if isinstance(c, dict):
+                label = str(c.get("name", "")).title()
+                extra = []
+                if c.get("source"):
+                    extra.append(f"from {c['source']}")
+                if c.get("duration"):
+                    extra.append(str(c["duration"]))
+                if extra:
+                    label += f" ({', '.join(extra)})"
+            else:
+                label = str(c).title()
+            cond_lines.append(f"• {label}")
+        embed.add_field(name="Conditions", value="\n".join(cond_lines), inline=False)
+
     # Spells (names only; the sheet is a summary).
     spells = sheet.get("spells") or []
     if spells:
