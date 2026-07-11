@@ -29,6 +29,9 @@ from eight_card_system import WorldGraph
 from eight_card_system.graph import slugify
 from eight_card_system.seed import seed_starter_world, place_pc
 from eight_card_system.extraction import extract_and_apply
+from eight_card_system.models import (
+    EntityType, RelationType, Attitude, CompanionControl, NpcAttr, attitude_for_trust,
+)
 from rules import (
     RulesLibrary,
     format_monster_brief,
@@ -528,6 +531,14 @@ class Character(SQLModel, table=True):
     # Must resolve via /level_up before continuing adventure.
     pending_level_up: bool = Field(default=False)
 
+    # PC vs NPC discriminator. NPCs are FULL characters — same class/subclass/
+    # level/feature machinery as PCs — distinguished only by this flag. ``controller``
+    # records who runs an NPC once it joins a party: "player" or "dm" (PCs are always
+    # player-run). The world-graph NPC entity holds the narrative/relational layer
+    # (location, trust, party membership) and links back here by character id.
+    is_npc: bool = Field(default=False, index=True)
+    controller: str = Field(default="player", sa_column=Column(String))
+
     # Coin purse (SRD denominations) + downtime lifestyle tier.
     cp: int = Field(default=0)
     sp: int = Field(default=0)
@@ -803,6 +814,59 @@ def apply_condition_hooks(character_id: Optional[int], ops: list[dict]) -> list[
     return notes
 
 
+# The DM records a shift in an NPC's running trust toward the party during
+# roleplay (kindness, betrayal, shared danger, insults, favors kept or broken):
+#   [[TRUST: Marta Fenn | +5 | the party saved her tavern]]
+#   [[TRUST: Old Ferran | -3 | they mocked his warnings]]
+# Fields: npc (slug or name) | signed delta | reason (optional)
+TRUST_HOOK_PATTERN = re.compile(r"\[\[TRUST:(.+?)\]\]", re.IGNORECASE)
+
+
+def extract_trust_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull NPC trust-shift hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in TRUST_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if len(parts) < 2:
+            continue
+        npc = (parts[0] or "").strip()
+        raw = (parts[1] or "").strip().replace("+", "")
+        try:
+            delta = int(raw)
+        except ValueError:
+            continue
+        if not npc or delta == 0:
+            continue
+        op = {"npc": npc, "delta": delta}
+        if len(parts) > 2 and parts[2]:
+            op["reason"] = parts[2].strip()
+        ops.append(op)
+    clean = TRUST_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def apply_trust_hooks(character_id: Optional[int], ops: list[dict]) -> list[str]:
+    """Apply NPC trust shifts toward the session's PC. Returns short notes."""
+    if not character_id or not ops:
+        return []
+    notes: list[str] = []
+    with Session(engine) as session:
+        pc_char = session.get(Character, character_id)
+        if not pc_char:
+            return []
+        pc_slug = _pc_entity_slug(pc_char)
+        for op in ops:
+            ent = world.get_entity(op["npc"])
+            if not ent or ent.type != EntityType.NPC:
+                continue
+            result = world.adjust_trust(ent.slug, pc_slug, int(op["delta"]),
+                                        reason=op.get("reason", ""))
+            if result:
+                notes.append(f"{ent.name} -> {result['attitude']} (trust {result['trust']})")
+    return notes
+
+
 # ----- OpenRouter LLM call -----
 
 def call_openrouter_chat(
@@ -979,6 +1043,27 @@ def generate_dm_reply(
         "  When a fight or tense encounter ENDS, recap any conditions still on the player in the\n"
         "  narration (e.g. 'the wolves are dead, but the spider's venom still burns in your veins')\n"
         "  so they know what lingers, and remind them of the trigger that will clear it.\n"
+        "- NPCs & the party. Most NPCs are LIGHTWEIGHT: a name, role, disposition, and a running\n"
+        "  TRUST toward the party — you can invent and voice them freely without any stat sheet.\n"
+        "  The world-state block lists nearby NPCs with their current attitude; play them to it.\n"
+        "  * Trust grows or sours through play (favors, honesty, shared danger vs. insults,\n"
+        "    betrayal, broken promises) and moves an NPC along hostile -> unfriendly -> indifferent\n"
+        "    -> friendly -> helpful. When an interaction should shift how an NPC feels, record it on\n"
+        "    its own line (removed from what the player sees):\n"
+        "      [[TRUST: Marta Fenn | +5 | the party saved her tavern]]\n"
+        "      [[TRUST: Old Ferran | -3 | they mocked his warnings]]\n"
+        "    Fields: npc (name) | signed amount (small, ~1-10) | reason. Let the earned attitude,\n"
+        "    not plot convenience, decide how far an NPC will go for the party.\n"
+        "  * A friendly/helpful NPC may OFFER to travel with the party. Joining is the PLAYER's\n"
+        "    call, not yours: surface the offer and ask whether they want the companion along and\n"
+        "    whether THEY will run that companion or leave it to you (the DM). Don't auto-add an NPC\n"
+        "    to the party. Once an NPC joins, they become a full character (class, subclass, and\n"
+        "    level-appropriate features) who can fight and level up like the player — the system\n"
+        "    handles that promotion when the party recruits them.\n"
+        "  * Companions currently traveling with the party appear in a 'Party companions' list with\n"
+        "    who runs each (player-run or DM-run). Run DM-run companions as loyal allies with their\n"
+        "    own voice; for player-run companions, prompt the player for that character's actions.\n"
+
         "- That block may also show survival state: current/max HP, Hit Dice, exhaustion,\n"
         "  rations and water, active afflictions (diseases/madness), current weather and\n"
         "  environmental hazards, and faction reputation. Treat these as ground truth:\n"
@@ -1787,6 +1872,18 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             print(f"[conditions] hook processing failed: {e}")
 
+    # Record any NPC trust shifts the DM signalled during the scene.
+    dm_text, trust_ops = extract_trust_hooks(dm_text)
+    if trust_ops:
+        try:
+            state = _load_session_state(req.session_id)
+            character_id = (state.get("meta", {}) or {}).get("character_id")
+            if not character_id:
+                character_id = _resolve_session_character(req.session_id, req.user_id)
+            apply_trust_hooks(character_id, trust_ops)
+        except Exception as e:
+            print(f"[trust] hook processing failed: {e}")
+
     # Store DM turn
     state = _append_turn(req.session_id, Turn(role="dm", user="Oracle DM", content=dm_text))
     if len(state.get("recent_turns", [])) > get_config().session_memory.compaction_threshold:
@@ -2133,6 +2230,422 @@ async def class_options(class_name: str):
             "subclass_level": cls.subclass_level,
             "subclasses": [{"name": s.name, "slug": s.index_slug, "source": s.source} for s in options],
         }
+
+
+# ===================== NPCs & party companions =============================
+#
+# Design: MOST NPCs are lightweight world-graph entities (a name, role,
+# disposition, and a running trust toward the party) — cheap to spin up and
+# plenty for talking, trading, and scheming. An NPC is only promoted to a FULL
+# Character sheet (class/subclass/level + level-appropriate features, HP, Hit
+# Dice) when they JOIN THE PARTY as an adventuring companion, so they can fight,
+# level up, and be run in combat. The player chooses whether they or the DM run
+# that companion.
+
+# A neutral default ability array for a promoted NPC when none is supplied.
+_DEFAULT_NPC_STATS = {
+    "strength": 14, "dexterity": 13, "constitution": 14,
+    "intelligence": 10, "wisdom": 12, "charisma": 10,
+}
+
+
+def _pc_entity_slug(char: Character) -> str:
+    """The world-graph PC entity slug for a backend character (slug of its name)."""
+    return slugify(char.name)
+
+
+def _subclass_features_up_to(session: Session, cls: DndClass, subclass_name: Optional[str], level: int) -> list:
+    """Subclass features gained at or below ``level`` (SRD data only)."""
+    if not subclass_name:
+        return []
+    sc = _find_subclass(session, cls, subclass_name)
+    if not sc or not sc.features:
+        return []
+    out = []
+    for f in sc.features:
+        if isinstance(f, dict) and int(f.get("level", 0) or 0) <= level:
+            out.append({"level": f.get("level"), "name": f.get("name"), "summary": f.get("summary")})
+    return out
+
+
+def _build_leveled_npc_character(
+    session: Session,
+    *,
+    name: str,
+    char_class: str,
+    level: int,
+    subclass: Optional[str] = None,
+    stats: Optional[dict] = None,
+    race: Optional[str] = None,
+    controller: str = "dm",
+) -> Character:
+    """Create a FULL NPC character sheet at a target level.
+
+    HP/Hit Dice are derived from the class hit die + Constitution across levels,
+    and the subclass is applied when the class is high enough to choose one. This
+    reuses the same rules the PCs do so a companion is a real, levelable character.
+    """
+    cls = _get_class_row(session, char_class)
+    if cls is None:
+        raise HTTPException(status_code=400, detail=f"Unknown class for NPC: {char_class!r}")
+    stats = stats or dict(_DEFAULT_NPC_STATS)
+    level = max(1, int(level))
+
+    die_faces = int(cls.hit_die or 8)
+    con_mod = ability_modifier(stats.get("constitution") or stats.get("con") or stats.get("CON"))
+    # L1 = max die + CON; each later level adds the die's average (rounded up) + CON.
+    avg_per_level = die_faces // 2 + 1
+    max_hp = max(1, die_faces + con_mod)
+    for _ in range(2, level + 1):
+        max_hp += max(1, avg_per_level + con_mod)
+
+    # Only apply a subclass once the class is high enough to have chosen it.
+    applied_subclass = None
+    if subclass and level >= (cls.subclass_level or 3):
+        sc = _find_subclass(session, cls, subclass)
+        applied_subclass = sc.name if sc else subclass
+
+    char = Character(
+        name=name,
+        race=race,
+        char_class=cls.name,
+        subclass=applied_subclass,
+        level=level,
+        is_npc=True,
+        controller=controller if controller in ("player", "dm") else "dm",
+        stats=stats,
+        max_hp=max_hp,
+        current_hp=max_hp,
+        hit_die=f"d{die_faces}",
+        hit_dice_total=level,
+        hit_dice_remaining=level,
+        approved=True,
+    )
+    session.add(char)
+    session.commit()
+    session.refresh(char)
+    return char
+
+
+def _npc_character_summary(session: Session, character_id: Optional[int]) -> Optional[dict]:
+    """Compact mechanical sheet for a promoted NPC (class/subclass/level/HP/features)."""
+    if not character_id:
+        return None
+    char = session.get(Character, character_id)
+    if not char:
+        return None
+    cls = _get_class_row(session, char.char_class)
+    features = _subclass_features_up_to(session, cls, char.subclass, char.level) if cls else []
+    return {
+        "character_id": char.id,
+        "class": char.char_class,
+        "subclass": char.subclass,
+        "level": char.level,
+        "hp": {"current": char.current_hp, "max": char.max_hp},
+        "hit_dice": {"remaining": char.hit_dice_remaining, "total": char.hit_dice_total, "die": char.hit_die},
+        "controller": char.controller,
+        "subclass_features": features,
+        "stats": char.stats or {},
+    }
+
+
+def _npc_dossier(session: Session, ent, pc_char: Optional[Character] = None) -> dict:
+    """Full NPC record: narrative attributes + trust (toward a PC) + any sheet."""
+    attrs = ent.attributes or {}
+    trust = None
+    if pc_char is not None:
+        trust = world.get_trust(ent.slug, _pc_entity_slug(pc_char))
+    return {
+        "slug": ent.slug,
+        "name": ent.name,
+        "status": ent.status,
+        "description": attrs.get(NpcAttr.DESCRIPTION),
+        "race": attrs.get(NpcAttr.RACE),
+        "role": attrs.get(NpcAttr.ROLE),
+        "disposition": attrs.get(NpcAttr.DISPOSITION),
+        "attitude": attrs.get(NpcAttr.ATTITUDE),
+        "voice": attrs.get(NpcAttr.VOICE),
+        "goals": attrs.get(NpcAttr.GOALS),
+        "trust": trust,
+        "is_full_character": bool(ent.character_id),
+        "sheet": _npc_character_summary(session, ent.character_id),
+    }
+
+
+class NpcCreateRequest(BaseModel):
+    name: str
+    race: Optional[str] = None
+    role: Optional[str] = None
+    disposition: Optional[str] = None
+    attitude: Optional[str] = None
+    voice: Optional[str] = None
+    goals: Optional[str] = None
+    description: Optional[str] = None
+    location: Optional[str] = None      # place slug/name to place the NPC at
+    tags: Optional[List[str]] = None
+    # Optional: seed an initial trust toward a specific PC.
+    character_id: Optional[int] = None
+    initial_trust: Optional[int] = None
+
+
+@app.post("/npc/create")
+async def npc_create(req: NpcCreateRequest):
+    """Quickly spin up a LIGHTWEIGHT narrative NPC in the world graph.
+
+    No stat sheet is created — that only happens if/when the NPC joins a party.
+    """
+    attrs = {}
+    if req.description:
+        attrs[NpcAttr.DESCRIPTION] = req.description
+    if req.race:
+        attrs[NpcAttr.RACE] = req.race
+    if req.role:
+        attrs[NpcAttr.ROLE] = req.role
+    if req.disposition:
+        attrs[NpcAttr.DISPOSITION] = req.disposition
+    if req.attitude:
+        attrs[NpcAttr.ATTITUDE] = req.attitude
+    if req.voice:
+        attrs[NpcAttr.VOICE] = req.voice
+    if req.goals:
+        attrs[NpcAttr.GOALS] = req.goals
+
+    ent = world.upsert_entity(
+        req.name, EntityType.NPC, attributes=attrs, tags=req.tags or ["npc"],
+    )
+    if req.location:
+        try:
+            world.move_entity(ent.slug, req.location)
+        except Exception as e:
+            print(f"[npc] could not place '{req.name}' at '{req.location}': {e}")
+
+    with Session(engine) as session:
+        pc_char = session.get(Character, req.character_id) if req.character_id else None
+        if pc_char is not None and req.initial_trust is not None:
+            world.adjust_trust(ent.slug, _pc_entity_slug(pc_char), int(req.initial_trust),
+                               reason="first impression")
+        # Re-read the entity so mirrored attitude (if trust set) is reflected.
+        return {"status": "ok", "npc": _npc_dossier(session, world.get_entity(ent.slug), pc_char)}
+
+
+@app.get("/npc/{slug}")
+async def npc_get(slug: str, character_id: Optional[int] = None):
+    ent = world.get_entity(slug)
+    if not ent or ent.type != EntityType.NPC:
+        raise HTTPException(status_code=404, detail=f"NPC '{slug}' not found.")
+    with Session(engine) as session:
+        pc_char = session.get(Character, character_id) if character_id else None
+        return _npc_dossier(session, ent, pc_char)
+
+
+class NpcTrustRequest(BaseModel):
+    npc: str                    # slug or name
+    character_id: int
+    delta: int
+    reason: Optional[str] = None
+
+
+@app.post("/npc/trust")
+async def npc_trust(req: NpcTrustRequest):
+    """Nudge an NPC's running trust toward a PC (shifts their attitude band)."""
+    with Session(engine) as session:
+        pc_char = session.get(Character, req.character_id)
+        if not pc_char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        ent = world.get_entity(req.npc)
+        if not ent or ent.type != EntityType.NPC:
+            raise HTTPException(status_code=404, detail=f"NPC '{req.npc}' not found.")
+        result = world.adjust_trust(ent.slug, _pc_entity_slug(pc_char), int(req.delta),
+                                    reason=req.reason or "")
+        if result is None:
+            raise HTTPException(status_code=400, detail="Could not adjust trust.")
+        try:
+            world.add_event(
+                f"{ent.name}'s trust toward {pc_char.name} shifts to {result['attitude']}"
+                + (f" ({req.reason})" if req.reason else ""),
+                involved=[ent.slug],
+            )
+        except Exception:
+            pass
+        return {"status": "ok", "npc": ent.slug, **result}
+
+
+class NpcActivityRequest(BaseModel):
+    npc: str
+    activity: str
+    move_to: Optional[str] = None   # place slug/name to relocate the NPC
+
+
+@app.post("/npc/activity")
+async def npc_activity(req: NpcActivityRequest):
+    """Log what an NPC is doing (and optionally move them) — living-world tracking."""
+    ent = world.get_entity(req.npc)
+    if not ent or ent.type != EntityType.NPC:
+        raise HTTPException(status_code=404, detail=f"NPC '{req.npc}' not found.")
+    if req.move_to:
+        try:
+            world.move_entity(ent.slug, req.move_to)
+        except Exception as e:
+            print(f"[npc] move failed: {e}")
+    world.add_event(f"{ent.name}: {req.activity}", involved=[ent.slug])
+    return {"status": "ok", "npc": ent.slug, "logged": req.activity}
+
+
+class PartyRecruitRequest(BaseModel):
+    character_id: int               # the PC whose party the NPC joins
+    npc: str                        # slug or name of an existing NPC
+    control: str = CompanionControl.DM   # "player" or "dm" — the PLAYER's choice
+    role: Optional[str] = None
+    # Promotion parameters (used only if the NPC has no character sheet yet):
+    char_class: Optional[str] = None
+    subclass: Optional[str] = None
+    level: Optional[int] = None
+    stats: Optional[dict] = None
+    race: Optional[str] = None
+
+
+@app.post("/party/recruit")
+async def party_recruit(req: PartyRecruitRequest):
+    """An NPC joins a PC's party. Promotes the NPC to a full character sheet.
+
+    If the NPC has no sheet yet, one is built at the requested level (defaulting to
+    the recruiting PC's level) with class/subclass features — so the companion can
+    fight and advance. The ``control`` field records whether the player or the DM
+    runs the companion.
+    """
+    control = req.control if req.control in CompanionControl.ALL else CompanionControl.DM
+    with Session(engine) as session:
+        pc_char = session.get(Character, req.character_id)
+        if not pc_char:
+            raise HTTPException(status_code=404, detail="Recruiting character not found.")
+        ent = world.get_entity(req.npc)
+        if not ent or ent.type != EntityType.NPC:
+            raise HTTPException(status_code=404, detail=f"NPC '{req.npc}' not found.")
+
+        # Promote to a full character sheet if not already one.
+        if not ent.character_id:
+            char_class = req.char_class
+            if not char_class:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Joining the party requires a class for the companion "
+                           "(NPCs are promoted to full characters when they adventure).",
+                )
+            npc_char = _build_leveled_npc_character(
+                session,
+                name=ent.name,
+                char_class=char_class,
+                level=req.level or pc_char.level or 1,
+                subclass=req.subclass,
+                stats=req.stats,
+                race=req.race or (ent.attributes or {}).get(NpcAttr.RACE),
+                controller=control,
+            )
+            world.upsert_entity(ent.name, EntityType.NPC, character_id=npc_char.id)
+            ent = world.get_entity(ent.slug)
+        else:
+            # Already a full character; just update who controls it.
+            npc_char = session.get(Character, ent.character_id)
+            if npc_char:
+                npc_char.controller = control
+                session.add(npc_char)
+                session.commit()
+
+        world.recruit_companion(ent.slug, _pc_entity_slug(pc_char),
+                                control=control, role=req.role or "")
+        try:
+            world.add_event(
+                f"{ent.name} joins {pc_char.name}'s party ({'player' if control=='player' else 'DM'}-run).",
+                involved=[ent.slug],
+            )
+        except Exception:
+            pass
+        return {
+            "status": "ok",
+            "companion": _npc_dossier(session, ent, pc_char),
+            "control": control,
+        }
+
+
+class PartyControlRequest(BaseModel):
+    character_id: int
+    npc: str
+    control: str    # "player" or "dm"
+
+
+@app.post("/party/control")
+async def party_control(req: PartyControlRequest):
+    """Switch who runs a companion — the player or the DM."""
+    if req.control not in CompanionControl.ALL:
+        raise HTTPException(status_code=400, detail="control must be 'player' or 'dm'.")
+    with Session(engine) as session:
+        pc_char = session.get(Character, req.character_id)
+        if not pc_char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        ent = world.get_entity(req.npc)
+        if not ent or ent.type != EntityType.NPC:
+            raise HTTPException(status_code=404, detail=f"NPC '{req.npc}' not found.")
+        mode = world.set_companion_control(ent.slug, _pc_entity_slug(pc_char), req.control)
+        if mode is None:
+            raise HTTPException(status_code=400, detail=f"{ent.name} is not in the party.")
+        if ent.character_id:
+            npc_char = session.get(Character, ent.character_id)
+            if npc_char:
+                npc_char.controller = req.control
+                session.add(npc_char)
+                session.commit()
+        return {"status": "ok", "npc": ent.slug, "control": mode}
+
+
+class PartyDismissRequest(BaseModel):
+    character_id: int
+    npc: str
+    reason: Optional[str] = None
+
+
+@app.post("/party/dismiss")
+async def party_dismiss(req: PartyDismissRequest):
+    """An NPC leaves the party (their character sheet is kept for later)."""
+    with Session(engine) as session:
+        pc_char = session.get(Character, req.character_id)
+        if not pc_char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        ent = world.get_entity(req.npc)
+        if not ent or ent.type != EntityType.NPC:
+            raise HTTPException(status_code=404, detail=f"NPC '{req.npc}' not found.")
+        closed = world.dismiss_companion(ent.slug, _pc_entity_slug(pc_char))
+        if closed:
+            try:
+                world.add_event(
+                    f"{ent.name} parts ways with {pc_char.name}'s party"
+                    + (f" ({req.reason})" if req.reason else "."),
+                    involved=[ent.slug],
+                )
+            except Exception:
+                pass
+        return {"status": "ok", "npc": ent.slug, "left": bool(closed)}
+
+
+@app.get("/party/{character_id}")
+async def party_list(character_id: int):
+    """List the PC's current companions with control mode + sheet summary."""
+    with Session(engine) as session:
+        pc_char = session.get(Character, character_id)
+        if not pc_char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        companions = world.list_companions(_pc_entity_slug(pc_char))
+        out = []
+        for c in companions:
+            ent = c["npc"]
+            out.append({
+                "slug": c["slug"],
+                "name": c["name"],
+                "control": c["control"],
+                "role": c["role"],
+                "trust": world.get_trust(c["slug"], _pc_entity_slug(pc_char)),
+                "sheet": _npc_character_summary(session, ent.character_id),
+            })
+        return {"character_id": character_id, "companions": out}
 
 
 # ----- Combat state tracker -----

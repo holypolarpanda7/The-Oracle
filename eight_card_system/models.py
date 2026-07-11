@@ -93,6 +93,57 @@ class Attitude:
     ALL = {HOSTILE, UNFRIENDLY, INDIFFERENT, FRIENDLY, HELPFUL}
 
 
+# Trust is a running numeric relationship score between an NPC and a specific PC,
+# stored on the npc->pc KNOWS relation's ``attributes['trust']`` (and mirrored to
+# an ``attitude`` band). It lets the DM track a relationship growing/souring over
+# many interactions, beyond the coarse 5e attitude snapshot.
+TRUST_MIN = -100
+TRUST_MAX = 100
+
+
+def attitude_for_trust(trust: int) -> str:
+    """Map a running trust score to the 5e attitude band the NPC currently holds."""
+    t = max(TRUST_MIN, min(TRUST_MAX, int(trust)))
+    if t <= -60:
+        return Attitude.HOSTILE
+    if t <= -20:
+        return Attitude.UNFRIENDLY
+    if t < 20:
+        return Attitude.INDIFFERENT
+    if t < 60:
+        return Attitude.FRIENDLY
+    return Attitude.HELPFUL
+
+
+class CompanionControl:
+    """Who issues a party companion's actions once an NPC joins the party.
+
+    The PLAYER decides this per companion: run the NPC themselves, or hand the
+    reins to the DM. Stored on the npc->pc ``travels_with`` relation's
+    ``attributes['control']``.
+    """
+    PLAYER = "player"   # the player controls the companion's actions
+    DM = "dm"           # the DM runs the companion as an ally NPC
+
+    ALL = {PLAYER, DM}
+
+
+# Canonical attribute keys for an NPC entity's ``attributes`` JSON. Keeping these
+# consistent lets the DM tools + prompt read/write a predictable NPC "dossier".
+class NpcAttr:
+    DESCRIPTION = "description"   # one-line summary
+    RACE = "race"
+    ROLE = "role"                # occupation / function (tavernkeeper, guard, ...)
+    DISPOSITION = "disposition"  # personality in a word or two
+    ATTITUDE = "attitude"        # default 5e attitude (per-PC trust overrides this)
+    VOICE = "voice"              # how they speak (accent, verbal tics)
+    GOALS = "goals"              # what they want
+    SECRETS = "secrets"          # DM-only info the player must earn
+    STATBLOCK = "statblock"      # compact combat block for companions/foes
+    LEVEL = "level"
+
+
+
 class TimeOfDay:
     """Coarse time-of-day segments used by the world clock."""
     DAWN = "dawn"
@@ -136,11 +187,13 @@ class RelationType:
     SELLS = "sells"                  # npc/faction -> item
     GIVES_QUEST = "gives_quest"      # npc/faction -> quest
     KNOWS_ABOUT = "knows_about"      # npc/pc -> lore/any (information held)
+    # party / companionship
+    TRAVELS_WITH = "travels_with"    # npc -> pc (companion currently in the party)
 
     ALL = {
         LOCATED_IN, ADJACENT_TO, PART_OF, MEMBER_OF, ALLIED_WITH,
         HOSTILE_TO, KNOWS, OWNS, INVOLVES, LOCATED_AT,
-        WORSHIPS, GOVERNS, SELLS, GIVES_QUEST, KNOWS_ABOUT,
+        WORSHIPS, GOVERNS, SELLS, GIVES_QUEST, KNOWS_ABOUT, TRAVELS_WITH,
     }
 
     # Relation types that are symmetric (traversed both ways for adjacency logic)
@@ -169,6 +222,11 @@ class Entity(SQLModel, table=True):
 
     # Link back to backend Character rows for PC entities.
     discord_user_id: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+
+    # Link to a backend Character sheet (the full mechanical record). Both PC and
+    # NPC entities may carry this: NPCs are full characters too (class/subclass/
+    # level/features), so their combat/progression lives on that Character row.
+    character_id: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
 
     created_day: int = Field(default=0)
     created_at: datetime = Field(default_factory=datetime.utcnow)

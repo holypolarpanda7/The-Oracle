@@ -23,7 +23,10 @@ from .models import (
     ItemRarity,
     QuestState,
     Attitude,
+    CompanionControl,
+    NpcAttr,
     TimeOfDay,
+    attitude_for_trust,
     describe_date,
 )
 from .graph import WorldGraph, get_engine, WorldContext
@@ -42,6 +45,9 @@ __all__ = [
     "ItemRarity",
     "QuestState",
     "Attitude",
+    "CompanionControl",
+    "NpcAttr",
     "TimeOfDay",
+    "attitude_for_trust",
     "describe_date",
 ]

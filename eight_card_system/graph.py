@@ -22,6 +22,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from .models import (
     Entity, Relation, WorldEvent, WorldMeta, RelationType,
     TimeOfDay, describe_date, DAYS_PER_MONTH,
+    Attitude, CompanionControl, NpcAttr, attitude_for_trust,
+    TRUST_MIN, TRUST_MAX,
 )
 
 EntityRef = Union[int, str, Entity]
@@ -101,8 +103,35 @@ class WorldContext:
                 attrs = e.attributes or {}
                 desc = attrs.get("description", "")
                 status = "" if e.status == "active" else f" [{e.status}]"
-                lines.append(f"- **{e.name}**{status}"
+                extra = ""
+                if etype == "npc":
+                    bits = []
+                    att = attrs.get("attitude")
+                    if att:
+                        bits.append(str(att))
+                    role = attrs.get("role")
+                    if role:
+                        bits.append(str(role))
+                    if bits:
+                        extra = f" ({', '.join(bits)})"
+                lines.append(f"- **{e.name}**{status}{extra}"
                              + (f": {desc}" if desc else ""))
+
+        # Party companions traveling with a PC in this slice (with control mode).
+        party_lines: list[str] = []
+        pc_ids = {e.id for e in self.entities if e.type == "pc"}
+        for r in self.relations:
+            if r.rel_type == RelationType.TRAVELS_WITH and r.dst_id in pc_ids:
+                mode = (r.attributes or {}).get("control", CompanionControl.DM)
+                role = (r.attributes or {}).get("role", "")
+                who = f" — {role}" if role else ""
+                controller = "player-run" if mode == CompanionControl.PLAYER else "DM-run"
+                party_lines.append(
+                    f"- {label(r.src_id)}{who} (companion of {label(r.dst_id)}, {controller})"
+                )
+        if party_lines:
+            lines.append("\n## Party companions")
+            lines.extend(party_lines)
 
         # Key current relationships worth stating explicitly.
         rel_lines: list[str] = []
@@ -204,6 +233,7 @@ class WorldGraph:
         attributes: Optional[dict] = None,
         tags: Optional[list] = None,
         discord_user_id: Optional[str] = None,
+        character_id: Optional[int] = None,
     ) -> Entity:
         slug = slug or slugify(name)
         with Session(self.engine) as s:
@@ -222,6 +252,8 @@ class WorldGraph:
                     existing.tags = tags
                 if discord_user_id is not None:
                     existing.discord_user_id = discord_user_id
+                if character_id is not None:
+                    existing.character_id = character_id
                 existing.updated_at = datetime.utcnow()
                 s.add(existing)
                 s.commit()
@@ -230,7 +262,8 @@ class WorldGraph:
             ent = Entity(
                 name=name, type=type, slug=slug, subtype=subtype, status=status,
                 attributes=attributes or {}, tags=tags or [],
-                discord_user_id=discord_user_id, created_day=day,
+                discord_user_id=discord_user_id, character_id=character_id,
+                created_day=day,
             )
             s.add(ent)
             s.commit()
@@ -325,6 +358,159 @@ class WorldGraph:
         """Convenience: close the current ``located_in`` and open a new one."""
         self.close_relation(entity, RelationType.LOCATED_IN)
         return self.add_relation(entity, RelationType.LOCATED_IN, place)
+
+    # ----- NPC relationships: trust & party companionship -----
+
+    def _open_relation(
+        self, s: Session, src_id: int, rel_type: str, dst_id: int
+    ) -> Optional[Relation]:
+        return s.exec(
+            select(Relation).where(
+                Relation.src_id == src_id,
+                Relation.rel_type == rel_type,
+                Relation.dst_id == dst_id,
+                Relation.valid_to == None,  # noqa: E711
+            )
+        ).first()
+
+    def get_trust(self, npc: EntityRef, pc: EntityRef) -> Optional[int]:
+        """Current trust score an NPC holds toward a PC, or None if unacquainted."""
+        with Session(self.engine) as s:
+            npc_e = self._resolve_entity(s, npc)
+            pc_e = self._resolve_entity(s, pc)
+            if not npc_e or not pc_e:
+                return None
+            rel = self._open_relation(s, npc_e.id, RelationType.KNOWS, pc_e.id)
+            if not rel:
+                return None
+            return int((rel.attributes or {}).get("trust", 0))
+
+    def adjust_trust(
+        self, npc: EntityRef, pc: EntityRef, delta: int, *, reason: str = ""
+    ) -> Optional[dict]:
+        """Nudge an NPC's trust toward a PC, opening the acquaintance if needed.
+
+        Returns ``{trust, attitude, delta}`` or None if either entity is unknown.
+        """
+        with Session(self.engine) as s:
+            npc_e = self._resolve_entity(s, npc)
+            pc_e = self._resolve_entity(s, pc)
+            if not npc_e or not pc_e:
+                return None
+            day = self._day(s)
+            rel = self._open_relation(s, npc_e.id, RelationType.KNOWS, pc_e.id)
+            if not rel:
+                rel = Relation(
+                    src_id=npc_e.id, rel_type=RelationType.KNOWS, dst_id=pc_e.id,
+                    attributes={"trust": 0}, valid_from=day,
+                )
+            attrs = dict(rel.attributes or {})
+            new_trust = max(TRUST_MIN, min(TRUST_MAX, int(attrs.get("trust", 0)) + int(delta)))
+            attitude = attitude_for_trust(new_trust)
+            attrs["trust"] = new_trust
+            attrs["attitude"] = attitude
+            if reason:
+                attrs["last_reason"] = reason
+            rel.attributes = attrs
+            s.add(rel)
+            # Mirror the derived attitude onto the NPC for quick single-PC reads.
+            npc_e.attributes = {**(npc_e.attributes or {}), NpcAttr.ATTITUDE: attitude}
+            npc_e.updated_at = datetime.utcnow()
+            s.add(npc_e)
+            s.commit()
+            return {"trust": new_trust, "attitude": attitude, "delta": int(delta)}
+
+    def recruit_companion(
+        self,
+        npc: EntityRef,
+        pc: EntityRef,
+        *,
+        control: str = CompanionControl.DM,
+        role: str = "",
+    ) -> Optional[Relation]:
+        """Add an NPC to a PC's party via a ``travels_with`` relation.
+
+        ``control`` records whether the PLAYER or the DM runs the companion.
+        """
+        control = control if control in CompanionControl.ALL else CompanionControl.DM
+        with Session(self.engine) as s:
+            npc_e = self._resolve_entity(s, npc)
+            pc_e = self._resolve_entity(s, pc)
+            if not npc_e or not pc_e:
+                return None
+            day = self._day(s)
+            # A companion travels with one party at a time: close any prior tie.
+            existing = s.exec(
+                select(Relation).where(
+                    Relation.src_id == npc_e.id,
+                    Relation.rel_type == RelationType.TRAVELS_WITH,
+                    Relation.valid_to == None,  # noqa: E711
+                )
+            ).all()
+            for r in existing:
+                r.valid_to = day
+                s.add(r)
+            rel = Relation(
+                src_id=npc_e.id, rel_type=RelationType.TRAVELS_WITH, dst_id=pc_e.id,
+                attributes={"control": control, "role": role, "joined_day": day},
+                valid_from=day,
+            )
+            s.add(rel)
+            s.commit()
+            s.refresh(rel)
+            return rel
+
+    def dismiss_companion(self, npc: EntityRef, pc: EntityRef) -> int:
+        """Remove an NPC from a PC's party (close the ``travels_with`` relation)."""
+        return self.close_relation(npc, RelationType.TRAVELS_WITH, pc)
+
+    def set_companion_control(
+        self, npc: EntityRef, pc: EntityRef, control: str
+    ) -> Optional[str]:
+        """Switch who runs a companion (player | dm). Returns the new mode or None."""
+        if control not in CompanionControl.ALL:
+            return None
+        with Session(self.engine) as s:
+            npc_e = self._resolve_entity(s, npc)
+            pc_e = self._resolve_entity(s, pc)
+            if not npc_e or not pc_e:
+                return None
+            rel = self._open_relation(s, npc_e.id, RelationType.TRAVELS_WITH, pc_e.id)
+            if not rel:
+                return None
+            rel.attributes = {**(rel.attributes or {}), "control": control}
+            s.add(rel)
+            s.commit()
+            return control
+
+    def list_companions(self, pc: EntityRef) -> list[dict]:
+        """Companions currently traveling with a PC, with control mode + role."""
+        with Session(self.engine) as s:
+            pc_e = self._resolve_entity(s, pc)
+            if not pc_e:
+                return []
+            rels = s.exec(
+                select(Relation).where(
+                    Relation.rel_type == RelationType.TRAVELS_WITH,
+                    Relation.dst_id == pc_e.id,
+                    Relation.valid_to == None,  # noqa: E711
+                )
+            ).all()
+            out: list[dict] = []
+            for r in rels:
+                npc = s.get(Entity, r.src_id)
+                if not npc:
+                    continue
+                attrs = r.attributes or {}
+                out.append({
+                    "npc": npc,
+                    "slug": npc.slug,
+                    "name": npc.name,
+                    "control": attrs.get("control", CompanionControl.DM),
+                    "role": attrs.get("role", ""),
+                    "joined_day": attrs.get("joined_day"),
+                })
+            return out
 
     # ----- events -----
 

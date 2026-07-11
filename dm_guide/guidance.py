@@ -47,7 +47,17 @@ DM_SECTIONS: dict[str, list[str]] = {
         "motives, not to the plot's convenience.",
         "Let NPCs react believably to the party's reputation and past deeds.",
         "Voice NPCs briefly and distinctly; don't monologue.",
+        "Most NPCs are lightweight: a name, a role, a disposition, and a running "
+        "trust toward the party — no full stat sheet needed to talk, trade, or plot.",
+        "Track trust as it grows or sours across interactions; it shifts an NPC's "
+        "attitude from hostile up to helpful and gates what they'll risk for the party.",
+        "Only when an NPC actually JOINS THE PARTY do they become a full character "
+        "with a class, subclass, and level-appropriate features — promoted to a real "
+        "sheet so they can fight, level up, and be run in combat.",
+        "When an NPC is invited to join, the PLAYER decides whether they run that "
+        "companion themselves or hand it to the DM.",
     ],
+
     "combat": [
         "Frame fights with terrain, objectives, and stakes beyond 'reduce HP to 0' "
         "— escapes, rescues, timers, and hazards.",
