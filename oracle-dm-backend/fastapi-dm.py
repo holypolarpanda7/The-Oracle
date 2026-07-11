@@ -140,6 +140,35 @@ async def lifespan(app: FastAPI):
     SQLModel.metadata.create_all(engine)
     print("[Startup] Database tables created/verified")
 
+    # Lightweight schema self-heal for older SQLite DBs. SQLModel create_all()
+    # does not ALTER existing tables, so add known-missing world columns needed
+    # by current world graph queries.
+    try:
+        if str(engine.url).startswith("sqlite"):
+            with engine.begin() as conn:
+                rows = conn.exec_driver_sql("PRAGMA table_info(world_entity)").fetchall()
+                existing = {str(r[1]).lower() for r in rows}
+
+                if "subtype" not in existing:
+                    conn.exec_driver_sql("ALTER TABLE world_entity ADD COLUMN subtype VARCHAR")
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS ix_world_entity_subtype ON world_entity (subtype)")
+                    print("[Startup] Migrated world_entity: added subtype")
+
+                if "status" not in existing:
+                    conn.exec_driver_sql("ALTER TABLE world_entity ADD COLUMN status VARCHAR")
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS ix_world_entity_status ON world_entity (status)")
+                    print("[Startup] Migrated world_entity: added status")
+
+                if "character_id" not in existing:
+                    conn.exec_driver_sql("ALTER TABLE world_entity ADD COLUMN character_id INTEGER")
+                    conn.exec_driver_sql(
+                        "CREATE INDEX IF NOT EXISTS ix_world_entity_character_id ON world_entity (character_id)")
+                    print("[Startup] Migrated world_entity: added character_id")
+    except Exception as e:
+        print(f"[Startup] World schema self-heal skipped: {e}")
+
     # Seed the persistent starter world once (offline, idempotent).
     try:
         world.create_tables()
