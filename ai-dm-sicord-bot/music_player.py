@@ -168,6 +168,30 @@ async def load_playlist(playlist_name: str) -> list[str]:
     return urls
 
 
+def _normalize_search_identifier(value: str) -> str:
+    """Normalize a user/playlist music query for Lavalink search.
+
+    Wavelink + Lavalink v4 can produce odd results when fed pre-prefixed values
+    like ``ytsearch:foo`` (it can become ``ytmsearch:ytsearch:foo``). To keep
+    behavior stable, collapse any ytsearch/ytmsearch prefix to a clean search
+    term and emit exactly one ``ytmsearch:`` prefix.
+    """
+    s = (value or "").strip()
+    if not s:
+        return s
+    # Direct URLs (YouTube/http/etc.) should pass through untouched.
+    if "://" in s:
+        return s
+
+    low = s.lower()
+    for prefix in ("ytsearch:", "ytmsearch:"):
+        if low.startswith(prefix):
+            s = s[len(prefix):].strip()
+            break
+
+    return f"ytmsearch:{s}" if s else s
+
+
 async def play_music_in_channel(
     voice_channel: discord.VoiceChannel,
     playlist_name: str = "cc_menu",
@@ -229,7 +253,10 @@ async def play_music_in_channel(
         # Load and play tracks
         for url in urls:
             try:
-                tracks = await wavelink.Playable.search(url)
+                ident = _normalize_search_identifier(url)
+                if not ident:
+                    continue
+                tracks = await wavelink.Playable.search(ident)
                 if tracks:
                     await player.queue.put_wait(tracks[0] if isinstance(tracks, list) else tracks)
                     print(f"[music] Queued: {tracks[0].title if isinstance(tracks, list) else tracks.title}")
@@ -276,12 +303,10 @@ async def play_query_in_channel(
             print("[music] Lavalink is not ready; cannot start scene music")
             return False
 
-        first = query.strip().split(" ", 1)[0]
-        # Accept explicit sources (ytsearch:, https://...); default to YouTube search.
-        if "://" in query or ":" in first:
-            search = query.strip()
-        else:
-            search = f"ytsearch:{query.strip()}"
+        search = _normalize_search_identifier(query)
+        if not search:
+            print("[music] Empty scene query; skipping")
+            return False
 
         # Ensure we have a live player in this channel.
         player = active_players.get(voice_channel.id)
