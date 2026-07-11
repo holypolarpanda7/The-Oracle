@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
+from discord.ui import View, Button, button
 
 import music_player
 import music_control
@@ -17,6 +18,56 @@ import backend_integration
 import dm_commands
 import character_display
 import game_session
+
+
+class CharacterCreationView(View):
+    """Button view for character creation options."""
+    
+    def __init__(self, cc_voice_id: int, cc_data: dict, bot):
+        super().__init__()
+        self.cc_voice_id = cc_voice_id
+        self.cc_data = cc_data
+        self.bot = bot
+        self.timeout = 3600  # 1 hour timeout
+    
+    @button(label="Import from D&D Beyond", style=discord.ButtonStyle.success, emoji="✅", custom_id="cc_import")
+    async def import_button(self, interaction: discord.Interaction, button: Button):
+        """Handle import from D&D Beyond."""
+        await interaction.response.defer()
+        await interaction.followup.send("Waiting for your Avrae import... Type `!import [D&D Beyond link]`")
+    
+    @button(label="Create with AI Guidance", style=discord.ButtonStyle.secondary, emoji="❌", custom_id="cc_guided")
+    async def guided_button(self, interaction: discord.Interaction, button: Button):
+        """Handle AI-guided character creation."""
+        await interaction.response.defer()
+        await interaction.followup.send("🎨 No problem! Let's build your character together. I'll ask you some questions.\n\nWhat's your character's name?")
+        # Start guided character creation
+        await character_creation.start_guided_character_creation(
+            interaction.channel, 
+            self.cc_voice_id, 
+            self.cc_data["user_id"], 
+            interaction.user.display_name, 
+            self.bot.backend_url
+        )
+    
+    @button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌", custom_id="cc_cancel")
+    async def cancel_button(self, interaction: discord.Interaction, button: Button):
+        """Cancel character creation session."""
+        await interaction.response.defer()
+        voice_channel_id = self.cc_voice_id
+        guild = interaction.guild
+        user_id = self.cc_data["user_id"]
+        
+        # Clean up the session
+        await character_creation.cleanup_ephemeral_channel(
+            guild, 
+            voice_channel_id, 
+            user_id, 
+            reason="Cancelled by user"
+        )
+        
+        await interaction.followup.send("❌ Character creation session cancelled.")
+
 
 
 async def on_ready_handler(bot):
@@ -204,19 +255,18 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
             f"🎵 Background music is now playing in the voice channel.\n"
             f"• React with 🔇 to turn music OFF\n"
             f"• React with 🔊 to turn music back ON\n\n"
-            f"Need to stop right now? Type `!cancelcc` to close this character-creation chat + voice session immediately.\n\n"
+            f"Need to stop right now? Use the **Cancel** button below.\n\n"
             f"Choose your character creation path:\n\n"
             f"**✅ Import from D&D Beyond**\n"
             f"If you already have a character sheet on D&D Beyond, use Avrae to import it.\n"
             f"Type `!import [link]` to begin.\n\n"
             f"**❌ Create with AI Guidance**\n"
             f"Let the Oracle guide you through character creation step by step.\n\n"
-            f"React to this message with your choice:"
+            f"Use the buttons below to choose:",
+            view=CharacterCreationView(after.channel.id, character_creation.ephemeral_cc_channels[after.channel.id], bot)
         )
         
-        # Add reactions to the instructions message
-        await instructions_msg.add_reaction("✅")
-        await instructions_msg.add_reaction("❌")
+        # Add reactions for music control (kept for backward compatibility)
         await instructions_msg.add_reaction("🔇")
         await instructions_msg.add_reaction("🔊")
         
