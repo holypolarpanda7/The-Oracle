@@ -81,6 +81,10 @@ export function createAudioProcess(query) {
   // Drain stderr so the buffer never fills; only surface real errors.
   subprocess.stderr?.on('data', (chunk) => {
     const text = chunk.toString();
+    // Benign when we intentionally kill the process while switching tracks.
+    if (/unable to write data: \[errno 22\] invalid argument/i.test(text)) {
+      return;
+    }
     if (/error/i.test(text)) {
       console.error(`[resolver] yt-dlp: ${text.trim()}`);
     }

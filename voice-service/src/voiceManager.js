@@ -215,7 +215,23 @@ export async function play(client, { guildId, channelId, tracks, loop, volume })
   if (!gid) throw new Error('Could not resolve guild from request');
   if (!channelId) throw new Error('channelId is required to join voice');
   const gv = getGuildVoice(client, gid);
-  return gv.play({ channelId: String(channelId), tracks, loop, volume });
+  try {
+    return await gv.play({ channelId: String(channelId), tracks, loop, volume });
+  } catch (err) {
+    // First connect/play after startup can race Discord voice state hydration and
+    // throw an AbortError. Retry once quickly so callers don't need to.
+    if (isTransientAbort(err)) {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      return gv.play({ channelId: String(channelId), tracks, loop, volume });
+    }
+    throw err;
+  }
+}
+
+function isTransientAbort(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  const name = String(err?.name || '').toLowerCase();
+  return name.includes('abort') || msg.includes('operation was aborted');
 }
 
 export async function stop(client, { guildId, channelId }) {
