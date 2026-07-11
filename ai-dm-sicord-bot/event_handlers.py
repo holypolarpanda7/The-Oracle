@@ -5,6 +5,7 @@ import base64
 import binascii
 import io
 import re
+from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
@@ -392,6 +393,11 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
     # Process commands first
     await bot.process_commands(message)
 
+    # The remaining routing is guild-specific. DMs can still invoke commands,
+    # but should not be treated as entry/session/world messages.
+    if message.guild is None:
+        return
+
     # Active play-session channel? Only logged-in characters act here; everyone
     # else is told (out-of-character) that they aren't part of the game.
     if message.channel.id in game_session.active_sessions:
@@ -404,7 +410,7 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
 
     # Check if message is in the entry channel
     entry_id = getattr(bot, "entry_channel_id", None)
-    is_entry = (message.channel.name == bot.entry_channel_name
+    is_entry = (getattr(message.channel, "name", None) == bot.entry_channel_name
                 or (entry_id and message.channel.id == int(entry_id)))
     if is_entry:
         # Check if player has characters in DB
