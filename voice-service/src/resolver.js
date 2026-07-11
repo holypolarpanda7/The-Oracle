@@ -6,8 +6,10 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { pipeline } from 'node:stream';
 
 const require = createRequire(import.meta.url);
+const ffmpegPath = require('ffmpeg-static');
 const pkgRoot = dirname(require.resolve('youtube-dl-exec/package.json'));
 export const YT_DLP_BIN = join(
   pkgRoot,
@@ -60,13 +62,15 @@ export function resolveTitle(query) {
   });
 }
 
-// Spawn a yt-dlp process that streams the best audio to stdout. The caller pipes
-// stdout into @discordjs/voice, which transcodes to Opus via ffmpeg (ffmpeg-static).
-// Returns the child process. Caller owns killing it.
-export function createAudioProcess(query) {
+// Build a live audio pipeline:
+// yt-dlp stdout (container/audio stream) -> ffmpeg (48k stereo PCM s16le) -> Discord resource.
+// Returns { stream, kill } where stream is ffmpeg stdout.
+export function createAudioPipeline(query, volume = 50) {
   const arg = normalizeQuery(query);
   if (!arg) throw new Error('Empty audio query');
-  const subprocess = spawn(
+  let killed = false;
+
+  const ytdlp = spawn(
     YT_DLP_BIN,
     [
       arg,
@@ -78,8 +82,33 @@ export function createAudioProcess(query) {
     ],
     { stdio: ['ignore', 'pipe', 'pipe'] }
   );
+
+  const ffmpeg = spawn(
+    ffmpegPath,
+    [
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-thread_queue_size', '4096',
+      '-i', 'pipe:0',
+      '-af', `volume=${clampVolume(volume) / 100}`,
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
+      'pipe:1',
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] }
+  );
+
+  // Media flow: yt-dlp -> ffmpeg stdin, with backpressure + handled pipe errors.
+  pipeline(ytdlp.stdout, ffmpeg.stdin, (err) => {
+    if (!err || killed || isBenignPipeError(err)) {
+      return;
+    }
+    console.error(`[resolver] stream pipeline error: ${err.message}`);
+  });
+
   // Drain stderr so the buffer never fills; only surface real errors.
-  subprocess.stderr?.on('data', (chunk) => {
+  ytdlp.stderr?.on('data', (chunk) => {
     const text = chunk.toString();
     // Benign when we intentionally kill the process while switching tracks.
     if (/unable to write data: \[errno 22\] invalid argument/i.test(text)) {
@@ -89,5 +118,49 @@ export function createAudioProcess(query) {
       console.error(`[resolver] yt-dlp: ${text.trim()}`);
     }
   });
-  return subprocess;
+
+  ytdlp.on('error', (err) => {
+    if (killed || isBenignPipeError(err)) return;
+    console.error(`[resolver] yt-dlp process error: ${err.message}`);
+  });
+
+  ffmpeg.on('error', (err) => {
+    if (killed || isBenignPipeError(err)) return;
+    console.error(`[resolver] ffmpeg process error: ${err.message}`);
+  });
+
+  ffmpeg.stderr?.on('data', (chunk) => {
+    const text = chunk.toString();
+    if (text.trim()) {
+      console.error(`[resolver] ffmpeg: ${text.trim()}`);
+    }
+  });
+
+  const kill = () => {
+    killed = true;
+    try { ytdlp.kill('SIGKILL'); } catch { /* ignore */ }
+    try { ffmpeg.kill('SIGKILL'); } catch { /* ignore */ }
+  };
+
+  return {
+    stream: ffmpeg.stdout,
+    kill,
+  };
+}
+
+function clampVolume(v) {
+  const n = Number(v);
+  if (Number.isNaN(n)) return 50;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function isBenignPipeError(err) {
+  const code = String(err?.code || '').toUpperCase();
+  const msg = String(err?.message || '').toLowerCase();
+  return (
+    code === 'EPIPE' ||
+    code === 'ERR_STREAM_PREMATURE_CLOSE' ||
+    msg.includes('write epipe') ||
+    msg.includes('premature close')
+  );
 }

@@ -10,7 +10,7 @@ import {
   NoSubscriberBehavior,
   entersState,
 } from '@discordjs/voice';
-import { createAudioProcess, resolveTitle } from './resolver.js';
+import { createAudioPipeline, resolveTitle } from './resolver.js';
 
 // One GuildVoice per guild currently in use.
 const guilds = new Map();
@@ -29,7 +29,7 @@ class GuildVoice {
     this.loop = true;
     this.volume = 50;
     this.currentTitle = null;
-    this.currentProcess = null;
+    this.currentPipeline = null;
     this.currentResource = null;
     this.stopping = false;
 
@@ -37,6 +37,12 @@ class GuildVoice {
     this.player.on('error', (err) => {
       console.error(`[voice:${this.guildId}] player error: ${err.message}`);
       this._advance();
+    });
+    this.player.on(AudioPlayerStatus.Playing, () => {
+      console.log(`[voice:${this.guildId}] player status -> playing`);
+    });
+    this.player.on(AudioPlayerStatus.Buffering, () => {
+      console.log(`[voice:${this.guildId}] player status -> buffering`);
     });
   }
 
@@ -61,6 +67,9 @@ class GuildVoice {
     this.connection.on('error', (err) => {
       console.error(`[voice:${this.guildId}] connection error: ${err.message}`);
     });
+    this.connection.on(VoiceConnectionStatus.Ready, () => {
+      console.log(`[voice:${this.guildId}] voice connection ready (channel ${channelId})`);
+    });
     this.connection.on(VoiceConnectionStatus.Disconnected, async () => {
       // Try a quick reconnect; if it fails, tear down.
       try {
@@ -82,16 +91,14 @@ class GuildVoice {
     const query = this.queue[this.index];
     // Kill any lingering process before starting a new one.
     this._killProcess();
-    const proc = createAudioProcess(query);
-    this.currentProcess = proc;
-    proc.on('error', (err) => {
-      console.error(`[voice:${this.guildId}] yt-dlp spawn error: ${err.message}`);
+    const pipeline = createAudioPipeline(query, this.volume);
+    this.currentPipeline = pipeline;
+    const resource = createAudioResource(pipeline.stream, {
+      // ffmpeg emits raw 48kHz stereo PCM (s16le).
+      inputType: StreamType.Raw,
+      // Inline volume adds a per-frame transform and can increase jitter/chop.
+      inlineVolume: false,
     });
-    const resource = createAudioResource(proc.stdout, {
-      inputType: StreamType.Arbitrary,
-      inlineVolume: true,
-    });
-    resource.volume?.setVolume(this.volume / 100);
     this.currentResource = resource;
     this.player.play(resource);
     // Resolve a human-friendly title in the background for logging/status.
@@ -123,9 +130,9 @@ class GuildVoice {
   }
 
   _killProcess() {
-    if (this.currentProcess) {
-      try { this.currentProcess.kill('SIGKILL'); } catch { /* ignore */ }
-      this.currentProcess = null;
+    if (this.currentPipeline) {
+      try { this.currentPipeline.kill(); } catch { /* ignore */ }
+      this.currentPipeline = null;
     }
   }
 
@@ -145,7 +152,7 @@ class GuildVoice {
 
   setVolume(volume) {
     this.volume = clampVolume(volume);
-    this.currentResource?.volume?.setVolume(this.volume / 100);
+    // With inlineVolume disabled for playback stability, keep this for status only.
   }
 
   stop() {

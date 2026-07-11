@@ -133,10 +133,13 @@ def start_voice_service(token: Optional[str] = None) -> bool:
         env["VOICE_SERVICE_SECRET"] = _SECRET
 
     try:
-        log_file = open(_VOICE_DIR / "voice-service.log", "w")
+        # Append mode keeps prior runs for postmortems; line buffering helps
+        # logs appear promptly during active debugging.
+        log_file = open(_VOICE_DIR / "voice-service.log", "a", encoding="utf-8", buffering=1)
         _voice_process = subprocess.Popen(
             [node, "index.js"], cwd=str(_VOICE_DIR),
             stdout=log_file, stderr=subprocess.STDOUT, env=env,
+            text=True,
         )
         print(f"[voice-service] Started (PID {_voice_process.pid}); logs: voice-service/voice-service.log")
         return True
