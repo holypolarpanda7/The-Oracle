@@ -75,25 +75,38 @@ export function createAudioPipeline(query, volume = 50) {
     [
       arg,
       '-o', '-',                 // stream media to stdout
-      '-f', 'bestaudio/best',
+      // Prefer m4a audio (typically higher quality than webm on YouTube).
+      '-f', 'bestaudio[ext=m4a]/bestaudio/best',
       '--no-playlist',
       '--no-warnings',
       '--quiet',
+      // Buffer the download to reduce startup stutter.
+      '--buffer-size', '1024k',
     ],
     { stdio: ['ignore', 'pipe', 'pipe'] }
   );
 
+  // Normalize volume to 0.0-1.0 amplitude before ffmpeg (avoids per-frame jitter).
+  const amplFactor = clampVolume(volume) / 100.0;
   const ffmpeg = spawn(
     ffmpegPath,
     [
       '-hide_banner',
       '-loglevel', 'error',
-      '-thread_queue_size', '4096',
+      // Increase input buffer to smooth network jitter from yt-dlp.
+      '-thread_queue_size', '8192',
+      // Bigger buffer window helps with startup and short stalls.
+      '-fflags', 'nobuffer',
+      '-analyzeduration', '0',
+      '-probesize', '32',
       '-i', 'pipe:0',
-      '-af', `volume=${clampVolume(volume) / 100}`,
+      // High-quality resampling: aresample with dither for smooth 48kHz.
+      '-af', `aresample=resampler=soxr:dither_method=triangular${amplFactor < 1.0 ? `:volume=${amplFactor}` : ''}`,
       '-f', 's16le',
       '-ar', '48000',
       '-ac', '2',
+      // Larger output buffer reduces stuttering on stream pipe.
+      '-bufsize', '256k',
       'pipe:1',
     ],
     { stdio: ['pipe', 'pipe', 'pipe'] }
