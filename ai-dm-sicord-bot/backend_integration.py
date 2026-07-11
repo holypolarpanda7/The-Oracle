@@ -112,6 +112,35 @@ async def enter_world_backend(user_id: str, character_name: str, enter_url: str)
             return {"ok": False, "error": str(e)}
 
 
+async def enter_world_session(
+    user_id: str, username: str, guild_id: str, character_name: str, enter_url: str
+) -> Dict:
+    """Start a play session for a specific character via the backend /enterworld.
+
+    Sends the fields the backend actually expects (``user_id``/``username``/
+    ``guild_id``/``character_name``) and returns the full response, including the
+    backend ``session_id`` (used for every subsequent turn so the character stays
+    bound), the opening ``intro`` narration, and any opening ``music`` cue.
+    """
+    payload = {
+        "user_id": user_id,
+        "username": username,
+        "guild_id": guild_id,
+        "character_name": character_name,
+    }
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(
+                enter_url, json=payload, timeout=aiohttp.ClientTimeout(total=180)
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return {"status": "error", "error": f"HTTP {resp.status}"}
+        except Exception as e:
+            print(f"[enter_world_session error] {e}")
+            return {"status": "error", "error": str(e)}
+
+
 # ==================== Character sheet / inventory / portrait ====================
 
 async def resolve_character(

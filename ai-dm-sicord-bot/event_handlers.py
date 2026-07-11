@@ -16,6 +16,7 @@ import character_creation
 import backend_integration
 import dm_commands
 import character_display
+import game_session
 
 
 async def on_ready_handler(bot):
@@ -96,9 +97,32 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
     if member.bot:
         return
 
+    # Owner left a session voice channel -> start the 2-minute end timer.
+    if before.channel is not None and before.channel is not after.channel:
+        if game_session.is_session_voice(before.channel.id):
+            try:
+                await game_session.on_session_voice_leave(member, before.channel.id, bot)
+            except Exception as e:
+                print(f"[session voice leave error] {e}")
+
     # Check if the member joined a voice channel
     if after.channel is None:
         return  # Member left or was moved, ignore
+
+    # Owner rejoined an active session voice channel -> cancel the end timer.
+    if game_session.is_session_voice(after.channel.id):
+        try:
+            await game_session.on_session_voice_rejoin(member, after.channel.id, bot)
+        except Exception as e:
+            print(f"[session voice rejoin error] {e}")
+
+    # If this is a pending play-session voice channel, start the session there.
+    if after.channel.id in game_session.pending_sessions:
+        try:
+            await game_session.on_session_voice_join(member, after.channel, bot)
+        except Exception as e:
+            print(f"[session voice join error] {e}")
+        return
 
     # Check if this voice channel is tracked as ephemeral CC session
     if after.channel.id not in character_creation.ephemeral_cc_channels:
@@ -284,8 +308,21 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
     # Process commands first
     await bot.process_commands(message)
 
+    # Active play-session channel? Only logged-in characters act here; everyone
+    # else is told (out-of-character) that they aren't part of the game.
+    if message.channel.id in game_session.active_sessions:
+        try:
+            if await game_session.handle_session_message(message, bot):
+                return
+        except Exception as e:
+            print(f"[session message error] {e}")
+        return
+
     # Check if message is in the entry channel
-    if message.channel.name == bot.entry_channel_name:
+    entry_id = getattr(bot, "entry_channel_id", None)
+    is_entry = (message.channel.name == bot.entry_channel_name
+                or (entry_id and message.channel.id == int(entry_id)))
+    if is_entry:
         # Check if player has characters in DB
         has_char, characters = await backend_integration.check_character_in_db(str(message.author.id), bot.check_character_url)
         
@@ -308,12 +345,15 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
                     custom_id=f"select_char_{char['id']}"
                 )
                 
-                async def char_callback(interaction: discord.Interaction, char_id=char['id'], char_name=char['name']):
+                async def char_callback(interaction: discord.Interaction, char=char):
                     if interaction.user.id != message.author.id:
                         await interaction.response.send_message("This isn't your character selection!", ephemeral=True)
                         return
-                    await interaction.response.send_message(f"✨ Loading {char_name}... Use `!enterworld` to begin your adventure!", ephemeral=True)
-                    # TODO: Store selected character for enterworld command
+                    await interaction.response.send_message(
+                        f"🎭 Entering the world as **{char['name']}** — I'm opening your session channel now...",
+                        ephemeral=True)
+                    await game_session.start_login_session(
+                        interaction.guild, interaction.user, interaction.channel, bot, char)
                 
                 button.callback = char_callback
                 view.add_item(button)

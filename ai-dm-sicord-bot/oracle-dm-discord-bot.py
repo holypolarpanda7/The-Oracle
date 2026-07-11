@@ -15,6 +15,7 @@ import backend_integration
 import dm_commands
 import event_handlers
 import character_display
+import game_session
 
 
 # Load env vars
@@ -30,6 +31,8 @@ CHARACTER_CREATION_URL = BACKEND_URL.rsplit("/", 1)[0] + "/register_character"
 
 # Entry channel name (where players type to start character creation)
 ENTRY_CHANNEL_NAME = "enter-the-world-of-gatvorhain🛖"
+# Entry channel id (preferred, stable across renames). Falls back to the name.
+ENTRY_CHANNEL_ID = os.getenv("ORACLE_DM_ENTRY_CHANNEL_ID", "1447775459533262868")
 
 if not TOKEN:
     raise RuntimeError("ORACLE_DM_TOKEN not found in cred.env!")
@@ -55,6 +58,7 @@ bot.enter_url = ENTER_URL
 bot.check_character_url = CHECK_CHARACTER_URL
 bot.character_creation_url = CHARACTER_CREATION_URL
 bot.entry_channel_name = ENTRY_CHANNEL_NAME
+bot.entry_channel_id = ENTRY_CHANNEL_ID
 bot.admin_id = ADMIN_ID
 
 # Track DM-enabled channels
@@ -142,6 +146,21 @@ async def enter_world(ctx: commands.Context, *, character_name: str = None):
     else:
         # Enter world
         await dm_commands.enter_world_command(ctx, character_name, CHECK_CHARACTER_URL, ENTER_URL)
+
+
+@bot.command(name="leave", aliases=["endsession", "logout"])
+async def leave_session(ctx: commands.Context):
+    """End the play session tied to this channel (session owner or admin only)."""
+    session = game_session.active_sessions.get(ctx.channel.id)
+    if not session:
+        await ctx.send("There's no active session in this channel to leave.")
+        return
+    if str(ctx.author.id) != session["owner_id"] and not dm_commands.is_admin(ctx.author, ADMIN_ID):
+        await ctx.send("Only the session's player (or the Oracle) can end this session.")
+        return
+    char_name = session["participants"].get(session["owner_id"], {}).get("character_name", "your character")
+    await ctx.send(f"🌙 Ending **{char_name}**'s session — this channel will close shortly. Safe travels!")
+    await game_session.end_session_for_channel(ctx.channel.id, bot, reason="Player ended session")
 
 
 @bot.command(name="sheet")
