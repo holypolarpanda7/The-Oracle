@@ -22,6 +22,23 @@ current_playlists: Dict[int, str] = {}
 lavalink_process: Optional[subprocess.Popen] = None
 
 
+async def _log_playback_state_later(player: wavelink.Player, delay_seconds: float = 2.0) -> None:
+    """Log player state shortly after play() for silent-audio diagnosis."""
+    try:
+        await asyncio.sleep(delay_seconds)
+        current = getattr(player, "current", None)
+        title = getattr(current, "title", None)
+        channel = getattr(getattr(player, "channel", None), "id", "unknown")
+        print(
+            f"[music] Playback state after {delay_seconds:.1f}s: "
+            f"channel={channel} connected={getattr(player, 'connected', None)} "
+            f"playing={getattr(player, 'playing', None)} paused={getattr(player, 'paused', None)} "
+            f"current={title!r} position={getattr(player, 'position', None)}"
+        )
+    except Exception as e:
+        print(f"[music] Delayed playback-state log failed: {e}")
+
+
 def start_lavalink_server() -> bool:
     """Start Lavalink server as a subprocess."""
     global lavalink_process
@@ -169,27 +186,25 @@ async def load_playlist(playlist_name: str) -> list[str]:
 
 
 def _normalize_search_identifier(value: str) -> str:
-    """Normalize a user/playlist music query for Lavalink search.
+    """Normalize a music query to pass to wavelink.Playable.search().
 
-    Wavelink + Lavalink v4 can produce odd results when fed pre-prefixed values
-    like ``ytsearch:foo`` (it can become ``ytmsearch:ytsearch:foo``). To keep
-    behavior stable, collapse any ytsearch/ytmsearch prefix to a clean search
-    term and emit exactly one ``ytmsearch:`` prefix.
+    wavelink 3.x search() ALWAYS prepends its own source prefix (default
+    ytmsearch:) to non-URL queries. So we must return a BARE query string for
+    searches; any existing prefix is stripped here. Direct URLs are returned
+    untouched -- wavelink skips the prefix for URLs automatically.
     """
     s = (value or "").strip()
     if not s:
         return s
-    # Direct URLs (YouTube/http/etc.) should pass through untouched.
+    # Direct URLs pass through as-is; wavelink won't add a prefix.
     if "://" in s:
         return s
-
-    low = s.lower()
-    for prefix in ("ytsearch:", "ytmsearch:"):
-        if low.startswith(prefix):
+    # Strip any search prefix so wavelink's default (ytmsearch:) is used once.
+    for prefix in ("ytmsearch:", "ytsearch:"):
+        if s.lower().startswith(prefix):
             s = s[len(prefix):].strip()
             break
-
-    return f"ytmsearch:{s}" if s else s
+    return s
 
 
 async def play_music_in_channel(
@@ -257,7 +272,12 @@ async def play_music_in_channel(
                 ident = _normalize_search_identifier(url)
                 if not ident:
                     continue
-                tracks = await wavelink.Playable.search(ident)
+                # For direct URLs pass source=None (no prefix); for bare
+                # search terms let wavelink add the default ytmsearch: once.
+                if "://" in ident:
+                    tracks = await wavelink.Playable.search(ident, source=None)
+                else:
+                    tracks = await wavelink.Playable.search(ident)
                 if tracks:
                     await player.queue.put_wait(tracks[0] if isinstance(tracks, list) else tracks)
                     print(f"[music] Queued: {tracks[0].title if isinstance(tracks, list) else tracks.title}")
@@ -268,6 +288,7 @@ async def play_music_in_channel(
         if not player.playing and not player.queue.is_empty:
             await player.play(player.queue.get())
             print(f"[music] Started playback in {voice_channel.name}")
+            asyncio.create_task(_log_playback_state_later(player))
 
         return bool(player.playing or not player.queue.is_empty)
 
@@ -308,6 +329,7 @@ async def play_query_in_channel(
         if not search:
             print("[music] Empty scene query; skipping")
             return False
+        is_url = "://" in search
 
         # Ensure we have a live player in this channel.
         player = active_players.get(voice_channel.id)
@@ -337,7 +359,10 @@ async def play_query_in_channel(
             await player.set_volume(volume)
 
         # Resolve the query into a playable track.
-        tracks = await wavelink.Playable.search(search)
+        if is_url:
+            tracks = await wavelink.Playable.search(search, source=None)
+        else:
+            tracks = await wavelink.Playable.search(search)
         if not tracks:
             print(f"[music] No results for scene query '{search}'")
             return False
@@ -351,6 +376,7 @@ async def play_query_in_channel(
             pass
         await player.play(track)
         print(f"[music] Scene music -> {track.title}  (query: {query.strip()})")
+        asyncio.create_task(_log_playback_state_later(player))
         return True
 
     except Exception as e:
@@ -396,7 +422,7 @@ async def on_wavelink_track_start(payload: wavelink.TrackStartEventPayload):
 
 async def on_wavelink_track_end(payload: wavelink.TrackEndEventPayload):
     """Called when a track ends - loop the playlist in place (no reconnect)."""
-    player = payload.player
+    player: Optional[wavelink.Player] = payload.player
     if player is None or player.channel is None:
         return
 
@@ -427,3 +453,28 @@ async def on_wavelink_track_end(payload: wavelink.TrackEndEventPayload):
             print(f"[music] Looping playlist in channel {voice_channel_id}")
         except Exception as e:
             print(f"[music] Error continuing playback: {e}")
+
+
+async def on_wavelink_track_exception(payload) -> None:
+    """Called when Lavalink raises an exception trying to stream a track."""
+    track = getattr(payload, "track", None)
+    exception = getattr(payload, "exception", None)
+    player = getattr(payload, "player", None)
+    ch = player.channel.id if player and player.channel else "unknown"
+    print(
+        f"[music] TRACK EXCEPTION in channel {ch}: "
+        f"track={getattr(track, 'title', track)!r}  error={exception}"
+    )
+
+
+async def on_wavelink_websocket_closed(payload) -> None:
+    """Called when Discord closes the voice WebSocket (media-server side)."""
+    code = getattr(payload, "code", "?")
+    reason = getattr(payload, "reason", "")
+    by_remote = getattr(payload, "by_remote", "?")
+    player = getattr(payload, "player", None)
+    ch = player.channel.id if player and player.channel else "unknown"
+    print(
+        f"[music] VOICE WS CLOSED in channel {ch}: "
+        f"code={code}  by_remote={by_remote}  reason={reason!r}"
+    )

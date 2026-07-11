@@ -3,4 +3,4 @@
 #   ytsearch:your search terms                 -> plays the top YouTube result (robust)
 #   https://www.youtube.com/watch?v=VIDEO_ID    -> a specific YouTube video
 # Lines starting with # are ignored.
-ytsearch:wow nightsong ambient
+https://www.youtube.com/watch?v=2KplZ-D8zAY

@@ -46,6 +46,16 @@ async def on_wavelink_track_end_handler(payload: wavelink.TrackEndEventPayload):
     await music_player.on_wavelink_track_end(payload)
 
 
+async def on_wavelink_track_exception_handler(payload):
+    """Called when Lavalink fails to play a track."""
+    await music_player.on_wavelink_track_exception(payload)
+
+
+async def on_wavelink_websocket_closed_handler(payload):
+    """Called when Discord's voice WebSocket is closed by Discord."""
+    await music_player.on_wavelink_websocket_closed(payload)
+
+
 async def on_reaction_add_handler(reaction: discord.Reaction, user: discord.User, bot):
     """Handle reactions on character creation instructions."""
     # Ignore bot's own reactions
@@ -137,6 +147,19 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
         return
 
     print(f"[on_voice_state_update] {member.display_name} joined character creation voice channel: {after.channel.name}")
+
+    # The CC channel may have been sitting idle for a while before the player
+    # actually joined. Reset the one-hour cleanup window from first join so
+    # late joins don't inherit an almost-expired session.
+    if session_data.get("joined_at") is None:
+        session_data["joined_at"] = datetime.now(timezone.utc)
+    session_data["last_message_at"] = datetime.now(timezone.utc)
+    character_creation.rearm_cleanup_task(
+        after.channel.guild,
+        after.channel.id,
+        session_data["user_id"],
+        3600,
+    )
 
     # Check if text channel already exists
     text_channel_id = session_data.get("text_channel_id")

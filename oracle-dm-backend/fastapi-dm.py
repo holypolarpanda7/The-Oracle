@@ -173,12 +173,14 @@ async def lifespan(app: FastAPI):
                 c_existing = {str(r[1]).lower() for r in c_rows}
                 char_cols: list[tuple[str, str]] = [
                     ("subclass", "TEXT"),
+                    ("xp", "INTEGER DEFAULT 0"),
                     ("pending_level_up", "INTEGER DEFAULT 0"),
                     ("is_npc", "INTEGER DEFAULT 0"),
                     ("controller", "TEXT DEFAULT 'player'"),
                     ("cp", "INTEGER DEFAULT 0"),
                     ("sp", "INTEGER DEFAULT 0"),
                     ("ep", "INTEGER DEFAULT 0"),
+                    ("gp", "INTEGER DEFAULT 0"),
                     ("pp", "INTEGER DEFAULT 0"),
                     ("lifestyle", "TEXT DEFAULT 'modest'"),
                     ("max_hp", "INTEGER DEFAULT 0"),

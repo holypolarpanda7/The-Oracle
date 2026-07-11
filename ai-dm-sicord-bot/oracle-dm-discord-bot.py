@@ -88,6 +88,16 @@ async def on_wavelink_track_end(payload):
 
 
 @bot.event
+async def on_wavelink_track_exception(payload):
+    await event_handlers.on_wavelink_track_exception_handler(payload)
+
+
+@bot.event
+async def on_wavelink_websocket_closed(payload):
+    await event_handlers.on_wavelink_websocket_closed_handler(payload)
+
+
+@bot.event
 async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
     await event_handlers.on_reaction_add_handler(reaction, user, bot)
 

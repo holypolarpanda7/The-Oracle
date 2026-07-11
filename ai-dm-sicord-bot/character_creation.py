@@ -11,7 +11,8 @@ import discord
 import aiohttp
 
 
-# Track ephemeral character creation channels: channel_id -> {user_id, created_at, last_message_at}
+# Track ephemeral character creation channels: channel_id ->
+# {user_id, created_at, joined_at, last_message_at, text_channel_id}
 ephemeral_cc_channels: Dict[int, Dict] = {}
 
 # Track cleanup tasks so we can cancel them if needed
@@ -72,6 +73,16 @@ async def schedule_cleanup_task(guild: discord.Guild, channel_id: int, user_id: 
     """Schedule a channel cleanup after the specified delay."""
     await asyncio.sleep(delay_seconds)
     await cleanup_ephemeral_channel(guild, channel_id, user_id)
+
+
+def rearm_cleanup_task(guild: discord.Guild, channel_id: int, user_id: str, delay_seconds: int = 3600) -> None:
+    """Cancel any existing cleanup timer and start a fresh one."""
+    existing = cleanup_tasks.get(channel_id)
+    if existing and not existing.done():
+        existing.cancel()
+    cleanup_tasks[channel_id] = asyncio.create_task(
+        schedule_cleanup_task(guild, channel_id, user_id, delay_seconds)
+    )
 
 
 def find_cc_session_by_text_channel(text_channel_id: int) -> tuple[Optional[int], Optional[Dict]]:
@@ -473,6 +484,7 @@ async def create_character_creation_session(ctx_or_msg, bot):
         ephemeral_cc_channels[voice_channel.id] = {
             "user_id": user_id,
             "created_at": datetime.now(timezone.utc),
+            "joined_at": None,
             "last_message_at": datetime.now(timezone.utc),
             "text_channel_id": None,
         }
@@ -483,9 +495,8 @@ async def create_character_creation_session(ctx_or_msg, bot):
             "current_playlist": "cc_menu",
         }
         
-        # Schedule cleanup task
-        task = asyncio.create_task(schedule_cleanup_task(guild, voice_channel.id, user_id, 3600))
-        cleanup_tasks[voice_channel.id] = task
+        # Schedule cleanup task for the pre-join waiting window.
+        rearm_cleanup_task(guild, voice_channel.id, user_id, 3600)
         
         # Step 3: Notify the user
         await send_target.send(
