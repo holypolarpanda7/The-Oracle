@@ -197,6 +197,7 @@ async def play_music_in_channel(
     playlist_name: str = "cc_menu",
     *,
     bot: Optional[discord.Client] = None,
+    volume: int = 50,
 ) -> bool:
     """Connect to voice channel and play music from playlist.
 
@@ -246,7 +247,7 @@ async def play_music_in_channel(
 
         active_players[voice_channel.id] = player
         current_playlists[voice_channel.id] = playlist_name
-        await player.set_volume(30)
+        await player.set_volume(max(0, min(100, volume)))
 
         print(f"[music] Connected to {voice_channel.name}, loading tracks from '{playlist_name}'...")
 

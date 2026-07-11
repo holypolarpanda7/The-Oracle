@@ -188,7 +188,14 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
         
         # Start music in the voice channel (if enabled).
         if after.channel.id in music_control.music_preferences and music_control.music_preferences[after.channel.id]["enabled"]:
-            started = await music_player.play_music_in_channel(after.channel, "cc_menu", bot=bot)
+            started = await music_player.play_music_in_channel(
+                after.channel, "cc_menu", bot=bot, volume=65)
+            if not started:
+                # One immediate retry after a short pause for voice/Lavalink races.
+                import asyncio
+                await asyncio.sleep(1.0)
+                started = await music_player.play_music_in_channel(
+                    after.channel, "cc_menu", bot=bot, volume=65)
             if not started:
                 await text_channel.send(
                     "⚠️ I couldn't start background music right now. "
@@ -251,6 +258,7 @@ def _is_cc_cancel_request(text: str) -> bool:
     # Explicit phrases first (high confidence). Intentionally avoid ambiguous
     # "done" wording so completion chatter doesn't accidentally cancel.
     phrases = (
+        "cancel",
         "cancel creation",
         "cancel character creation",
         "stop creation",
@@ -475,14 +483,17 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
         from datetime import datetime, timezone
         character_creation.ephemeral_cc_channels[session_voice_id]["last_message_at"] = datetime.now(timezone.utc)
 
+        owner_id = str(session_data.get("user_id"))
+        is_owner = str(message.author.id) == owner_id
+
         # Conversational cancel in CC chat (owner only):
         # "I want to cancel creation", "never mind", etc.
-        if str(message.author.id) == str(session_data.get("user_id")) and _is_cc_cancel_request(message.content):
+        if is_owner and _is_cc_cancel_request(message.content):
             await message.channel.send("🛑 Understood. Ending character creation now and closing this session.")
             await character_creation.cleanup_ephemeral_channel(
                 message.guild,
                 session_voice_id,
-                str(session_data.get("user_id")),
+                owner_id,
                 reason="Cancelled by player request",
             )
             return
@@ -490,6 +501,21 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
         # Check if we're in guided character creation mode
         if message.channel.id in character_creation.guided_cc_state:
             await character_creation.process_guided_cc_input(message.channel, message, bot.backend_url)
+            return
+
+        # Owner chatting in CC channel (without guided mode active): start guided
+        # flow automatically so "talking to the Oracle" works without requiring
+        # the ❌ reaction as a hard prerequisite.
+        if is_owner and not message.content.strip().startswith("!"):
+            await message.channel.send(
+                "🎭 I can guide your character creation right here. Let's begin.")
+            await character_creation.start_guided_character_creation(
+                message.channel,
+                session_voice_id,
+                owner_id,
+                message.author.display_name,
+                bot.backend_url,
+            )
             return
 
         # Check if this is Avrae posting a character import

@@ -166,6 +166,58 @@ async def lifespan(app: FastAPI):
                     conn.exec_driver_sql(
                         "CREATE INDEX IF NOT EXISTS ix_world_entity_character_id ON world_entity (character_id)")
                     print("[Startup] Migrated world_entity: added character_id")
+
+                # Older DBs may have a partial character schema. Add missing
+                # columns used by current queries/endpoints.
+                c_rows = conn.exec_driver_sql('PRAGMA table_info("character")').fetchall()
+                c_existing = {str(r[1]).lower() for r in c_rows}
+                char_cols: list[tuple[str, str]] = [
+                    ("subclass", "TEXT"),
+                    ("pending_level_up", "INTEGER DEFAULT 0"),
+                    ("is_npc", "INTEGER DEFAULT 0"),
+                    ("controller", "TEXT DEFAULT 'player'"),
+                    ("cp", "INTEGER DEFAULT 0"),
+                    ("sp", "INTEGER DEFAULT 0"),
+                    ("ep", "INTEGER DEFAULT 0"),
+                    ("pp", "INTEGER DEFAULT 0"),
+                    ("lifestyle", "TEXT DEFAULT 'modest'"),
+                    ("max_hp", "INTEGER DEFAULT 0"),
+                    ("current_hp", "INTEGER DEFAULT 0"),
+                    ("hit_die", "TEXT DEFAULT 'd8'"),
+                    ("hit_dice_total", "INTEGER DEFAULT 1"),
+                    ("hit_dice_remaining", "INTEGER DEFAULT 1"),
+                    ("exhaustion", "INTEGER DEFAULT 0"),
+                    ("rations", "INTEGER DEFAULT 0"),
+                    ("water", "INTEGER DEFAULT 0"),
+                    ("days_without_food", "INTEGER DEFAULT 0"),
+                    ("days_without_water", "INTEGER DEFAULT 0"),
+                    ("death_save_successes", "INTEGER DEFAULT 0"),
+                    ("death_save_failures", "INTEGER DEFAULT 0"),
+                    ("stable", "INTEGER DEFAULT 1"),
+                    ("inspiration", "INTEGER DEFAULT 0"),
+                    ("tags", "JSON"),
+                    ("stats", "JSON"),
+                    ("spells", "JSON"),
+                    ("inventory", "JSON"),
+                    ("conditions", "JSON"),
+                    ("ddb_url", "TEXT"),
+                    ("avrae_import_text", "TEXT"),
+                    ("last_verified_at", "DATETIME"),
+                    ("approved", "INTEGER DEFAULT 0"),
+                    ("home_region", "TEXT"),
+                    ("notes", "TEXT"),
+                    ("created_at", "DATETIME"),
+                    ("updated_at", "DATETIME"),
+                ]
+                for col, ddl in char_cols:
+                    if col not in c_existing:
+                        conn.exec_driver_sql(f'ALTER TABLE "character" ADD COLUMN {col} {ddl}')
+                        print(f"[Startup] Migrated character: added {col}")
+
+                conn.exec_driver_sql(
+                    'CREATE INDEX IF NOT EXISTS ix_character_is_npc ON "character" (is_npc)')
+                conn.exec_driver_sql(
+                    'CREATE INDEX IF NOT EXISTS ix_character_approved ON "character" (approved)')
     except Exception as e:
         print(f"[Startup] World schema self-heal skipped: {e}")
 
