@@ -37,3 +37,8 @@ ai-dm-sicord-bot/logs/
 
 # generic runtime logs
 *.log
+
+# voice-service runtime/secrets
+voice-service/node_modules/
+voice-service/.env
+voice-service/*.log

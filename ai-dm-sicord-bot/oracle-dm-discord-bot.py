@@ -2,6 +2,7 @@
 Oracle DM Discord Bot - Main Entry Point
 Modular D&D session manager with character creation, music, and AI DM.
 """
+import asyncio
 import os
 from dotenv import load_dotenv
 import discord
@@ -70,31 +71,6 @@ active_dm_channels: set[int] = set()
 @bot.event
 async def on_ready():
     await event_handlers.on_ready_handler(bot)
-
-
-@bot.event
-async def on_wavelink_node_ready(payload):
-    await event_handlers.on_wavelink_node_ready_handler(payload)
-
-
-@bot.event
-async def on_wavelink_track_start(payload):
-    await event_handlers.on_wavelink_track_start_handler(payload)
-
-
-@bot.event
-async def on_wavelink_track_end(payload):
-    await event_handlers.on_wavelink_track_end_handler(payload)
-
-
-@bot.event
-async def on_wavelink_track_exception(payload):
-    await event_handlers.on_wavelink_track_exception_handler(payload)
-
-
-@bot.event
-async def on_wavelink_websocket_closed(payload):
-    await event_handlers.on_wavelink_websocket_closed_handler(payload)
 
 
 @bot.event
@@ -171,6 +147,34 @@ async def leave_session(ctx: commands.Context):
     char_name = session["participants"].get(session["owner_id"], {}).get("character_name", "your character")
     await ctx.send(f"🌙 Ending **{char_name}**'s session — this channel will close shortly. Safe travels!")
     await game_session.end_session_for_channel(ctx.channel.id, bot, reason="Player ended session")
+
+
+@bot.command(name="voicetest")
+async def voice_test(ctx: commands.Context):
+    """Play ~15s of test music in your current voice channel via the DAVE sidecar."""
+    if not getattr(ctx.author, "voice", None) or not ctx.author.voice or not ctx.author.voice.channel:
+        await ctx.send("Join a voice channel first, then run `!voicetest`.")
+        return
+
+    voice_channel = ctx.author.voice.channel
+    if voice_channel.id in music_player.active_players:
+        await music_player.stop_music_in_channel(voice_channel.id)
+
+    await ctx.send("🔊 Running a 15-second voice test through the sidecar...")
+    ok = await music_player.play_music_in_channel(
+        voice_channel, "cc_menu", bot=bot, volume=60)
+    if not ok:
+        await ctx.send(
+            "Voice test failed to start. Check `voice-service/voice-service.log` "
+            "(is the sidecar running and installed?)."
+        )
+        return
+
+    async def _auto_stop():
+        await asyncio.sleep(15)
+        await music_player.stop_music_in_channel(voice_channel.id)
+
+    asyncio.create_task(_auto_stop())
 
 
 @bot.command(name="cancelcc", aliases=["endcc", "abortcc"])
@@ -315,18 +319,17 @@ async def portrait(ctx: commands.Context, *, description: str = None):
 # ==================== MAIN ====================
 
 if __name__ == "__main__":
-    # Start Lavalink server
-    if music_player.start_lavalink_server():
-        # Wait for Lavalink to start initializing (retry logic in setup_lavalink will handle the rest)
+    # Start the DAVE-capable Node voice sidecar (replaces Lavalink).
+    if music_player.start_voice_service(TOKEN):
         import time
-        print("[Bot] Waiting for Lavalink to start initializing...")
+        print("[Bot] Waiting for voice sidecar to initialize...")
         time.sleep(5)
-    
+
     try:
         # Run the bot
         bot.run(TOKEN)
     except KeyboardInterrupt:
         print("\n[Bot] Shutting down...")
     finally:
-        # Ensure Lavalink stops when bot exits
-        music_player.stop_lavalink_server()
+        # Ensure the voice sidecar stops when the bot exits
+        music_player.stop_voice_service()

@@ -1,231 +1,218 @@
 """
-Music player module using Lavalink/wavelink for Discord voice channels.
+Music player module — client for the DAVE-capable Node voice sidecar.
+
+Discord enforces the DAVE (E2EE) voice protocol; clients without it are kicked
+from voice with close code 4017. discord.py and Lavalink both lack DAVE, so voice
+playback now lives in the ``voice-service/`` Node process (built on
+``@discordjs/voice`` + ``@snazzah/davey``). This module keeps the same public API
+the rest of the bot already uses (``play_music_in_channel``,
+``play_query_in_channel``, ``stop_music_in_channel``) but drives the sidecar over
+a small localhost HTTP API instead of connecting to voice directly.
 """
 import asyncio
-import os
-import subprocess
 import atexit
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Dict, Optional
 
+import aiohttp
 import discord
-import wavelink
 
 
-# Track active music players: voice_channel_id -> wavelink.Player
-active_players: Dict[int, wavelink.Player] = {}
+# Best-effort local mirror of sidecar state so callers can cheaply check whether
+# a channel is "active" (e.g. the bot's !voicetest / toggle logic).
+# voice_channel_id -> {"playlist": str, "guild_id": int}
+active_players: Dict[int, dict] = {}
 
-# Track current playlist for each channel: voice_channel_id -> playlist_name
+# voice_channel_id -> playlist_name (kept for backward compatibility)
 current_playlists: Dict[int, str] = {}
 
-# Global Lavalink process
-lavalink_process: Optional[subprocess.Popen] = None
+# voice_channel_id -> guild_id, so stop() can address the sidecar (which is
+# keyed by guild) even though callers only pass a channel id.
+_channel_guild: Dict[int, int] = {}
+
+# The spawned Node sidecar process (when the bot manages its lifecycle).
+_voice_process: Optional[subprocess.Popen] = None
+
+# --- Sidecar connection config -------------------------------------------------
+
+_DEFAULT_HOST = os.getenv("VOICE_SERVICE_HOST", "127.0.0.1")
+_DEFAULT_PORT = os.getenv("VOICE_SERVICE_PORT", "8790")
+VOICE_SERVICE_URL = os.getenv(
+    "VOICE_SERVICE_URL", f"http://{_DEFAULT_HOST}:{_DEFAULT_PORT}"
+).rstrip("/")
+_SECRET = os.getenv("VOICE_SERVICE_SECRET", "")
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_VOICE_DIR = _REPO_ROOT / "voice-service"
+
+_ready = False
 
 
-async def _log_playback_state_later(player: wavelink.Player, delay_seconds: float = 2.0) -> None:
-    """Log player state shortly after play() for silent-audio diagnosis."""
+def _headers() -> dict:
+    return {"X-Voice-Token": _SECRET} if _SECRET else {}
+
+
+async def _post(path: str, payload: dict, *, timeout: float = 30.0) -> Optional[dict]:
+    """POST JSON to the sidecar; returns the parsed body or None on failure."""
+    url = f"{VOICE_SERVICE_URL}{path}"
     try:
-        await asyncio.sleep(delay_seconds)
-        current = getattr(player, "current", None)
-        title = getattr(current, "title", None)
-        channel = getattr(getattr(player, "channel", None), "id", "unknown")
-        me = getattr(player.guild, "me", None) if getattr(player, "guild", None) else None
-        voice = getattr(me, "voice", None) if me else None
-        print(
-            f"[music] Playback state after {delay_seconds:.1f}s: "
-            f"channel={channel} connected={getattr(player, 'connected', None)} "
-            f"playing={getattr(player, 'playing', None)} paused={getattr(player, 'paused', None)} "
-            f"current={title!r} position={getattr(player, 'position', None)} ping={getattr(player, 'ping', None)} "
-            f"voice_channel={getattr(getattr(voice, 'channel', None), 'id', None)} "
-            f"self_mute={getattr(voice, 'self_mute', None)} self_deaf={getattr(voice, 'self_deaf', None)} "
-            f"mute={getattr(voice, 'mute', None)} deaf={getattr(voice, 'deaf', None)}"
-        )
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=payload, headers=_headers(),
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status >= 400:
+                    print(f"[music] sidecar {path} -> {resp.status}: {data}")
+                    return None
+                return data
     except Exception as e:
-        print(f"[music] Delayed playback-state log failed: {e}")
+        print(f"[music] sidecar {path} request failed: {e}")
+        return None
 
 
-def _log_discord_voice_state(player: wavelink.Player, context: str) -> None:
-    """Log the bot member's Discord voice-state flags for this guild."""
+async def _get(path: str, params: dict, *, timeout: float = 10.0) -> Optional[dict]:
+    url = f"{VOICE_SERVICE_URL}{path}"
     try:
-        me = getattr(player.guild, "me", None) if getattr(player, "guild", None) else None
-        voice = getattr(me, "voice", None) if me else None
-        print(
-            f"[music] Discord voice state ({context}): "
-            f"channel={getattr(getattr(voice, 'channel', None), 'id', None)} "
-            f"self_mute={getattr(voice, 'self_mute', None)} self_deaf={getattr(voice, 'self_deaf', None)} "
-            f"mute={getattr(voice, 'mute', None)} deaf={getattr(voice, 'deaf', None)}"
-        )
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, params=params, headers=_headers(),
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                return await resp.json(content_type=None)
     except Exception as e:
-        print(f"[music] Discord voice-state log failed ({context}): {e}")
+        print(f"[music] sidecar GET {path} failed: {e}")
+        return None
 
 
-def start_lavalink_server() -> bool:
-    """Start Lavalink server as a subprocess."""
-    global lavalink_process
-    
-    lavalink_jar = os.path.join(os.path.dirname(__file__), "Lavalink.jar")
-    
-    if not os.path.exists(lavalink_jar):
-        print("[Lavalink] WARNING: Lavalink.jar not found!")
-        print(f"[Lavalink] Expected location: {lavalink_jar}")
-        print("[Lavalink] Download from: https://github.com/lavalink-devs/Lavalink/releases")
+# --- Sidecar lifecycle ---------------------------------------------------------
+
+def start_voice_service(token: Optional[str] = None) -> bool:
+    """Spawn the Node voice sidecar as a subprocess (mirrors the old Lavalink
+    starter). Runs ``npm install`` first if dependencies are missing. Returns
+    True if the process was started."""
+    global _voice_process
+
+    if not _VOICE_DIR.exists():
+        print(f"[voice-service] Directory not found: {_VOICE_DIR}")
         return False
-    
-    # Check if application.yml exists
-    app_yml = os.path.join(os.path.dirname(__file__), "application.yml")
-    if not os.path.exists(app_yml):
-        print(f"[Lavalink] WARNING: application.yml not found at {app_yml}")
-        print("[Lavalink] Lavalink requires application.yml configuration file")
+
+    node = shutil.which("node")
+    if not node:
+        print("[voice-service] ERROR: Node.js not found on PATH (need >= 22.12).")
         return False
-    
+
+    # One-time dependency install.
+    if not (_VOICE_DIR / "node_modules").exists():
+        npm = shutil.which("npm")
+        if not npm:
+            print("[voice-service] ERROR: node_modules missing and npm not found. "
+                  "Run `npm install` in voice-service/ manually.")
+            return False
+        print("[voice-service] Installing dependencies (first run, this may take a while)...")
+        try:
+            with open(_VOICE_DIR / "npm-install.log", "w") as log:
+                subprocess.run(
+                    [npm, "install"], cwd=str(_VOICE_DIR),
+                    stdout=log, stderr=subprocess.STDOUT, check=True, shell=False,
+                )
+            print("[voice-service] Dependencies installed.")
+        except (subprocess.CalledProcessError, OSError) as e:
+            print(f"[voice-service] npm install failed ({e}); see voice-service/npm-install.log")
+            return False
+
+    env = os.environ.copy()
+    if token:
+        env["DISCORD_TOKEN"] = token
+    env.setdefault("VOICE_SERVICE_HOST", _DEFAULT_HOST)
+    env.setdefault("VOICE_SERVICE_PORT", str(_DEFAULT_PORT))
+    if _SECRET:
+        env["VOICE_SERVICE_SECRET"] = _SECRET
+
     try:
-        print("[Lavalink] Starting Lavalink server...")
-        print(f"[Lavalink] Working directory: {os.path.dirname(__file__)}")
-        print(f"[Lavalink] JAR location: {lavalink_jar}")
-        
-        # Start Lavalink with output redirected to files for debugging
-        log_file = open(os.path.join(os.path.dirname(__file__), "lavalink.log"), "w")
-        error_file = open(os.path.join(os.path.dirname(__file__), "lavalink-error.log"), "w")
-        
-        lavalink_process = subprocess.Popen(
-            ["java", "-jar", lavalink_jar],
-            stdout=log_file,
-            stderr=error_file,
-            cwd=os.path.dirname(__file__)
+        log_file = open(_VOICE_DIR / "voice-service.log", "w")
+        _voice_process = subprocess.Popen(
+            [node, "index.js"], cwd=str(_VOICE_DIR),
+            stdout=log_file, stderr=subprocess.STDOUT, env=env,
         )
-        print(f"[Lavalink] Server started with PID {lavalink_process.pid}")
-        print("[Lavalink] Logs: lavalink.log and lavalink-error.log")
-        print("[Lavalink] Waiting 10 seconds for server to initialize...")
+        print(f"[voice-service] Started (PID {_voice_process.pid}); logs: voice-service/voice-service.log")
         return True
-    except FileNotFoundError:
-        print("[Lavalink] ERROR: Java not found! Please install Java 17 or higher.")
-        return False
     except Exception as e:
-        print(f"[Lavalink] ERROR starting server: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"[voice-service] Failed to start: {e}")
         return False
 
 
-def stop_lavalink_server():
-    """Stop the Lavalink server subprocess."""
-    global lavalink_process
-    
-    if lavalink_process:
-        print("[Lavalink] Stopping server...")
+def stop_voice_service() -> None:
+    """Terminate the sidecar subprocess if we started it."""
+    global _voice_process
+    if _voice_process:
+        print("[voice-service] Stopping...")
         try:
-            lavalink_process.terminate()
-            lavalink_process.wait(timeout=5)
-            print("[Lavalink] Server stopped gracefully")
-        except subprocess.TimeoutExpired:
-            print("[Lavalink] Server didn't stop gracefully, forcing...")
-            lavalink_process.kill()
-            lavalink_process.wait()
-            print("[Lavalink] Server force-stopped")
-        except Exception as e:
-            print(f"[Lavalink] Error stopping server: {e}")
+            _voice_process.terminate()
+            _voice_process.wait(timeout=5)
+        except Exception:
+            try:
+                _voice_process.kill()
+                _voice_process.wait()
+            except Exception:
+                pass
         finally:
-            lavalink_process = None
+            _voice_process = None
 
 
-# Register cleanup handler
-atexit.register(stop_lavalink_server)
+atexit.register(stop_voice_service)
 
 
-async def setup_lavalink(bot: discord.Client) -> bool:
-    """
-    Connect to Lavalink server with retry logic.
-    Returns True if successful, False otherwise.
-    """
-    import asyncio
-    
-    max_retries = 10
-    retry_delay = 3  # seconds
-    
-    for attempt in range(1, max_retries + 1):
-        try:
-            node = wavelink.Node(
-                uri="http://127.0.0.1:2333",
-                password="youshallnotpass"
-            )
-            await wavelink.Pool.connect(client=bot, nodes=[node])
-            print(f"[Lavalink] Connected successfully on attempt {attempt}")
+async def setup_voice_service(bot: Optional[discord.Client] = None, *, retries: int = 20) -> bool:
+    """Wait for the sidecar HTTP API to report ready. Returns True once healthy."""
+    global _ready
+    for attempt in range(1, retries + 1):
+        data = await _get("/health", {}, timeout=5.0)
+        if data and data.get("ok") and data.get("ready"):
+            _ready = True
+            print(f"[voice-service] Ready (guilds={data.get('guilds')}, dave={data.get('dave')})")
             return True
-        except Exception as e:
-            if attempt < max_retries:
-                print(f"[Lavalink] Connection attempt {attempt}/{max_retries} failed: {e}")
-                print(f"[Lavalink] Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-            else:
-                print(f"[Lavalink] All {max_retries} connection attempts failed")
-                print("[Lavalink] Make sure Lavalink server is running on port 2333")
-                return False
+        await asyncio.sleep(1.0)
+    print(f"[voice-service] Not ready after {retries}s; music will retry on demand.")
+    return False
 
 
-async def ensure_lavalink_ready(bot: Optional[discord.Client]) -> bool:
-    """Best-effort check that at least one Lavalink node is ready.
+async def ensure_voice_service_ready(bot: Optional[discord.Client] = None) -> bool:
+    """Best-effort readiness check before a play call."""
+    global _ready
+    if _ready:
+        return True
+    data = await _get("/health", {}, timeout=5.0)
+    if data and data.get("ok") and data.get("ready"):
+        _ready = True
+        return True
+    return False
 
-    If no nodes are currently connected and a bot client is available, attempt a
-    reconnect via ``setup_lavalink`` so first-play in a fresh/test session still
-    works even after transient WS disconnects.
-    """
-    try:
-        nodes = getattr(wavelink.Pool, "nodes", None)
-        if nodes:
-            return True
-    except Exception:
-        pass
 
-    if bot is None:
-        return False
-
-    print("[Lavalink] No active node detected; attempting reconnect...")
-    try:
-        return await setup_lavalink(bot)
-    except Exception as e:
-        print(f"[Lavalink] Reconnect failed: {e}")
-        return False
-
+# --- Playlist loading ----------------------------------------------------------
 
 async def load_playlist(playlist_name: str) -> list[str]:
-    """Load a playlist from the playlists directory."""
+    """Load a playlist (list of URLs / search phrases) from playlists/."""
     playlist_path = Path(__file__).parent / "playlists" / f"{playlist_name}.txt"
     if not playlist_path.exists():
         print(f"[playlist] Playlist file not found: {playlist_path}")
         return []
-    
-    urls = []
-    with open(playlist_path, 'r') as f:
+
+    urls: list[str] = []
+    with open(playlist_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line and not line.startswith('#'):
+            if line and not line.startswith("#"):
                 urls.append(line)
-    
+
     print(f"[playlist] Loaded {len(urls)} tracks from {playlist_name}")
     return urls
 
 
-def _normalize_search_identifier(value: str) -> str:
-    """Normalize a music query to pass to wavelink.Playable.search().
-
-    wavelink 3.x search() ALWAYS prepends its own source prefix (default
-    ytmsearch:) to non-URL queries. So we must return a BARE query string for
-    searches; any existing prefix is stripped here. Direct URLs are returned
-    untouched -- wavelink skips the prefix for URLs automatically.
-    """
-    s = (value or "").strip()
-    if not s:
-        return s
-    # Direct URLs pass through as-is; wavelink won't add a prefix.
-    if "://" in s:
-        return s
-    # Strip any search prefix so wavelink's default (ytmsearch:) is used once.
-    for prefix in ("ytmsearch:", "ytsearch:"):
-        if s.lower().startswith(prefix):
-            s = s[len(prefix):].strip()
-            break
-    return s
-
+# --- Public playback API (sidecar-backed) --------------------------------------
 
 async def play_music_in_channel(
     voice_channel: discord.VoiceChannel,
@@ -234,102 +221,36 @@ async def play_music_in_channel(
     bot: Optional[discord.Client] = None,
     volume: int = 50,
 ) -> bool:
-    """Connect to voice channel and play music from playlist.
+    """Play a looping playlist in ``voice_channel`` via the voice sidecar.
 
-    Returns True when playback starts (or is already active in the channel),
-    otherwise False.
+    Returns True when the sidecar reports playback started.
     """
-    try:
-        if not await ensure_lavalink_ready(bot):
-            print("[music] Lavalink is not ready; cannot start playback")
-            return False
-
-        # Check if already connected
-        if voice_channel.id in active_players:
-            print(f"[music] Already playing in {voice_channel.name}")
-            return True
-
-        # Load playlist
-        urls = await load_playlist(playlist_name)
-        if not urls:
-            print(f"[music] No tracks in playlist {playlist_name}")
-            return False
-
-        # Clean up any lingering voice connection in this guild first. Discord
-        # needs a moment to tear down the old voice session before we can open a
-        # new one; skipping this causes "Unable to connect" on the next connect.
-        existing = voice_channel.guild.voice_client
-        if existing is not None:
-            try:
-                await existing.disconnect(force=True)
-            except Exception as e:
-                print(f"[music] Could not clean up old voice client: {e}")
-            await asyncio.sleep(1.0)
-
-        # Connect to voice channel, retrying to survive voice-session races.
-        player: Optional[wavelink.Player] = None
-        last_err: Optional[Exception] = None
-        for attempt in range(1, 4):
-            try:
-                player = await voice_channel.connect(
-                    cls=wavelink.Player,
-                    timeout=20.0,
-                    self_deaf=False,
-                    self_mute=False,
-                )
-                break
-            except Exception as e:
-                last_err = e
-                print(f"[music] Connect attempt {attempt}/3 failed: {e}")
-                await asyncio.sleep(1.5)
-        if player is None:
-            raise last_err or RuntimeError("Unable to connect to voice channel")
-
-        active_players[voice_channel.id] = player
-        current_playlists[voice_channel.id] = playlist_name
-        await player.set_volume(max(0, min(100, volume)))
-        _log_discord_voice_state(player, "after connect")
-
-        print(f"[music] Connected to {voice_channel.name}, loading tracks from '{playlist_name}'...")
-
-        # Load and play tracks
-        for url in urls:
-            try:
-                ident = _normalize_search_identifier(url)
-                if not ident:
-                    continue
-                # For direct URLs pass source=None (no prefix); for bare
-                # search terms let wavelink add the default ytmsearch: once.
-                if "://" in ident:
-                    tracks = await wavelink.Playable.search(ident, source=None)
-                else:
-                    tracks = await wavelink.Playable.search(ident)
-                if tracks:
-                    await player.queue.put_wait(tracks[0] if isinstance(tracks, list) else tracks)
-                    print(f"[music] Queued: {tracks[0].title if isinstance(tracks, list) else tracks.title}")
-            except Exception as e:
-                print(f"[music] Error loading track {url}: {e}")
-
-        # Start playback if not already playing
-        if not player.playing and not player.queue.is_empty:
-            await player.play(player.queue.get())
-            print(f"[music] Started playback in {voice_channel.name}")
-            asyncio.create_task(_log_playback_state_later(player))
-
-        return bool(player.playing or not player.queue.is_empty)
-
-    except Exception as e:
-        print(f"[music] Error in play_music_in_channel: {e}")
-        # Roll back any partial state so a retry can reconnect cleanly.
-        active_players.pop(voice_channel.id, None)
-        current_playlists.pop(voice_channel.id, None)
-        stale = voice_channel.guild.voice_client
-        if stale is not None:
-            try:
-                await stale.disconnect(force=True)
-            except Exception:
-                pass
+    if not await ensure_voice_service_ready(bot):
+        print("[music] Voice service not ready; cannot start playback")
         return False
+
+    tracks = await load_playlist(playlist_name)
+    if not tracks:
+        print(f"[music] No tracks in playlist {playlist_name}")
+        return False
+
+    data = await _post("/play", {
+        "guildId": str(voice_channel.guild.id),
+        "channelId": str(voice_channel.id),
+        "tracks": tracks,
+        "loop": True,
+        "volume": max(0, min(100, volume)),
+    })
+    if data and data.get("ok") and data.get("playing"):
+        active_players[voice_channel.id] = {
+            "playlist": playlist_name, "guild_id": voice_channel.guild.id}
+        current_playlists[voice_channel.id] = playlist_name
+        _channel_guild[voice_channel.id] = voice_channel.guild.id
+        print(f"[music] Playing '{playlist_name}' in {voice_channel.name}")
+        return True
+
+    print(f"[music] Sidecar did not start playback for '{playlist_name}'")
+    return False
 
 
 async def play_query_in_channel(
@@ -339,174 +260,58 @@ async def play_query_in_channel(
     volume: int = 30,
     bot: Optional[discord.Client] = None,
 ) -> bool:
-    """Play a single searched track (looped) for an AI-recommended scene.
-
-    Unlike ``play_music_in_channel`` (which loads a fixed playlist file), this
-    plays one track resolved from a search query and loops it until the scene
-    changes. If already connected to this channel, it swaps to the new track
-    without disconnecting; otherwise it connects first.
-    """
-    try:
-        if not await ensure_lavalink_ready(bot):
-            print("[music] Lavalink is not ready; cannot start scene music")
-            return False
-
-        search = _normalize_search_identifier(query)
-        if not search:
-            print("[music] Empty scene query; skipping")
-            return False
-        is_url = "://" in search
-
-        # Ensure we have a live player in this channel.
-        player = active_players.get(voice_channel.id)
-        if player is None or not player.connected:
-            existing = voice_channel.guild.voice_client
-            if existing is not None:
-                try:
-                    await existing.disconnect(force=True)
-                except Exception as e:
-                    print(f"[music] Could not clean up old voice client: {e}")
-                await asyncio.sleep(1.0)
-
-            player = None
-            last_err: Optional[Exception] = None
-            for attempt in range(1, 4):
-                try:
-                    player = await voice_channel.connect(
-                        cls=wavelink.Player,
-                        timeout=20.0,
-                        self_deaf=False,
-                        self_mute=False,
-                    )
-                    break
-                except Exception as e:
-                    last_err = e
-                    print(f"[music] Connect attempt {attempt}/3 failed: {e}")
-                    await asyncio.sleep(1.5)
-            if player is None:
-                raise last_err or RuntimeError("Unable to connect to voice channel")
-
-            active_players[voice_channel.id] = player
-            await player.set_volume(volume)
-            _log_discord_voice_state(player, "after connect")
-
-        # Resolve the query into a playable track.
-        if is_url:
-            tracks = await wavelink.Playable.search(search, source=None)
-        else:
-            tracks = await wavelink.Playable.search(search)
-        if not tracks:
-            print(f"[music] No results for scene query '{search}'")
-            return False
-        track = tracks[0] if isinstance(tracks, list) else tracks
-
-        # Swap to the new scene track: clear the queue and replace playback.
-        current_playlists[voice_channel.id] = f"scene:{query.strip()}"
-        try:
-            player.queue.clear()
-        except Exception:
-            pass
-        await player.play(track)
-        print(f"[music] Scene music -> {track.title}  (query: {query.strip()})")
-        asyncio.create_task(_log_playback_state_later(player))
-        return True
-
-    except Exception as e:
-        print(f"[music] Error in play_query_in_channel: {e}")
+    """Play a single searched track (looped) for an AI-recommended scene."""
+    if not await ensure_voice_service_ready(bot):
+        print("[music] Voice service not ready; cannot start scene music")
         return False
 
+    q = (query or "").strip()
+    if not q:
+        print("[music] Empty scene query; skipping")
+        return False
 
-async def stop_music_in_channel(voice_channel_id: int):
-    """Stop music and disconnect from voice channel."""
-    if voice_channel_id in active_players:
-        try:
-            player = active_players[voice_channel_id]
-            await player.disconnect(force=True)
-            del active_players[voice_channel_id]
-            if voice_channel_id in current_playlists:
-                del current_playlists[voice_channel_id]
-            print(f"[music] Disconnected from voice channel {voice_channel_id}")
-            # Give Discord time to fully close the voice session so a later
-            # reconnect (e.g. toggling music back on) doesn't race.
-            await asyncio.sleep(1.0)
-        except Exception as e:
-            print(f"[music] Error stopping music: {e}")
-            active_players.pop(voice_channel_id, None)
-            current_playlists.pop(voice_channel_id, None)
+    data = await _post("/play", {
+        "guildId": str(voice_channel.guild.id),
+        "channelId": str(voice_channel.id),
+        "tracks": [q],
+        "loop": True,
+        "volume": max(0, min(100, volume)),
+    })
+    if data and data.get("ok") and data.get("playing"):
+        active_players[voice_channel.id] = {
+            "playlist": f"scene:{q}", "guild_id": voice_channel.guild.id}
+        current_playlists[voice_channel.id] = f"scene:{q}"
+        _channel_guild[voice_channel.id] = voice_channel.guild.id
+        print(f"[music] Scene music -> {q} in {voice_channel.name}")
+        return True
+
+    print(f"[music] Sidecar did not start scene music for '{q}'")
+    return False
 
 
-def get_active_player(voice_channel_id: int) -> Optional[wavelink.Player]:
-    """Get the active player for a voice channel, if any."""
+async def stop_music_in_channel(voice_channel_id: int) -> None:
+    """Stop music and disconnect the sidecar from the channel's guild."""
+    guild_id = _channel_guild.get(voice_channel_id)
+    payload: dict = {"channelId": str(voice_channel_id)}
+    if guild_id is not None:
+        payload["guildId"] = str(guild_id)
+    await _post("/stop", payload)
+    active_players.pop(voice_channel_id, None)
+    current_playlists.pop(voice_channel_id, None)
+    _channel_guild.pop(voice_channel_id, None)
+    print(f"[music] Stopped music in channel {voice_channel_id}")
+
+
+async def set_volume_in_channel(voice_channel_id: int, volume: int) -> bool:
+    """Adjust playback volume (0-100) for an active channel."""
+    guild_id = _channel_guild.get(voice_channel_id)
+    if guild_id is None:
+        return False
+    data = await _post("/volume", {
+        "guildId": str(guild_id), "volume": max(0, min(100, volume))})
+    return bool(data and data.get("ok"))
+
+
+def get_active_player(voice_channel_id: int) -> Optional[dict]:
+    """Return the local state entry for a channel, if any."""
     return active_players.get(voice_channel_id)
-
-
-async def on_wavelink_node_ready(payload: wavelink.NodeReadyEventPayload):
-    """Called when Lavalink node is ready."""
-    print(f"[Lavalink] Node {payload.node.identifier} is ready!")
-
-
-async def on_wavelink_track_start(payload: wavelink.TrackStartEventPayload):
-    """Called when a track starts playing."""
-    player = payload.player
-    track = payload.track
-    print(f"[music] Now playing: {track.title} in channel {player.channel.id if player.channel else 'unknown'}")
-
-
-async def on_wavelink_track_end(payload: wavelink.TrackEndEventPayload):
-    """Called when a track ends - loop the playlist in place (no reconnect)."""
-    player: Optional[wavelink.Player] = payload.player
-    if player is None or player.channel is None:
-        return
-
-    voice_channel_id = player.channel.id
-    # If we intentionally stopped/disconnected this channel, do nothing.
-    if voice_channel_id not in active_players:
-        return
-
-    # Only loop when a track ended naturally. Ignore "replaced" (scene swap),
-    # "stopped", and failure reasons so scene changes don't re-queue stale tracks.
-    reason = getattr(payload, "reason", "finished")
-    if str(reason).lower() != "finished":
-        return
-
-    # Re-queue the finished track at the end so the current track/playlist loops forever
-    # without ever disconnecting from voice (which caused reconnect races).
-    if payload.track is not None:
-        try:
-            await player.queue.put_wait(payload.track)
-        except Exception as e:
-            print(f"[music] Error re-queuing track: {e}")
-
-    # Advance playback (manual control keeps looping deterministic and never
-    # disconnects, so the voice session stays alive between tracks).
-    if not player.playing and not player.queue.is_empty:
-        try:
-            await player.play(player.queue.get())
-            print(f"[music] Looping playlist in channel {voice_channel_id}")
-        except Exception as e:
-            print(f"[music] Error continuing playback: {e}")
-
-
-async def on_wavelink_track_exception(payload) -> None:
-    """Called when Lavalink raises an exception trying to stream a track."""
-    track = getattr(payload, "track", None)
-    exception = getattr(payload, "exception", None)
-    player = getattr(payload, "player", None)
-    ch = player.channel.id if player and player.channel else "unknown"
-    print(
-        f"[music] TRACK EXCEPTION in channel {ch}: "
-        f"track={getattr(track, 'title', track)!r}  error={exception}"
-    )
-
-
-async def on_wavelink_websocket_closed(payload) -> None:
-    """Called when Discord closes the voice WebSocket (media-server side)."""
-    code = getattr(payload, "code", "?")
-    reason = getattr(payload, "reason", "")
-    by_remote = getattr(payload, "by_remote", "?")
-    player = getattr(payload, "player", None)
-    ch = player.channel.id if player and player.channel else "unknown"
-    print(
-        f"[music] VOICE WS CLOSED in channel {ch}: "
-        f"code={code}  by_remote={by_remote}  reason={reason!r}"
-    )

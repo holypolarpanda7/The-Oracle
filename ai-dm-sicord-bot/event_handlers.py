@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
-import wavelink
 
 import music_player
 import music_control
@@ -23,38 +22,13 @@ import game_session
 async def on_ready_handler(bot):
     """Called when bot connects to Discord."""
     print(f"Bot is online as {bot.user} (ID: {bot.user.id})")
-    
-    # Connect to Lavalink via music_player module
-    lavalink_ok = await music_player.setup_lavalink(bot)
-    if not lavalink_ok:
-        print("[on_ready] Lavalink connection failed; music retries will occur on demand.")
-    
+
+    # Connect to the DAVE-capable voice sidecar (replaces Lavalink).
+    voice_ok = await music_player.setup_voice_service(bot)
+    if not voice_ok:
+        print("[on_ready] Voice service not ready; music retries will occur on demand.")
+
     print("Ready to DM!")
-
-
-async def on_wavelink_node_ready_handler(payload: wavelink.NodeReadyEventPayload):
-    """Called when Lavalink node is ready."""
-    await music_player.on_wavelink_node_ready(payload)
-
-
-async def on_wavelink_track_start_handler(payload: wavelink.TrackStartEventPayload):
-    """Called when a track starts playing."""
-    await music_player.on_wavelink_track_start(payload)
-
-
-async def on_wavelink_track_end_handler(payload: wavelink.TrackEndEventPayload):
-    """Called when a track ends - play next track in queue."""
-    await music_player.on_wavelink_track_end(payload)
-
-
-async def on_wavelink_track_exception_handler(payload):
-    """Called when Lavalink fails to play a track."""
-    await music_player.on_wavelink_track_exception(payload)
-
-
-async def on_wavelink_websocket_closed_handler(payload):
-    """Called when Discord's voice WebSocket is closed by Discord."""
-    await music_player.on_wavelink_websocket_closed(payload)
 
 
 async def on_reaction_add_handler(reaction: discord.Reaction, user: discord.User, bot):
@@ -215,7 +189,7 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
             started = await music_player.play_music_in_channel(
                 after.channel, "cc_menu", bot=bot, volume=65)
             if not started:
-                # One immediate retry after a short pause for voice/Lavalink races.
+                # One immediate retry after a short pause for voice/sidecar races.
                 import asyncio
                 await asyncio.sleep(1.0)
                 started = await music_player.play_music_in_channel(
