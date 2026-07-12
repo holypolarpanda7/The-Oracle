@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Callable, Optional
 
 from sqlmodel import Session, select
+from sqlalchemy import delete as sa_delete, func
 from sqlalchemy.engine import Engine
 from .models import (
     EntityImage,
@@ -129,6 +130,23 @@ class ImageStore:
         )
         return list(session.exec(stmt).all())
 
+    def _draw_random(
+        self, session: Session, bucket: list[EntityImage], caption_fallback: str
+    ) -> ImageResult:
+        """Pick a random stored image from a bucket and bump its usage stats."""
+        chosen = random.choice(bucket)
+        chosen.use_count += 1
+        chosen.last_used_at = datetime.utcnow()
+        session.add(chosen)
+        session.commit()
+        session.refresh(chosen)
+        return ImageResult(
+            kind=chosen.kind, ref_slug=chosen.ref_slug, context_key=chosen.context_key,
+            caption=chosen.caption or caption_fallback, image=chosen.image,
+            width=chosen.width, height=chosen.height, image_id=chosen.id,
+            reused=True, stored=True, seed=chosen.seed,
+        )
+
     def list_for(self, kind: str, ref: str, context: Optional[str] = None) -> list[dict]:
         """Metadata for a subject's stored images (no image bytes)."""
         kind = normalize_kind(kind)
@@ -165,23 +183,30 @@ class ImageStore:
             return row.thumb if (thumb and row.thumb) else row.image
 
     def stats(self) -> dict:
+        # Aggregate in SQL — selecting full rows would drag every WebP blob
+        # out of the DB just to count them.
         with Session(self.engine) as s:
-            rows = list(s.exec(select(EntityImage)).all())
-        buckets: dict[tuple, int] = {}
-        total_bytes = 0
-        for r in rows:
-            buckets[(r.kind, r.ref_slug, r.context_key)] = buckets.get(
-                (r.kind, r.ref_slug, r.context_key), 0) + 1
-            total_bytes += r.byte_size or 0
+            images, total_bytes = s.exec(
+                select(func.count(EntityImage.id),
+                       func.coalesce(func.sum(EntityImage.byte_size), 0))
+            ).one()
+            buckets = s.exec(
+                select(func.count()).select_from(
+                    select(EntityImage.kind, EntityImage.ref_slug,
+                           EntityImage.context_key).distinct().subquery()
+                )
+            ).one()
         return {
-            "images": len(rows),
-            "buckets": len(buckets),
+            "images": images,
+            "buckets": buckets,
             "total_bytes": total_bytes,
         }
 
     # ----- generation -----
 
-    def _render(self, cfg, prompt, ckey: str) -> tuple[Optional[bytes], Optional[int], bool]:
+    def _render(self, cfg, prompt, ckey: str,
+                reference_filenames: Optional[list[str]] = None
+                ) -> tuple[Optional[bytes], Optional[int], bool]:
         """Return (raw_bytes, seed, offline). raw_bytes is None only if offline."""
         seed = random.randint(0, 2**31 - 1)
         try:
@@ -193,6 +218,7 @@ class ImageStore:
                 height=cfg.gen_height,
                 steps=cfg.steps,
                 seed=seed,
+                reference_filenames=reference_filenames,
             )
             return raw, seed, False
         except ImageServiceUnavailable as e:
@@ -236,22 +262,17 @@ class ImageStore:
             existing = self._bucket(s, kind, ref, ckey)
             # Full bucket (or explicitly no new render) -> random draw.
             if existing and (force_new is False) and len(existing) >= cfg.max_per_bucket:
-                chosen = random.choice(existing)
-                chosen.use_count += 1
-                chosen.last_used_at = datetime.utcnow()
-                s.add(chosen)
-                s.commit()
-                s.refresh(chosen)
-                return ImageResult(
-                    kind=kind, ref_slug=ref, context_key=ckey,
-                    caption=chosen.caption or prompt.caption, image=chosen.image,
-                    width=chosen.width, height=chosen.height, image_id=chosen.id,
-                    reused=True, stored=True, seed=chosen.seed,
-                )
+                return self._draw_random(s, existing, prompt.caption)
 
         # Otherwise render a fresh image (building bucket variety up to the cap).
         raw, seed, offline = self._render(cfg, prompt, ckey)
         if offline or raw is None:
+            # Backend down: prefer any stored art for this bucket over a
+            # placeholder — a slightly-repeated picture beats a blank one.
+            with Session(self.engine) as s:
+                existing = self._bucket(s, kind, ref, ckey)
+                if existing:
+                    return self._draw_random(s, existing, prompt.caption)
             return ImageResult(
                 kind=kind, ref_slug=ref, context_key=ckey, caption=prompt.caption,
                 image=make_placeholder(), width=768, height=512,
@@ -273,6 +294,10 @@ class ImageStore:
             s.add(row)
             s.commit()
             s.refresh(row)
+            # force_new can push a full bucket over its cap — trim, keeping the
+            # fresh render.
+            self._enforce_bucket_cap(s, kind, ref, ckey, cfg.max_per_bucket,
+                                     keep_id=row.id)
             self._enforce_global_cap(s, cfg)
             s.commit()
             image_id = row.id
@@ -319,6 +344,92 @@ class ImageStore:
             generated=True, temp=True, seed=seed,
         )
 
+    def get_any_latest(self, kind: str, ref: str) -> Optional[ImageResult]:
+        """The newest stored image for a subject across ALL context buckets."""
+        kind = normalize_kind(kind)
+        ref = slugify(ref)
+        with Session(self.engine) as s:
+            row = s.exec(
+                select(EntityImage)
+                .where(EntityImage.kind == kind, EntityImage.ref_slug == ref)
+                .order_by(EntityImage.created_at.desc())
+            ).first()
+            if row is None:
+                return None
+            return ImageResult(
+                kind=row.kind, ref_slug=row.ref_slug, context_key=row.context_key,
+                caption=row.caption or ref, image=row.image, width=row.width,
+                height=row.height, image_id=row.id, reused=True, stored=True,
+            )
+
+    def generate_scene(
+        self,
+        subject: str,
+        *,
+        context: str = "",
+        extra: str = "",
+        reference_refs: Optional[list[tuple[str, str]]] = None,
+    ) -> Optional[ImageResult]:
+        """Render a moment in play, guided by stored art of its participants.
+
+        ``reference_refs`` = [(kind, ref), ...] — e.g. [("pc", "Kara"),
+        ("creature", "goblin")]. Each participant's newest stored image is
+        uploaded to ComfyUI as a visual reference (IP-Adapter or workflow
+        ref slots), so the scene actually depicts THESE subjects. Scenes are
+        moment-specific: never stored, never bucketed. Falls back to a plain
+        text-prompted render when references are missing/unuploadable.
+        """
+        cfg = self._cfg()
+        if not cfg.enabled or not cfg.allow_temp:
+            return None
+        prompt = build_prompt(
+            "scene", subject, context=context,
+            style_prompt=cfg.style_prompt, negative_prompt=cfg.negative_prompt,
+            extra=extra,
+        )
+        ref_files: list[str] = []
+        max_refs = int(getattr(cfg, "max_scene_references", 2))
+        if reference_refs:
+            try:
+                client = self._client_for(cfg)
+                for kind, ref in reference_refs[:max_refs]:
+                    res = self.get_any_latest(kind, ref)
+                    if res is None and kind != ImageKind.PC:
+                        continue
+                    if res is None:  # portraits live in their own bucket
+                        res = self.get_portrait(ref)
+                    if res is None:
+                        continue
+                    fname = client.upload_image(
+                        res.image, f"oracle-ref-{normalize_kind(kind)}-{slugify(ref)}.webp")
+                    if fname:
+                        ref_files.append(fname)
+            except Exception as e:
+                print(f"[imagery] scene reference prep failed: {e}")
+        if ref_files:
+            print(f"[imagery] scene render with {len(ref_files)} reference(s)")
+
+        raw, seed, offline = self._render(cfg, prompt, context_key(context),
+                                          reference_filenames=ref_files or None)
+        if offline or raw is None:
+            return ImageResult(
+                kind=ImageKind.SCENE, ref_slug=slugify(subject),
+                context_key=context_key(context), caption=prompt.caption,
+                image=make_placeholder(), width=768, height=512,
+                temp=True, offline=True, seed=seed,
+            )
+        enc = encode_webp(
+            raw, store_width=cfg.store_width, thumb_width=cfg.thumb_width,
+            quality=cfg.webp_quality,
+        )
+        return ImageResult(
+            kind=ImageKind.SCENE, ref_slug=slugify(subject),
+            context_key=context_key(context), caption=prompt.caption,
+            image=enc.data, width=enc.width, height=enc.height,
+            generated=True, temp=True, seed=seed,
+            meta={"references": len(ref_files)},
+        )
+
     # ----- provided (uploaded) images + single-slot portraits -----
 
     def store_provided_image(
@@ -361,6 +472,8 @@ class ImageStore:
             s.add(row)
             s.commit()
             s.refresh(row)
+            self._enforce_bucket_cap(s, kind, ref, ckey, cfg.max_per_bucket,
+                                     keep_id=row.id)
             self._enforce_global_cap(s, cfg)
             s.commit()
             image_id = row.id
@@ -481,12 +594,48 @@ class ImageStore:
     def _enforce_global_cap(self, session: Session, cfg) -> int:
         """LRU-evict oldest, least-used rows beyond the global cap."""
         cap = cfg.max_total_images
-        rows = list(session.exec(select(EntityImage)).all())
-        if len(rows) <= cap:
+        total = session.exec(select(func.count(EntityImage.id))).one()
+        if total <= cap:
             return 0
-        # Least valuable first: low use_count, then oldest last_used.
-        rows.sort(key=lambda r: (r.use_count, r.last_used_at))
-        to_remove = rows[: len(rows) - cap]
-        for r in to_remove:
-            session.delete(r)
-        return len(to_remove)
+        # Least valuable first: low use_count, then oldest last_used. Work on
+        # ids only so blobs never leave the DB just to be deleted.
+        victim_ids = list(session.exec(
+            select(EntityImage.id)
+            .order_by(EntityImage.use_count, EntityImage.last_used_at)
+            .limit(total - cap)
+        ).all())
+        if victim_ids:
+            session.execute(
+                sa_delete(EntityImage).where(EntityImage.id.in_(victim_ids)))
+        return len(victim_ids)
+
+    def _enforce_bucket_cap(
+        self, session: Session, kind: str, ref: str, ckey: str, cap: int,
+        *, keep_id: Optional[int] = None,
+    ) -> int:
+        """Trim a (kind, ref, context) bucket back to ``cap`` rows (LRU).
+
+        ``keep_id`` protects a just-inserted row (its use_count of 1 would
+        otherwise make it the first eviction candidate).
+        """
+        count = session.exec(
+            select(func.count(EntityImage.id)).where(
+                EntityImage.kind == kind, EntityImage.ref_slug == ref,
+                EntityImage.context_key == ckey)
+        ).one()
+        if count <= cap:
+            return 0
+        stmt = (
+            select(EntityImage.id)
+            .where(EntityImage.kind == kind, EntityImage.ref_slug == ref,
+                   EntityImage.context_key == ckey)
+            .order_by(EntityImage.use_count, EntityImage.last_used_at)
+            .limit(count - cap)
+        )
+        if keep_id is not None:
+            stmt = stmt.where(EntityImage.id != keep_id)
+        victim_ids = list(session.exec(stmt).all())
+        if victim_ids:
+            session.execute(
+                sa_delete(EntityImage).where(EntityImage.id.in_(victim_ids)))
+        return len(victim_ids)

@@ -198,21 +198,52 @@ async def ensure_voice_service_ready(bot: Optional[discord.Client] = None) -> bo
 # --- Playlist loading ----------------------------------------------------------
 
 async def load_playlist(playlist_name: str) -> list[str]:
-    """Load a playlist (list of URLs / search phrases) from playlists/."""
+    """Load tracks for a mood in priority order:
+
+    1. ``playlists/<name>.txt`` — explicit overrides (YouTube URLs, custom links).
+       Lines starting with ``#`` are comments.  If the file is non-empty, it wins.
+    2. ``voice-service/audio/<name>/`` — local pre-downloaded MP3/OGG files.
+       Tracks are passed to the sidecar as ``localfile:<abs_path>`` so the Node
+       process streams them through ffmpeg with no yt-dlp at all.
+    3. Freesound API — searches by mood keyword, returns direct HTTPS preview MP3
+       URLs.  Requires ``FREESOUND_API_KEY`` in the environment.
+    """
+    # --- 1. Explicit .txt override -------------------------------------------
     playlist_path = Path(__file__).parent / "playlists" / f"{playlist_name}.txt"
-    if not playlist_path.exists():
-        print(f"[playlist] Playlist file not found: {playlist_path}")
-        return []
+    if playlist_path.exists():
+        urls: list[str] = []
+        with open(playlist_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    urls.append(line)
+        if urls:
+            print(f"[playlist] Loaded {len(urls)} tracks from {playlist_name}.txt")
+            return urls
 
-    urls: list[str] = []
-    with open(playlist_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                urls.append(line)
+    # --- 2. Local audio folder -----------------------------------------------
+    audio_dir = _REPO_ROOT / "voice-service" / "audio" / playlist_name
+    if audio_dir.exists():
+        local_files = sorted(audio_dir.glob("*.mp3")) + sorted(audio_dir.glob("*.ogg"))
+        if local_files:
+            tracks = [f"localfile:{p.as_posix()}" for p in local_files]
+            print(f"[playlist] Loaded {len(tracks)} local files for '{playlist_name}'")
+            return tracks
 
-    print(f"[playlist] Loaded {len(urls)} tracks from {playlist_name}")
-    return urls
+    # --- 3. Freesound fallback -----------------------------------------------
+    freesound_key = os.getenv("FREESOUND_API_KEY", "")
+    if freesound_key:
+        try:
+            from freesound_client import get_mood_tracks
+            tracks = await get_mood_tracks(playlist_name, api_key=freesound_key)
+            if tracks:
+                print(f"[playlist] Loaded {len(tracks)} Freesound tracks for '{playlist_name}'")
+                return tracks
+        except Exception as e:
+            print(f"[playlist] Freesound fallback failed: {e}")
+
+    print(f"[playlist] No tracks found for '{playlist_name}'")
+    return []
 
 
 # --- Public playback API (sidecar-backed) --------------------------------------
@@ -273,10 +304,23 @@ async def play_query_in_channel(
         print("[music] Empty scene query; skipping")
         return False
 
+    # Prefer Freesound: direct MP3 URLs stream through ffmpeg with no yt-dlp.
+    # Fall back to the raw query (sidecar resolves it as a YouTube search).
+    tracks: list[str] = [q]
+    freesound_key = os.getenv("FREESOUND_API_KEY", "")
+    if freesound_key:
+        try:
+            from freesound_client import search_tracks
+            found = await search_tracks(q, api_key=freesound_key)
+            if found:
+                tracks = found
+        except Exception as e:
+            print(f"[music] Freesound scene search failed ({e}); using yt-dlp fallback")
+
     data = await _post("/play", {
         "guildId": str(voice_channel.guild.id),
         "channelId": str(voice_channel.id),
-        "tracks": [q],
+        "tracks": tracks,
         "loop": True,
         "volume": max(0, min(100, volume)),
     })

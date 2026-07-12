@@ -66,7 +66,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `[[ROLL: expr | label | DC n]]` hooks and the backend resolves them inline via
   `resolve_roll_hooks` — the player never copy-pastes Avrae. The legacy
   `render_avrae_hooks`/`[[AVRAE:...]]` path remains in the file but is unused.
-- **LLM**: OpenRouter, model via `OPENROUTER_MODEL` env (default Llama 3.1 70B).
+- **LLM**: Configurable via `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` env vars. Defaults to OpenRouter; set `LLM_BASE_URL=http://127.0.0.1:11434/v1/chat/completions` for local Ollama.
 - **Rules content is split by type**: structured entities (monsters/spells/items) live
   in `rules/` tables seeded from the open SRD (legally safe, CC-BY-4.0); prose rules
   will be a later vector-RAG layer. Do NOT bulk-load copyrighted PDFs into a shared DB.

@@ -73,6 +73,13 @@ def make_placeholder(text: str = "image service offline",
                      size: tuple[int, int] = (768, 512)) -> bytes:
     """A plain WebP placeholder used when the diffusion backend is unavailable."""
     img = Image.new("RGB", size, (28, 24, 38))
+    if text:
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(img)
+        # Default bitmap font: no font files to ship, good enough for a notice.
+        tw = draw.textlength(text)
+        draw.text(((size[0] - tw) / 2, size[1] / 2 - 6), text,
+                  fill=(140, 130, 160))
     buf = io.BytesIO()
     img.save(buf, format="WEBP", quality=70, method=4)
     return buf.getvalue()

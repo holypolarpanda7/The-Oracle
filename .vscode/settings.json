@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "\"$OLLAMA\"": true,
+        "\"$LOCALAPPDATA/Programs/Ollama/ollama.exe\"": true,
+        "uv": true
+    },
+    // We run everything via `uv run`, which manages the venv itself.
+    // Stop the Python extension from injecting a venv activation command
+    // into terminals (it emits a Windows `.venv\Scripts\activate` path that
+    // breaks in the WSL/Ubuntu bash shell).
+    "python.terminal.activateEnvironment": false
+}

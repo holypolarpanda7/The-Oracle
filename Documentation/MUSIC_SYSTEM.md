@@ -1,187 +1,119 @@
 # Music System Documentation
 
 ## Overview
-The Oracle bot now includes an integrated music system using Lavalink that automatically plays contextual background music during character creation and gameplay sessions.
+The Oracle plays contextual background music in voice channels during character
+creation and gameplay. Playback runs through the **Node voice sidecar**
+(`voice-service/`) — Discord's DAVE (E2EE) voice protocol made discord.py and
+Lavalink unusable for voice, so the sidecar (built on `@discordjs/voice` +
+`@snazzah/davey`) owns the voice connection and the bot drives it over a small
+localhost HTTP API (`music_player.py`).
 
-## Features
+## Track sources (three tiers, checked in order)
 
-### 1. **Automatic Music Playback**
-- Music starts automatically when a player joins their character creation voice channel
-- Default: `cc_menu` playlist plays during character creation
-- Music transitions to `character_complete` playlist when character is successfully registered
+`music_player.load_playlist(mood)` resolves a mood's tracks in priority order:
 
-### 2. **Player Controls**
-Players can toggle music on/off using reactions in the welcome message:
-- 🔇 - Turn music OFF
-- 🔊 - Turn music ON
+1. **`ai-dm-sicord-bot/playlists/<mood>.txt`** — explicit overrides.
+   One entry per line (`#` = comment). YouTube URLs, `ytsearch:` queries, or any
+   direct HTTPS audio URL. If the file has any active line, it wins outright.
+   *Currently `cc_menu.txt` and `character_complete.txt` contain YouTube
+   entries, so those two moods use YouTube instead of local files — comment the
+   lines out to fall through to the local library.*
+2. **`voice-service/audio/<mood>/*.mp3|*.ogg`** — the local ambient library.
+   Pre-downloaded from Freesound; streamed by the sidecar via
+   `localfile:<path>` → ffmpeg directly (no network, no yt-dlp, instant start).
+   Seed/refresh it with:
+   ```bash
+   uv run python scripts/download_tracks.py
+   ```
+   (~5 tracks per mood; needs `FREESOUND_API_KEY`.)
+3. **Freesound live search** — if neither of the above yields tracks, the bot
+   searches freesound.org by mood keywords (`freesound_client.MOOD_QUERIES`,
+   with broader `MOOD_FALLBACK_QUERIES` tried when results are thin) and
+   streams the HQ preview MP3s directly.
 
-### 3. **Multiple Playlists**
-The system supports different playlists for various contexts:
+## AI-chosen scene music
 
-| Playlist | Context | Description |
-|----------|---------|-------------|
-| `cc_menu` | Character Creation | Background music for character creation menu |
-| `character_complete` | Character Registered | Celebration music when character is approved |
-| `town` | Town/City | Peaceful ambient music for settlements |
-| `tavern` | Tavern/Inn | Warm, social music for gathering places |
-| `desert` | Desert Exploration | Atmospheric music for hot climates |
-| `dungeon` | Underground | Dark, mysterious music for dungeons |
-| `combat` | Battle | Intense music for combat encounters |
-
-### 4. **Playlist Management**
-All playlists are stored in `playlists/*.txt` files with one URL per line:
+The DM brain can set the mood itself: when a scene's location/tone changes the
+LLM emits a hook in its narration:
 
 ```
-# playlists/town.txt
-# Town/City ambient music
-https://www.youtube.com/watch?v=example1
-https://www.youtube.com/watch?v=example2
-# Lines starting with # are comments
+[[MUSIC: dark dungeon tension]]
 ```
 
-Supported sources: YouTube, SoundCloud, Bandcamp, Twitch, HTTP/HTTPS streams
+The backend strips the hook and returns the query in the `/chat` response
+(`music` field); the bot then calls `music_player.play_query_in_channel()`,
+which **searches Freesound first** and passes the resulting direct MP3 URLs to
+the sidecar (looped). If Freesound has no match (or no API key is set), the raw
+query falls back to the sidecar's yt-dlp path as a YouTube search.
 
-## Implementation Details
+## Moods / playlists
 
-### State Tracking
-```python
-# Tracks music preferences per voice channel
-music_preferences: Dict[int, Dict] = {
-    voice_channel_id: {
-        "enabled": bool,          # Whether music is on/off
-        "current_playlist": str   # Currently playing playlist
-    }
-}
-```
+| Mood | Context |
+|------|---------|
+| `cc_menu` | Character creation menu |
+| `character_complete` | Character successfully registered |
+| `town` | Settlements |
+| `tavern` | Taverns, inns, social scenes |
+| `desert` | Desert / hot climates |
+| `dungeon` | Underground, dark places |
+| `combat` | Battle encounters |
 
-### Key Functions
-
-#### `switch_music(voice_channel, new_playlist)`
-Switches to a different playlist in the given voice channel.
-
-```python
-# Example: Switch to town music
-await switch_music(voice_channel, "town")
-```
-
-#### `toggle_music(voice_channel_id, enabled)`
-Turns music on/off for a voice channel.
-
-```python
-# Turn music off
-await toggle_music(voice_channel_id, False)
-
-# Turn music back on
-await toggle_music(voice_channel_id, True)
-```
-
-## Automatic Music Switching
-
-### Character Creation Flow
-1. Player uses `/enterworld` → Voice channel created
-2. Player joins voice channel → `cc_menu` music starts automatically
-3. Player completes character creation → Music switches to `character_complete`
-4. Player leaves/session ends → Music stops, channel deleted
-
-### Future: Context-Based Switching
-The system is designed to support automatic music switching based on:
-- Player location (town, wilderness, dungeon)
-- Game state (exploration, combat, social)
-- DM commands to set atmosphere
-
-## DM Controls (Future Enhancement)
-
-You can add slash commands for DMs to manually control music:
-
-```python
-@bot.tree.command(name="music")
-async def music_control(
-    interaction: discord.Interaction,
-    action: Literal["play", "stop", "switch"],
-    playlist: str = None
-):
-    """Control background music in voice channels."""
-    # Implementation for manual DM control
-```
+Add a new mood by creating `voice-service/audio/<mood>/` with MP3s (or a
+`playlists/<mood>.txt`), and optionally an entry in
+`freesound_client.MOOD_QUERIES` so the live fallback and the seeding script
+know what to search for.
 
 ## Configuration
 
-### Volume
-Default volume is set to 30%. To change:
+- **`FREESOUND_API_KEY`** — free key from https://freesound.org/apiv2/apply.
+  Lives in `ai-dm-sicord-bot/cred.env` (bot runtime) and
+  `oracle-dm-backend/backend-cred.env` (used by `scripts/download_tracks.py`).
+- **Volume** — passed per play call (`play_music_in_channel(..., volume=50)`,
+  scene music defaults to 30); adjust live via
+  `music_player.set_volume_in_channel(channel_id, volume)`.
+- **Sidecar address** — `VOICE_SERVICE_HOST` / `VOICE_SERVICE_PORT` /
+  `VOICE_SERVICE_URL`, optional `VOICE_SERVICE_SECRET` shared token.
+- **Looping** — the sidecar loops the track list it was given (`loop: true`).
 
-Edit `music_player.py`:
-```python
-await player.set_volume(30)  # Change to desired volume (0-100)
-```
+## Player & flow behavior
 
-### Playlist Loop
-Playlists automatically restart when all tracks finish. This behavior is in `music_player.py`:
-
-```python
-async def on_wavelink_track_end(payload):
-    # ... when queue is empty, restart playlist
-    await play_music_in_channel(voice_channel, "cc_menu")
-```
-
-## Adding New Playlists
-
-1. Create a new `.txt` file in `playlists/` directory:
-   ```bash
-   touch playlists/forest.txt
-   ```
-
-2. Add URLs (one per line):
-   ```
-   # Forest exploration music
-   https://www.youtube.com/watch?v=example1
-   https://www.youtube.com/watch?v=example2
-   ```
-
-3. Use the playlist in code:
-   ```python
-   await music_player.play_music_in_channel(voice_channel, "forest")
-   ```
+- `/enterworld` → voice channel created → `cc_menu` music starts when the
+  player joins.
+- Character registered → switches to `character_complete`.
+- Players toggle music with the 🔊 / 🔇 reactions on the welcome message
+  (`music_control.toggle_music`).
+- Scene changes during play → `[[MUSIC: ...]]` hooks retarget the ambience.
 
 ## Troubleshooting
 
-### Music not playing?
-- Check Lavalink server is running: `java -jar Lavalink.jar`
-- Verify bot has permission to connect to voice channels
-- Check playlist file exists and has valid URLs
-
-### Music won't stop?
-- Check `music_preferences` state: `music_preferences[voice_channel_id]`
-- Verify `toggle_music()` is being called correctly
-- Check Lavalink server logs for errors
-
-### Playlists not loading?
-- Verify file path: `playlists/<name>.txt`
-- Check file format (UTF-8, one URL per line)
-- Test URLs manually in browser
+- **No music at all** — is the sidecar up? The bot spawns it automatically
+  (`music_player.start_voice_service`); check `voice-service/voice-service.log`
+  and `GET http://127.0.0.1:8790/health`. Node ≥ 22.12 required.
+- **A mood is silent** — check the three tiers in order: does
+  `playlists/<mood>.txt` have only comments? does `voice-service/audio/<mood>/`
+  have files? is `FREESOUND_API_KEY` set?
+- **Scene music sounds wrong** — the Freesound search is keyword-based; the
+  LLM's `[[MUSIC: ...]]` phrasing drives it. Tighten the prompt guidance in
+  `fastapi-dm.py` if it picks poorly.
+- **YouTube entries fail** — the sidecar shells out to `yt-dlp`; make sure it's
+  installed and current (`yt-dlp -U`).
 
 ## Architecture
 
 ```
-oracle-dm-discord-bot.py
-├── music_preferences{}          # Track enabled/disabled state
-├── switch_music()               # Switch playlists
-├── toggle_music()               # Enable/disable music
-└── on_reaction_add()            # Handle player toggle requests
+oracle-dm-backend/fastapi-dm.py
+└── [[MUSIC: ...]] hook extraction → "music" field in /chat response
 
-music_player.py
-├── active_players{}             # Track active Lavalink players
-├── setup_lavalink()             # Connect to Lavalink server
-├── load_playlist()              # Load URLs from .txt files
-├── play_music_in_channel()      # Start playback
-├── stop_music_in_channel()      # Stop and disconnect
-└── on_wavelink_track_end()      # Auto-loop playlists
+ai-dm-sicord-bot/
+├── music_player.py        # sidecar HTTP client + 3-tier playlist loading
+├── music_control.py       # per-channel enable/disable + playlist switching
+├── freesound_client.py    # Freesound search + download (moods & free queries)
+├── event_handlers.py / game_session.py   # play scene music from /chat
+└── playlists/*.txt        # tier-1 overrides
 
-playlists/
-├── cc_menu.txt                  # Character creation
-├── character_complete.txt       # Character registered
-├── town.txt                     # Town ambient
-├── tavern.txt                   # Tavern social
-├── desert.txt                   # Desert exploration
-├── dungeon.txt                  # Dungeon crawling
-└── combat.txt                   # Battle music
+voice-service/             # Node sidecar (DAVE voice, ffmpeg playback)
+├── src/resolver.js        # localfile:/direct-URL fast path, yt-dlp slow path
+└── audio/<mood>/*.mp3     # tier-2 local ambient library (seeded from Freesound)
+
+scripts/download_tracks.py # seed/refresh the local library
 ```

@@ -20,6 +20,7 @@ _KIND_FRAMING = {
     ImageKind.CREATURE: "full-body creature illustration, dynamic pose, menacing presence",
     ImageKind.ITEM: "single object study on a neutral background, museum lighting",
     ImageKind.PC: "heroic character portrait, head and shoulders, detailed face, single figure, adventurer",
+    ImageKind.SCENE: "dynamic action scene, mid-motion, cinematic wide composition, dramatic moment",
 }
 
 

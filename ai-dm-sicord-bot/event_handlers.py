@@ -1,9 +1,11 @@
 """
 Event Handlers Module - Discord event handlers (on_ready, on_message, on_reaction_add, etc.)
 """
+import asyncio
 import base64
 import binascii
 import io
+import os
 import re
 from datetime import datetime, timezone
 
@@ -40,7 +42,7 @@ class CharacterCreationView(View):
     async def guided_button(self, interaction: discord.Interaction, button: Button):
         """Handle AI-guided character creation."""
         await interaction.response.defer()
-        await interaction.followup.send("🎨 No problem! Let's build your character together. I'll ask you some questions.\n\nWhat's your character's name?")
+        await interaction.followup.send("🎨 The Oracle is preparing your adventure...")
         # Start guided character creation
         await character_creation.start_guided_character_creation(
             interaction.channel, 
@@ -58,15 +60,19 @@ class CharacterCreationView(View):
         guild = interaction.guild
         user_id = self.cc_data["user_id"]
         
-        # Clean up the session
+        # Send cancel message BEFORE cleanup
+        try:
+            await interaction.followup.send("❌ Character creation session cancelled.")
+        except Exception:
+            pass  # Channel may be deleted, ignore
+        
+        # Then clean up the session
         await character_creation.cleanup_ephemeral_channel(
             guild, 
             voice_channel_id, 
             user_id, 
             reason="Cancelled by user"
         )
-        
-        await interaction.followup.send("❌ Character creation session cancelled.")
 
 
 
@@ -109,7 +115,7 @@ async def on_reaction_add_handler(reaction: discord.Reaction, user: discord.User
 
     # ❌ reaction = create from scratch (AI-guided)
     elif str(reaction.emoji) == "❌":
-        await reaction.message.channel.send("🎨 No problem! Let's build your character together. I'll ask you some questions.\n\nWhat's your character's name?")
+        await reaction.message.channel.send("🎨 The Oracle is preparing your adventure...")
         # Start guided character creation
         backend_url = bot.backend_url
         await character_creation.start_guided_character_creation(reaction.message.channel, cc_voice_id, cc_data["user_id"], user.display_name, backend_url)
@@ -384,6 +390,60 @@ async def _maybe_handle_character_query(message, bot) -> bool:
     return True
 
 
+# Channel that receives fallen characters' memorials (the hall of the dead).
+MEMORIAL_CHANNEL_ID = int(os.getenv("MEMORIAL_CHANNEL_ID", "1447789198039060600"))
+
+
+async def post_memorial(bot, memorial) -> None:
+    """Post a fallen PC's one-page life record to the memorial channel.
+
+    Best-effort: a missing channel or permissions problem is logged, never
+    raised — the death is already canon in the world graph regardless.
+    """
+    if not memorial or not memorial.get("text"):
+        return
+    try:
+        channel = bot.get_channel(MEMORIAL_CHANNEL_ID)
+        if channel is None:
+            channel = await bot.fetch_channel(MEMORIAL_CHANNEL_ID)
+        embed = discord.Embed(
+            title=memorial.get("title", "⚰️ In Memoriam"),
+            description=memorial.get("text", "")[:4000],
+            color=discord.Color.dark_grey(),
+        )
+        embed.set_footer(text="Their tale is told. The world remembers.")
+        await channel.send(embed=embed)
+        print(f"[memorial] posted for {memorial.get('character', '?')} "
+              f"to #{getattr(channel, 'name', MEMORIAL_CHANNEL_ID)}")
+    except Exception as e:
+        print(f"[memorial] failed to post: {e}")
+
+
+async def send_paced(channel, text: str, files=None) -> None:
+    """Deliver a long narration paragraph-by-paragraph with the typing
+    indicator between beats — the Discord approximation of streaming text.
+
+    Short replies go out in one message; attachments ride the final part.
+    """
+    text = (text or "").strip()
+    parts = [p for p in text.split("\n\n") if p.strip()]
+    if len(parts) <= 1 or len(text) < 700:
+        await channel.send(text or "...", files=files if files else None)
+        return
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        try:
+            await channel.send(part, files=files if (files and last) else None)
+        except discord.HTTPException as e:
+            print(f"[paced send error] {e}")
+            return
+        if not last:
+            # Pause scaled to the next paragraph's length, like a storyteller
+            # drawing breath (capped so pacing never drags).
+            async with channel.typing():
+                await asyncio.sleep(min(2.5, 0.5 + len(parts[i + 1]) / 400))
+
+
 def _build_scene_files(images) -> list:
     """Turn backend image payloads (base64 WebP) into discord.File attachments."""
     files = []
@@ -611,13 +671,20 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
     user_id = str(message.author.id)
     username = message.author.display_name
     
-    result = await backend_integration.call_backend(user_text, session_id, user_id, username, bot.backend_url)
+    # Typing indicator while the Oracle thinks (local 14B narration takes a
+    # moment) — the waiting feels alive instead of dead air.
+    async with message.channel.typing():
+        result = await backend_integration.call_backend(user_text, session_id, user_id, username, bot.backend_url)
     dm_reply = result.get("reply", "The Oracle is silent...")
     music_query = result.get("music")
 
     # Decode any scene pictures the backend produced into Discord attachments.
     files = _build_scene_files(result.get("images"))
-    await message.channel.send(dm_reply, files=files if files else None)
+    await send_paced(message.channel, dm_reply, files=files)
+
+    # A fallen character's life record goes to the memorial channel.
+    if result.get("memorial"):
+        await post_memorial(bot, result["memorial"])
 
     # If the DM recommended scene music and the player is in a voice channel,
     # play a matching ambient track there (looped until the scene changes).

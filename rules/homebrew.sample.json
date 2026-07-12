@@ -1,0 +1,33 @@
+{
+  "_readme": [
+    "Copy this file to rules/homebrew.json and replace the examples with",
+    "entries typed from books YOU own (Tasha's, Xanathar's, homebrew, ...).",
+    "Loaded at backend startup into the same table as the SRD, so shops,",
+    "equipment guardrails, and the DM's exact-numbers context all see them.",
+    "Required per item: name + desc. Everything else optional:",
+    "category, item_type, rarity, cost_gp, weight, requires_attunement,",
+    "damage_dice/damage_type (weapons), armor_class_base (armor), properties."
+  ],
+  "items": [
+    {
+      "name": "Example: Lantern of the Patient Moth",
+      "category": "magic-item",
+      "item_type": "Wondrous Item",
+      "rarity": "uncommon",
+      "requires_attunement": false,
+      "cost_gp": 150,
+      "desc": "REPLACE ME - an original example entry. Sheds dim light that insects and beasts of CR 1/4 or lower will not cross. 3 charges, regains 1d3 at dawn."
+    },
+    {
+      "name": "Example: Wardens' Chain Whip",
+      "category": "weapon",
+      "item_type": "Martial Melee Weapon",
+      "rarity": "rare",
+      "requires_attunement": true,
+      "damage_dice": "1d4",
+      "damage_type": "slashing",
+      "properties": ["finesse", "reach"],
+      "desc": "REPLACE ME - +1 weapon; on a hit you may attempt to grapple (escape DC 13) instead of dealing damage."
+    }
+  ]
+}

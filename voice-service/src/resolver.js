@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { pipeline } from 'node:stream';
+import { pipeline, PassThrough } from 'node:stream';
 
 const require = createRequire(import.meta.url);
 const ffmpegPath = require('ffmpeg-static');
@@ -38,6 +38,18 @@ export function normalizeQuery(raw) {
 // Fetch lightweight metadata (title) for a resolved query. Best-effort; resolves
 // to the raw query text on failure so playback logging never blocks on it.
 export function resolveTitle(query) {
+  // Local file: use the filename part as the title.
+  if (isLocalFile(query)) {
+    const p = localFilePath(query);
+    return Promise.resolve(p.replace(/.*[\\/]/, '').replace(/\.[^.]+$/, ''));
+  }
+  // Direct audio URL: use the last path segment.
+  if (isDirectAudioUrl(query)) {
+    try {
+      const seg = new URL(query).pathname.split('/').pop() || query;
+      return Promise.resolve(decodeURIComponent(seg).replace(/\.[^.]+$/, ''));
+    } catch { return Promise.resolve(query); }
+  }
   const arg = normalizeQuery(query);
   if (!arg) return Promise.resolve(query);
   return new Promise((resolve) => {
@@ -66,6 +78,85 @@ export function resolveTitle(query) {
 // yt-dlp stdout (container/audio stream) -> ffmpeg (48k stereo PCM s16le) -> Discord resource.
 // Returns { stream, kill } where stream is ffmpeg stdout.
 export function createAudioPipeline(query, volume = 50) {
+  // Fast path: local file or direct HTTPS audio URL — skip yt-dlp entirely.
+  if (isLocalFile(query) || isDirectAudioUrl(query)) {
+    return createDirectPipeline(query, volume);
+  }
+  // Slow path: let yt-dlp extract and stream the audio (YouTube etc.).
+  return createYtdlpPipeline(query, volume);
+}
+
+// ---------------------------------------------------------------------------
+// Fast path: local file or a direct HTTPS .mp3/.ogg/etc. URL.
+// ffmpeg reads the source directly — no yt-dlp, instant start, no video risk.
+// ---------------------------------------------------------------------------
+function isLocalFile(s) {
+  return typeof s === 'string' && s.startsWith('localfile:');
+}
+
+function localFilePath(s) {
+  // Normalize Windows backslashes so ffmpeg is happy on all platforms.
+  return s.slice('localfile:'.length).replace(/\\/g, '/');
+}
+
+function isDirectAudioUrl(s) {
+  if (typeof s !== 'string') return false;
+  try {
+    const url = new URL(s);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    return /\.(mp3|ogg|opus|wav|flac|m4a)(\?.*)?$/i.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function createDirectPipeline(query, volume) {
+  const src = isLocalFile(query) ? localFilePath(query) : query;
+  let killed = false;
+  const amplFactor = clampVolume(volume) / 100.0;
+
+  const ffmpeg = spawn(
+    ffmpegPath,
+    [
+      '-hide_banner', '-loglevel', 'error',
+      '-i', src,
+      '-vn', '-map', '0:a:0',
+      '-af', `volume=${amplFactor}`,
+      '-c:a', 'libopus',
+      '-b:a', '224k', '-vbr', 'on', '-compression_level', '10',
+      '-ar', '48000', '-ac', '2',
+      '-frame_duration', '20', '-application', 'audio',
+      '-f', 'ogg', 'pipe:1',
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+
+  const buffered = new PassThrough({ highWaterMark: 1 << 22 });
+  pipeline(ffmpeg.stdout, buffered, (err) => {
+    if (!err || killed || isBenignPipeError(err)) return;
+    console.error(`[resolver] direct pipeline error: ${err.message}`);
+  });
+  ffmpeg.stderr?.on('data', (chunk) => {
+    const text = chunk.toString().trim();
+    if (text) console.error(`[resolver] ffmpeg(direct): ${text}`);
+  });
+  ffmpeg.on('error', (err) => {
+    if (killed || isBenignPipeError(err)) return;
+    console.error(`[resolver] ffmpeg(direct) process error: ${err.message}`);
+  });
+
+  const kill = () => {
+    killed = true;
+    try { ffmpeg.kill('SIGKILL'); } catch { /* ignore */ }
+    try { buffered.destroy(); } catch { /* ignore */ }
+  };
+  return { stream: buffered, kill };
+}
+
+// ---------------------------------------------------------------------------
+// Slow path: yt-dlp + ffmpeg for YouTube and other extractable URLs.
+// ---------------------------------------------------------------------------
+function createYtdlpPipeline(query, volume) {
   const arg = normalizeQuery(query);
   if (!arg) throw new Error('Empty audio query');
   let killed = false;
@@ -74,80 +165,69 @@ export function createAudioPipeline(query, volume = 50) {
     YT_DLP_BIN,
     [
       arg,
-      '-o', '-',                 // stream media to stdout
-      '-f', 'bestaudio/best',
-      '--no-playlist',
-      '--no-warnings',
-      '--quiet',
+      '-o', '-',
+      '-f', 'bestaudio[acodec=opus][vcodec=none]/bestaudio[vcodec=none]/bestaudio/best',
+      '--no-playlist', '--no-warnings', '--quiet',
+      '--extractor-args', 'youtube:player_client=android,web',
+      '--retries', '10', '--fragment-retries', '10',
+      '--extractor-retries', '5', '--retry-sleep', '2',
     ],
     { stdio: ['ignore', 'pipe', 'pipe'] }
   );
 
-  // Normalize volume to 0.0-1.0 amplitude before ffmpeg (avoids per-frame jitter).
   const amplFactor = clampVolume(volume) / 100.0;
   const ffmpeg = spawn(
     ffmpegPath,
     [
-      '-hide_banner',
-      '-loglevel', 'error',
+      '-hide_banner', '-loglevel', 'error',
       '-thread_queue_size', '4096',
       '-i', 'pipe:0',
+      '-vn', '-map', '0:a:0',
       '-af', `volume=${amplFactor}`,
-      '-f', 's16le',
-      '-ar', '48000',
-      '-ac', '2',
-      'pipe:1',
+      '-c:a', 'libopus',
+      '-b:a', '224k', '-vbr', 'on', '-compression_level', '10',
+      '-ar', '48000', '-ac', '2',
+      '-frame_duration', '20', '-application', 'audio',
+      '-f', 'ogg', 'pipe:1',
     ],
     { stdio: ['pipe', 'pipe', 'pipe'] }
   );
 
-  // Media flow: yt-dlp -> ffmpeg stdin, with backpressure + handled pipe errors.
+  const buffered = new PassThrough({ highWaterMark: 1 << 22 });
   pipeline(ytdlp.stdout, ffmpeg.stdin, (err) => {
-    if (!err || killed || isBenignPipeError(err)) {
-      return;
-    }
+    if (!err || killed || isBenignPipeError(err)) return;
     console.error(`[resolver] stream pipeline error: ${err.message}`);
   });
-
-  // Drain stderr so the buffer never fills; only surface real errors.
-  ytdlp.stderr?.on('data', (chunk) => {
-    const text = chunk.toString();
-    // Benign when we intentionally kill the process while switching tracks.
-    if (/unable to write data: \[errno 22\] invalid argument/i.test(text)) {
-      return;
-    }
-    if (/error/i.test(text)) {
-      console.error(`[resolver] yt-dlp: ${text.trim()}`);
-    }
+  pipeline(ffmpeg.stdout, buffered, (err) => {
+    if (!err || killed || isBenignPipeError(err)) return;
+    console.error(`[resolver] buffer pipeline error: ${err.message}`);
   });
 
+  ytdlp.stderr?.on('data', (chunk) => {
+    const text = chunk.toString();
+    if (/unable to write data: \[errno 22\] invalid argument/i.test(text)) return;
+    if (/error/i.test(text)) console.error(`[resolver] yt-dlp: ${text.trim()}`);
+  });
   ytdlp.on('error', (err) => {
     if (killed || isBenignPipeError(err)) return;
     console.error(`[resolver] yt-dlp process error: ${err.message}`);
   });
-
   ffmpeg.on('error', (err) => {
     if (killed || isBenignPipeError(err)) return;
     console.error(`[resolver] ffmpeg process error: ${err.message}`);
   });
-
   ffmpeg.stderr?.on('data', (chunk) => {
     const text = chunk.toString();
-    if (text.trim()) {
-      console.error(`[resolver] ffmpeg: ${text.trim()}`);
-    }
+    if (text.trim()) console.error(`[resolver] ffmpeg: ${text.trim()}`);
   });
 
   const kill = () => {
     killed = true;
     try { ytdlp.kill('SIGKILL'); } catch { /* ignore */ }
     try { ffmpeg.kill('SIGKILL'); } catch { /* ignore */ }
+    try { buffered.destroy(); } catch { /* ignore */ }
   };
-
-  return {
-    stream: ffmpeg.stdout,
-    kill,
-  };
+  return { stream: buffered, kill };
 }
 
 function clampVolume(v) {

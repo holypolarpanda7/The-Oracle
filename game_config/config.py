@@ -228,6 +228,16 @@ class ImageryConfig:
     webp_quality: int = 82
     max_per_bucket: int = 3                  # 3 images per (subject x context)
     max_total_images: int = 600             # global cap; LRU-evicted beyond this
+    # ----- reference-guided scenes (IP-Adapter) -----
+    # When on, scene renders pull stored art of named participants (PC
+    # portraits, NPC/creature images) as visual references so "Kara casting
+    # fireball at the goblin" looks like Kara and that goblin. Requires the
+    # ComfyUI_IPAdapter_plus custom nodes + an ip-adapter SDXL model in
+    # ComfyUI; when absent/off, scenes render from the text prompt alone.
+    use_ipadapter: bool = False
+    ipadapter_weight: float = 0.65           # identity strength (0..1)
+    ipadapter_preset: str = "STANDARD (medium strength)"
+    max_scene_references: int = 2            # participant refs pulled per scene
     # ----- behavior -----
     allow_temp: bool = True                  # player-requested throwaway images
     max_images_per_reply: int = 2            # cap auto-generated visuals per turn

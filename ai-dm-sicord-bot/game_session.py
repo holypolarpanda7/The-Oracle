@@ -439,12 +439,19 @@ async def handle_session_message(message: discord.Message, bot) -> bool:
     if not content:
         return True
 
-    result = await backend_integration.call_backend(
-        content, session["backend_session_id"], user_id,
-        participant["character_name"], bot.backend_url)
+    import event_handlers  # deferred: event_handlers imports this module
+    async with message.channel.typing():
+        result = await backend_integration.call_backend(
+            content, session["backend_session_id"], user_id,
+            participant["character_name"], bot.backend_url)
     reply = result.get("reply", "The Oracle is silent...")
     files = _scene_files(result.get("images"))
-    await message.channel.send(reply, files=files if files else None)
+    await event_handlers.send_paced(message.channel, reply, files=files)
+
+    # A fallen character's life record goes to the memorial channel.
+    if result.get("memorial"):
+        import event_handlers  # deferred: event_handlers imports this module
+        await event_handlers.post_memorial(bot, result["memorial"])
 
     music_query = result.get("music")
     if music_query:

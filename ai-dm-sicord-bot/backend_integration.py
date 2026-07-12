@@ -66,15 +66,19 @@ async def call_backend(message_text: str, session_id: str, user_id: str, usernam
                         "reply": data.get("reply", "The Oracle is silent..."),
                         "music": data.get("music"),
                         "images": data.get("images"),
+                        "memorial": data.get("memorial"),
                     }
                 else:
-                    return {"reply": f"The Oracle is troubled (HTTP {resp.status})...", "music": None, "images": None}
+                    return {"reply": f"The Oracle is troubled (HTTP {resp.status})...",
+                            "music": None, "images": None, "memorial": None}
         except aiohttp.ClientError as e:
             print(f"[call_backend error] {e}")
-            return {"reply": "The Oracle's connection falters...", "music": None, "images": None}
+            return {"reply": "The Oracle's connection falters...",
+                    "music": None, "images": None, "memorial": None}
         except Exception as e:
             print(f"[call_backend error] {e}")
-            return {"reply": "The Oracle is silent...", "music": None, "images": None}
+            return {"reply": "The Oracle is silent...",
+                    "music": None, "images": None, "memorial": None}
 
 
 async def reset_backend_session(session_id: str, reset_url: str) -> str:
@@ -163,6 +167,29 @@ async def resolve_character(
                 return c, characters
         return None, characters
     return characters[0], characters
+
+
+async def import_ddb_character(user_id: str, url: str, backend_url: str) -> Dict:
+    """POST /import_ddb: import + validate a public D&D Beyond sheet.
+
+    Returns the backend payload ({status, character_id, name, report}) or
+    {"ok": False, "error": <player-readable reason>}.
+    """
+    api = f"{_api_base(backend_url)}/import_ddb"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(
+                api, json={"discord_user_id": user_id, "url": url},
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status == 200:
+                    return data
+                return {"ok": False,
+                        "error": data.get("detail", f"HTTP {resp.status}")}
+        except Exception as e:
+            print(f"[import_ddb_character error] {e}")
+            return {"ok": False, "error": "Could not reach the Oracle's backend."}
 
 
 async def get_character_sheet(character_id: int, backend_url: str) -> Optional[dict]:

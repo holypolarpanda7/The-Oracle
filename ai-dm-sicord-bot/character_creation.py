@@ -3,6 +3,7 @@ Character Creation Module - Handles all character creation logic.
 Includes session management, Avrae imports, and AI-guided creation.
 """
 import asyncio
+import re
 from datetime import datetime, timezone
 from typing import Dict, Optional
 import uuid
@@ -339,39 +340,182 @@ async def start_guided_character_creation(text_channel: discord.TextChannel, voi
     guided_cc_state[text_channel.id]["waiting_for_input"] = True
 
 
+def _build_cc_progress_embed(char_data: Dict) -> discord.Embed:
+    """The live 'sheet so far' panel shown/updated after every CC exchange."""
+    def val(v):  # noqa: E731-ish helper
+        return str(v) if v else "❓ —"
+    embed = discord.Embed(
+        title=f"📜 Character sheet — {char_data.get('name') or 'unnamed'}",
+        description="Taking shape as you speak...",
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name="Race", value=val(char_data.get("race")), inline=True)
+    embed.add_field(name="Class", value=val(char_data.get("char_class")), inline=True)
+    embed.add_field(name="Background", value=val(char_data.get("background")), inline=True)
+    stats = char_data.get("stats") or {}
+    if stats:
+        embed.add_field(
+            name="Abilities",
+            value=" · ".join(f"{k[:3].upper()} {v}" for k, v in stats.items()),
+            inline=False)
+    else:
+        embed.add_field(name="Abilities", value="❓ not yet rolled/assigned", inline=False)
+    todo = [f for f, v in (("name", char_data.get("name")),
+                           ("race", char_data.get("race")),
+                           ("class", char_data.get("char_class")),
+                           ("abilities", stats)) if not v]
+    embed.set_footer(text=("Still needed: " + ", ".join(todo)) if todo
+                     else "Complete! The Oracle will finalize your character.")
+    return embed
+
+
+async def _update_cc_progress(channel: discord.TextChannel, state: Dict) -> None:
+    """Edit the pinned progress sheet in place (or post it the first time)."""
+    embed = _build_cc_progress_embed(state["char_data"])
+    try:
+        msg_id = state.get("sheet_message_id")
+        if msg_id:
+            msg = await channel.fetch_message(msg_id)
+            await msg.edit(embed=embed)
+            return
+    except (discord.NotFound, discord.HTTPException):
+        pass
+    try:
+        msg = await channel.send(embed=embed)
+        state["sheet_message_id"] = msg.id
+    except discord.HTTPException as e:
+        print(f"[cc sheet panel error] {e}")
+
+
+async def _show_final_sheet(channel: discord.TextChannel, character_id: int,
+                            backend_url: str) -> None:
+    """Reflect the fully rendered sheet + starting inventory back to the player."""
+    import backend_integration
+    import character_display
+    try:
+        sheet = await backend_integration.get_character_sheet(character_id, backend_url)
+        if sheet:
+            embed, file = character_display.build_sheet_embed(sheet)
+            await channel.send(embed=embed, file=file) if file else \
+                await channel.send(embed=embed)
+        inv = await backend_integration.get_inventory(character_id, backend_url)
+        if inv and inv.get("items"):
+            await channel.send(embed=character_display.build_inventory_embed(inv))
+    except Exception as e:
+        print(f"[cc final sheet error] {e}")
+
+
+async def _handle_ddb_import(channel: discord.TextChannel, message: discord.Message,
+                             state: Dict, url_text: str, backend_url: str) -> None:
+    """Import a D&D Beyond sheet mid-CC: validate, report, reflect, follow up."""
+    import backend_integration
+    await channel.send("🔮 The Oracle peers into D&D Beyond...")
+    result = await backend_integration.import_ddb_character(
+        str(message.author.id), url_text, backend_url)
+    if result.get("status") != "ok":
+        await channel.send(
+            f"❌ Import failed: {result.get('error', 'unknown error')}\n"
+            "Make sure the character is set to **Public** on D&D Beyond, "
+            "then paste the link again — or we can keep building here.")
+        return
+
+    name = result.get("name", "your character")
+    report = result.get("report") or {}
+    lines = [f"✅ **{name}** imported from D&D Beyond!"]
+    if report.get("dropped"):
+        lines.append("**Set aside by the world's rules:**\n" +
+                     "\n".join(f"• {d}" for d in report["dropped"]))
+    if report.get("warnings"):
+        lines.append("**Notes:**\n" + "\n".join(f"• {w}" for w in report["warnings"]))
+    await channel.send("\n\n".join(lines)[:1900])
+
+    # The rendered sheet + starting inventory, reflected back.
+    await _show_final_sheet(channel, result["character_id"], backend_url)
+
+    # Let the AI DM follow up on gaps and acknowledge what was dropped.
+    followup = (
+        f"SYSTEM NOTE: the player just imported '{name}' from D&D Beyond. "
+        f"Validation report — missing: {report.get('missing') or 'nothing'}; "
+        f"dropped: {report.get('dropped') or 'nothing'}; "
+        f"notes: {report.get('warnings') or 'none'}. "
+        "In character as the Oracle: welcome the character warmly by name. "
+        "If anything is missing, ask about it one question at a time. If things "
+        "were dropped, briefly explain why (this world starts every tale at "
+        "level 1, magic must be earned). Then tell them they're ready for "
+        "!enterworld."
+    )
+    guidance = await get_dm_guidance(state["session_id"], state["username"],
+                                     followup, backend_url)
+    await channel.send(f"🎭 The Oracle: {guidance}")
+
+    await _offer_portrait_setup(channel, message.author, result, name, backend_url)
+    guided_cc_state.pop(channel.id, None)
+
+
 async def process_guided_cc_input(channel: discord.TextChannel, message: discord.Message, backend_url: str):
     """Process player input during guided character creation."""
     if channel.id not in guided_cc_state:
         return
-    
+
     state = guided_cc_state[channel.id]
+    if not state.get("waiting_for_input"):
+        return  # Opening LLM call still in flight; ignore early messages
+
     user_text = message.content.strip()
-    
+
+    # A D&D Beyond link anywhere in the message switches to the import path.
+    if "dndbeyond.com/characters" in user_text.lower() or "ddb.ac/characters" in user_text.lower():
+        await _handle_ddb_import(channel, message, state, user_text, backend_url)
+        return
+
     # Get next guidance from the DM
     guidance = await get_dm_guidance(state["session_id"], state["username"], user_text, backend_url)
     await channel.send(f"🎭 The Oracle: {guidance}")
-    
+
     # Update character data based on conversation (simple extraction)
     lower_text = user_text.lower()
-    
+
     # Try to extract character name
     if state["char_data"]["name"] is None and len(user_text) > 1 and not any(verb in lower_text for verb in ["is", "are", "like", "want", "choose", "pick", "class", "race"]):
         # Assume it's a name
         state["char_data"]["name"] = user_text.strip()
-    
+
     # Try to extract race
     races = ["human", "elf", "dwarf", "halfling", "dragonborn", "gnome", "half-elf", "half-orc", "tiefling"]
     for race in races:
         if race in lower_text:
             state["char_data"]["race"] = race.capitalize()
             break
-    
+
     # Try to extract class
     classes = ["fighter", "wizard", "rogue", "cleric", "ranger", "paladin", "barbarian", "bard", "druid", "monk", "sorcerer", "warlock"]
     for char_class in classes:
         if char_class in lower_text:
             state["char_data"]["char_class"] = char_class.capitalize()
             break
+
+    # Try to extract background
+    backgrounds = ["acolyte", "charlatan", "criminal", "entertainer", "folk hero",
+                   "guild artisan", "hermit", "noble", "outlander", "sage",
+                   "sailor", "soldier", "urchin"]
+    for bg in backgrounds:
+        if bg in lower_text:
+            state["char_data"]["background"] = bg.title()
+            break
+
+    # Try to extract ability scores ("str 15", "dexterity 14", "con: 13" ...)
+    _ABILS = {"str": "strength", "dex": "dexterity", "con": "constitution",
+              "int": "intelligence", "wis": "wisdom", "cha": "charisma"}
+    for m in re.finditer(
+            r"\b(str(?:ength)?|dex(?:terity)?|con(?:stitution)?|int(?:elligence)?"
+            r"|wis(?:dom)?|cha(?:risma)?)\s*[:=]?\s*(\d{1,2})\b", lower_text):
+        ability = _ABILS[m.group(1)[:3]]
+        score = int(m.group(2))
+        if 3 <= score <= 18:
+            state["char_data"].setdefault("stats", {})[ability] = score
+
+    # Keep the live sheet panel in step with the conversation.
+    await _update_cc_progress(channel, state)
 
 
 async def finalize_guided_character(channel: discord.TextChannel, player: discord.User, backend_url: str):
@@ -405,6 +549,7 @@ async def finalize_guided_character(channel: discord.TextChannel, player: discor
         "char_class": char_data["char_class"],
         "level": 1,
         "stats": char_data.get("stats", {}),
+        "background": char_data.get("background"),
         "ddb_url": None,
         "avrae_import_text": None,
         "approve": True,
@@ -414,6 +559,10 @@ async def finalize_guided_character(channel: discord.TextChannel, player: discor
     result = await register_character_backend(payload, backend_url)
     if _registration_succeeded(result):
         await channel.send(f"✅ Character **{char_data['name']}** created and approved! You can now enter the world with `!enterworld`.")
+
+        # Reflect the finished sheet + starting kit inventory back to the player.
+        if result.get("character_id"):
+            await _show_final_sheet(channel, result["character_id"], backend_url)
 
         await _offer_portrait_setup(channel, player, result, char_data["name"], backend_url)
 

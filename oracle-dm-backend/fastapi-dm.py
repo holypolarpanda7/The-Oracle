@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 import base64
 from pathlib import Path
 from typing import Dict, List, Literal, TypedDict, Optional
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 
 # Database (SQLModel)
 from sqlmodel import SQLModel, Field, create_engine, Session, select
-from sqlalchemy import Column, JSON, String, Text
+from sqlalchemy import Column, JSON, String, Text, func
 from typing import Any
 from datetime import datetime
 import sys
@@ -26,10 +27,12 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from eight_card_system import WorldGraph
+from eight_card_system import entropy as world_entropy
 from eight_card_system.graph import slugify
-from eight_card_system.seed import seed_starter_world, place_pc
+from eight_card_system.seed import seed_minimal_world, backfill_coords, place_pc
 from eight_card_system.extraction import extract_and_apply
 from eight_card_system.models import (
+    Entity as WorldEntity, Relation as WorldRelation, WorldEvent,
     EntityType, RelationType, Attitude, CompanionControl, NpcAttr, attitude_for_trust,
 )
 from rules import (
@@ -123,13 +126,61 @@ ENV_PATH = BASE_DIR / "backend-cred.env"  # <-- your env file name
 
 load_dotenv(ENV_PATH)
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-70b-instruct")
+# LLM model and auth — provider-agnostic. Works with OpenRouter (cloud) or any
+# local OpenAI-compatible server such as Ollama.
+LLM_MODEL = os.getenv("LLM_MODEL", "meta-llama/llama-3.1-70b-instruct")
+# Optional comma-separated fallback models tried (in order) when the primary
+# model is rate-limited/unavailable.
+LLM_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.getenv("LLM_FALLBACK_MODELS", "").split(",")
+    if m.strip()
+]
+LLM_BASE_URL = os.getenv(
+    "LLM_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"
+)
+# Auth token. Local servers (Ollama) ignore it; pass "ollama" or any placeholder.
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 
-if not OPENROUTER_API_KEY:
-    raise RuntimeError(f"OPENROUTER_API_KEY not found in {ENV_PATH}!")
+# Ollama's OpenAI-compat shim (LLM_BASE_URL ending in /v1/chat/completions)
+# silently ignores context-size options and defaults to a small context window
+# (typically 4096) — a big system prompt gets truncated with no error. When
+# LLM_NUM_CTX is set AND LLM_BASE_URL looks like that shim, call_openrouter_chat
+# instead calls Ollama's NATIVE /api/chat endpoint (derived by swapping the
+# path), which honors options.num_ctx. See call_openrouter_chat for the
+# graceful-degrade fallback to the OpenAI-compat path.
+try:
+    LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "0") or 0)
+except ValueError:
+    LLM_NUM_CTX = 0
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Optional model used for the world-extraction second LLM call (see
+# _call_extractor_llm). Falls back to LLM_MODEL when unset — a smaller/cheaper
+# model is fine here since it only ever emits a strict JSON delta.
+EXTRACTOR_MODEL = os.getenv("EXTRACTOR_MODEL", "").strip() or LLM_MODEL
+
+# --- Ratchet world clock (multiplayer-ready time) ---
+# Wall-clock floor: how many world-days pass per real day while nobody plays.
+# Session bubbles run in PARALLEL world time and ratchet the clock to the max
+# closing bubble (never the sum), so player count never inflates world pace.
+WORLD_DAYS_PER_REAL_DAY = float(os.getenv("WORLD_DAYS_PER_REAL_DAY", "1.0"))
+# In-bubble skips longer than this become a personal downtime commitment
+# (PC attr busy_until_day) instead of dragging the shared clock forward.
+BUBBLE_SKIP_CAP_DAYS = int(os.getenv("BUBBLE_SKIP_CAP_DAYS", "7"))
+
+# --- Single-GPU VRAM time-sharing (LLM <-> diffusion) ---
+# When enabled, the /chat handler evicts the diffusion model from VRAM before an
+# LLM call and evicts the local LLM before rendering an image, so a 70B/32B model
+# and ComfyUI can share one GPU (at the cost of load latency between turns).
+VRAM_TIMESHARE = os.getenv("VRAM_TIMESHARE", "0").strip().lower() not in {
+    "0", "false", "no", "",
+}
+# Native Ollama endpoint used only to unload the model (keep_alive=0). Distinct
+# from LLM_BASE_URL, which is the OpenAI-compatible chat path.
+OLLAMA_UNLOAD_URL = os.getenv("OLLAMA_UNLOAD_URL", "http://127.0.0.1:11434/api/generate")
+
+if not LLM_API_KEY:
+    raise RuntimeError(f"LLM_API_KEY not found in {ENV_PATH}!")
 
 
 # ----- Lifespan Context Manager -----
@@ -207,6 +258,7 @@ async def lifespan(app: FastAPI):
                     ("last_verified_at", "DATETIME"),
                     ("approved", "INTEGER DEFAULT 0"),
                     ("home_region", "TEXT"),
+                    ("background", "TEXT"),
                     ("notes", "TEXT"),
                     ("created_at", "DATETIME"),
                     ("updated_at", "DATETIME"),
@@ -220,17 +272,51 @@ async def lifespan(app: FastAPI):
                     'CREATE INDEX IF NOT EXISTS ix_character_is_npc ON "character" (is_npc)')
                 conn.exec_driver_sql(
                     'CREATE INDEX IF NOT EXISTS ix_character_approved ON "character" (approved)')
+
+                # Ratchet-clock + entropy + calendar columns on world_meta
+                # (pre-existing DBs). Calendar defaults mirror WorldMeta.
+                wm_existing = {row[1] for row in
+                               conn.exec_driver_sql('PRAGMA table_info("world_meta")')}
+                if wm_existing:
+                    for col, ddl in [("real_anchor_ts", "REAL"),
+                                     ("anchor_world_day", "INTEGER DEFAULT 0"),
+                                     ("last_entropy_day", "INTEGER DEFAULT 0"),
+                                     ("year", "INTEGER DEFAULT 1492"),
+                                     ("month", "INTEGER DEFAULT 1"),
+                                     ("day_of_month", "INTEGER DEFAULT 1"),
+                                     ("time_of_day", "VARCHAR DEFAULT 'morning'")]:
+                        if col not in wm_existing:
+                            conn.exec_driver_sql(
+                                f'ALTER TABLE "world_meta" ADD COLUMN {col} {ddl}')
+                            print(f"[Startup] Migrated world_meta: added {col}")
     except Exception as e:
         print(f"[Startup] World schema self-heal skipped: {e}")
 
-    # Seed the persistent starter world once (offline, idempotent).
+    # Seed the persistent world once (offline, idempotent). Minimal by design:
+    # just the starting town, its tavern, and the frontier stubs — everything
+    # else grows through play via the extraction loop and its world laws.
     try:
         world.create_tables()
         if world.get_entity("greenfields") is None:
-            seed_starter_world(world)
-            print("[Startup] Seeded starter world (Greenfields)")
+            seed_minimal_world(world)
+            print("[Startup] Seeded minimal world (Greenfields origin)")
+        else:
+            # Worlds from before spherical coords get positions for the known
+            # seed places so climate/bearings work; no-op once filled.
+            filled = backfill_coords(world)
+            if filled:
+                print(f"[Startup] Backfilled coords on {filled} legacy place(s)")
     except Exception as e:
         print(f"[Startup] World seed skipped: {e}")
+
+    # Owned-book / homebrew content the operator typed in (rules/homebrew.json)
+    # joins the rules tables — shops, guardrails, and exact-numbers injection
+    # all see it. See rules/homebrew.sample.json for the format.
+    try:
+        from rules.homebrew import load_homebrew
+        load_homebrew(engine=engine)
+    except Exception as e:
+        print(f"[Startup] Homebrew load skipped: {e}")
 
     # Seed the SRD rules reference if empty (best-effort; needs network).
     try:
@@ -291,8 +377,11 @@ class ChatRequest(BaseModel):
     user_id: str
     username: str
     message: str
-    channel_id: str
-    guild_id: str
+    # Optional: the bot's chat callers key sessions on session_id and don't
+    # always supply these (e.g. guided character creation). The /chat handler
+    # doesn't use them, so keep them optional to avoid 422 rejections.
+    channel_id: Optional[str] = None
+    guild_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -301,6 +390,9 @@ class ChatResponse(BaseModel):
     music: Optional[str] = None
     # Optional scene pictures (base64 WebP + metadata) for the bot to attach.
     images: Optional[List[Dict[str, Any]]] = None
+    # Set once, on the turn a PC's death is confirmed: a one-page life record
+    # the bot posts to the memorial channel. {"title": str, "text": str}
+    memorial: Optional[Dict[str, Any]] = None
 
 
 class ResetRequest(BaseModel):
@@ -334,11 +426,12 @@ class RegisterCharacterRequest(BaseModel):
     subclass: Optional[str] = None
     level: int = 1
     stats: Optional[Dict[str, int]] = None
+    background: Optional[str] = None
     ddb_url: Optional[str] = None
     avrae_import_text: Optional[str] = None
     approve: Optional[bool] = False
     home_region: Optional[str] = None
-    source: Optional[str] = "manual"  # one of: 'avrae', 'guided', 'manual'
+    source: Optional[str] = "manual"  # one of: 'avrae', 'guided', 'manual', 'ddb'
 
 
 class CheckCharacterRequest(BaseModel):
@@ -570,7 +663,7 @@ def _maybe_compact_session_memory(session_id: str) -> None:
     try:
         merged_summary = call_openrouter_chat(
             [
-                {"role": "system", "content": "You are a precise context compressor for an RPG memory ledger."},
+                {"role": "system", "content": "You are a precise context compressor for an RPG memory ledger. Always respond in English only."},
                 {"role": "user", "content": summary_prompt},
             ],
             max_tokens=cfg.compaction_max_tokens,
@@ -608,6 +701,7 @@ class Character(SQLModel, table=True):
     race: Optional[str] = Field(default=None, sa_column=Column(String))
     char_class: Optional[str] = Field(default=None, sa_column=Column(String))
     subclass: Optional[str] = Field(default=None, sa_column=Column(String))
+    background: Optional[str] = Field(default=None, sa_column=Column(String))
     level: int = Field(default=1)
     xp: int = Field(default=0)
     # Flag: character has XP to level up but hasn't taken level-up options yet.
@@ -792,12 +886,43 @@ def extract_image_hooks(text: str) -> tuple[str, list[dict], list[dict]]:
     return clean, images, resets
 
 
-def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict]) -> list[dict]:
+def _scene_reference_refs(subject: str, pc_name: Optional[str],
+                          ctx_entities: Optional[list]) -> list[tuple[str, str]]:
+    """Which stored art should guide a scene render: participants NAMED in it.
+
+    The PC (portrait) when the scene mentions them or speaks in first person,
+    plus any in-scene world NPCs and any SRD creatures named in the subject.
+    """
+    refs: list[tuple[str, str]] = []
+    text = (subject or "").lower()
+    if pc_name:
+        first = pc_name.split()[0].lower()
+        if first in text or pc_name.lower() in text or re.search(r"\b(my|me|i)\b", text):
+            refs.append(("pc", pc_name))
+    for e in ctx_entities or []:
+        if getattr(e, "type", "") == "npc" and e.name.lower() in text:
+            refs.append(("npc", e.slug))
+    try:
+        for kind, obj in rules_lib.find_mentions(subject, limit=3):
+            if kind == "monster":
+                refs.append(("creature", obj.index_slug))
+    except Exception:
+        pass
+    return refs
+
+
+def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict],
+                        *, pc_name: Optional[str] = None,
+                        ctx_entities: Optional[list] = None) -> list[dict]:
     """Apply image-reset purges and render/reuse pictures for image requests.
 
     Returns a list of transport payloads (base64 image + metadata) for the bot,
     capped by ``ImageryConfig.max_images_per_reply``. Offline results are skipped
     so nothing broken is shown to players.
+
+    ``kind: scene`` requests are special: rendered fresh (never bucketed) with
+    stored art of their named participants as visual references, so the scene
+    depicts THESE people and creatures, not generic lookalikes.
     """
     cfg = get_config().imagery
     if not cfg.enabled:
@@ -821,10 +946,17 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict]) -> list[
         if not subject:
             continue
         try:
-            result = image_store.ensure_image(
-                rq.get("kind") or "creature", subject,
-                look=rq.get("look") or "", context=rq.get("context") or "",
-            )
+            if (rq.get("kind") or "").strip().lower() == "scene":
+                refs = _scene_reference_refs(subject, pc_name, ctx_entities)
+                result = image_store.generate_scene(
+                    subject, context=rq.get("context") or "",
+                    extra=rq.get("look") or "", reference_refs=refs,
+                )
+            else:
+                result = image_store.ensure_image(
+                    rq.get("kind") or "creature", subject,
+                    look=rq.get("look") or "", context=rq.get("context") or "",
+                )
         except Exception as e:
             print(f"[imagery] generation error for '{subject}': {e}")
             continue
@@ -840,6 +972,244 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict]) -> list[
 #   [[CONDITION: remove | frightened]]
 #   [[CONDITION: clear]]
 # Fields: action(add|remove|clear) | name | source (optional) | duration (optional)
+# Player cartography (SRD Cartographer's Tools): after adjudicating the
+# Wisdom (DC 15) roll, the DM emits the outcome and the system renders the
+# artifact — accurate on a success, confidently WRONG on a failure:
+#   [[MAP: draft-success | the lands around Millbrook]]
+#   [[MAP: draft-failure | the lands around Millbrook]]
+#   [[MAP: purchase | Greenfields]]         (bought from a map-maker, ~25 gp)
+MAP_HOOK_PATTERN = re.compile(r"\[\[MAP:(.+?)\]\]", re.IGNORECASE)
+
+
+def extract_map_hooks(text: str) -> tuple[str, list[dict]]:
+    ops: list[dict] = []
+    for m in MAP_HOOK_PATTERN.finditer(text):
+        parts = [p.strip() for p in m.group(1).split("|")]
+        action = (parts[0] if parts else "").lower()
+        if action in ("draft-success", "draft-failure", "purchase"):
+            ops.append({"action": action,
+                        "area": parts[1] if len(parts) > 1 else ""})
+    clean = MAP_HOOK_PATTERN.sub("", text)
+    return clean.strip(), ops
+
+
+def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
+    """Turn MAP hooks into rendered parchment artifacts + inventory items.
+
+    Enforces the hard prerequisites the prompt also states: drafting needs
+    Cartographer's Tools in inventory; purchase needs the coin. A failed
+    draft is rendered with deterministic distortion — the caption gives
+    nothing away.
+    """
+    if not map_ops:
+        return []
+    from eight_card_system import mapmaker
+    payloads: list[dict] = []
+    state = _load_session_state(session_id)
+    meta = state.get("meta", {}) or {}
+    pc_slug, char_id = meta.get("pc_slug"), meta.get("character_id")
+    if not pc_slug or not char_id:
+        return []
+    day = world.current_day()
+
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if char is None:
+            return []
+        for op in map_ops[:2]:
+            action, area = op["action"], op["area"] or "the surrounding lands"
+            if action.startswith("draft"):
+                if not _has_inventory_item(char, mapmaker.TOOLS_ITEM):
+                    print(f"[map] {char.name} lacks {mapmaker.TOOLS_ITEM} — draft refused")
+                    continue
+                flawed = action == "draft-failure"
+                # You can only draw what you KNOW: visited places and places
+                # learned of in play (knows_about). Someone else's discoveries
+                # don't appear on your parchment.
+                known = mapmaker.known_place_ids(world, pc_slug)
+                center, places = mapmaker.gather_mappable_places(
+                    world, pc_slug, radius_mi=mapmaker.DRAFT_RADIUS_MI,
+                    known_ids=known)
+                subtitle = f"drafted by {char.name}, {world.current_date_str()}"
+            else:  # purchase
+                price = mapmaker.MAP_PRICE_GP
+                if (char.gp or 0) < price:
+                    print(f"[map] {char.name} can't afford the {price} gp map")
+                    continue
+                char.gp -= price
+                flawed = False
+                center, places = mapmaker.gather_mappable_places(
+                    world, pc_slug, radius_mi=mapmaker.PURCHASE_RADIUS_MI,
+                    include_rumored=True)
+                subtitle = "by a map-maker's practiced hand"
+            if center is None or not places:
+                print(f"[map] nothing mappable around {pc_slug}")
+                continue
+            title = f"Map of {area}"
+            png = mapmaker.render_map(
+                places, center, title=title, flawed=flawed,
+                seed=f"{pc_slug}:{day}:{area}", subtitle=subtitle)
+            if action == "purchase" and pc_slug:
+                # Buying the map IS gaining the knowledge: every charted site
+                # (rumored ones included) becomes drawable on your own drafts.
+                for p in places:
+                    if p.get("slug"):
+                        world.add_relation(pc_slug, RelationType.KNOWS_ABOUT, p["slug"])
+            _add_inventory_item(char, title, extra={
+                "map": {"area": area, "day": day,
+                        "provenance": "drafted" if action.startswith("draft") else "purchased",
+                        # The truth lives in the data; the player never sees it.
+                        "reliable": not flawed}})
+            payloads.append({
+                "b64": base64.b64encode(png).decode("ascii"),
+                "mime": "image/png", "kind": "map",
+                "caption": title, "temp": False,
+            })
+            print(f"[map] {char.name}: {action} '{title}' "
+                  f"({len(places)} sites{', flawed' if flawed else ''})")
+        s.add(char)
+        s.commit()
+    return payloads
+
+
+# Commerce: the DM narrates the deal, the system moves the actual coin/items.
+#   [[TRADE: buy | Longsword | 15]]      (price cross-checked vs rolled stock)
+#   [[TRADE: sell | wolf pelt | 2]]
+#   [[TRADE: wager | dice | 5]]          (needs a den keeper/gambling venue)
+TRADE_HOOK_PATTERN = re.compile(r"\[\[TRADE:(.+?)\]\]", re.IGNORECASE)
+
+
+def extract_trade_hooks(text: str) -> tuple[str, list[dict]]:
+    ops: list[dict] = []
+    for m in TRADE_HOOK_PATTERN.finditer(text):
+        parts = [p.strip() for p in m.group(1).split("|")]
+        action = (parts[0] if parts else "").lower()
+        if action in ("buy", "sell", "wager") and len(parts) >= 2:
+            try:
+                amount = float(parts[2]) if len(parts) > 2 else 0.0
+            except ValueError:
+                amount = 0.0
+            ops.append({"action": action, "item": parts[1], "amount": amount})
+    return TRADE_HOOK_PATTERN.sub("", text).strip(), ops
+
+
+def _purse_of(char: Character) -> Dict[str, int]:
+    return {"cp": char.cp or 0, "sp": char.sp or 0, "ep": char.ep or 0,
+            "gp": char.gp or 0, "pp": char.pp or 0}
+
+
+def _write_purse(char: Character, purse: Dict[str, int]) -> None:
+    char.cp, char.sp, char.ep = purse.get("cp", 0), purse.get("sp", 0), purse.get("ep", 0)
+    char.gp, char.pp = purse.get("gp", 0), purse.get("pp", 0)
+
+
+def process_trade_hooks(trade_ops: list[dict], session_id: str,
+                        ctx_obj) -> list[str]:
+    """Execute agreed trades against rolled stock and the real purse.
+
+    Returns short system lines appended to the narration (purse deltas,
+    wager outcomes). Refuses hallucinated bargains: buys must match a
+    present merchant's actual stock, wagers need a gambling presence.
+    """
+    if not trade_ops:
+        return []
+    from eight_card_system import shops
+    notes: list[str] = []
+    state = _load_session_state(session_id)
+    meta = state.get("meta", {}) or {}
+    char_id, pc_slug = meta.get("character_id"), meta.get("pc_slug")
+    if not char_id:
+        return []
+    day = world.current_day()
+
+    # Merchants present in the scene, with this week's actual stock.
+    merchants: list[tuple[Any, list[dict]]] = []
+    gambling_present = False
+    for e in (ctx_obj.entities if ctx_obj else []):
+        attrs = e.attributes or {}
+        if getattr(e, "type", "") == "npc":
+            role = str(attrs.get("role", "")).strip().lower()
+            if role in ("den keeper", "dice-den keeper"):
+                gambling_present = True
+            if role in shops.MERCHANT_ROLES:
+                merchants.append(
+                    (e, shops.roll_stock(e.slug, role, ctx_obj.merchant_scale(e), day)))
+        elif attrs.get("venue") == "gambling den":
+            gambling_present = True
+
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if char is None:
+            return []
+        for op in trade_ops[:3]:
+            action, item, amount = op["action"], op["item"], op["amount"]
+            if action == "buy":
+                hit = None
+                for merch, stock in merchants:
+                    found = shops.find_in_stock(stock, item)
+                    if found:
+                        hit = (merch, found)
+                        break
+                if hit is None:
+                    print(f"[trade] refused buy '{item}': no merchant here stocks it")
+                    continue
+                merch, entry = hit
+                cost_cp = gp_to_cp(entry["price_gp"])
+                purse = _purse_of(char)
+                if to_cp(purse) < cost_cp:
+                    notes.append(f"*(Your purse comes up short for the {entry['name']}.)*")
+                    continue
+                _write_purse(char, subtract_cost(purse, cost_cp))
+                _add_inventory_item(char, entry["name"])
+                world.add_event(f"{char.name} bought {entry['name']} from {merch.name}.",
+                                involved=[pc_slug] if pc_slug else [])
+                notes.append(f"*({entry['name']} acquired — {entry['price_gp']:g} gp. "
+                             f"Purse: {format_purse(_purse_of(char))}.)*")
+            elif action == "sell":
+                if not _has_inventory_item(char, item):
+                    print(f"[trade] refused sell '{item}': not in inventory")
+                    continue
+                # SRD spirit: used gear fetches half-ish; clamp DM enthusiasm.
+                price_gp = max(0.0, min(float(amount), 200.0))
+                inv = _inventory_items(char)
+                for it in inv:
+                    if _normalize_item_name(str(it.get("name", ""))) == _normalize_item_name(item):
+                        qty = int(it.get("quantity", 1) or 1)
+                        if qty > 1:
+                            it["quantity"] = qty - 1
+                        else:
+                            inv.remove(it)
+                        char.inventory = inv
+                        break
+                _write_purse(char, add_coins(_purse_of(char),
+                                             {"cp": gp_to_cp(price_gp)}))
+                notes.append(f"*({item} sold — {price_gp:g} gp. "
+                             f"Purse: {format_purse(_purse_of(char))}.)*")
+            elif action == "wager":
+                if not gambling_present:
+                    print("[trade] refused wager: no gambling den or den keeper here")
+                    continue
+                stake_gp = int(max(1, min(amount or 1, 50)))
+                stake_cp = gp_to_cp(stake_gp)
+                purse = _purse_of(char)
+                if to_cp(purse) < stake_cp:
+                    notes.append("*(You can't cover that stake.)*")
+                    continue
+                player = dice_roll("1d20").total
+                house = dice_roll("1d20").total
+                if player > house:
+                    _write_purse(char, add_coins(purse, {"cp": stake_cp}))
+                    notes.append(f"*(The dice fall {player} to {house} — you WIN "
+                                 f"{stake_gp} gp. Purse: {format_purse(_purse_of(char))}.)*")
+                else:  # house wins ties: that's why the den keeps its lamps lit
+                    _write_purse(char, subtract_cost(purse, stake_cp))
+                    notes.append(f"*(The dice fall {player} to {house} — the house "
+                                 f"takes {stake_gp} gp. Purse: {format_purse(_purse_of(char))}.)*")
+        s.add(char)
+        s.commit()
+    return notes
+
+
 CONDITION_HOOK_PATTERN = re.compile(r"\[\[CONDITION:(.+?)\]\]", re.IGNORECASE)
 
 
@@ -952,39 +1322,170 @@ def apply_trust_hooks(character_id: Optional[int], ops: list[dict]) -> list[str]
 
 # ----- OpenRouter LLM call -----
 
+def _retry_after_seconds(resp: "requests.Response") -> Optional[float]:
+    """Extract a retry delay (seconds) from a rate-limited OpenRouter response.
+
+    Prefers the standard ``Retry-After`` header, then falls back to the
+    provider-specific ``retry_after_seconds`` field in the JSON error body.
+    Returns None if no hint is present.
+    """
+    header = resp.headers.get("Retry-After")
+    if header:
+        try:
+            return float(header)
+        except (TypeError, ValueError):
+            pass
+    try:
+        meta = resp.json().get("error", {}).get("metadata", {})
+        val = meta.get("retry_after_seconds") or meta.get("retry_after_seconds_raw")
+        if val is not None:
+            return float(val)
+    except (ValueError, AttributeError, TypeError):
+        pass
+    return None
+
+
 def call_openrouter_chat(
     messages: List[Dict[str, str]],
     *,
     max_tokens: Optional[int] = None,
     timeout_seconds: int = 60,
+    model_override: Optional[str] = None,
+    temperature: Optional[float] = None,
 ) -> str:
-    """Call OpenRouter's chat completion endpoint with the given messages."""
+    """Call the configured LLM chat endpoint (OpenRouter or a local server).
+
+    When ``LLM_NUM_CTX`` is set and ``LLM_BASE_URL`` looks like Ollama's
+    OpenAI-compatible shim (path ends in ``/v1/chat/completions``), each attempt
+    first tries Ollama's NATIVE ``/api/chat`` endpoint instead — the shim
+    silently ignores context-size options, so a big system prompt gets
+    truncated to Ollama's small default context window (typically 4096) with no
+    error, while the native endpoint honors ``options.num_ctx``. Any failure
+    talking to the native endpoint (connection error, non-2xx, bad response
+    shape) is logged and falls through to the OpenAI-compatible path for the
+    rest of the call, so OpenRouter users (and older Ollama builds without
+    ``/api/chat``) are completely unaffected.
+
+    ``model_override``, when given, replaces the normal [LLM_MODEL,
+    *LLM_FALLBACK_MODELS] list with a single fixed model (used by the world-
+    extraction side-call, which targets EXTRACTOR_MODEL specifically).
+    """
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {LLM_API_KEY}",
         "Content-Type": "application/json",
-        # Optional metadata:
+        # Optional metadata (ignored by local servers):
         "HTTP-Referer": "http://localhost",
         "X-Title": "Oracle DM",
     }
 
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": messages,
-    }
-    if max_tokens is not None:
-        payload["max_tokens"] = max_tokens
+    # Try the primary model, then any configured fallbacks. Each model gets a
+    # few attempts so transient upstream 429s (common on :free models) don't
+    # immediately surface as a failed DM turn.
+    models = [model_override] if model_override else [LLM_MODEL, *LLM_FALLBACK_MODELS]
+    max_attempts_per_model = 3
+    max_backoff_seconds = 20
+    last_error: Optional[str] = None
 
-    resp = requests.post(OPENROUTER_BASE_URL, headers=headers, json=payload, timeout=timeout_seconds)
-    if resp.status_code != 200:
-        print(f"[OpenRouter error] HTTP {resp.status_code}: {resp.text}")
-        raise RuntimeError("LLM call failed")
+    # Only meaningful for Ollama's OpenAI-compat shim; disabled for OpenRouter
+    # and any other endpoint. Once it fails once, we stop retrying it for the
+    # rest of this call and rely purely on the OpenAI-compat path below.
+    try_native = bool(LLM_NUM_CTX) and LLM_BASE_URL.rstrip("/").endswith("/v1/chat/completions")
+    native_url = LLM_BASE_URL.replace("/v1/chat/completions", "/api/chat") if try_native else None
 
-    data = resp.json()
-    try:
-        return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        print(f"[OpenRouter parse error] {e} | data={data}")
-        raise RuntimeError("Failed to parse LLM response")
+    for model in models:
+        payload: Dict = {
+            "model": model,
+            "messages": messages,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if temperature is not None:
+            payload["temperature"] = temperature
+
+        for attempt in range(1, max_attempts_per_model + 1):
+            if try_native:
+                native_options: Dict[str, Any] = {"num_ctx": LLM_NUM_CTX}
+                if temperature is not None:
+                    native_options["temperature"] = temperature
+                if max_tokens is not None:
+                    native_options["num_predict"] = max_tokens
+                native_payload = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": native_options,
+                }
+                native_resp = None
+                try:
+                    native_resp = requests.post(
+                        native_url, json=native_payload, timeout=timeout_seconds,
+                    )
+                except requests.RequestException as e:
+                    last_error = f"native request error: {e}"
+                    print(
+                        f"[LLM native error] {model} attempt {attempt}: {last_error} "
+                        "— falling back to OpenAI-compat endpoint"
+                    )
+                    try_native = False
+
+                if native_resp is not None:
+                    if native_resp.status_code == 200:
+                        try:
+                            return native_resp.json()["message"]["content"]
+                        except Exception as e:
+                            last_error = f"native parse error: {e}"
+                            print(
+                                f"[LLM native parse error] {model} attempt {attempt}: {last_error} "
+                                "— falling back to OpenAI-compat endpoint"
+                            )
+                            try_native = False
+                    else:
+                        last_error = f"native HTTP {native_resp.status_code}: {native_resp.text}"
+                        print(f"[LLM native error] {model} attempt {attempt}: {last_error}")
+                        if native_resp.status_code == 429 or native_resp.status_code >= 500:
+                            if attempt < max_attempts_per_model:
+                                time.sleep(min(2 ** attempt, max_backoff_seconds))
+                                continue
+                        # Non-retryable (or exhausted): drop native for the rest
+                        # of this call and fall through to the compat path below.
+                        try_native = False
+
+            try:
+                resp = requests.post(
+                    LLM_BASE_URL,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout_seconds,
+                )
+            except requests.RequestException as e:
+                last_error = f"request error: {e}"
+                print(f"[LLM error] {model} attempt {attempt}: {last_error}")
+                time.sleep(min(2 ** attempt, max_backoff_seconds))
+                continue
+
+            if resp.status_code == 200:
+                data = resp.json()
+                try:
+                    return data["choices"][0]["message"]["content"]
+                except Exception as e:
+                    print(f"[LLM parse error] {e} | data={data}")
+                    raise RuntimeError("Failed to parse LLM response")
+
+            last_error = f"HTTP {resp.status_code}: {resp.text}"
+            print(f"[LLM error] {model} attempt {attempt}: {last_error}")
+
+            # Retry on rate-limit / transient server errors; otherwise move on.
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < max_attempts_per_model:
+                    delay = _retry_after_seconds(resp)
+                    if delay is None:
+                        delay = min(2 ** attempt, max_backoff_seconds)
+                    time.sleep(min(delay, max_backoff_seconds))
+                    continue
+            # Non-retryable status (or attempts exhausted): try next model.
+            break
+
+    raise RuntimeError(f"LLM call failed after retries: {last_error}")
 
 
 def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
@@ -992,7 +1493,420 @@ def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
     return call_openrouter_chat(messages)
 
 
+def _call_extractor_llm(messages: List[Dict[str, str]]) -> str:
+    """LLM call for the world-extraction second pass (see _run_world_extraction).
+
+    Targets EXTRACTOR_MODEL (falls back to LLM_MODEL when unset) at a low
+    temperature and a small max_tokens budget — this call only ever emits a
+    strict JSON delta, never prose, so it doesn't need the DM call's budget.
+    """
+    return call_openrouter_chat(
+        messages,
+        model_override=EXTRACTOR_MODEL,
+        temperature=0.1,
+        max_tokens=700,
+    )
+
+
+# DM-narration error fallback text (see chat_endpoint) — never worth extracting
+# a world-state delta from an error message.
+_DM_ERROR_FALLBACK_MARKER = "The Oracle strains to speak"
+
+
+def _reconcile_bubble_time(session_id: str, days: int) -> None:
+    """Fold a turn's fictional days into this session's time bubble.
+
+    Bubbles run in PARALLEL world time: each session tracks its own start day
+    and accumulated days, and the world clock ratchets to the bubble's end via
+    max() — a hundred concurrent sessions advance the clock no faster than the
+    single longest one. Skips beyond BUBBLE_SKIP_CAP_DAYS become a personal
+    downtime commitment on the PC (busy_until_day) instead of dragging the
+    shared clock.
+    """
+    if days <= 0:
+        return
+    try:
+        state = _load_session_state(session_id)
+        meta = dict(state.get("meta", {}))
+        start = meta.get("bubble_start_day")
+        if start is None:
+            start = world.current_day()
+        skip = min(days, BUBBLE_SKIP_CAP_DAYS)
+        extra = days - skip
+        bubble_days = int(meta.get("bubble_days", 0)) + skip
+        meta["bubble_start_day"] = int(start)
+        meta["bubble_days"] = bubble_days
+        _set_session_meta(session_id, meta)
+
+        new_day = world.ratchet_day(int(start) + bubble_days)
+        print(f"[clock] {session_id}: bubble +{skip}d "
+              f"(start day {start}, total {bubble_days}) -> world day {new_day}")
+
+        if extra > 0 and meta.get("pc_slug"):
+            pc_e = world.get_entity(meta["pc_slug"])
+            if pc_e is not None:
+                busy_until = new_day + extra
+                world.upsert_entity(pc_e.name, pc_e.type, slug=pc_e.slug,
+                                    status=pc_e.status,
+                                    attributes={"busy_until_day": busy_until})
+                print(f"[clock] {pc_e.name}: long skip — committed to downtime "
+                      f"until world day {busy_until} (world unaffected)")
+
+        ent = world_entropy.run_if_due(world)
+        if any(ent.values()):
+            print(f"[entropy] {ent}")
+    except Exception as e:
+        print(f"[clock] bubble reconcile failed for {session_id}: {e}")
+
+
+def _build_memorial(char: Optional["Character"], pc_slug: str) -> Optional[dict]:
+    """One-page life record for a fallen PC: LLM-written eulogy over the
+    graph's canon, with a deterministic fallback. Never raises."""
+    record = world_entropy.build_life_record(world, pc_slug)
+    if record is None:
+        return None
+    name = record["name"]
+    ident = ""
+    if char is not None:
+        bits = [b for b in (char.race, char.char_class) if b]
+        ident = f"{' '.join(bits)}, level {char.level}" if bits else f"level {char.level}"
+
+    stats = [f"Adventured {record['days_adventured']} days",
+             f"fell on {record['date_str']}"]
+    if record["places"]:
+        stats.append(f"walked {len(record['places'])} places")
+    footer = " • ".join(stats)
+
+    fallback_lines = [f"**{name}**" + (f" — {ident}" if ident else ""), ""]
+    if record["deeds"]:
+        fallback_lines.append("Deeds: " + "; ".join(
+            d.split(") ", 1)[-1] for d in record["deeds"][-5:]))
+    if record["quests"]:
+        fallback_lines.append("Quests: " + "; ".join(record["quests"]))
+    if record["friends"] or record["companions"]:
+        fallback_lines.append(
+            "Remembered by: " + ", ".join(
+                (record["companions"] + record["friends"])[:8]))
+    fallback_lines += ["", f"*{footer}*"]
+    text = "\n".join(fallback_lines)
+
+    try:
+        eulogy = call_openrouter_chat(
+            [{"role": "system", "content": (
+                "You are a chronicler writing a memorial for a fallen adventurer. "
+                "Write AT MOST 220 words of flowing in-world prose (no headers, no "
+                "lists): who they were, their greatest questing achievements drawn "
+                "from the deeds given, the places and people that mattered, and how "
+                "they will be remembered. Solemn but warm. English only.")},
+             {"role": "user", "content": json.dumps(
+                 {"name": name, "identity": ident, **{k: record[k] for k in
+                  ("deeds", "quests", "places", "companions", "friends")}},
+                 ensure_ascii=False)}],
+            max_tokens=400, temperature=0.8, timeout_seconds=90,
+        ).strip()
+        if eulogy:
+            text = f"**{name}**" + (f" — {ident}" if ident else "") + \
+                   f"\n\n{eulogy}\n\n*{footer}*"
+    except Exception as e:
+        print(f"[memorial] eulogy LLM failed, using fallback: {e}")
+
+    return {"title": f"⚰️ In Memoriam — {name}", "text": text[:3800],
+            "character": name}
+
+
+def _maybe_memorialize(session_id: str) -> Optional[dict]:
+    """If this session's PC just died, canonize the death (permanent) and
+    return the memorial payload exactly once."""
+    state = _load_session_state(session_id)
+    meta = state.get("meta", {}) or {}
+    pc_slug = meta.get("pc_slug")
+    if not pc_slug:
+        return None
+    pc = world.get_entity(pc_slug)
+    if pc is None or (pc.attributes or {}).get("memorialized"):
+        return None
+
+    char = None
+    char_id = meta.get("character_id")
+    if char_id:
+        with Session(engine) as s:
+            char = s.get(Character, char_id)
+
+    dead_by_saves = bool(char and char.death_save_failures >= 3
+                         and char.current_hp <= 0 and not char.stable)
+    dead_by_canon = pc.status == "dead"
+    if not (dead_by_saves or dead_by_canon):
+        return None
+
+    # Permadeath: canonized in the world graph, memorial fires exactly once.
+    world.upsert_entity(
+        pc.name, pc.type, slug=pc.slug, status="dead",
+        attributes={"memorialized": True, "died_day": world.current_day()},
+    )
+    world.add_event(f"{pc.name} fell, and their tale passed into memory.",
+                    involved=[pc.slug])
+    print(f"[memorial] {pc.name} has died — building life record")
+    return _build_memorial(char, pc.slug)
+
+
+def _run_world_extraction(
+    session_id: str,
+    player_action: str,
+    dm_narration: str,
+    world_context_text: str,
+    context_entity_ids: Optional[List[int]] = None,
+) -> None:
+    """Background task: turn a completed DM turn into world-graph mutations.
+
+    Called via BackgroundTasks after the DM's reply has already been sent to
+    the player — Starlette runs sync background tasks in a threadpool, so the
+    blocking extractor LLM call here doesn't hold up the response. Never
+    raises: a bad extraction should never surface as a play-loop error.
+    """
+    if _DM_ERROR_FALLBACK_MARKER in (dm_narration or ""):
+        print(f"[world-extract] {session_id}: skipped — DM narration was an error fallback")
+        return
+    try:
+        _delta, summary = extract_and_apply(
+            world,
+            _call_extractor_llm,
+            player_action=player_action,
+            dm_narration=dm_narration,
+            world_context=world_context_text or "",
+            session_id=session_id,
+            defer_clock=True,  # bubble time: this session owns its days
+            context_entity_ids=set(context_entity_ids or []),
+        )
+        if summary.get("error"):
+            print(f"[world-extract] {session_id}: failed — {summary['error']}")
+        else:
+            print(f"[world-extract] {session_id}: applied {summary}")
+            _reconcile_bubble_time(session_id, int(summary.get("days") or 0))
+            # Keep the DB bounded: archive far-off detail / compact old events
+            # once the caps are exceeded. Cheap no-op while under them.
+            try:
+                caps = world.enforce_world_caps(
+                    max_entities=int(os.getenv("WORLD_MAX_ENTITIES", "3000")),
+                    max_events=int(os.getenv("WORLD_MAX_EVENTS", "4000")),
+                )
+                if caps.get("archived") or caps.get("events_compacted"):
+                    print(f"[world-caps] {caps}")
+            except Exception as e:
+                print(f"[world-caps] sweep failed: {e}")
+    except Exception as e:
+        print(f"[world-extract] {session_id}: unexpected failure: {e}")
+
+
+# ----- Single-GPU VRAM time-sharing helpers -----
+
+def _free_diffusion_vram() -> None:
+    """Unload the ComfyUI diffusion model so the LLM can reclaim VRAM.
+
+    No-op unless VRAM_TIMESHARE is enabled. Best-effort and never raises.
+    """
+    if not VRAM_TIMESHARE:
+        return
+    try:
+        from imagery.comfy_client import client_from_config
+
+        cfg = get_config().imagery
+        if not cfg.enabled:
+            return
+        client = client_from_config(cfg)
+        if client.free_memory():
+            print("[vram] freed diffusion VRAM for LLM")
+    except Exception as e:
+        print(f"[vram] free diffusion failed: {e}")
+
+
+def _unload_local_llm() -> None:
+    """Evict the local LLM (Ollama) from VRAM so diffusion can reclaim it.
+
+    Uses Ollama's native endpoint with keep_alive=0. No-op unless VRAM_TIMESHARE
+    is enabled. Best-effort and never raises.
+    """
+    if not VRAM_TIMESHARE:
+        return
+    try:
+        requests.post(
+            OLLAMA_UNLOAD_URL,
+            json={"model": LLM_MODEL, "keep_alive": 0},
+            timeout=10,
+        )
+        print("[vram] unloaded local LLM for diffusion")
+    except Exception as e:
+        print(f"[vram] unload LLM failed: {e}")
+
+
 # ----- "DM brain" using OpenRouter + Avrae hooks -----
+
+# Full per-condition rules cheat-sheet, injected only when a Combat block or an
+# 'Active conditions' line is actually present this turn (see generate_dm_reply).
+_CONDITIONS_FULL = (
+    "- Conditions bind EVERY creature — the PC, NPCs, and monsters alike. Before you let\n"
+    "  anyone act (or resolve an action against them), check their conditions (the Combat\n"
+    "  block lists them in a fight; otherwise track any you've narrated) and honor the\n"
+    "  mechanical effects:\n"
+    "  * Prone: attacks at disadvantage; melee attackers against it have advantage,\n"
+    "    ranged have disadvantage; standing up costs half its movement.\n"
+    "  * Grappled / Restrained: Speed becomes 0. Restrained also = attacks at disadvantage,\n"
+    "    attacks against it at advantage, Dex saves at disadvantage.\n"
+    "  * Incapacitated: no actions, bonus actions, or reactions at all.\n"
+    "  * Stunned: incapacitated, can't move, auto-fails Str/Dex saves, attacks against it\n"
+    "    have advantage. Paralyzed / Unconscious: as stunned, and any hit from within 5 ft\n"
+    "    is a critical hit (unconscious also drops what it holds and falls prone).\n"
+    "  * Petrified: incapacitated, unaware, resistant to all damage, immune to poison/disease.\n"
+    "  * Blinded: can't see, auto-fails sight checks, attacks at disadvantage and attacks\n"
+    "    against it at advantage. Deafened: can't hear, auto-fails hearing checks.\n"
+    "  * Poisoned: disadvantage on attack rolls and ability checks.\n"
+    "  * Frightened: disadvantage on checks and attacks while the source is in sight, and it\n"
+    "    can't willingly move closer to the source.\n"
+    "  * Charmed: can't attack the charmer or target them with harmful effects; the charmer\n"
+    "    has advantage on social checks with it.\n"
+    "  * Invisible: can't be seen without special senses (heavily obscured for locating);\n"
+    "    attacks at advantage, attacks against it at disadvantage.\n"
+    "  Don't let a stunned, paralyzed, or unconscious creature take actions, a grappled one\n"
+    "  walk away, or a blinded one make a clean ranged shot. When a condition ends or a save\n"
+    "  applies, resolve it with a [[ROLL]] hook rather than assuming the outcome.\n"
+    "  Conditions PERSIST between encounters. The 'Character resources' block shows an\n"
+    "  'Active conditions' line for whatever currently afflicts the player — honor it every\n"
+    "  turn, even outside a fight. When a lasting condition BEGINS or ENDS on the player\n"
+    "  outside the initiative tracker, record it so it carries forward by emitting a hook on\n"
+    "  its own line (removed from what the player sees):\n"
+    "    [[CONDITION: add | poisoned | giant spider venom | until the end of a long rest]]\n"
+    "    [[CONDITION: remove | frightened]]\n"
+    "  Fields: action (add/remove/clear) | condition | source (optional) | duration (optional).\n"
+    "  Put the REMOVAL TRIGGER in the duration field so you remember how it ends — e.g.\n"
+    "  'for 1 minute', 'until it takes damage', 'until the source is out of sight', 'save at\n"
+    "  end of each turn', 'until the end of a long rest'. Track that trigger and, the moment it\n"
+    "  is met (time elapses, the required action or event happens, or a [[ROLL]] save succeeds),\n"
+    "  emit the matching [[CONDITION: remove | ...]] hook and tell the player they're free of it.\n"
+    "  Use it for things that outlast the moment (a lingering poison, a curse, ongoing fear);\n"
+    "  don't spam it for effects that resolve within the same scene. Exhaustion is tracked\n"
+    "  separately — don't emit a CONDITION hook for it.\n"
+    "  When a fight or tense encounter ENDS, recap any conditions still on the player in the\n"
+    "  narration (e.g. 'the wolves are dead, but the spider's venom still burns in your veins')\n"
+    "  so they know what lingers, and remind them of the trigger that will clear it.\n"
+)
+
+# Compact stand-in for _CONDITIONS_FULL when no combat/active-condition context is
+# present this turn — keeps the [[CONDITION]] hook syntax visible at all times so
+# the model can still emit it, without paying for the full cheat-sheet every turn.
+_CONDITIONS_SHORT = (
+    "- Conditions bind every creature in play; apply their mechanical effects whenever\n"
+    "  one is active. When a lasting condition starts or ends on the player, emit a hook on\n"
+    "  its own line (removed from what the player sees) so it carries forward:\n"
+    "    [[CONDITION: add | poisoned | giant spider venom | until the end of a long rest]]\n"
+    "    [[CONDITION: remove | frightened]]\n"
+    "  Fields: action (add/remove/clear) | condition | source (optional) | duration (optional).\n"
+)
+
+# Full physical-limits detail block, injected only when the resource block shows a
+# 'Physical limits' line AND the player's message reads as a physical feat.
+_PHYSICAL_LIMITS_FULL = (
+    "- A 'Physical limits' line gives the PC's speed, jump distances, lift/carry, and\n"
+    "  reach WITHOUT magic or special items. Enforce these as hard limits:\n"
+    "  * Movement: a creature can move up to its Speed on its turn (double if it Dashes,\n"
+    "    using its action). It cannot cross more distance than that in one turn, and\n"
+    "    climbing, swimming, or crawling through difficult terrain costs double movement.\n"
+    "  * Jumping: a long jump clears at most the listed feet (a running start is needed\n"
+    "    for the full distance; only half without ~10 ft of runway). A high jump reaches\n"
+    "    only the listed height. Don't let a PC leap onto a rooftop, chasm, or wall that\n"
+    "    exceeds these numbers unless they have a relevant spell, item, or class feature.\n"
+    "  * Lifting/carrying/forcing: a PC can't lift, drag, or hurl objects beyond their\n"
+    "    push/drag/lift limit, and hauling near capacity slows them.\n"
+    "  * Reach: melee reach is 5 ft (10 ft only with a reach weapon); they can't strike\n"
+    "    or grab something farther away.\n"
+    "  When a player attempts a physical feat NEAR the edge of these limits, call for an\n"
+    "  ability check (usually Strength (Athletics) or Dexterity (Acrobatics)) at a DC that\n"
+    "  reflects the difficulty via a [[ROLL]] hook. When an attempt EXCEEDS what is\n"
+    "  physically possible without augmentation, don't allow it — explain the limit in the\n"
+    "  fiction (the ledge is simply too high) and invite a feasible alternative (find a\n"
+    "  ladder, take the stairs, cast a spell, grapple up in stages). Also keep other\n"
+    "  physics honest: unsupported creatures fall (~3d6 per 10 ft, capped) and take time\n"
+    "  to act; a character can't be two places at once, act while unconscious, or use a\n"
+    "  reaction they've already spent. Reward clever, plausible plans; refuse the\n"
+    "  impossible.\n"
+)
+
+# Compact stand-in for _PHYSICAL_LIMITS_FULL for turns that aren't about a physical feat.
+_PHYSICAL_LIMITS_SHORT = (
+    "- A 'Physical limits' line caps the PC's speed, jump distance, and lift/carry without\n"
+    "  magic — treat it as a hard ceiling and call for a check near its edge.\n"
+)
+
+# Always-on contract with the world-graph layer: keeps travel/exploration grounded
+# in the 'Beyond the map' entries the world layer supplies, instead of inventing
+# settlements or biomes the graph doesn't support.
+_WORLD_BUILDING_BLOCK = (
+    "World-building & travel:\n"
+    "- The World state block is canon. A 'Beyond the map' section lists unexplored areas\n"
+    "  adjacent to here, each with a biome, danger, largest-possible-settlement ceiling,\n"
+    "  and seed motifs.\n"
+    "- When the party travels into unexplored territory, stay INSIDE that area's\n"
+    "  constraints: match its biome and danger, and never introduce a settlement larger\n"
+    "  than its ceiling. No exceptions — if no 'Beyond the map' entry allows a town, there\n"
+    "  is no town nearby.\n"
+    "- You may freely invent SMALL discoveries (a shrine, a hollow tree, a peddler's camp,\n"
+    "  a ruin entrance) — weave the listed seed motifs into what the party finds before\n"
+    "  inventing new ones.\n"
+    "- Introduce at most ONE new named place per reply, and give distances in travel time\n"
+    "  (hours/days), keeping them consistent with what was said before.\n"
+    "- The world is a globe with real positions: nearby places and 'Beyond the map' lines\n"
+    "  show a compass direction and travel time — treat those bearings as exact. When you\n"
+    "  introduce a new place, SAY which direction it lies and roughly how far (the\n"
+    "  mapkeeper places it on the world map from your words). The climate note on the\n"
+    "  current location is ground truth — northern latitudes are colder, southern warmer.\n"
+    "- Time: a '# Time passed' note means world days elapsed while the player was away.\n"
+    "  Welcome them back, mention one or two things that changed, and offer to spend that\n"
+    "  time as SRD downtime (training, crafting, work, carousing — lifestyle costs apply)\n"
+    "  or to play it out as a short personal side-tale. A side-tale set in past days must\n"
+    "  stay personal and local, and may NOT contradict anything already established.\n"
+    "- An NPC marked 'memory of you has faded' or 'barely recalls you' hasn't seen this\n"
+    "  player in a long while — play the fumbling recognition honestly.\n"
+    "- A 'Census' line means the settlement is FULL of implied people beyond the named\n"
+    "  NPCs: its population, wards, and trades are real. Freely invent minor folk, shops,\n"
+    "  and street detail consistent with the census — a crowded market should FEEL crowded.\n"
+    "  Anyone who matters to the story gets remembered automatically; the rest stay crowd.\n"
+    "- 'Signs of:' on an unexplored area names the creatures that hunt there. Foreshadow\n"
+    "  them (tracks, kills, distant cries) and draw encounters from that list first.\n"
+    "Cartography — maps are earned, never given:\n"
+    "- There is NO free world map. A character may draft one only with Cartographer's\n"
+    "  Tools in inventory: call for [[ROLL: 1d20+<Wis mod, +PB if proficient with the\n"
+    "  tools> | Cartography (Wisdom) | DC 15]] (advantage if also proficient in a\n"
+    "  relevant skill such as Survival). Then, from the resolved roll, emit on its own\n"
+    "  line: [[MAP: draft-success | <area>]] or [[MAP: draft-failure | <area>]].\n"
+    "- NEVER reveal that a failed map is wrong. Hand it over with the same confidence —\n"
+    "  its owner discovers the errors by getting lost. Describe drafting time honestly\n"
+    "  (an hour or more of careful sightlines and measurements).\n"
+    "- A drafter can only chart what they KNOW — places they have visited or genuinely\n"
+    "  learned of (an NPC's directions, a bought map). The system enforces this: unknown\n"
+    "  places simply won't appear on their parchment, however well they roll.\n"
+    "- In settlements, a map-maker (market wards often keep one) sells a regional map\n"
+    "  for ~25 gp: emit [[MAP: purchase | <region>]] once the sale is agreed. Bought\n"
+    "  maps also mark RUMORED, uncharted sites — hooks to places no one has explored —\n"
+    "  and studying one teaches the buyer those places for their own future drafts.\n"
+    "Commerce — merchants' stock lines are ground truth:\n"
+    "- NPCs with a 'stock (this week)' line sell exactly those items at exactly those\n"
+    "  prices. Haggle in the fiction, but when a deal is STRUCK, emit on its own line:\n"
+    "    [[TRADE: buy | Longsword | 15]]   [[TRADE: sell | wolf pelt | 2]]\n"
+    "  The system moves the real coin and items and appends the receipt — NEVER adjust\n"
+    "  the purse yourself. Selling used gear fetches about half its list value.\n"
+    "- Gambling (needs a den or den keeper present): agree the stake (1-50 gp), then\n"
+    "  emit [[TRADE: wager | dice | 5]]. The system rolls it out; the house wins ties.\n"
+    "  Narrate the den's atmosphere around the appended result.\n"
+    "- Mounts: stablemasters sell them (buy via [[TRADE]]). A mounted character travels\n"
+    "  at a fast pace (~30 miles/day vs 24 on foot) and can gallop short bursts at double\n"
+    "  speed; mounts need feed and stabling (charge for both), can panic in combat, and\n"
+    "  can't follow into dungeons, dense woods, or up ropes — make ownership matter.\n"
+    "- A '# Danger assessment' block means the party is outmatched nearby: seed WARNINGS\n"
+    "  into the world (an NPC interdicts, fresh kills on the trail, refugees, rumors) so\n"
+    "  informed choice is always possible. Scale avoidable encounters to the party; NEVER\n"
+    "  scale down a danger they were warned about and chose anyway. Player death is\n"
+    "  PERMANENT — no rescues you didn't foreshadow, no take-backs. Make death mean\n"
+    "  something: let it be earned, witnessed, and remembered.\n"
+)
+
 
 def generate_dm_reply(
     session_id: str,
@@ -1011,9 +1925,36 @@ def generate_dm_reply(
 
     messages: List[Dict[str, str]] = []
 
+    # Token diet for the 14B local model: the full per-condition rules cheat-sheet
+    # and the full physical-limits detail block are only worth their weight when
+    # they're actually relevant this turn. Detect relevance from the context
+    # blocks already assembled for this turn (world slice, combat board,
+    # character-resources block) plus a cheap keyword scan of the player's
+    # message, and fall back to a compact summary otherwise. The hook syntax
+    # stays visible either way so the model can always emit it.
+    _combined_ctx = "\n".join(extra_context or [])
+    _combat_present = "# Combat" in _combined_ctx
+    _active_conditions_present = "Active conditions" in _combined_ctx
+    _show_conditions_detail = _combat_present or _active_conditions_present
+
+    _physical_limits_present = "Physical limits" in _combined_ctx
+    _physical_keywords = (
+        "jump", "climb", "lift", "throw", "swim", "leap", "carry", "push", "drag",
+    )
+    _looks_physical = any(kw in message.lower() for kw in _physical_keywords)
+    _show_physical_detail = _physical_limits_present and _looks_physical
+
+    _physical_limits_block = (
+        _PHYSICAL_LIMITS_FULL if _show_physical_detail else _PHYSICAL_LIMITS_SHORT
+    )
+    _conditions_block = (
+        _CONDITIONS_FULL if _show_conditions_detail else _CONDITIONS_SHORT
+    )
+
     system_prompt = (
         "You are an imaginative, fair Dungeon Master for a 5e-style tabletop RPG. "
-        "You narrate the world, voice NPCs, and adjudicate the outcomes of actions.\n\n"
+        "You narrate the world, voice NPCs, and adjudicate the outcomes of actions. "
+        "ALWAYS respond in English only, regardless of the model's default language.\n\n"
         "Tone & style:\n"
         "- Grounded, evocative fantasy; fun and playable.\n"
         "- 2-4 short paragraphs, not a novel.\n"
@@ -1058,74 +1999,8 @@ def generate_dm_reply(
         "    (which flags them as pending level-up) and then call /level_up to choose feats,\n"
         "    ASIs, spells, or subclass. Once /level_up completes, they're ready to adventure.\n"
 
-
-        "- A 'Physical limits' line gives the PC's speed, jump distances, lift/carry, and\n"
-        "  reach WITHOUT magic or special items. Enforce these as hard limits:\n"
-        "  * Movement: a creature can move up to its Speed on its turn (double if it Dashes,\n"
-        "    using its action). It cannot cross more distance than that in one turn, and\n"
-        "    climbing, swimming, or crawling through difficult terrain costs double movement.\n"
-        "  * Jumping: a long jump clears at most the listed feet (a running start is needed\n"
-        "    for the full distance; only half without ~10 ft of runway). A high jump reaches\n"
-        "    only the listed height. Don't let a PC leap onto a rooftop, chasm, or wall that\n"
-        "    exceeds these numbers unless they have a relevant spell, item, or class feature.\n"
-        "  * Lifting/carrying/forcing: a PC can't lift, drag, or hurl objects beyond their\n"
-        "    push/drag/lift limit, and hauling near capacity slows them.\n"
-        "  * Reach: melee reach is 5 ft (10 ft only with a reach weapon); they can't strike\n"
-        "    or grab something farther away.\n"
-        "  When a player attempts a physical feat NEAR the edge of these limits, call for an\n"
-        "  ability check (usually Strength (Athletics) or Dexterity (Acrobatics)) at a DC that\n"
-        "  reflects the difficulty via a [[ROLL]] hook. When an attempt EXCEEDS what is\n"
-        "  physically possible without augmentation, don't allow it — explain the limit in the\n"
-        "  fiction (the ledge is simply too high) and invite a feasible alternative (find a\n"
-        "  ladder, take the stairs, cast a spell, grapple up in stages). Also keep other\n"
-        "  physics honest: unsupported creatures fall (~3d6 per 10 ft, capped) and take time\n"
-        "  to act; a character can't be two places at once, act while unconscious, or use a\n"
-        "  reaction they've already spent. Reward clever, plausible plans; refuse the\n"
-        "  impossible.\n"
-        "- Conditions bind EVERY creature — the PC, NPCs, and monsters alike. Before you let\n"
-        "  anyone act (or resolve an action against them), check their conditions (the Combat\n"
-        "  block lists them in a fight; otherwise track any you've narrated) and honor the\n"
-        "  mechanical effects:\n"
-        "  * Prone: attacks at disadvantage; melee attackers against it have advantage,\n"
-        "    ranged have disadvantage; standing up costs half its movement.\n"
-        "  * Grappled / Restrained: Speed becomes 0. Restrained also = attacks at disadvantage,\n"
-        "    attacks against it at advantage, Dex saves at disadvantage.\n"
-        "  * Incapacitated: no actions, bonus actions, or reactions at all.\n"
-        "  * Stunned: incapacitated, can't move, auto-fails Str/Dex saves, attacks against it\n"
-        "    have advantage. Paralyzed / Unconscious: as stunned, and any hit from within 5 ft\n"
-        "    is a critical hit (unconscious also drops what it holds and falls prone).\n"
-        "  * Petrified: incapacitated, unaware, resistant to all damage, immune to poison/disease.\n"
-        "  * Blinded: can't see, auto-fails sight checks, attacks at disadvantage and attacks\n"
-        "    against it at advantage. Deafened: can't hear, auto-fails hearing checks.\n"
-        "  * Poisoned: disadvantage on attack rolls and ability checks.\n"
-        "  * Frightened: disadvantage on checks and attacks while the source is in sight, and it\n"
-        "    can't willingly move closer to the source.\n"
-        "  * Charmed: can't attack the charmer or target them with harmful effects; the charmer\n"
-        "    has advantage on social checks with it.\n"
-        "  * Invisible: can't be seen without special senses (heavily obscured for locating);\n"
-        "    attacks at advantage, attacks against it at disadvantage.\n"
-        "  Don't let a stunned, paralyzed, or unconscious creature take actions, a grappled one\n"
-        "  walk away, or a blinded one make a clean ranged shot. When a condition ends or a save\n"
-        "  applies, resolve it with a [[ROLL]] hook rather than assuming the outcome.\n"
-        "  Conditions PERSIST between encounters. The 'Character resources' block shows an\n"
-        "  'Active conditions' line for whatever currently afflicts the player — honor it every\n"
-        "  turn, even outside a fight. When a lasting condition BEGINS or ENDS on the player\n"
-        "  outside the initiative tracker, record it so it carries forward by emitting a hook on\n"
-        "  its own line (removed from what the player sees):\n"
-        "    [[CONDITION: add | poisoned | giant spider venom | until the end of a long rest]]\n"
-        "    [[CONDITION: remove | frightened]]\n"
-        "  Fields: action (add/remove/clear) | condition | source (optional) | duration (optional).\n"
-        "  Put the REMOVAL TRIGGER in the duration field so you remember how it ends — e.g.\n"
-        "  'for 1 minute', 'until it takes damage', 'until the source is out of sight', 'save at\n"
-        "  end of each turn', 'until the end of a long rest'. Track that trigger and, the moment it\n"
-        "  is met (time elapses, the required action or event happens, or a [[ROLL]] save succeeds),\n"
-        "  emit the matching [[CONDITION: remove | ...]] hook and tell the player they're free of it.\n"
-        "  Use it for things that outlast the moment (a lingering poison, a curse, ongoing fear);\n"
-        "  don't spam it for effects that resolve within the same scene. Exhaustion is tracked\n"
-        "  separately — don't emit a CONDITION hook for it.\n"
-        "  When a fight or tense encounter ENDS, recap any conditions still on the player in the\n"
-        "  narration (e.g. 'the wolves are dead, but the spider's venom still burns in your veins')\n"
-        "  so they know what lingers, and remind them of the trigger that will clear it.\n"
+        + _physical_limits_block
+        + _conditions_block +
         "- NPCs & the party. Most NPCs are LIGHTWEIGHT: a name, role, disposition, and a running\n"
         "  TRUST toward the party — you can invent and voice them freely without any stat sheet.\n"
         "  The world-state block lists nearby NPCs with their current attitude; play them to it.\n"
@@ -1168,6 +2043,8 @@ def generate_dm_reply(
         "- Use 3-6 evocative keywords (place + mood); imagine instrumental/ambient scoring.\n"
         "- Emit it ONLY when the ambiance meaningfully changes; otherwise omit it entirely.\n"
         "- Put the hook on its own line. It is removed from what the player sees.\n"
+        "\n"
+        + _WORLD_BUILDING_BLOCK
     )
 
     # Scene-imagery hook guidance (config-toggleable, only when imagery is on).
@@ -1180,7 +2057,11 @@ def generate_dm_reply(
             "    [[IMAGE: creature | dire wolf | snowy pass at dusk | lean, scarred, pale fur]]\n"
             "    [[IMAGE: npc | Jim the blacksmith | forge in town | burly, soot-stained, graying beard]]\n"
             "    [[IMAGE: place | Greenfields | autumn morning | rolling farmland, timber cottages]]\n"
-            "- Fields: kind (place|npc|creature|item) | subject | context (environment/season/mood) | look.\n"
+            "- Fields: kind (place|npc|creature|item|scene) | subject | context (environment/season/mood) | look.\n"
+            "- Use kind 'scene' for a dramatic MOMENT involving the player or known figures —\n"
+            "    [[IMAGE: scene | Kara hurls a fireball at the goblin | torchlit dungeon melee | desperate, embers flying]]\n"
+            "  Name the participants exactly (the player's name, the creature) — the system uses\n"
+            "  their existing portraits/art as visual references so the picture shows THEM.\n"
             "- The SAME subject in a different environment (a desert wolf vs a jungle wolf, an NPC in\n"
             "  town vs in the desert) is a distinct picture: keep 'subject' stable, vary 'context'.\n"
             "- If a subject's appearance changes PERMANENTLY (an NPC is maimed, a town burns down),\n"
@@ -1227,6 +2108,9 @@ def generate_dm_reply(
         "role": "user",
         "content": f"{username}: {message}",
     })
+
+    total_chars = sum(len(m.get("content", "")) for m in messages)
+    print(f"[prompt] ~{total_chars // 4} tokens ({total_chars} chars, {len(messages)} messages)")
 
     dm_raw = call_openrouter_dm(messages)
 
@@ -1287,6 +2171,68 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
                 texts.append(rendered)
         except Exception as e:
             print(f"[world context error] {e}")
+
+        # Danger assessment: when the party is in (or beside) country whose
+        # danger outstrips their level, tell the DM to warn and to scale —
+        # but never to soften a fight the players walk into anyway.
+        try:
+            char_level = 1
+            if meta.get("character_id"):
+                with Session(engine) as s:
+                    ch = s.get(Character, meta["character_id"])
+                    if ch:
+                        char_level = max(1, int(ch.level or 1))
+            danger_floor = {"low": 1, "moderate": 3, "high": 5}
+            hot: list[str] = []
+            if ctx_obj is not None:
+                spots = list(ctx_obj.entities)
+                if ctx_obj.location is not None:
+                    spots.append(ctx_obj.location)
+                for e in spots:
+                    a = e.attributes or {}
+                    lvl_needed = danger_floor.get(str(a.get("danger", "")).lower())
+                    if lvl_needed and lvl_needed > char_level:
+                        denizens = ", ".join(a.get("denizens") or []) or "unknown threats"
+                        hot.append(f"- {e.name}: danger {a['danger']} "
+                                   f"(suits level {lvl_needed}+; party is level "
+                                   f"{char_level}). Known threats: {denizens}.")
+            if hot:
+                texts.append(
+                    "# Danger assessment\n"
+                    "The party is under-leveled for these nearby areas:\n"
+                    + "\n".join(hot) +
+                    "\nForeshadow the threat and have locals warn or interdict "
+                    "(a hunter blocks the road, tracks and kills, fearful talk). "
+                    "Scale encounters to the encounter-building guidance when the "
+                    "fight is avoidable — but if they knowingly press into danger, "
+                    "play it honestly and lethally. Death is permanent here."
+                )
+        except Exception as e:
+            print(f"[danger assessment error] {e}")
+
+        # Away-time notice: if world days passed since this PC last acted
+        # (another party's bubble, or the wall-clock floor), tell the DM so
+        # they can welcome the player back and offer downtime catch-up.
+        try:
+            pc_e = world.get_entity(meta["pc_slug"])
+            today = ctx_obj.world_day if ctx_obj else world.current_day()
+            if pc_e is not None:
+                last = (pc_e.attributes or {}).get("last_active_day")
+                gap = (today - int(last)) if last is not None else 0
+                if gap >= 3:
+                    texts.append(
+                        f"# Time passed\n{gap} world days have passed since "
+                        f"{pc_e.name} last acted. Welcome them back and offer to "
+                        "spend that time as SRD downtime (training, crafting, "
+                        "work, carousing — lifestyle costs apply) or as a short "
+                        "personal side-tale covering those days."
+                    )
+                if last is None or today > int(last):
+                    world.upsert_entity(pc_e.name, pc_e.type, slug=pc_e.slug,
+                                        status=pc_e.status,
+                                        attributes={"last_active_day": today})
+        except Exception as e:
+            print(f"[away-time notice error] {e}")
 
     # Inject exact stats for any monster/spell named in the action or last narration.
     try:
@@ -1807,11 +2753,16 @@ def _character_resource_block(character_id: int) -> str:
             if char.inspiration:
                 lines.append("Has Inspiration.")
 
-            # Current weather at the PC's region.
+            # Current weather at the PC's position: latitude-derived climate
+            # from the world globe, falling back to the home_region keyword guess.
             try:
                 day = world.current_day()
                 month = ((day // 30) % 12) + 1
-                climate = _region_climate(char.home_region)
+                try:
+                    climate = world.location_climate(slugify(char.name))
+                except Exception:
+                    climate = None
+                climate = climate or _region_climate(char.home_region)
                 weather = generate_weather(day, climate=climate, month=month)
                 lines.append(f"Weather: {weather['summary']}")
                 tags = active_hazard_tags(weather)
@@ -1882,7 +2833,11 @@ async def root():
 
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
+def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
+    # NOTE: deliberately a sync (def) endpoint. Everything inside — the LLM call,
+    # ComfyUI image renders (up to timeout_seconds), VRAM unloads — uses blocking
+    # `requests`. As a sync route FastAPI runs it in the threadpool, so long
+    # renders no longer freeze the event loop for every other player.
     """
     Main entry point from the Discord bot.
     Tracks per-session history and asks the DM brain for a reply.
@@ -1907,11 +2862,25 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     # Player turn
     state = _append_turn(req.session_id, Turn(role="player", user=req.username, content=req.message))
 
-    # DM reply
+    # Ratchet clock: apply the wall-time floor and any due entropy pass BEFORE
+    # assembling context, so the DM narrates the world as time has left it.
     try:
+        world.sync_clock(days_per_real_day=WORLD_DAYS_PER_REAL_DAY)
+        _ent = world_entropy.run_if_due(world)
+        if any(_ent.values()):
+            print(f"[entropy] {_ent}")
+    except Exception as e:
+        print(f"[entropy] clock sync failed: {e}")
+
+    # DM reply
+    ctx_obj = None
+    try:
+        # Single-GPU time-share: free the diffusion model from VRAM before the
+        # LLM call so a self-hosted 70B/32B has room to load.
+        _free_diffusion_vram()
         # Ground the turn in the local world slice, referenced rules, and — if a
         # fight is underway — the live initiative/HP board.
-        _, ctx_texts = assemble_context(req.session_id, req.message, user_id=req.user_id)
+        ctx_obj, ctx_texts = assemble_context(req.session_id, req.message, user_id=req.user_id)
         active_enc = combat.get_active(req.session_id)
         if active_enc:
             board = combat.render(active_enc.id)
@@ -1936,8 +2905,33 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     # Pull out scene-image requests (and any permanent-change resets), then
     # render/reuse pictures for the bot to attach.
     dm_text, image_reqs, reset_reqs = extract_image_hooks(dm_text)
+    # Single-GPU time-share: only evict the local LLM when we actually need the
+    # GPU for a render, so text-only turns keep the model warm.
+    if image_reqs or reset_reqs:
+        _unload_local_llm()
     try:
-        image_payloads = process_image_hooks(image_reqs, reset_reqs)
+        image_payloads = process_image_hooks(
+            image_reqs, reset_reqs,
+            pc_name=(state.get("meta", {}) or {}).get("character_name"),
+            ctx_entities=list(ctx_obj.entities) if ctx_obj else None,
+        )
+        # Player cartography: rendered map artifacts ride the image channel.
+        dm_text, map_ops = extract_map_hooks(dm_text)
+        if map_ops:
+            try:
+                image_payloads.extend(process_map_hooks(map_ops, req.session_id))
+            except Exception as e:
+                print(f"[map] hook processing failed: {e}")
+
+        # Commerce: agreed trades move real coin/items; outcomes are appended.
+        dm_text, trade_ops = extract_trade_hooks(dm_text)
+        if trade_ops:
+            try:
+                trade_notes = process_trade_hooks(trade_ops, req.session_id, ctx_obj)
+                if trade_notes:
+                    dm_text = dm_text.rstrip() + "\n\n" + "\n".join(trade_notes)
+            except Exception as e:
+                print(f"[trade] hook processing failed: {e}")
     except Exception as e:
         print(f"[imagery] hook processing failed: {e}")
         image_payloads = []
@@ -1972,8 +2966,28 @@ async def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     if len(state.get("recent_turns", [])) > get_config().session_memory.compaction_threshold:
         _schedule_session_compaction(background_tasks, req.session_id)
 
+    # Write this turn's world-state changes to the graph in the background —
+    # never blocks the reply the player is waiting on.
+    background_tasks.add_task(
+        _run_world_extraction,
+        req.session_id,
+        req.message,
+        dm_text,
+        ctx_obj.render() if ctx_obj else "",
+        [e.id for e in ctx_obj.entities] if ctx_obj else [],
+    )
+
+    # Permadeath check: if this turn confirmed the PC's death, canonize it and
+    # attach the one-page memorial for the bot to post (fires exactly once).
+    memorial_payload = None
+    try:
+        memorial_payload = _maybe_memorialize(req.session_id)
+    except Exception as e:
+        print(f"[memorial] check failed: {e}")
+
     return ChatResponse(reply=dm_text, music=music_query,
-                        images=image_payloads or None)
+                        images=image_payloads or None,
+                        memorial=memorial_payload)
 
 @app.post("/reset")
 async def reset_endpoint(req: ResetRequest):
@@ -2022,22 +3036,52 @@ async def enter_world(req: EnterRequest):
             if c.name and c.name.lower() == req.character_name.lower():
                 chosen = c
                 break
+    def _is_alive(c) -> bool:
+        # Owner-scoped lookup: another player's same-named dead PC must not
+        # shadow this player's living one (identities are per-owner now).
+        e = world.find_pc(req.user_id, c.name)
+        return e is None or e.status != "dead"
+
     if not chosen:
-        chosen = chars[0]
+        # Auto-choice prefers the living: dead characters stay in the DB as
+        # canon (memorials/events reference them) but never get picked here.
+        chosen = next((c for c in chars if _is_alive(c)), chars[0])
+
+    # Permadeath gate: a character whose world entity is dead stays dead.
+    try:
+        pc_entity = world.find_pc(req.user_id, chosen.name)
+        if pc_entity is not None and pc_entity.status == "dead":
+            living = [c.name for c in chars if _is_alive(c)]
+            return EnterResponse(
+                status="character_dead",
+                message=(
+                    f"{chosen.name} has passed into legend — their tale is told and "
+                    "cannot be resumed. "
+                    + (f"You may enter as: {', '.join(living)}. " if living else "")
+                    + "Or create a new character to begin a new tale."
+                ),
+                characters=living,
+            )
+    except Exception as e:
+        print(f"[enterworld permadeath check error] {e}")
 
     # Create a new session id (guild-based namespace)
     session_id = f"{req.guild_id}:{uuid.uuid4().hex}"
 
     # Place the PC in the persistent world graph and remember it for this session.
+    # Use the RETURNED entity's slug — identities have unique slugs now, so the
+    # slug may differ from slugify(name) when names repeat across players.
     pc_slug = slugify(chosen.name)
     try:
-        place_pc(
+        pc_ent = place_pc(
             world,
             chosen.name,
             discord_user_id=req.user_id,
             location_slug="the-silver-tankard",
             attributes={"race": chosen.race, "class": chosen.char_class, "subclass": chosen.subclass, "level": chosen.level},
         )
+        if pc_ent is not None and getattr(pc_ent, "slug", None):
+            pc_slug = pc_ent.slug
     except Exception as e:
         print(f"[enterworld place_pc error] {e}")
     _set_session_meta(session_id, {
@@ -2079,6 +3123,122 @@ async def enter_world(req: EnterRequest):
     )
 
 
+# SRD starting equipment by class — granted whenever a new character has an
+# empty inventory (guided creation, manual, or a DDB import whose gear was all
+# dropped by validation). Names align with the equipment guardrails.
+_CLASS_STARTING_KITS: Dict[str, List[tuple]] = {
+    "barbarian": [("Greataxe", 1), ("Handaxe", 2), ("Javelin", 4), ("Explorer's Pack", 1)],
+    "bard": [("Rapier", 1), ("Dagger", 1), ("Leather Armor", 1), ("Lute", 1), ("Entertainer's Pack", 1)],
+    "cleric": [("Mace", 1), ("Scale Mail", 1), ("Shield", 1), ("Holy Symbol", 1), ("Priest's Pack", 1)],
+    "druid": [("Quarterstaff", 1), ("Leather Armor", 1), ("Druidic Focus", 1), ("Explorer's Pack", 1)],
+    "fighter": [("Chain Mail", 1), ("Longsword", 1), ("Shield", 1), ("Light Crossbow", 1), ("Crossbow Bolts", 20), ("Dungeoneer's Pack", 1)],
+    "monk": [("Shortsword", 1), ("Dart", 10), ("Dungeoneer's Pack", 1)],
+    "paladin": [("Chain Mail", 1), ("Longsword", 1), ("Shield", 1), ("Holy Symbol", 1), ("Priest's Pack", 1)],
+    "ranger": [("Scale Mail", 1), ("Shortsword", 2), ("Longbow", 1), ("Arrows", 20), ("Explorer's Pack", 1)],
+    "rogue": [("Rapier", 1), ("Shortbow", 1), ("Arrows", 20), ("Leather Armor", 1), ("Dagger", 2), ("Thieves' Tools", 1), ("Burglar's Pack", 1)],
+    "sorcerer": [("Light Crossbow", 1), ("Crossbow Bolts", 20), ("Component Pouch", 1), ("Dagger", 2), ("Dungeoneer's Pack", 1)],
+    "warlock": [("Light Crossbow", 1), ("Crossbow Bolts", 20), ("Component Pouch", 1), ("Leather Armor", 1), ("Dagger", 2), ("Scholar's Pack", 1)],
+    "wizard": [("Quarterstaff", 1), ("Component Pouch", 1), ("Spellbook", 1), ("Scholar's Pack", 1)],
+}
+
+
+# SRD background packages: equipment + the signature feature (stored on the
+# character's tags so the DM prompt can honor it).
+_BACKGROUND_KITS: Dict[str, Dict[str, Any]] = {
+    "acolyte": {"items": [("Holy Symbol", 1), ("Prayer Book", 1), ("Incense", 5), ("Vestments", 1)],
+                "feature": "Shelter of the Faithful"},
+    "charlatan": {"items": [("Fine Clothes", 1), ("Disguise Kit", 1), ("Weighted Dice", 1)],
+                  "feature": "False Identity"},
+    "criminal": {"items": [("Crowbar", 1), ("Dark Common Clothes", 1)],
+                 "feature": "Criminal Contact"},
+    "entertainer": {"items": [("Musical Instrument", 1), ("Costume", 1)],
+                    "feature": "By Popular Demand"},
+    "folk hero": {"items": [("Artisan's Tools", 1), ("Shovel", 1), ("Iron Pot", 1), ("Common Clothes", 1)],
+                  "feature": "Rustic Hospitality"},
+    "guild artisan": {"items": [("Artisan's Tools", 1), ("Letter of Introduction", 1), ("Traveler's Clothes", 1)],
+                      "feature": "Guild Membership"},
+    "hermit": {"items": [("Scroll Case", 1), ("Winter Blanket", 1), ("Herbalism Kit", 1)],
+               "feature": "Discovery"},
+    "noble": {"items": [("Fine Clothes", 1), ("Signet Ring", 1), ("Scroll of Pedigree", 1)],
+              "feature": "Position of Privilege"},
+    "outlander": {"items": [("Staff", 1), ("Hunting Trap", 1), ("Traveler's Clothes", 1)],
+                  "feature": "Wanderer"},
+    "sage": {"items": [("Bottle of Ink", 1), ("Quill", 1), ("Small Knife", 1), ("Letter from a Dead Colleague", 1)],
+             "feature": "Researcher"},
+    "sailor": {"items": [("Belaying Pin", 1), ("Silk Rope (50 ft)", 1), ("Lucky Charm", 1)],
+               "feature": "Ship's Passage"},
+    "soldier": {"items": [("Insignia of Rank", 1), ("Trophy from a Fallen Enemy", 1), ("Set of Bone Dice", 1)],
+                "feature": "Military Rank"},
+    "urchin": {"items": [("Small Knife", 1), ("Map of Home City", 1), ("Pet Mouse", 1)],
+               "feature": "City Secrets"},
+}
+
+
+def _apply_background(char: Character, background: Optional[str],
+                      *, grant_items: bool = True) -> Optional[str]:
+    """Store the background, grant its kit, tag its feature. Returns feature name.
+
+    ``grant_items=False`` on re-import sync: identity updates must not
+    duplicate gear into an inventory play may have changed.
+    """
+    if not background:
+        return None
+    char.background = background
+    kit = _BACKGROUND_KITS.get(background.strip().lower())
+    if not kit:
+        return None
+    if grant_items:
+        for name, qty in kit["items"]:
+            _add_inventory_item(char, name, quantity=qty)
+    tags = list(char.tags or [])
+    feature_tag = f"background-feature: {kit['feature']}"
+    if feature_tag not in tags:
+        tags.append(feature_tag)
+    char.tags = tags
+    return kit["feature"]
+
+
+def _validate_spells_for_class(spell_names: List[str], char_class: Optional[str]
+                               ) -> tuple[List[str], List[str], List[str]]:
+    """Split imported spells into (kept, dropped_reasons, warnings) using the
+    SRD rules DB: must exist, be castable at level 1 (cantrip or 1st), and be
+    on the character's class list."""
+    if not spell_names:
+        return [], [], []
+    from rules.models import Spell as _Spell
+    with Session(rules_lib.engine) as s:
+        seeded = s.exec(select(func.count(_Spell.id))).one()
+    if not seeded:
+        return list(spell_names), [], [
+            "spell legality unchecked — SRD rules DB not seeded (run rules ingest)"]
+    kept: List[str] = []
+    drops: List[str] = []
+    cls = (char_class or "").strip().lower()
+    for name in spell_names:
+        sp = rules_lib.get_spell(name)
+        if sp is None:
+            drops.append(f"{name} (not an SRD spell)")
+        elif int(sp.level or 0) > 1:
+            drops.append(f"{name} (level {sp.level} — beyond a level-1 caster)")
+        elif cls and sp.classes and cls not in {str(c).lower() for c in sp.classes}:
+            drops.append(f"{name} (not a {char_class} spell)")
+        else:
+            kept.append(name)
+    return kept, drops, []
+
+
+def _grant_starting_kit(char: Character) -> List[str]:
+    """Fill an empty inventory with the class's SRD starting kit. Returns names."""
+    if _inventory_items(char):
+        return []
+    kit = _CLASS_STARTING_KITS.get((char.char_class or "").strip().lower())
+    if not kit:
+        kit = [("Dagger", 1), ("Traveler's Clothes", 1), ("Explorer's Pack", 1)]
+    for name, qty in kit:
+        _add_inventory_item(char, name, quantity=qty)
+    return [f"{name} x{qty}" if qty > 1 else name for name, qty in kit]
+
+
 @app.post("/register_character")
 async def register_character(req: RegisterCharacterRequest):
     """Register a new character for a discord user.
@@ -2090,8 +3250,8 @@ async def register_character(req: RegisterCharacterRequest):
         raise HTTPException(status_code=400, detail="Missing required fields: name and discord_user_id.")
 
     # Validate allowed source values
-    if req.source and req.source not in ("avrae", "guided", "manual"):
-        raise HTTPException(status_code=400, detail="Invalid source. Allowed: avrae, guided, manual.")
+    if req.source and req.source not in ("avrae", "guided", "manual", "ddb"):
+        raise HTTPException(status_code=400, detail="Invalid source. Allowed: avrae, guided, manual, ddb.")
 
     # Level validation: characters are always CREATED at level 1. Advancement is
     # tracked in-system via the /level_up flow (SRD-based), so any import or manual
@@ -2150,11 +3310,171 @@ async def register_character(req: RegisterCharacterRequest):
             water=surv.starting_water,
         )
 
+        # Starting gear: every fresh character walks out equipped for the road.
+        kit_granted = _grant_starting_kit(char)
+        bg_feature = _apply_background(char, req.background)
+
         session.add(char)
         session.commit()
         session.refresh(char)
 
-    return {"status": "ok", "message": "Character registered", "character_id": char.id}
+    return {"status": "ok", "message": "Character registered", "character_id": char.id,
+            "starting_kit": kit_granted or None,
+            "background_feature": bg_feature}
+
+
+class DDBImportRequest(BaseModel):
+    discord_user_id: str
+    url: str
+    home_region: Optional[str] = None
+
+
+def _import_ddb_portrait(parsed: dict, character_name: str, report: dict) -> None:
+    """Fetch the DDB avatar and store it as the character's portrait. Best-effort."""
+    url = parsed.get("avatar_url")
+    if not url:
+        return
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200 or not (1024 < len(r.content) <= 8_000_000):
+            return
+        image_store.set_portrait_from_bytes(
+            character_name, r.content,
+            caption=f"{character_name} (D&D Beyond portrait)")
+        report.setdefault("warnings", []).append("portrait imported from D&D Beyond")
+    except Exception as e:
+        print(f"[ddb portrait] fetch/store failed: {e}")
+
+
+@app.post("/import_ddb")
+def import_ddb_endpoint(req: DDBImportRequest):
+    """Import a PUBLIC D&D Beyond character sheet (Avrae-free path).
+
+    Fetches + parses the DDB JSON, enforces world rules (level 1 start,
+    stat caps, no magic/homebrew gear), registers the character, fills the
+    inventory (kept mundane gear, else the class starting kit), and returns a
+    validation report the AI DM uses to follow up on missing pieces and
+    mention dropped extras.
+    """
+    import ddb_import
+    try:
+        parsed, report = ddb_import.import_from_url(req.url)
+    except ddb_import.DDBImportError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Import failed: {e}")
+
+    if not parsed.get("name"):
+        raise HTTPException(status_code=400,
+                            detail="The sheet has no character name; set one on "
+                                   "D&D Beyond and re-import.")
+
+    # Spell legality against the SRD rules DB (exists, level-1 castable, on
+    # the class list). Dropped spells are itemized for the DM to mention.
+    spells_kept, spell_drops, spell_warnings = _validate_spells_for_class(
+        parsed.get("spells") or [], parsed.get("char_class"))
+    report["dropped"].extend(spell_drops)
+    report["warnings"].extend(spell_warnings)
+    parsed["spells"] = spells_kept
+
+    import ddb_import as _ddb
+    new_ddb_id = _ddb.extract_character_id(req.url)
+
+    with Session(engine) as session:
+        # Re-import as SYNC: same DDB character id, or same name for this user.
+        existing = None
+        if new_ddb_id:
+            for c in session.exec(select(Character).where(
+                    Character.discord_user_id == req.discord_user_id)).all():
+                if c.ddb_url and _ddb.extract_character_id(c.ddb_url) == new_ddb_id:
+                    existing = c
+                    break
+        if existing is None:
+            existing = session.exec(select(Character).where(
+                Character.discord_user_id == req.discord_user_id,
+                Character.name == parsed["name"])).first()
+
+        if existing is not None:
+            if existing.level > 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{existing.name} has grown beyond the sheet (level "
+                           f"{existing.level}) — re-import can no longer overwrite "
+                           "them. Their story lives here now.")
+            # Identity sync: race/class/stats/spells refresh; inventory, coin,
+            # and anything earned in play are untouched.
+            existing.name = parsed["name"]
+            existing.race = parsed.get("race")
+            existing.char_class = parsed.get("char_class")
+            existing.stats = parsed.get("stats")
+            existing.spells = parsed.get("spells") or None
+            existing.ddb_url = req.url
+            _apply_background(existing, parsed.get("background"), grant_items=False)
+            cls_row = _get_class_row(session, parsed.get("char_class"))
+            hit_die = f"d{cls_row.hit_die}" if cls_row and cls_row.hit_die else "d8"
+            con_mod = ability_modifier((parsed.get("stats") or {}).get("constitution"))
+            existing.hit_die = hit_die
+            existing.max_hp = max(1, int(hit_die[1:]) + con_mod)
+            existing.current_hp = existing.max_hp
+            existing.updated_at = datetime.utcnow()
+            session.add(existing)
+            session.commit()
+            session.refresh(existing)
+            report.setdefault("warnings", []).append(
+                "existing character synced from the sheet — identity refreshed, "
+                "inventory and progress untouched")
+            _import_ddb_portrait(parsed, existing.name, report)
+            return {"status": "ok", "character_id": existing.id,
+                    "name": existing.name, "synced": True, "report": report}
+
+        cls_row = _get_class_row(session, parsed.get("char_class"))
+        hit_die = f"d{cls_row.hit_die}" if cls_row and cls_row.hit_die else "d8"
+        con_mod = ability_modifier((parsed.get("stats") or {}).get("constitution"))
+        start_hp = max(1, int(hit_die[1:]) + con_mod)
+        surv = get_config().survival
+
+        char = Character(
+            discord_user_id=req.discord_user_id,
+            name=parsed["name"],
+            race=parsed.get("race"),
+            char_class=parsed.get("char_class"),
+            subclass=None,                       # chosen in-system at subclass level
+            level=1,
+            gp=get_config().economy.starting_gold,
+            stats=parsed.get("stats"),
+            spells=parsed.get("spells") or None,
+            ddb_url=req.url,
+            approved=True,
+            home_region=req.home_region,
+            max_hp=start_hp, current_hp=start_hp,
+            hit_die=hit_die, hit_dice_total=1, hit_dice_remaining=1,
+            rations=surv.starting_rations, water=surv.starting_water,
+        )
+        # Inventory: mundane gear that survived validation, else the class kit.
+        for it in parsed.get("items") or []:
+            _add_inventory_item(char, it["name"], quantity=it.get("quantity", 1))
+        kit = _grant_starting_kit(char)
+        if kit:
+            report.setdefault("warnings", []).append(
+                "issued class starting kit: " + ", ".join(kit))
+
+        # Background: stored + its equipment + its feature tag.
+        feature = _apply_background(char, parsed.get("background"))
+        if feature:
+            report.setdefault("warnings", []).append(
+                f"background {parsed['background']} applied "
+                f"(feature: {feature}, kit added)")
+
+        session.add(char)
+        session.commit()
+        session.refresh(char)
+        char_id = char.id
+
+    # DDB avatar becomes the character portrait (best-effort, post-commit).
+    _import_ddb_portrait(parsed, parsed["name"], report)
+
+    return {"status": "ok", "character_id": char_id,
+            "name": parsed["name"], "report": report}
 
 
 @app.post("/check_character")
@@ -2333,7 +3653,18 @@ _DEFAULT_NPC_STATS = {
 
 
 def _pc_entity_slug(char: Character) -> str:
-    """The world-graph PC entity slug for a backend character (slug of its name)."""
+    """The world-graph PC entity slug for a backend character.
+
+    Identity-aware: resolves via (owner, name) since slugs are unique per
+    entity and names may repeat; falls back to the plain name slug for
+    pre-identity worlds.
+    """
+    try:
+        pc = world.find_pc(char.discord_user_id, char.name)
+        if pc is not None:
+            return pc.slug
+    except Exception:
+        pass
     return slugify(char.name)
 
 
@@ -4453,7 +5784,7 @@ class CharacterConditionRequest(BaseModel):
 
 
 @app.get("/imagery/status")
-async def imagery_status():
+def imagery_status():
     """Report imagery config + whether the diffusion backend is reachable."""
     cfg = get_config().imagery
     available = False
@@ -4474,7 +5805,7 @@ async def imagery_status():
 
 
 @app.post("/imagery/ensure")
-async def imagery_ensure(req: ImageEnsureRequest):
+def imagery_ensure(req: ImageEnsureRequest):
     """Generate or reuse a stored picture for (subject x context)."""
     cfg = get_config().imagery
     if not cfg.enabled:
@@ -4491,7 +5822,7 @@ async def imagery_ensure(req: ImageEnsureRequest):
 
 
 @app.post("/imagery/temp")
-async def imagery_temp(req: ImageTempRequest):
+def imagery_temp(req: ImageTempRequest):
     """Generate a throwaway image (never stored)."""
     cfg = get_config().imagery
     if not cfg.enabled or not cfg.allow_temp:

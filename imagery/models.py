@@ -32,8 +32,11 @@ class ImageKind:
     CREATURE = "creature"  # -> rules Monster.index_slug (or owned slug)
     ITEM = "item"          # -> world Entity.slug / rules Item
     PC = "pc"              # -> backend Character.name slug (player portrait)
+    SCENE = "scene"        # -> a moment in play (multi-subject, never bucketed;
+    #                          rendered with stored art of participants as
+    #                          visual references — see store.generate_scene)
 
-    ALL = {PLACE, NPC, CREATURE, ITEM, PC}
+    ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE}
 
 
 def normalize_kind(kind: str) -> str:

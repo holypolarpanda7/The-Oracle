@@ -88,6 +88,9 @@ class ComfyClient:
         sampler: str = "euler",
         scheduler: str = "normal",
         timeout_seconds: int = 180,
+        use_ipadapter: bool = False,
+        ipadapter_weight: float = 0.65,
+        ipadapter_preset: str = "STANDARD (medium strength)",
     ):
         self.base_url = base_url.rstrip("/")
         self.checkpoint = checkpoint
@@ -96,6 +99,9 @@ class ComfyClient:
         self.sampler = sampler
         self.scheduler = scheduler
         self.timeout_seconds = timeout_seconds
+        self.use_ipadapter = use_ipadapter
+        self.ipadapter_weight = ipadapter_weight
+        self.ipadapter_preset = ipadapter_preset
         self.client_id = uuid.uuid4().hex
         self._template = self._load_workflow(workflow_path)
 
@@ -110,6 +116,75 @@ class ComfyClient:
                 except Exception as e:
                     print(f"[imagery] Failed to read workflow {p}: {e}; using default")
         return copy.deepcopy(_DEFAULT_WORKFLOW)
+
+    def upload_image(self, image_bytes: bytes, name: str) -> Optional[str]:
+        """Upload reference image bytes to ComfyUI's input store.
+
+        Returns the server-side filename to reference in LoadImage nodes, or
+        None on failure (callers degrade to reference-free generation).
+        """
+        try:
+            resp = requests.post(
+                f"{self.base_url}/upload/image",
+                files={"image": (name, image_bytes, "image/webp")},
+                data={"overwrite": "true"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("name") or name
+        except Exception as e:
+            print(f"[imagery] reference upload failed ({name}): {e}")
+            return None
+
+    def _inject_references(self, g: dict, ref_filenames: list[str]) -> None:
+        """Wire reference images into the graph so the render RESEMBLES them.
+
+        Two mechanisms, in priority order:
+        1. Custom workflows: any LoadImage node titled ``oracle_ref_N`` gets
+           the Nth reference filename — full operator control.
+        2. Built-in/other workflows with ``use_ipadapter`` on: an IPAdapter
+           chain (ComfyUI_IPAdapter_plus custom nodes + an ip-adapter SDXL
+           model must be installed) is spliced between the checkpoint and the
+           KSampler. If the nodes aren't installed, ComfyUI rejects the graph
+           and generation falls back upstream — never a hard failure here.
+        """
+        # (1) Title-convention slots in custom workflows.
+        slots = sorted(
+            (nid for nid, node in g.items()
+             if node.get("class_type") == "LoadImage"
+             and str((node.get("_meta") or {}).get("title", "")).startswith("oracle_ref")),
+            key=lambda nid: str(g[nid].get("_meta", {}).get("title")),
+        )
+        if slots:
+            for nid, fname in zip(slots, ref_filenames):
+                g[nid].setdefault("inputs", {})["image"] = fname
+            return
+
+        if not self.use_ipadapter:
+            return
+
+        # (2) IPAdapter chain injection into the default-style graph.
+        sampler_id = next((nid for nid, n in g.items()
+                           if n.get("class_type") == "KSampler"), None)
+        if sampler_id is None:
+            return
+        model_src = g[sampler_id]["inputs"].get("model")
+        if not model_src:
+            return
+        g["90"] = {"class_type": "IPAdapterUnifiedLoader",
+                   "inputs": {"model": model_src, "preset": self.ipadapter_preset}}
+        prev_model = ["90", 0]
+        for i, fname in enumerate(ref_filenames[:3]):
+            load_id, ada_id = f"91{i}", f"92{i}"
+            g[load_id] = {"class_type": "LoadImage", "inputs": {"image": fname}}
+            g[ada_id] = {"class_type": "IPAdapter", "inputs": {
+                "model": prev_model, "ipadapter": ["90", 1],
+                "image": [load_id, 0], "weight": self.ipadapter_weight,
+                "start_at": 0.0, "end_at": 1.0, "weight_type": "standard",
+            }}
+            prev_model = [ada_id, 0]
+        g[sampler_id]["inputs"]["model"] = prev_model
 
     def _build_graph(
         self, positive: str, negative: str, width: int, height: int, seed: int, steps: int
@@ -148,6 +223,24 @@ class ComfyClient:
         except Exception:
             return False
 
+    def free_memory(self, *, unload_models: bool = True) -> bool:
+        """Ask ComfyUI to release GPU memory (unload the diffusion model).
+
+        Used for single-GPU time-sharing so a self-hosted LLM can reclaim VRAM
+        between image renders. Best-effort: returns False if ComfyUI is offline
+        or the request fails, and never raises.
+        """
+        try:
+            r = requests.post(
+                f"{self.base_url}/free",
+                json={"unload_models": unload_models, "free_memory": True},
+                timeout=10,
+            )
+            return r.status_code == 200
+        except Exception as e:
+            print(f"[imagery] free_memory failed: {e}")
+            return False
+
     def generate(
         self,
         positive: str,
@@ -157,14 +250,19 @@ class ComfyClient:
         height: int = 1024,
         steps: Optional[int] = None,
         seed: Optional[int] = None,
+        reference_filenames: Optional[list[str]] = None,
     ) -> bytes:
         """Queue a job and return the produced image bytes (PNG).
 
+        ``reference_filenames`` (already uploaded via ``upload_image``) make
+        the render resemble those images — see ``_inject_references``.
         Raises ``ImageServiceUnavailable`` on any connection/generation failure.
         """
         seed = random.randint(0, 2**31 - 1) if seed is None else seed
         graph = self._build_graph(positive, negative, width, height, seed,
                                    steps or self.steps)
+        if reference_filenames:
+            self._inject_references(graph, list(reference_filenames))
         try:
             resp = requests.post(
                 f"{self.base_url}/prompt",
@@ -185,19 +283,34 @@ class ComfyClient:
 
     def _poll_history(self, prompt_id: str) -> dict:
         deadline = time.time() + self.timeout_seconds
+        consecutive_failures = 0
         while time.time() < deadline:
             try:
                 r = requests.get(f"{self.base_url}/history/{prompt_id}", timeout=10)
                 r.raise_for_status()
                 hist = r.json().get(prompt_id)
+                consecutive_failures = 0
             except Exception as e:
-                raise ImageServiceUnavailable(f"History poll failed: {e}") from e
-            if hist and hist.get("outputs"):
-                for out in hist["outputs"].values():
-                    images = out.get("images") or []
-                    if images:
-                        return images[0]
-                raise ImageServiceUnavailable("Job finished with no image output")
+                # A single dropped poll shouldn't abandon a render that is still
+                # running; only give up after several failures in a row.
+                consecutive_failures += 1
+                if consecutive_failures >= 5:
+                    raise ImageServiceUnavailable(f"History poll failed: {e}") from e
+                time.sleep(2.0)
+                continue
+            if hist:
+                status = hist.get("status") or {}
+                if status.get("status_str") == "error":
+                    raise ImageServiceUnavailable(
+                        f"ComfyUI job {prompt_id} failed: "
+                        f"{json.dumps(status.get('messages', []))[:300]}"
+                    )
+                if hist.get("outputs"):
+                    for out in hist["outputs"].values():
+                        images = out.get("images") or []
+                        if images:
+                            return images[0]
+                    raise ImageServiceUnavailable("Job finished with no image output")
             time.sleep(1.0)
         raise ImageServiceUnavailable("Timed out waiting for image generation")
 
@@ -227,4 +340,7 @@ def client_from_config(cfg) -> ComfyClient:
         sampler=cfg.sampler,
         scheduler=cfg.scheduler,
         timeout_seconds=cfg.timeout_seconds,
+        use_ipadapter=getattr(cfg, "use_ipadapter", False),
+        ipadapter_weight=getattr(cfg, "ipadapter_weight", 0.65),
+        ipadapter_preset=getattr(cfg, "ipadapter_preset", "STANDARD (medium strength)"),
     )

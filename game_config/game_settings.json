@@ -33,6 +33,9 @@
     },
     "_encumbrance": {
       "variant": "off"
+    },
+    "imagery": {
+      "use_ipadapter": true
     }
   }
 }

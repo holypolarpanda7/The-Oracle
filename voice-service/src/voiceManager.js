@@ -48,42 +48,84 @@ class GuildVoice {
 
   async _ensureConnection(channelId) {
     const guild = await this.client.guilds.fetch(this.guildId);
+    // Reuse an existing connection only if it's actually Ready on this channel.
     if (this.connection && this.channelId === channelId &&
-        this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+        this.connection.state.status === VoiceConnectionStatus.Ready) {
       return;
     }
-    // Different channel or no connection -> (re)join.
-    if (this.connection) {
-      try { this.connection.destroy(); } catch { /* ignore */ }
-      this.connection = null;
+    // Otherwise, (re)join with retries until the connection reaches Ready.
+    const maxAttempts = 5;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Tear down any prior/failed connection first.
+      if (this.connection) {
+        try { this.connection.destroy(); } catch { /* ignore */ }
+        this.connection = null;
+      }
+      const connection = joinVoiceChannel({
+        guildId: this.guildId,
+        channelId,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: false,
+        selfMute: false,
+      });
+      this.connection = connection;
+      this.channelId = channelId;
+      this._wireConnection(connection, channelId);
+      connection.subscribe(this.player);
+      try {
+        // Shorter per-attempt timeout so a stalled join retries quickly instead
+        // of leaving the user staring at ~20s of apparent silence.
+        await entersState(connection, VoiceConnectionStatus.Ready, 7_000);
+        console.log(`[voice:${this.guildId}] connection Ready on attempt ${attempt}`);
+        return;
+      } catch (err) {
+        lastErr = err;
+        console.error(
+          `[voice:${this.guildId}] join attempt ${attempt}/${maxAttempts} failed to reach Ready ` +
+            `(status=${connection.state.status}): ${err.message}`
+        );
+        try { connection.destroy(); } catch { /* ignore */ }
+        this.connection = null;
+        // Brief backoff before retrying.
+        await new Promise((r) => setTimeout(r, 400));
+      }
     }
-    this.connection = joinVoiceChannel({
-      guildId: this.guildId,
-      channelId,
-      adapterCreator: guild.voiceAdapterCreator,
-      selfDeaf: false,
-      selfMute: false,
-    });
-    this.connection.on('error', (err) => {
+    throw new Error(
+      `Voice connection failed to reach Ready after ${maxAttempts} attempts: ${lastErr?.message || 'unknown'}`
+    );
+  }
+
+  _wireConnection(connection, channelId) {
+    connection.on('error', (err) => {
       console.error(`[voice:${this.guildId}] connection error: ${err.message}`);
     });
-    this.connection.on(VoiceConnectionStatus.Ready, () => {
-      console.log(`[voice:${this.guildId}] voice connection ready (channel ${channelId})`);
+    connection.on('stateChange', (oldState, newState) => {
+      console.log(
+        `[voice:${this.guildId}] connection ${oldState.status} -> ${newState.status}`
+      );
     });
-    this.connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    connection.on(VoiceConnectionStatus.Ready, () => {
+      console.log(`[voice:${this.guildId}] voice connection ready (channel ${channelId})`);
+      try {
+        const netState = connection.state?.networking?.state;
+        const enc = netState?.connectionData?.encryptionMode;
+        console.log(`[voice:${this.guildId}] encryptionMode=${enc || 'unknown'}`);
+      } catch (e) {
+        console.log(`[voice:${this.guildId}] could not read encryption state: ${e.message}`);
+      }
+    });
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
       // Try a quick reconnect; if it fails, tear down.
       try {
         await Promise.race([
-          entersState(this.connection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(this.connection, VoiceConnectionStatus.Connecting, 5_000),
+          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
         ]);
       } catch {
         this.destroy();
       }
     });
-    this.channelId = channelId;
-    this.connection.subscribe(this.player);
-    await entersState(this.connection, VoiceConnectionStatus.Ready, 20_000);
   }
 
   _startCurrent() {
@@ -94,13 +136,36 @@ class GuildVoice {
     const pipeline = createAudioPipeline(query, this.volume);
     this.currentPipeline = pipeline;
     const resource = createAudioResource(pipeline.stream, {
-      // ffmpeg emits raw 48kHz stereo PCM (s16le).
-      inputType: StreamType.Raw,
+      // ffmpeg emits Ogg-wrapped Opus; the player demuxes without re-encoding.
+      inputType: StreamType.OggOpus,
       // Inline volume adds a per-frame transform and can increase jitter/chop.
       inlineVolume: false,
     });
     this.currentResource = resource;
-    this.player.play(resource);
+    // Prebuffer: wait for an actual byte cushion (not just elapsed time) before
+    // starting playback so short upstream jitter doesn't immediately starve audio.
+    const startToken = Symbol('start');
+    this._startToken = startToken;
+    if (this._prebufferTimer) clearTimeout(this._prebufferTimer);
+    const minPrebufferBytes = 192 * 1024;
+    const maxPrebufferMs = 4_000;
+    const pollMs = 100;
+    const startedAt = Date.now();
+    const startWhenBuffered = () => {
+      // Guard against a newer track having started during the prebuffer wait.
+      if (this._startToken !== startToken || this.stopping) return;
+      const bufferedBytes = Number(pipeline.stream?.readableLength || 0);
+      const waitedMs = Date.now() - startedAt;
+      if (bufferedBytes >= minPrebufferBytes || waitedMs >= maxPrebufferMs) {
+        console.log(
+          `[voice:${this.guildId}] prebuffer ${bufferedBytes} bytes after ${waitedMs}ms`
+        );
+        this.player.play(resource);
+        return;
+      }
+      this._prebufferTimer = setTimeout(startWhenBuffered, pollMs);
+    };
+    this._prebufferTimer = setTimeout(startWhenBuffered, pollMs);
     // Resolve a human-friendly title in the background for logging/status.
     resolveTitle(query).then((title) => {
       this.currentTitle = title;
@@ -130,6 +195,11 @@ class GuildVoice {
   }
 
   _killProcess() {
+    if (this._prebufferTimer) {
+      clearTimeout(this._prebufferTimer);
+      this._prebufferTimer = null;
+    }
+    this._startToken = null;
     if (this.currentPipeline) {
       try { this.currentPipeline.kill(); } catch { /* ignore */ }
       this.currentPipeline = null;

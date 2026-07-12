@@ -19,6 +19,7 @@ from typing import Iterable, Optional, Union
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from . import geo, shops
 from .models import (
     Entity, Relation, WorldEvent, WorldMeta, RelationType,
     TimeOfDay, describe_date, DAYS_PER_MONTH,
@@ -62,6 +63,103 @@ class WorldContext:
     world_day: int
     date_str: str = ""
 
+    def _slice_coords(self, entity: Optional[Entity]) -> Optional[tuple[float, float]]:
+        """An entity's coords, or its PART_OF parent's within this slice (2 hops)."""
+        current = entity
+        for _ in range(3):
+            if current is None:
+                return None
+            c = geo.coords_from_attrs(current.attributes)
+            if c is not None:
+                return c
+            parent_id = next(
+                (r.dst_id for r in self.relations
+                 if r.rel_type == RelationType.PART_OF and r.src_id == current.id),
+                None,
+            )
+            current = next((e for e in self.entities if e.id == parent_id), None)
+        return None
+
+    def merchant_scale(self, npc: Entity) -> str:
+        """Enclosing settlement scale for a merchant NPC, walked in-slice."""
+        loc_id = next((r.dst_id for r in self.relations
+                       if r.rel_type == RelationType.LOCATED_IN and r.src_id == npc.id),
+                      None)
+        current = next((e for e in self.entities if e.id == loc_id), None)
+        for _ in range(4):
+            if current is None:
+                break
+            sc = str((current.attributes or {}).get("scale")
+                     or current.subtype or "").lower()
+            if sc in ("village", "town", "city", "settlement"):
+                return sc
+            pid = next((r.dst_id for r in self.relations
+                        if r.rel_type == RelationType.PART_OF and r.src_id == current.id),
+                       None)
+            current = next((e for e in self.entities if e.id == pid), None)
+        return "village"
+
+    def _frontier_anchor_ids(self) -> set[int]:
+        """Location + its immediate PART_OF parent (e.g. a town), for stub adjacency."""
+        ids: set[int] = set()
+        if not self.location:
+            return ids
+        ids.add(self.location.id)
+        for r in self.relations:
+            if r.rel_type == RelationType.PART_OF and r.src_id == self.location.id:
+                ids.add(r.dst_id)
+        return ids
+
+    def _frontier_stub_lines(self) -> tuple[list[str], set[int]]:
+        """Render lines for unexplored stubs adjacent to the current location.
+
+        Returns ``(lines, stub_ids)`` — ``stub_ids`` lets the caller exclude
+        these from the regular "Nearby places" listing so they aren't doubled up.
+        """
+        anchors = self._frontier_anchor_ids()
+        if not anchors:
+            return [], set()
+        lines: list[str] = []
+        stub_ids: set[int] = set()
+        for e in self.entities:
+            if e.type != "place":
+                continue
+            attrs = e.attributes or {}
+            if e.status != "unexplored" and not attrs.get("stub"):
+                continue
+            edge = next(
+                (r for r in self.relations
+                 if r.rel_type == RelationType.ADJACENT_TO
+                 and ((r.src_id == e.id and r.dst_id in anchors)
+                      or (r.dst_id == e.id and r.src_id in anchors))),
+                None,
+            )
+            if edge is None:
+                continue
+            stub_ids.add(e.id)
+            eattrs = edge.attributes or {}
+            direction = eattrs.get("direction", "?")
+            travel = eattrs.get("travel_time", "unknown travel time")
+            # Coords beat edge annotations when both ends are placed on the globe.
+            here = self._slice_coords(self.location)
+            there = geo.coords_from_attrs(attrs)
+            if here and there:
+                direction = geo.compass_between(here, there)
+                travel = geo.travel_time_str(geo.distance_mi(here, there))
+            biome = attrs.get("biome", "wilds")
+            danger = attrs.get("danger", "unknown")
+            ceiling = attrs.get("scale_ceiling", "poi")
+            motifs = attrs.get("motifs") or []
+            line = (f"- **{e.name}** ({direction}, {travel}): unexplored {biome}, "
+                    f"danger {danger}, largest settlement possible: {ceiling}.")
+            if motifs:
+                line += f" Seeds: {'; '.join(motifs)}"
+            denizens = attrs.get("denizens") or []
+            if denizens:
+                line += f" Signs of: {', '.join(denizens)}."
+            lines.append(line)
+        return lines, stub_ids
+
     def render(self) -> str:
         """Compact text block to inject into the DM prompt."""
         by_id = {e.id: e for e in self.entities}
@@ -75,13 +173,47 @@ class WorldContext:
 
         if self.location:
             desc = (self.location.attributes or {}).get("description", "")
+            climate = geo.climate_for(self._slice_coords(self.location))
             lines.append(f"\n## Current location: {self.location.name}"
-                         + (f" — {desc}" if desc else ""))
+                         + (f" — {desc}" if desc else "")
+                         + f" (climate: {climate})")
+            # Census backdrop for the settlement we're in (or inside of):
+            # implied population the DM may draw minor folk from freely.
+            settle = self.location
+            for _ in range(3):
+                if (settle.attributes or {}).get("census"):
+                    break
+                parent_id = next(
+                    (r.dst_id for r in self.relations
+                     if r.rel_type == RelationType.PART_OF and r.src_id == settle.id),
+                    None,
+                )
+                settle = next((e for e in self.entities if e.id == parent_id), None)
+                if settle is None:
+                    break
+            if settle is not None and (settle.attributes or {}).get("census"):
+                sa = settle.attributes or {}
+                bits = [f"{settle.name}: ~{sa.get('population', '?')} souls"]
+                if sa.get("wards"):
+                    bits.append(f"wards: {', '.join(sa['wards'])}")
+                if sa.get("trades"):
+                    bits.append(f"trades: {', '.join(sa['trades'])}")
+                lines.append("Census — " + "; ".join(bits)
+                             + ". (Freely name minor folk consistent with this.)")
 
-        # Group entities by type for a readable block.
+        stub_lines, _shown_stub_ids = self._frontier_stub_lines()
+
+        # Group entities by type for a readable block. Frontier stubs never belong
+        # in the regular listing — they only ever appear (conditionally) under
+        # "Beyond the map" below, so they don't show up twice or out of context.
+        def is_stub(e: Entity) -> bool:
+            return e.status == "unexplored" or bool((e.attributes or {}).get("stub"))
+
         buckets: dict[str, list[Entity]] = {}
         for e in self.entities:
             if self.location and e.id == self.location.id:
+                continue
+            if e.type == "place" and is_stub(e):
                 continue
             buckets.setdefault(e.type, []).append(e)
 
@@ -99,54 +231,67 @@ class WorldContext:
             if not group:
                 continue
             lines.append(f"\n## {pretty.get(etype, etype.title())}")
+            here = self._slice_coords(self.location) if self.location else None
             for e in group:
                 attrs = e.attributes or {}
                 desc = attrs.get("description", "")
                 status = "" if e.status == "active" else f" [{e.status}]"
                 extra = ""
                 if etype == "npc":
-                    bits = []
-                    att = attrs.get("attitude")
-                    if att:
-                        bits.append(str(att))
-                    role = attrs.get("role")
-                    if role:
-                        bits.append(str(role))
+                    bits = [str(attrs[k]) for k in ("attitude", "role", "memory")
+                            if attrs.get(k)]
                     if bits:
                         extra = f" ({', '.join(bits)})"
-                lines.append(f"- **{e.name}**{status}{extra}"
-                             + (f": {desc}" if desc else ""))
+                elif etype == "place" and here:
+                    # Known bearings: derived from coords, never narrated guesswork.
+                    there = geo.coords_from_attrs(attrs)
+                    if there:
+                        d = geo.distance_mi(here, there)
+                        if d >= 0.5:
+                            extra = f" ({geo.compass_between(here, there)}, {geo.travel_time_str(d)})"
+                lines.append(f"- **{e.name}**{status}{extra}" + (f": {desc}" if desc else ""))
+                # Merchants show this week's rolled stock — prices are canon.
+                if etype == "npc":
+                    role_l = str(attrs.get("role", "")).strip().lower()
+                    if role_l in shops.MERCHANT_ROLES:
+                        stock = shops.roll_stock(
+                            e.slug, role_l, self.merchant_scale(e), self.world_day)
+                        if stock:
+                            lines.append(f"  · stock (this week): {shops.stock_line(stock)}")
+
+        if stub_lines:
+            lines.append("\n## Beyond the map")
+            lines.extend(stub_lines)
 
         # Party companions traveling with a PC in this slice (with control mode).
-        party_lines: list[str] = []
         pc_ids = {e.id for e in self.entities if e.type == "pc"}
-        for r in self.relations:
-            if r.rel_type == RelationType.TRAVELS_WITH and r.dst_id in pc_ids:
-                mode = (r.attributes or {}).get("control", CompanionControl.DM)
-                role = (r.attributes or {}).get("role", "")
-                who = f" — {role}" if role else ""
-                controller = "player-run" if mode == CompanionControl.PLAYER else "DM-run"
-                party_lines.append(
-                    f"- {label(r.src_id)}{who} (companion of {label(r.dst_id)}, {controller})"
-                )
+        party_lines = [
+            f"- {label(r.src_id)}"
+            + (f" — {r.attributes.get('role')}" if (r.attributes or {}).get("role") else "")
+            + f" (companion of {label(r.dst_id)}, "
+            + ("player-run" if (r.attributes or {}).get("control") == CompanionControl.PLAYER else "DM-run")
+            + ")"
+            for r in self.relations
+            if r.rel_type == RelationType.TRAVELS_WITH and r.dst_id in pc_ids
+        ]
         if party_lines:
             lines.append("\n## Party companions")
             lines.extend(party_lines)
 
         # Key current relationships worth stating explicitly.
-        rel_lines: list[str] = []
-        for r in self.relations:
+        rel_lines = [
+            f"- {label(r.src_id)} {r.rel_type.replace('_', ' ')} {label(r.dst_id)}"
+            for r in self.relations
             if r.rel_type in (RelationType.ALLIED_WITH, RelationType.HOSTILE_TO,
-                              RelationType.MEMBER_OF, RelationType.OWNS):
-                rel_lines.append(f"- {label(r.src_id)} {r.rel_type.replace('_', ' ')} {label(r.dst_id)}")
+                              RelationType.MEMBER_OF, RelationType.OWNS)
+        ]
         if rel_lines:
             lines.append("\n## Relationships")
             lines.extend(rel_lines)
 
         if self.events:
             lines.append("\n## Recent history (most recent first)")
-            for ev in self.events:
-                lines.append(f"- (day {ev.world_day}) {ev.summary}")
+            lines.extend(f"- (day {ev.world_day}) {ev.summary}" for ev in self.events)
 
         return "\n".join(lines)
 
@@ -203,6 +348,45 @@ class WorldGraph:
             s.commit()
             return meta.world_day
 
+    def ratchet_day(self, target_day: int) -> int:
+        """Advance the clock to ``target_day`` if (and only if) it's ahead.
+
+        The multiplayer time rule: session bubbles run in PARALLEL world time,
+        so the clock takes the max of closing bubbles, never the sum, and
+        never moves backward. Returns the (possibly unchanged) current day.
+        """
+        with Session(self.engine) as s:
+            meta = self._ensure_meta(s)
+            if target_day > meta.world_day:
+                self._roll_day(meta, target_day - meta.world_day)
+                meta.updated_at = datetime.utcnow()
+                s.add(meta)
+                s.commit()
+            return meta.world_day
+
+    def sync_clock(self, *, days_per_real_day: float = 1.0) -> int:
+        """Apply the wall-clock floor: the world keeps breathing while nobody
+        plays. Anchored on first call; the floor never outruns a bubble that
+        already ratcheted ahead (max semantics). Returns the current day."""
+        import time as _time
+        now = _time.time()
+        with Session(self.engine) as s:
+            meta = self._ensure_meta(s)
+            if meta.real_anchor_ts is None:
+                meta.real_anchor_ts = now
+                meta.anchor_world_day = meta.world_day
+                s.add(meta)
+                s.commit()
+                return meta.world_day
+            floor = meta.anchor_world_day + int(
+                (now - meta.real_anchor_ts) / 86400.0 * max(0.0, days_per_real_day))
+            if floor > meta.world_day:
+                self._roll_day(meta, floor - meta.world_day)
+                meta.updated_at = datetime.utcnow()
+                s.add(meta)
+                s.commit()
+            return meta.world_day
+
     def advance_time(self, steps: int = 1) -> str:
         """Advance the clock by coarse segments; wrapping past night rolls a day."""
         with Session(self.engine) as s:
@@ -221,6 +405,77 @@ class WorldGraph:
             return meta.time_of_day
 
     # ----- entity CRUD -----
+    #
+    # Identity model: the SLUG is the identity, the NAME is just a label.
+    # Names may repeat freely (two "Marta Fenn"s in different towns, two
+    # players both named "Kara"); create_entity mints a fresh unique slug,
+    # while upsert_entity addresses an existing identity by its slug.
+
+    @staticmethod
+    def _unique_slug(s: Session, base: str) -> str:
+        """A slug no existing entity holds: base, then base-2, base-3, ..."""
+        base = base or "entity"
+        if not s.exec(select(Entity).where(Entity.slug == base)).first():
+            return base
+        n = 2
+        while s.exec(select(Entity).where(Entity.slug == f"{base}-{n}")).first():
+            n += 1
+        return f"{base}-{n}"
+
+    def create_entity(
+        self,
+        name: str,
+        type: str,
+        *,
+        subtype: Optional[str] = None,
+        status: str = "active",
+        attributes: Optional[dict] = None,
+        tags: Optional[list] = None,
+        discord_user_id: Optional[str] = None,
+        character_id: Optional[int] = None,
+    ) -> Entity:
+        """ALWAYS create a new entity — same names get distinct identities."""
+        with Session(self.engine) as s:
+            slug = self._unique_slug(s, slugify(name))
+            ent = Entity(
+                name=name, type=type, slug=slug, subtype=subtype, status=status,
+                attributes=attributes or {}, tags=tags or [],
+                discord_user_id=discord_user_id, character_id=character_id,
+                created_day=self._day(s),
+            )
+            s.add(ent)
+            s.commit()
+            s.refresh(ent)
+            return ent
+
+    def find_pc(self, discord_user_id: str, name: Optional[str] = None) -> Optional[Entity]:
+        """A player's PC entity by owner (+ name when they own several).
+
+        The safe way to address PCs now that names aren't unique: two players
+        can both play a 'Kara' without ever colliding.
+        """
+        with Session(self.engine) as s:
+            rows = list(s.exec(select(Entity).where(
+                Entity.type == "pc",
+                Entity.discord_user_id == discord_user_id,
+            )).all())
+            if name:
+                low = name.strip().lower()
+                return next((e for e in rows if e.name.lower() == low), None)
+            return rows[0] if rows else None
+
+    def find_entities_by_name(self, name: str) -> list[Entity]:
+        """Every entity wearing this name (or exact slug) — may be several."""
+        with Session(self.engine) as s:
+            out: dict[int, Entity] = {}
+            by_slug = s.exec(select(Entity).where(Entity.slug == name)).first()
+            if by_slug is not None:
+                out[by_slug.id] = by_slug
+            low = (name or "").strip().lower()
+            for e in s.exec(select(Entity)).all():
+                if e.name.lower() == low:
+                    out[e.id] = e
+            return list(out.values())
 
     def upsert_entity(
         self,
@@ -405,10 +660,16 @@ class WorldGraph:
                     attributes={"trust": 0}, valid_from=day,
                 )
             attrs = dict(rel.attributes or {})
-            new_trust = max(TRUST_MIN, min(TRUST_MAX, int(attrs.get("trust", 0)) + int(delta)))
+            # Entropy: trust fades toward indifference over world time; the
+            # decayed value becomes the new base the moment they interact again.
+            from . import entropy
+            base = entropy.decayed_trust(
+                int(attrs.get("trust", 0)), attrs.get("last_day"), day)
+            new_trust = max(TRUST_MIN, min(TRUST_MAX, base + int(delta)))
             attitude = attitude_for_trust(new_trust)
             attrs["trust"] = new_trust
             attrs["attitude"] = attitude
+            attrs["last_day"] = day
             if reason:
                 attrs["last_reason"] = reason
             rel.attributes = attrs
@@ -546,6 +807,156 @@ class WorldGraph:
             s.refresh(ev)
             return ev
 
+    # ----- size management (keep the DB bounded as the world grows) -----
+
+    def _coords_in_db(self, s: Session, entity: Entity) -> Optional[tuple[float, float]]:
+        """An entity's coords, inherited via located_in then part_of (4 hops)."""
+        current: Optional[Entity] = entity
+        # Non-places first hop through where they are.
+        if current is not None and current.type != "place":
+            current = self._current_location(s, current.id)
+        for _ in range(4):
+            if current is None:
+                return None
+            c = geo.coords_from_attrs(current.attributes)
+            if c is not None:
+                return c
+            rel = s.exec(
+                select(Relation).where(
+                    Relation.src_id == current.id,
+                    Relation.rel_type == RelationType.PART_OF,
+                    Relation.valid_to == None,  # noqa: E711
+                )
+            ).first()
+            current = s.get(Entity, rel.dst_id) if rel else None
+        return None
+
+    # Scales fine-grained enough to be archival candidates; big geography and
+    # the social fabric (factions, quests, deities, lore) always stay.
+    _ARCHIVABLE_PLACE_SCALES = {"poi", "building", "room", "district", "dungeon"}
+
+    def enforce_world_caps(
+        self,
+        *,
+        max_entities: int = 3000,
+        max_events: int = 4000,
+        keep_event_days: int = 120,
+        pc_radius_mi: float = 60.0,
+        batch: int = 200,
+    ) -> dict:
+        """Bound long-term growth without losing canon.
+
+        - Entities: when actives exceed ``max_entities``, fine-detail entities
+          (small places, NPCs, items) that are far from every PC and untouched
+          by recent events are flipped to status ``"archived"`` — dropped from
+          context retrieval but revived automatically if a player names them.
+        - Events: when the log exceeds ``max_events``, events older than
+          ``keep_event_days`` are compacted into one chronicle entry per
+          location; the originals are deleted (their essence survives in the
+          chronicle summary).
+        Returns counts of what was done. Cheap when under the caps.
+        """
+        out = {"archived": 0, "events_compacted": 0}
+        with Session(self.engine) as s:
+            day = self._day(s)
+
+            # --- entity archival -------------------------------------------
+            active = list(s.exec(
+                select(Entity).where(Entity.status != "archived")
+            ).all())
+            excess = len(active) - max_entities
+            if excess > 0:
+                # Entities touched by recent events are off-limits.
+                recent_ids: set[int] = set()
+                for ev in s.exec(
+                    select(WorldEvent).where(WorldEvent.world_day >= day - keep_event_days)
+                ).all():
+                    recent_ids |= set(ev.involved or [])
+                    if ev.location_id:
+                        recent_ids.add(ev.location_id)
+
+                pc_coords = [
+                    c for pc in active if pc.type == "pc"
+                    if (c := self._coords_in_db(s, pc)) is not None
+                ]
+
+                def far_from_pcs(c: Optional[tuple[float, float]]) -> bool:
+                    if c is None or not pc_coords:
+                        return False  # unknown position: be conservative, keep it
+                    return all(geo.distance_mi(c, pc) > pc_radius_mi for pc in pc_coords)
+
+                candidates = [
+                    e for e in active
+                    if e.id not in recent_ids
+                    and (
+                        (e.status == "active"
+                         and ((e.type == "place"
+                               and str((e.attributes or {}).get("scale") or e.subtype or "")
+                               .lower() in self._ARCHIVABLE_PLACE_SCALES)
+                              or e.type in ("npc", "item")))
+                        # Far unexplored stubs are regenerable scaffolding: the
+                        # cartographer re-rolls frontier wherever the party goes.
+                        or (e.type == "place" and e.status == "unexplored")
+                    )
+                ]
+                # Oldest-touched first.
+                candidates.sort(key=lambda e: e.updated_at)
+                for e in candidates:
+                    if out["archived"] >= min(batch, excess):
+                        break
+                    if not far_from_pcs(self._coords_in_db(s, e)):
+                        continue
+                    e.status = "archived"
+                    e.updated_at = datetime.utcnow()
+                    s.add(e)
+                    out["archived"] += 1
+                s.commit()
+
+            # --- event compaction -------------------------------------------
+            total_events = len(list(s.exec(select(WorldEvent.id)).all()))
+            if total_events > max_events:
+                cutoff = day - keep_event_days
+                old = list(s.exec(
+                    select(WorldEvent).where(WorldEvent.world_day < cutoff)
+                ).all())
+                by_loc: dict[Optional[int], list[WorldEvent]] = {}
+                for ev in old:
+                    by_loc.setdefault(ev.location_id, []).append(ev)
+                for loc_id, group in by_loc.items():
+                    if len(group) < 2:
+                        continue
+                    group.sort(key=lambda ev: (ev.world_day, ev.id))
+                    summaries = "; ".join(ev.summary for ev in group)
+                    if len(summaries) > 400:
+                        summaries = summaries[:397] + "..."
+                    involved: list[int] = []
+                    for ev in group:
+                        for eid in (ev.involved or []):
+                            if eid not in involved:
+                                involved.append(eid)
+                    chronicle = WorldEvent(
+                        world_day=group[-1].world_day,
+                        summary=f"Chronicle of earlier days: {summaries}",
+                        location_id=loc_id,
+                        involved=involved[:20],
+                        changes={"compacted": len(group)},
+                    )
+                    s.add(chronicle)
+                    for ev in group:
+                        s.delete(ev)
+                    out["events_compacted"] += len(group)
+                s.commit()
+        return out
+
+    def location_climate(self, entity_ref: EntityRef) -> Optional[str]:
+        """Climate band at an entity's position (via its location/parents), or None."""
+        with Session(self.engine) as s:
+            e = self._resolve_entity(s, entity_ref)
+            if e is None:
+                return None
+            c = self._coords_in_db(s, e)
+            return geo.climate_for(c) if c is not None else None
+
     # ----- retrieval -----
 
     def get_world_context(
@@ -572,7 +983,18 @@ class WorldGraph:
                     anchors.add(location.id)
 
             # Anchor on entities whose name is mentioned in the action text.
-            anchors |= self._match_named_entities(s, action_text)
+            named = self._match_named_entities(s, action_text)
+            anchors |= named
+
+            # Naming an archived entity revives it: the data was dormant, not
+            # gone, and the player just proved it still matters.
+            for eid in named:
+                ent = s.get(Entity, eid)
+                if ent and ent.status == "archived":
+                    ent.status = "active"
+                    ent.updated_at = datetime.utcnow()
+                    s.add(ent)
+            s.commit()
 
             if not anchors:
                 return WorldContext(location, set(), [], [], [], day, date_str)
@@ -583,7 +1005,38 @@ class WorldGraph:
             visited |= self._quests_touching(s, visited)
 
             entities = [s.get(Entity, eid) for eid in visited]
-            entities = [e for e in entities if e is not None]
+            # Archived detail stays out of the DM's context (anchors excepted —
+            # they were just revived above).
+            entities = [e for e in entities
+                        if e is not None and (e.status != "archived" or e.id in anchors)]
+            kept_ids = {e.id for e in entities}
+            rels = [r for r in rels if r.src_id in kept_ids and r.dst_id in kept_ids]
+
+            # Entropy at read time: NPC attitudes shown to the DM reflect
+            # time-decayed trust, and long-absent PCs are half-remembered.
+            # Annotates the DETACHED instances only — nothing is persisted
+            # until the next trust adjustment writes the decayed base.
+            from . import entropy
+            by_id_tmp = {e.id: e for e in entities}
+            pc_ids_tmp = {e.id for e in entities if e.type == "pc"}
+            for r in rels:
+                if r.rel_type != RelationType.KNOWS or r.dst_id not in pc_ids_tmp:
+                    continue
+                npc_ent = by_id_tmp.get(r.src_id)
+                if npc_ent is None or npc_ent.type != "npc":
+                    continue
+                rattrs = r.attributes or {}
+                if "trust" not in rattrs:
+                    continue
+                eff = entropy.decayed_trust(
+                    int(rattrs.get("trust", 0)), rattrs.get("last_day"), day)
+                state = entropy.memory_state(rattrs.get("last_day"), day)
+                annotated = dict(npc_ent.attributes or {})
+                annotated[NpcAttr.ATTITUDE] = attitude_for_trust(eff)
+                if state != "fresh":
+                    annotated["memory"] = ("barely recalls you" if state == "dim"
+                                           else "memory of you has faded")
+                npc_ent.attributes = annotated
 
             events = self._recent_events(s, visited, max_events)
 

@@ -19,6 +19,7 @@ from .encounter import (
     estimate_encounter,
     build_encounter,
 )
+from .motifs import MOTIF_TABLES, roll_motifs
 
 __all__ = [
     "DM_SECTIONS",
@@ -31,4 +32,6 @@ __all__ = [
     "party_budgets",
     "estimate_encounter",
     "build_encounter",
+    "MOTIF_TABLES",
+    "roll_motifs",
 ]

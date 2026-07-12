@@ -287,6 +287,14 @@ class WorldMeta(SQLModel, table=True):
     day_of_month: int = Field(default=1)         # 1..30
     time_of_day: str = Field(default=TimeOfDay.MORNING, sa_column=Column(String))
 
+    # Ratchet-clock anchoring: the wall-clock floor is computed from this
+    # (real timestamp, world_day) pair times WORLD_DAYS_PER_REAL_DAY. The
+    # clock only ever moves forward (see WorldGraph.ratchet_day/sync_clock).
+    real_anchor_ts: Optional[float] = Field(default=None)
+    anchor_world_day: int = Field(default=0)
+    # Last world-day the entropy demographic pass ran (see entropy.py).
+    last_entropy_day: int = Field(default=0)
+
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 

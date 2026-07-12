@@ -10,7 +10,6 @@ dependencies = [
     "alembic>=1.17.2",
     "discord-py>=2.6.4",
     "fastapi>=0.124.0",
-    "noise>=1.2.2",
     "numpy>=2.4.4",
     "pillow>=12.2.0",
     "pydantic>=2.12.5",
