@@ -1,6 +1,7 @@
 # CC Menu Playlist - Character Creation Background Music
-# One entry per line. Supported formats (the YouTube plugin is enabled):
-#   ytsearch:your search terms                 -> plays the top YouTube result (robust)
-#   https://www.youtube.com/watch?v=VIDEO_ID    -> a specific YouTube video
-# Lines starting with # are ignored.
-https://www.youtube.com/watch?v=2KplZ-D8zAY
+# One entry per line. Lines starting with # are ignored. Supported formats:
+#   localfile:<absolute path>  -> streams the file straight through ffmpeg
+#                                 (no yt-dlp/YouTube involved; instant start)
+#   ytsearch:terms / YouTube URL -> resolved by yt-dlp in the voice sidecar
+# The sidecar loops the playlist, so a single entry plays forever.
+localfile:D:/Projects/The Oracle/music/kmacleod-ancient-rite-162029.mp3

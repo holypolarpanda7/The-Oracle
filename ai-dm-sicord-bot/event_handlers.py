@@ -32,26 +32,36 @@ class CharacterCreationView(View):
         self.bot = bot
         self.timeout = 3600  # 1 hour timeout
     
-    @button(label="Import from D&D Beyond", style=discord.ButtonStyle.success, emoji="✅", custom_id="cc_import")
+    @button(label="Import from D&D Beyond", style=discord.ButtonStyle.success, emoji="📥", custom_id="cc_import")
     async def import_button(self, interaction: discord.Interaction, button: Button):
         """Handle import from D&D Beyond."""
         await interaction.response.defer()
         await interaction.followup.send("Waiting for your Avrae import... Type `!import [D&D Beyond link]`")
-    
-    @button(label="Create with AI Guidance", style=discord.ButtonStyle.secondary, emoji="❌", custom_id="cc_guided")
+
+    @button(label="Create Character", style=discord.ButtonStyle.secondary, emoji="⚒️", custom_id="cc_guided")
     async def guided_button(self, interaction: discord.Interaction, button: Button):
-        """Handle AI-guided character creation."""
+        """Deterministic character creation: menus + real dice, no LLM rules."""
+        import cc_wizard
+        await interaction.response.send_modal(cc_wizard.NameModal(
+            self.cc_voice_id,
+            self.cc_data["user_id"],
+            interaction.user.display_name,
+            self.bot.backend_url,
+        ))
+
+    @button(label="Music", style=discord.ButtonStyle.secondary, emoji="🎵", custom_id="cc_music")
+    async def music_button(self, interaction: discord.Interaction, button: Button):
+        """Toggle background music in the linked voice channel."""
         await interaction.response.defer()
-        await interaction.followup.send("🎨 The Oracle is preparing your adventure...")
-        # Start guided character creation
-        await character_creation.start_guided_character_creation(
-            interaction.channel, 
-            self.cc_voice_id, 
-            self.cc_data["user_id"], 
-            interaction.user.display_name, 
-            self.bot.backend_url
-        )
-    
+        changed = await music_control.toggle_music(self.cc_voice_id, self.bot)
+        now_on = music_control.music_preferences.get(
+            self.cc_voice_id, {}).get("enabled", False)
+        if changed:
+            note = "🔊 Music is back on." if now_on else "🔇 Music is off."
+        else:
+            note = "🔊 Music is already on." if now_on else "🔇 Music is already off."
+        await interaction.followup.send(note, ephemeral=True)
+
     @button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌", custom_id="cc_cancel")
     async def cancel_button(self, interaction: discord.Interaction, button: Button):
         """Cancel character creation session."""
@@ -113,12 +123,10 @@ async def on_reaction_add_handler(reaction: discord.Reaction, user: discord.User
     if str(reaction.emoji) == "✅":
         await reaction.message.channel.send("Waiting for your Avrae import... Type `!import [D&D Beyond link]`")
 
-    # ❌ reaction = create from scratch (AI-guided)
+    # ❌ reaction (legacy messages): creation is button-driven now.
     elif str(reaction.emoji) == "❌":
-        await reaction.message.channel.send("🎨 The Oracle is preparing your adventure...")
-        # Start guided character creation
-        backend_url = bot.backend_url
-        await character_creation.start_guided_character_creation(reaction.message.channel, cc_voice_id, cc_data["user_id"], user.display_name, backend_url)
+        await reaction.message.channel.send(
+            "⚒️ Press the **Create Character** button to begin.")
 
     # 🔇 reaction = turn music OFF
     elif str(reaction.emoji) == "🔇":
@@ -256,26 +264,14 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
                     "⚠️ I couldn't start background music right now. "
                     "Check that the bot can connect/speak in voice, then react 🔊 to retry."
                 )
-        instructions_msg = await text_channel.send(
-            f"🎭 **Welcome, {member.display_name}!** 🎭\n\n"
-            f"🎵 Background music is now playing in the voice channel.\n"
-            f"• React with 🔇 to turn music OFF\n"
-            f"• React with 🔊 to turn music back ON\n\n"
-            f"Need to stop right now? Use the **Cancel** button below.\n\n"
-            f"Choose your character creation path:\n\n"
-            f"**✅ Import from D&D Beyond**\n"
-            f"If you already have a character sheet on D&D Beyond, use Avrae to import it.\n"
-            f"Type `!import [link]` to begin.\n\n"
-            f"**❌ Create with AI Guidance**\n"
-            f"Let the Oracle guide you through character creation step by step.\n\n"
-            f"Use the buttons below to choose:",
+        await text_channel.send(
+            f"🎭 **Welcome, {member.display_name}!** Choose your path:\n"
+            f"📥 **Import from D&D Beyond** — you already have a sheet\n"
+            f"⚒️ **Create Character** — forge one here, step by step\n"
+            f"🎵 toggles music · ❌ cancels the session",
             view=CharacterCreationView(after.channel.id, character_creation.ephemeral_cc_channels[after.channel.id], bot)
         )
-        
-        # Add reactions for music control (kept for backward compatibility)
-        await instructions_msg.add_reaction("🔇")
-        await instructions_msg.add_reaction("🔊")
-        
+
         # Update the session data to track this text channel
         character_creation.ephemeral_cc_channels[after.channel.id]["text_channel_id"] = text_channel.id
         
@@ -611,24 +607,24 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
             )
             return
 
-        # Check if we're in guided character creation mode
+        # Deterministic wizard sessions: components do the work; typed text is
+        # either a D&D Beyond link (import) or gets a gentle nudge.
+        import cc_wizard
+        if await cc_wizard.handle_wizard_message(message.channel, message, bot.backend_url):
+            return
+
+        # Check if we're in guided character creation mode (legacy LLM flow —
+        # only reachable for sessions started before the wizard existed).
         if message.channel.id in character_creation.guided_cc_state:
             await character_creation.process_guided_cc_input(message.channel, message, bot.backend_url)
             return
 
-        # Owner chatting in CC channel (without guided mode active): start guided
-        # flow automatically so "talking to the Oracle" works without requiring
-        # the ❌ reaction as a hard prerequisite.
+        # Owner chatting in the CC channel before starting: point at the buttons
+        # (creation is deterministic now — the Oracle narrates, it doesn't adjudicate).
         if is_owner and not message.content.strip().startswith("!"):
             await message.channel.send(
-                "🎭 I can guide your character creation right here. Let's begin.")
-            await character_creation.start_guided_character_creation(
-                message.channel,
-                session_voice_id,
-                owner_id,
-                message.author.display_name,
-                bot.backend_url,
-            )
+                "⚒️ Press **Create Character** above to begin — every choice is a "
+                "click, and all dice are real. Or paste a D&D Beyond link to import.")
             return
 
         # Check if this is Avrae posting a character import

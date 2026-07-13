@@ -369,6 +369,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[Startup] Owned monster seed skipped: {e}")
 
+    # Seed playable races + class skill lists for deterministic character
+    # creation — offline & idempotent (also self-heals rules_class columns).
+    try:
+        from rules.ingest import seed_races, seed_classes_and_subclasses
+        seeded_r = seed_races(engine=engine)
+        seed_classes_and_subclasses(engine=engine)
+        print(f"[Startup] Seeded CC data: {seeded_r}")
+    except Exception as e:
+        print(f"[Startup] CC data seed skipped: {e}")
+
     yield
     # Shutdown: Add cleanup logic here if needed
     print("[Shutdown] FastAPI shutting down")
@@ -439,6 +449,8 @@ class RegisterCharacterRequest(BaseModel):
     approve: Optional[bool] = False
     home_region: Optional[str] = None
     source: Optional[str] = "manual"  # one of: 'avrae', 'guided', 'manual', 'ddb'
+    # Skill proficiencies chosen at creation (deterministic CC wizard).
+    skills: Optional[List[str]] = None
 
 
 class CheckCharacterRequest(BaseModel):
@@ -1998,7 +2010,18 @@ _CC_RULES_BLOCK = (
     "monk, rogue, ranger, or paladin). If the player already chose a feat and "
     "later picks a class that breaks its prerequisite, point out the conflict "
     "and make them change one of the two.\n"
-    "7. When restating the sheet, list FINAL scores (base + racial) and never "
+    "7. NEVER invent feats, class features, racial traits, or mechanics — no "
+    "homebrew. Only officially published feats exist. If the player wants a "
+    "unique concept, deliver it through LEGAL choices: ability placement, "
+    "skill proficiencies, background, and roleplay (e.g. a charismatic "
+    "barbarian = high CHA + Intimidation or Persuasion proficiency), and "
+    "suggest real feats by their official names only.\n"
+    "8. Racial ability bonuses apply EXACTLY ONCE, to exactly the abilities "
+    "the race grants (custom lineage: +2 to the ONE ability chosen when the "
+    "race was picked — it never moves, splits, or repeats). When recapping, "
+    "show each score once as its final value; do not re-add bonuses that are "
+    "already included.\n"
+    "9. When restating the sheet, list FINAL scores (base + racial) and never "
     "contradict numbers already established this conversation.\n"
 )
 
@@ -3247,31 +3270,31 @@ _CLASS_STARTING_KITS: Dict[str, List[tuple]] = {
 # SRD background packages: equipment + the signature feature (stored on the
 # character's tags so the DM prompt can honor it).
 _BACKGROUND_KITS: Dict[str, Dict[str, Any]] = {
-    "acolyte": {"items": [("Holy Symbol", 1), ("Prayer Book", 1), ("Incense", 5), ("Vestments", 1)],
+    "acolyte": {"skills": ['Insight', 'Religion'], "items": [("Holy Symbol", 1), ("Prayer Book", 1), ("Incense", 5), ("Vestments", 1)],
                 "feature": "Shelter of the Faithful"},
-    "charlatan": {"items": [("Fine Clothes", 1), ("Disguise Kit", 1), ("Weighted Dice", 1)],
+    "charlatan": {"skills": ['Deception', 'Sleight of Hand'], "items": [("Fine Clothes", 1), ("Disguise Kit", 1), ("Weighted Dice", 1)],
                   "feature": "False Identity"},
-    "criminal": {"items": [("Crowbar", 1), ("Dark Common Clothes", 1)],
+    "criminal": {"skills": ['Deception', 'Stealth'], "items": [("Crowbar", 1), ("Dark Common Clothes", 1)],
                  "feature": "Criminal Contact"},
-    "entertainer": {"items": [("Musical Instrument", 1), ("Costume", 1)],
+    "entertainer": {"skills": ['Acrobatics', 'Performance'], "items": [("Musical Instrument", 1), ("Costume", 1)],
                     "feature": "By Popular Demand"},
-    "folk hero": {"items": [("Artisan's Tools", 1), ("Shovel", 1), ("Iron Pot", 1), ("Common Clothes", 1)],
+    "folk hero": {"skills": ['Animal Handling', 'Survival'], "items": [("Artisan's Tools", 1), ("Shovel", 1), ("Iron Pot", 1), ("Common Clothes", 1)],
                   "feature": "Rustic Hospitality"},
-    "guild artisan": {"items": [("Artisan's Tools", 1), ("Letter of Introduction", 1), ("Traveler's Clothes", 1)],
+    "guild artisan": {"skills": ['Insight', 'Persuasion'], "items": [("Artisan's Tools", 1), ("Letter of Introduction", 1), ("Traveler's Clothes", 1)],
                       "feature": "Guild Membership"},
-    "hermit": {"items": [("Scroll Case", 1), ("Winter Blanket", 1), ("Herbalism Kit", 1)],
+    "hermit": {"skills": ['Medicine', 'Religion'], "items": [("Scroll Case", 1), ("Winter Blanket", 1), ("Herbalism Kit", 1)],
                "feature": "Discovery"},
-    "noble": {"items": [("Fine Clothes", 1), ("Signet Ring", 1), ("Scroll of Pedigree", 1)],
+    "noble": {"skills": ['History', 'Persuasion'], "items": [("Fine Clothes", 1), ("Signet Ring", 1), ("Scroll of Pedigree", 1)],
               "feature": "Position of Privilege"},
-    "outlander": {"items": [("Staff", 1), ("Hunting Trap", 1), ("Traveler's Clothes", 1)],
+    "outlander": {"skills": ['Athletics', 'Survival'], "items": [("Staff", 1), ("Hunting Trap", 1), ("Traveler's Clothes", 1)],
                   "feature": "Wanderer"},
-    "sage": {"items": [("Bottle of Ink", 1), ("Quill", 1), ("Small Knife", 1), ("Letter from a Dead Colleague", 1)],
+    "sage": {"skills": ['Arcana', 'History'], "items": [("Bottle of Ink", 1), ("Quill", 1), ("Small Knife", 1), ("Letter from a Dead Colleague", 1)],
              "feature": "Researcher"},
-    "sailor": {"items": [("Belaying Pin", 1), ("Silk Rope (50 ft)", 1), ("Lucky Charm", 1)],
+    "sailor": {"skills": ['Athletics', 'Perception'], "items": [("Belaying Pin", 1), ("Silk Rope (50 ft)", 1), ("Lucky Charm", 1)],
                "feature": "Ship's Passage"},
-    "soldier": {"items": [("Insignia of Rank", 1), ("Trophy from a Fallen Enemy", 1), ("Set of Bone Dice", 1)],
+    "soldier": {"skills": ['Athletics', 'Intimidation'], "items": [("Insignia of Rank", 1), ("Trophy from a Fallen Enemy", 1), ("Set of Bone Dice", 1)],
                 "feature": "Military Rank"},
-    "urchin": {"items": [("Small Knife", 1), ("Map of Home City", 1), ("Pet Mouse", 1)],
+    "urchin": {"skills": ['Sleight of Hand', 'Stealth'], "items": [("Small Knife", 1), ("Map of Home City", 1), ("Pet Mouse", 1)],
                "feature": "City Secrets"},
 }
 
@@ -3416,6 +3439,15 @@ async def register_character(req: RegisterCharacterRequest):
             water=surv.starting_water,
         )
 
+        # Skill proficiencies from the CC wizard, tagged onto the sheet.
+        if req.skills:
+            tags = list(char.tags or [])
+            for sk in req.skills:
+                t = f"skill: {sk}"
+                if t not in tags:
+                    tags.append(t)
+            char.tags = tags
+
         # Starting gear: every fresh character walks out equipped for the road.
         kit_granted = _grant_starting_kit(char)
         bg_feature = _apply_background(char, req.background)
@@ -3427,6 +3459,56 @@ async def register_character(req: RegisterCharacterRequest):
     return {"status": "ok", "message": "Character registered", "character_id": char.id,
             "starting_kit": kit_granted or None,
             "background_feature": bg_feature}
+
+
+# ----- Deterministic character creation (the CC wizard's data source) -----
+
+@app.get("/cc/options")
+def cc_options():
+    """Everything the deterministic CC wizard needs: races, classes (with
+    level-1 skill choices), backgrounds, and the legal ability-score methods.
+    All values come from the rules DB / server constants — never an LLM."""
+    from rules.models import Race as _Race, DndClass as _Cls
+    with Session(rules_lib.engine) as s:
+        races = s.exec(select(_Race)).all()
+        classes = s.exec(select(_Cls)).all()
+    return {
+        "races": [{
+            "slug": r.index_slug, "name": r.name,
+            "ability_bonuses": r.ability_bonuses or {},
+            "choose_bonus": r.choose_bonus or [],
+            "speed": r.speed, "size": r.size, "darkvision": bool(r.darkvision),
+            "languages": r.languages, "traits": r.traits or [],
+        } for r in races],
+        "classes": [{
+            "slug": c.index_slug, "name": c.name, "hit_die": c.hit_die,
+            "primary_ability": c.primary_ability,
+            "spellcasting_ability": c.spellcasting_ability,
+            "saving_throws": c.saving_throws or [],
+            "skill_choices_n": c.skill_choices_n or 2,
+            "skill_options": c.skill_options or [],
+        } for c in classes],
+        "backgrounds": [{
+            "slug": bg, "name": bg.title(),
+            "skills": kit.get("skills") or [],
+            "feature": kit.get("feature"),
+        } for bg, kit in _BACKGROUND_KITS.items()],
+        "ability_methods": {
+            "standard_array": [15, 14, 13, 12, 10, 8],
+            "point_buy": {"budget": 27, "min": 8, "max": 15,
+                          "costs": {"8": 0, "9": 1, "10": 2, "11": 3,
+                                     "12": 4, "13": 5, "14": 7, "15": 9}},
+            "roll": {"expr": "4d6kh3", "count": 6},
+        },
+    }
+
+
+@app.post("/cc/roll_abilities")
+def cc_roll_abilities():
+    """Six real 4d6-drop-lowest rolls from the internal dice engine."""
+    rolls = [dice_roll("4d6kh3") for _ in range(6)]
+    return {"rolls": [{"total": r.total, "kept": r.rolls, "dropped": r.dropped,
+                       "detail": r.detail} for r in rolls]}
 
 
 class DDBImportRequest(BaseModel):

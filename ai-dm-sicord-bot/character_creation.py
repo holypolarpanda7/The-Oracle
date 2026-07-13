@@ -23,6 +23,64 @@ cleanup_tasks: Dict[int, asyncio.Task] = {}
 guided_cc_state: Dict[int, Dict] = {}
 
 
+class CCControlsView(discord.ui.View):
+    """Session controls that follow the whole CC conversation.
+
+    Attached to every Oracle message during guided creation so the player can
+    toggle music, switch to a D&D Beyond import, or cancel at any point
+    without scrolling back to the welcome message.
+    """
+
+    def __init__(self, voice_channel_id: int, user_id: str):
+        super().__init__(timeout=3600)
+        self.voice_channel_id = voice_channel_id
+        self.user_id = user_id
+
+    async def _owner_only(self, interaction: discord.Interaction) -> bool:
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message(
+                "This isn't your character creation!", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Music", style=discord.ButtonStyle.secondary, emoji="🎵")
+    async def music_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._owner_only(interaction):
+            return
+        await interaction.response.defer()
+        import music_control
+        changed = await music_control.toggle_music(self.voice_channel_id, interaction.client)
+        now_on = music_control.music_preferences.get(
+            self.voice_channel_id, {}).get("enabled", False)
+        if changed:
+            note = "🔊 Music is back on." if now_on else "🔇 Music is off."
+        else:
+            note = "🔊 Music is already on." if now_on else "🔇 Music is already off."
+        await interaction.followup.send(note, ephemeral=True)
+
+    @discord.ui.button(label="Use D&D Beyond sheet", style=discord.ButtonStyle.secondary, emoji="📥")
+    async def ddb_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._owner_only(interaction):
+            return
+        await interaction.response.send_message(
+            "📥 Paste your **public** D&D Beyond character link right here and "
+            "I'll import it — you can do this at any point in the conversation.",
+            ephemeral=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._owner_only(interaction):
+            return
+        await interaction.response.defer()
+        try:
+            await interaction.followup.send("❌ Character creation session cancelled.")
+        except Exception:
+            pass  # Channel may already be gone
+        await cleanup_ephemeral_channel(
+            interaction.guild, self.voice_channel_id, self.user_id,
+            reason="Cancelled by user")
+
+
 async def cleanup_ephemeral_channel(guild: discord.Guild, channel_id: int, user_id: str, reason: str = "Inactivity (1 hour)"):
     """Delete an ephemeral character creation channel and notify the player."""
     from music_player import stop_music_in_channel
@@ -341,7 +399,9 @@ async def start_guided_character_creation(text_channel: discord.TextChannel, voi
     )
     
     guidance = await get_dm_guidance(session_id, username, opening_prompt, backend_url)
-    await text_channel.send(f"🎭 The Oracle begins: {guidance}")
+    await text_channel.send(
+        f"🎭 The Oracle begins: {guidance}",
+        view=CCControlsView(voice_channel_id, user_id))
 
     guided_cc_state[text_channel.id]["waiting_for_input"] = True
 
@@ -474,9 +534,12 @@ async def process_guided_cc_input(channel: discord.TextChannel, message: discord
         await _handle_ddb_import(channel, message, state, user_text, backend_url)
         return
 
-    # Get next guidance from the DM
+    # Get next guidance from the DM. Session controls ride every message so
+    # music/cancel/DDB-import are always one click away.
     guidance = await get_dm_guidance(state["session_id"], state["username"], user_text, backend_url)
-    await channel.send(f"🎭 The Oracle: {guidance}")
+    await channel.send(
+        f"🎭 The Oracle: {guidance}",
+        view=CCControlsView(state["voice_channel_id"], state["user_id"]))
 
     # Update character data based on conversation (simple extraction)
     lower_text = user_text.lower()

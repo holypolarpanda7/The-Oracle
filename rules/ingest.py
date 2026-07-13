@@ -20,7 +20,8 @@ import requests
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from .models import Monster, Spell, DndClass, Subclass, Item, SrdEntry, SRD_SOURCE, OWNED_SOURCE
+from .models import (Monster, Spell, DndClass, Subclass, Item, Race, SrdEntry,
+                     SRD_SOURCE, OWNED_SOURCE)
 
 RAW_BASE = "https://raw.githubusercontent.com/5e-bits/5e-database/main/src/2014/en/"
 MONSTERS_URL = RAW_BASE + "5e-SRD-Monsters.json"
@@ -414,6 +415,129 @@ _CLASSES: list[dict] = [
      "saving_throws": ["INT", "WIS"]},
 ]
 
+# Level-1 skill proficiencies per class (SRD): choose N from the options.
+_CLASS_SKILLS: dict[str, tuple[int, list[str]]] = {
+    "barbarian": (2, ["Animal Handling", "Athletics", "Intimidation", "Nature",
+                      "Perception", "Survival"]),
+    "bard":      (3, ["Acrobatics", "Animal Handling", "Arcana", "Athletics", "Deception",
+                      "History", "Insight", "Intimidation", "Investigation", "Medicine",
+                      "Nature", "Perception", "Performance", "Persuasion", "Religion",
+                      "Sleight of Hand", "Stealth", "Survival"]),
+    "cleric":    (2, ["History", "Insight", "Medicine", "Persuasion", "Religion"]),
+    "druid":     (2, ["Arcana", "Animal Handling", "Insight", "Medicine", "Nature",
+                      "Perception", "Religion", "Survival"]),
+    "fighter":   (2, ["Acrobatics", "Animal Handling", "Athletics", "History", "Insight",
+                      "Intimidation", "Perception", "Survival"]),
+    "monk":      (2, ["Acrobatics", "Athletics", "History", "Insight", "Religion",
+                      "Stealth"]),
+    "paladin":   (2, ["Athletics", "Insight", "Intimidation", "Medicine", "Persuasion",
+                      "Religion"]),
+    "ranger":    (3, ["Animal Handling", "Athletics", "Insight", "Investigation", "Nature",
+                      "Perception", "Stealth", "Survival"]),
+    "rogue":     (4, ["Acrobatics", "Athletics", "Deception", "Insight", "Intimidation",
+                      "Investigation", "Perception", "Performance", "Persuasion",
+                      "Sleight of Hand", "Stealth"]),
+    "sorcerer":  (2, ["Arcana", "Deception", "Insight", "Intimidation", "Persuasion",
+                      "Religion"]),
+    "warlock":   (2, ["Arcana", "Deception", "History", "Intimidation", "Investigation",
+                      "Nature", "Religion"]),
+    "wizard":    (2, ["Arcana", "History", "Insight", "Investigation", "Medicine",
+                      "Religion"]),
+}
+
+# Playable races (SRD 5.1 core versions), offline — mechanically exact bonuses
+# so character creation is deterministic. Trait text is our own concise wording.
+_RACES: list[dict] = [
+    {"slug": "human", "name": "Human", "bonuses": {"str": 1, "dex": 1, "con": 1,
+                                                    "int": 1, "wis": 1, "cha": 1},
+     "speed": 30, "size": "Medium", "darkvision": False,
+     "languages": "Common + one extra of your choice",
+     "traits": ["Versatile: +1 to every ability score"]},
+    {"slug": "dwarf", "name": "Dwarf (Hill)", "bonuses": {"con": 2, "wis": 1},
+     "speed": 25, "size": "Medium", "darkvision": True,
+     "languages": "Common, Dwarvish",
+     "traits": ["Dwarven Resilience: advantage on saves vs poison; resistance to poison damage",
+                "Dwarven Toughness: +1 HP per level",
+                "Stonecunning: expertise on History checks about stonework"]},
+    {"slug": "elf", "name": "Elf (High)", "bonuses": {"dex": 2, "int": 1},
+     "speed": 30, "size": "Medium", "darkvision": True,
+     "languages": "Common, Elvish + one extra",
+     "traits": ["Fey Ancestry: advantage on saves vs charm; magic can't put you to sleep",
+                "Keen Senses: proficiency in Perception",
+                "Trance: 4-hour meditation replaces sleep",
+                "Cantrip: one wizard cantrip (INT)"]},
+    {"slug": "halfling", "name": "Halfling (Lightfoot)", "bonuses": {"dex": 2, "cha": 1},
+     "speed": 25, "size": "Small", "darkvision": False,
+     "languages": "Common, Halfling",
+     "traits": ["Lucky: reroll natural 1s on d20 (must use new roll)",
+                "Brave: advantage on saves vs frightened",
+                "Naturally Stealthy: can hide behind bigger creatures"]},
+    {"slug": "dragonborn", "name": "Dragonborn", "bonuses": {"str": 2, "cha": 1},
+     "speed": 30, "size": "Medium", "darkvision": False,
+     "languages": "Common, Draconic",
+     "traits": ["Breath Weapon: exhale elemental damage (by ancestry; DC 8+CON+prof)",
+                "Damage Resistance: your ancestry's damage type"]},
+    {"slug": "gnome", "name": "Gnome (Rock)", "bonuses": {"int": 2, "con": 1},
+     "speed": 25, "size": "Small", "darkvision": True,
+     "languages": "Common, Gnomish",
+     "traits": ["Gnome Cunning: advantage on INT/WIS/CHA saves vs magic",
+                "Artificer's Lore: expertise on History about magic/tech items",
+                "Tinker: build tiny clockwork devices"]},
+    {"slug": "half-elf", "name": "Half-Elf",
+     "bonuses": {"cha": 2}, "choose_bonus": [1, 1],
+     "speed": 30, "size": "Medium", "darkvision": True,
+     "languages": "Common, Elvish + one extra",
+     "traits": ["Fey Ancestry: advantage on saves vs charm; magic can't put you to sleep",
+                "Skill Versatility: proficiency in two skills of your choice (pick with class skills)",
+                "+1 to two different abilities of your choice (besides CHA)"]},
+    {"slug": "half-orc", "name": "Half-Orc", "bonuses": {"str": 2, "con": 1},
+     "speed": 30, "size": "Medium", "darkvision": True,
+     "languages": "Common, Orc",
+     "traits": ["Menacing: proficiency in Intimidation",
+                "Relentless Endurance: drop to 1 HP instead of 0 (once per long rest)",
+                "Savage Attacks: extra weapon die on melee crits"]},
+    {"slug": "tiefling", "name": "Tiefling", "bonuses": {"cha": 2, "int": 1},
+     "speed": 30, "size": "Medium", "darkvision": True,
+     "languages": "Common, Infernal",
+     "traits": ["Hellish Resistance: resistance to fire damage",
+                "Infernal Legacy: thaumaturgy cantrip (CHA); more spells at higher levels"]},
+    {"slug": "custom-lineage", "name": "Custom Lineage",
+     "bonuses": {}, "choose_bonus": [2, 1],
+     "speed": 30, "size": "Medium", "darkvision": False,
+     "languages": "Common + one extra of your choice",
+     "traits": ["Describe your own people: +2 to one ability and +1 to another (your choice)",
+                "One extra skill proficiency of your choice (picked with class skills)",
+                "Darkvision OR one additional language (your choice)"],
+     "source": "House rules (Custom Lineage variant)"},
+]
+
+
+def seed_races(
+    engine: Optional[Engine] = None,
+    database_url: Optional[str] = None,
+) -> dict:
+    """Seed playable races. Offline and idempotent (upsert by slug)."""
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    result = {"races_new": 0, "races_total": len(_RACES)}
+    with Session(engine) as s:
+        for r in _RACES:
+            mapped = Race(
+                index_slug=r["slug"], name=r["name"],
+                ability_bonuses=r.get("bonuses") or {},
+                choose_bonus=r.get("choose_bonus"),
+                speed=r.get("speed", 30), size=r.get("size", "Medium"),
+                darkvision=bool(r.get("darkvision")),
+                languages=r.get("languages"), traits=r.get("traits"),
+                description=r.get("description"),
+                source=r.get("source", SRD_SOURCE),
+            )
+            if _upsert(s, Race, r["slug"], mapped):
+                result["races_new"] += 1
+        s.commit()
+    return result
+
+
 # SRD subclass per class (one each), summarized in our own words.
 _SUBCLASSES: list[dict] = [
     {"slug": "berserker", "name": "Path of the Berserker", "class_name": "Barbarian",
@@ -569,6 +693,17 @@ def seed_classes_and_subclasses(
     engine = engine or get_engine(database_url)
     SQLModel.metadata.create_all(engine)
 
+    # Self-heal: create_all never ALTERs, so add the skill columns to
+    # pre-existing rules_class tables before upserting rows that use them.
+    with engine.connect() as conn:
+        existing_cols = {row[1] for row in
+                         conn.exec_driver_sql('PRAGMA table_info("rules_class")')}
+        for col, ddl in [("skill_choices_n", "INTEGER DEFAULT 2"),
+                         ("skill_options", "JSON")]:
+            if existing_cols and col not in existing_cols:
+                conn.exec_driver_sql(f'ALTER TABLE "rules_class" ADD COLUMN {col} {ddl}')
+        conn.commit()
+
     result = {"classes_new": 0, "classes_total": len(_CLASSES),
               "subclasses_new": 0, "subclasses_total": len(_SUBCLASSES)}
 
@@ -576,12 +711,14 @@ def seed_classes_and_subclasses(
 
     with Session(engine) as s:
         for c in _CLASSES:
+            skills_n, skills = _CLASS_SKILLS.get(c["slug"], (2, []))
             mapped = DndClass(
                 index_slug=c["slug"], name=c["name"], hit_die=c.get("hit_die"),
                 primary_ability=c.get("primary_ability"),
                 subclass_label=c.get("subclass_label"),
                 subclass_level=c.get("subclass_level", 3),
                 spellcasting_ability=c.get("spellcasting_ability"),
+                skill_choices_n=skills_n, skill_options=skills,
                 saving_throws=c.get("saving_throws"),
                 description=c.get("description"),
                 source=c.get("source", SRD_SOURCE),

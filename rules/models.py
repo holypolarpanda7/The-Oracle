@@ -121,6 +121,38 @@ class Spell(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
+class Race(SQLModel, table=True):
+    """A playable race — the mechanical essentials for deterministic character
+    creation. Seeded offline from the CC-BY 5e SRD (plus the Custom Lineage
+    variant the world allows)."""
+    __tablename__ = "rules_race"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    index_slug: str = Field(sa_column=Column(String, nullable=False, unique=True, index=True))
+    name: str = Field(sa_column=Column(String, nullable=False, index=True))
+
+    # {"str": 2, "cha": 1} — fixed bonuses. Custom lineage stores {} and sets
+    # choose_bonus below instead.
+    ability_bonuses: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # For choose-your-own bonus races: [2, 1] means "+2 to one ability and +1
+    # to another of the player's choice". Empty/None for fixed races.
+    choose_bonus: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
+    speed: int = Field(default=30, sa_column=Column(Integer))
+    size: str = Field(default="Medium", sa_column=Column(String))
+    darkvision: bool = Field(default=False)
+    languages: Optional[str] = Field(default=None, sa_column=Column(String))
+    # One-line trait summaries: ["Fey Ancestry: advantage vs charm...", ...]
+    traits: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    description: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
+
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class DndClass(SQLModel, table=True):
     """A character class (Fighter, Wizard, ...) — the mechanical essentials only."""
     __tablename__ = "rules_class"
@@ -137,6 +169,10 @@ class DndClass(SQLModel, table=True):
     # The level at which this class chooses its subclass (SRD: 1, 2, or 3).
     subclass_level: int = Field(default=3, sa_column=Column(Integer))
     spellcasting_ability: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    # Level-1 skill proficiencies: choose N from the options list.
+    skill_choices_n: int = Field(default=2, sa_column=Column(Integer))
+    skill_options: Optional[Any] = Field(default=None, sa_column=Column(JSON))   # ["Athletics", ...]
 
     saving_throws: Optional[Any] = Field(default=None, sa_column=Column(JSON))   # ["STR","CON"]
     description: Optional[str] = Field(default=None, sa_column=Column(String))
