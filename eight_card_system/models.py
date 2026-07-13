@@ -16,7 +16,14 @@ Temporal model ("permutates over time"):
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from typing import Any, Optional
 
 from sqlalchemy import Column, JSON, String, Integer
@@ -229,8 +236,8 @@ class Entity(SQLModel, table=True):
     character_id: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
 
     created_day: int = Field(default=0)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class Relation(SQLModel, table=True):
@@ -248,7 +255,7 @@ class Relation(SQLModel, table=True):
     valid_from: int = Field(default=0, index=True)
     valid_to: Optional[int] = Field(default=None, index=True)
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class WorldEvent(SQLModel, table=True):
@@ -266,7 +273,7 @@ class WorldEvent(SQLModel, table=True):
     changes: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
     session_id: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class WorldMeta(SQLModel, table=True):
@@ -295,7 +302,7 @@ class WorldMeta(SQLModel, table=True):
     # Last world-day the entropy demographic pass ran (see entropy.py).
     last_entropy_day: int = Field(default=0)
 
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 def describe_date(meta: "WorldMeta") -> str:

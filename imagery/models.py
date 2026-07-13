@@ -16,7 +16,14 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from pathlib import Path
 from typing import Any, Optional
 
@@ -101,8 +108,8 @@ class EntityImage(SQLModel, table=True):
     # Usage bookkeeping for LRU eviction + "random draw" fairness.
     use_count: int = Field(default=0, index=True)
     world_day: int = Field(default=0)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_used_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    last_used_at: datetime = Field(default_factory=_utcnow)
 
 
 def get_engine(database_url: Optional[str] = None) -> Engine:

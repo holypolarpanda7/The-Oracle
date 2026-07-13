@@ -21,7 +21,14 @@ from __future__ import annotations
 import base64
 import random
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from typing import Callable, Optional
 
 from sqlmodel import Session, select
@@ -136,7 +143,7 @@ class ImageStore:
         """Pick a random stored image from a bucket and bump its usage stats."""
         chosen = random.choice(bucket)
         chosen.use_count += 1
-        chosen.last_used_at = datetime.utcnow()
+        chosen.last_used_at = _utcnow()
         session.add(chosen)
         session.commit()
         session.refresh(chosen)

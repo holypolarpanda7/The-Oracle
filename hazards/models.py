@@ -5,7 +5,14 @@ so each active one gets an ``Affliction`` row tied to the character and world-da
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from typing import Optional
 
 from sqlmodel import Field, SQLModel
@@ -25,4 +32,4 @@ class Affliction(SQLModel, table=True):
     ends_day: Optional[int] = None         # world-day it lifts (None = indefinite)
     active: bool = Field(default=True, index=True)
     notes: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)

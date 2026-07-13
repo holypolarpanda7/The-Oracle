@@ -288,7 +288,12 @@ async def get_dm_guidance(session_id: str, username: str, message: str, backend_
     
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(backend_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            # Local LLMs can legitimately take >30s on long CC prompts. If the
+            # bot gives up early the backend still finishes and records the
+            # reply in session history — the player just never sees it, and the
+            # next turn confusingly "remembers" things they weren't shown. So
+            # wait as long as the backend's own LLM timeout allows.
+            async with session.post(backend_url, json=payload, timeout=aiohttp.ClientTimeout(total=120)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data.get("reply", "The Oracle is silent...")
@@ -331,6 +336,7 @@ async def start_guided_character_creation(text_channel: discord.TextChannel, voi
         "You are the Oracle DM guiding a player through character creation for D&D. "
         "The player is Level 1 (fixed). Help them navigate D&D Beyond to create a character sheet, "
         "then guide them through choosing race, class, and allocating stats. Be encouraging and ask one question at a time. "
+        "Respond in English ONLY — never switch to any other language mid-reply. "
         "First, greet them and ask their character's name."
     )
     
@@ -511,7 +517,8 @@ async def process_guided_cc_input(channel: discord.TextChannel, message: discord
             r"|wis(?:dom)?|cha(?:risma)?)\s*[:=]?\s*(\d{1,2})\b", lower_text):
         ability = _ABILS[m.group(1)[:3]]
         score = int(m.group(2))
-        if 3 <= score <= 18:
+        # 3-20: final scores include racial bonuses (e.g. rolled 18 + 2 racial).
+        if 3 <= score <= 20:
             state["char_data"].setdefault("stats", {})[ability] = score
 
     # Keep the live sheet panel in step with the conversation.

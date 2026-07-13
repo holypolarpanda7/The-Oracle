@@ -4,7 +4,14 @@ Shares ``oracle.db`` with the rest of the systems.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from typing import Optional
 
 from sqlmodel import Field, SQLModel
@@ -23,7 +30,7 @@ class DowntimeLog(SQLModel, table=True):
     end_day: Optional[int] = None    # world-day it finished
     cp_delta: int = 0                # net copper change (earned minus lifestyle/costs)
     result_summary: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class CraftingProject(SQLModel, table=True):
@@ -42,5 +49,5 @@ class CraftingProject(SQLModel, table=True):
     gp_per_day: float = 5.0         # effective progress per crafting day
     days_spent: int = 0
     complete: bool = Field(default=False, index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)

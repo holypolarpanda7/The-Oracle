@@ -11,6 +11,16 @@ echo.
 if %EXITCODE%==0 (
   echo ============================================================
   echo  Done. New exe: %~dp0dist\The Oracle.exe
+  rem The desktop carries a COPY of the exe (not a shortcut), so refresh it
+  rem whenever one is present - otherwise rebuilds never reach the desktop.
+  if exist "%USERPROFILE%\OneDrive\Desktop\The Oracle.exe" (
+    copy /y "%~dp0dist\The Oracle.exe" "%USERPROFILE%\OneDrive\Desktop\The Oracle.exe" >nul
+    echo  Desktop copy updated: %USERPROFILE%\OneDrive\Desktop\The Oracle.exe
+  )
+  if exist "%USERPROFILE%\Desktop\The Oracle.exe" (
+    copy /y "%~dp0dist\The Oracle.exe" "%USERPROFILE%\Desktop\The Oracle.exe" >nul
+    echo  Desktop copy updated: %USERPROFILE%\Desktop\The Oracle.exe
+  )
   echo ============================================================
 ) else (
   echo ============================================================

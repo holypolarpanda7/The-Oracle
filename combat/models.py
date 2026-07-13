@@ -11,7 +11,14 @@ Shares the backend's ``oracle.db`` by default (see ``combat.tracker.CombatTracke
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from typing import Any, Optional
 
 from sqlalchemy import Column, JSON, String, Integer, Boolean
@@ -63,8 +70,8 @@ class Encounter(SQLModel, table=True):
     turn_index: int = Field(default=0, sa_column=Column(Integer))
     active: bool = Field(default=True, sa_column=Column(Boolean, index=True))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class Combatant(SQLModel, table=True):
@@ -97,5 +104,5 @@ class Combatant(SQLModel, table=True):
     defeated: bool = Field(default=False, sa_column=Column(Boolean))
     notes: Optional[str] = Field(default=None, sa_column=Column(String))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)

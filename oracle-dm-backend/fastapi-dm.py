@@ -18,7 +18,14 @@ from dotenv import load_dotenv
 from sqlmodel import SQLModel, Field, create_engine, Session, select
 from sqlalchemy import Column, JSON, String, Text, func
 from typing import Any
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 import sys
 
 # Make the project root importable so the backend can use the shared packages.
@@ -499,7 +506,7 @@ class SessionMemory(SQLModel, table=True):
     meta_json: str = Field(default="{}", sa_column=Column(Text, nullable=False))
     turn_count: int = Field(default=0, index=True)
     compaction_count: int = Field(default=0)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 SESSIONS: Dict[str, List[Turn]] = {}
@@ -531,7 +538,7 @@ def _default_session_state() -> Dict[str, Any]:
         "meta": {},
         "turn_count": 0,
         "compaction_count": 0,
-        "updated_at": datetime.utcnow(),
+        "updated_at": _utcnow(),
     }
 
 
@@ -551,7 +558,7 @@ def _session_state_to_cache(row: SessionMemory) -> Dict[str, Any]:
     state["meta"] = _parse_json_field(row.meta_json, {})
     state["turn_count"] = row.turn_count or 0
     state["compaction_count"] = row.compaction_count or 0
-    state["updated_at"] = row.updated_at or datetime.utcnow()
+    state["updated_at"] = row.updated_at or _utcnow()
     return state
 
 
@@ -574,7 +581,7 @@ def _load_session_state(session_id: str) -> Dict[str, Any]:
 
 
 def _save_session_state(session_id: str, state: Dict[str, Any]) -> None:
-    state["updated_at"] = datetime.utcnow()
+    state["updated_at"] = _utcnow()
     with Session(engine) as db:
         row = db.get(SessionMemory, session_id)
         if row is None:
@@ -762,8 +769,8 @@ class Character(SQLModel, table=True):
     home_region: Optional[str] = Field(default=None, sa_column=Column(String))
     notes: Optional[str] = Field(default=None, sa_column=Column(String))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 # ----- Avrae hook parsing -----
@@ -1345,6 +1352,39 @@ def _retry_after_seconds(resp: "requests.Response") -> Optional[float]:
     return None
 
 
+# CJK/fullwidth ranges. Local Qwen models occasionally "drift" mid-reply into
+# Chinese (usually restating what they already said in English). One prompt
+# line isn't a reliable fix, so replies are also sanitized after the fact.
+_CJK_RE = re.compile(
+    "[ᄀ-ᇿ　-ヿ㐀-䶿一-鿿"
+    "가-힯豈-﫿＀-￯]"
+)
+
+
+def _strip_cjk_drift(text: str) -> str:
+    """Cut a reply short at the point where it drifts into CJK text.
+
+    Truncates at the last sentence boundary before the first CJK character so
+    the player sees a clean English reply. If the drift starts too early to
+    leave a usable prefix, the text is returned unchanged (better odd than
+    empty) — in practice Qwen drifts late, after the English content.
+    """
+    m = _CJK_RE.search(text)
+    if not m:
+        return text
+    prefix = text[: m.start()]
+    # Prefer a clean sentence end; fall back to the last newline.
+    cut = max(prefix.rfind(". "), prefix.rfind("! "), prefix.rfind("? "),
+              prefix.rfind(".\n"), prefix.rfind("!\n"), prefix.rfind("?\n"),
+              prefix.rfind("\n"))
+    salvaged = prefix[: cut + 1].rstrip() if cut >= 40 else prefix.strip()
+    if len(salvaged) < 40:
+        print("[LLM] CJK drift detected too early to trim cleanly; leaving reply as-is")
+        return text
+    print(f"[LLM] trimmed CJK drift: kept {len(salvaged)}/{len(text)} chars")
+    return salvaged
+
+
 def call_openrouter_chat(
     messages: List[Dict[str, str]],
     *,
@@ -1431,7 +1471,8 @@ def call_openrouter_chat(
                 if native_resp is not None:
                     if native_resp.status_code == 200:
                         try:
-                            return native_resp.json()["message"]["content"]
+                            return _strip_cjk_drift(
+                                native_resp.json()["message"]["content"])
                         except Exception as e:
                             last_error = f"native parse error: {e}"
                             print(
@@ -1466,7 +1507,7 @@ def call_openrouter_chat(
             if resp.status_code == 200:
                 data = resp.json()
                 try:
-                    return data["choices"][0]["message"]["content"]
+                    return _strip_cjk_drift(data["choices"][0]["message"]["content"])
                 except Exception as e:
                     print(f"[LLM parse error] {e} | data={data}")
                     raise RuntimeError("Failed to parse LLM response")
@@ -1699,12 +1740,28 @@ def _run_world_extraction(
 
 # ----- Single-GPU VRAM time-sharing helpers -----
 
+# True when ComfyUI may be holding a model in VRAM (an image was rendered since
+# the last free). Starts True so the first chat after a backend restart clears
+# whatever a previous run may have left loaded.
+_DIFFUSION_VRAM_DIRTY = True
+
+
+def _mark_diffusion_dirty() -> None:
+    """Record that diffusion models were (probably) loaded into VRAM."""
+    global _DIFFUSION_VRAM_DIRTY
+    _DIFFUSION_VRAM_DIRTY = True
+
+
 def _free_diffusion_vram() -> None:
     """Unload the ComfyUI diffusion model so the LLM can reclaim VRAM.
 
-    No-op unless VRAM_TIMESHARE is enabled. Best-effort and never raises.
+    No-op unless VRAM_TIMESHARE is enabled, and skipped entirely unless an
+    image render actually loaded diffusion models since the last free — the
+    diffusion side only occupies VRAM when a job runs, so text-only sessions
+    never need this. Best-effort and never raises.
     """
-    if not VRAM_TIMESHARE:
+    global _DIFFUSION_VRAM_DIRTY
+    if not VRAM_TIMESHARE or not _DIFFUSION_VRAM_DIRTY:
         return
     try:
         from imagery.comfy_client import client_from_config
@@ -1715,6 +1772,7 @@ def _free_diffusion_vram() -> None:
         client = client_from_config(cfg)
         if client.free_memory():
             print("[vram] freed diffusion VRAM for LLM")
+            _DIFFUSION_VRAM_DIRTY = False
     except Exception as e:
         print(f"[vram] free diffusion failed: {e}")
 
@@ -1908,6 +1966,43 @@ _WORLD_BUILDING_BLOCK = (
 )
 
 
+# Hard rules injected for cc_guide:* sessions. Kept terse and imperative — the
+# local model follows short laws better than prose (see memory: terse beats
+# encoded). These are 5e-RAW level-1 creation constraints.
+_CC_RULES_BLOCK = (
+    "CHARACTER CREATION LAWS (binding — refuse anything outside them, kindly, "
+    "and offer legal alternatives):\n"
+    "1. Level 1 only. No starting feats, multiclassing, or magic items unless a "
+    "rule below grants them.\n"
+    "2. Ability scores come from ONE of: standard array (15,14,13,12,10,8); "
+    "point buy; or rolling 4d6-drop-lowest per score.\n"
+    "3. NEVER invent dice results. To roll ability scores, output EXACTLY six "
+    "hooks, each on its own line, then STOP and wait:\n"
+    "[[ROLL: 4d6kh3 | Ability roll 1]]\n"
+    "[[ROLL: 4d6kh3 | Ability roll 2]]\n"
+    "[[ROLL: 4d6kh3 | Ability roll 3]]\n"
+    "[[ROLL: 4d6kh3 | Ability roll 4]]\n"
+    "[[ROLL: 4d6kh3 | Ability roll 5]]\n"
+    "[[ROLL: 4d6kh3 | Ability roll 6]]\n"
+    "The system replaces each hook with a real roll. NEXT turn, ask the player "
+    "to assign the six results to STR/DEX/CON/INT/WIS/CHA.\n"
+    "4. Score bounds: base scores 3-18 BEFORE racial bonuses; no final score "
+    "above 20. If a total would exceed 20, it is illegal — fix it.\n"
+    "5. Racial bonuses: the chosen race's standard bonuses. A CUSTOM race/"
+    "lineage is allowed but gets exactly: +2 to ONE ability, one skill "
+    "proficiency, darkvision OR one extra language, and ONE 1st-level feat the "
+    "character QUALIFIES for. Nothing more.\n"
+    "6. Feat prerequisites are binding. War Caster and Elemental Adept require "
+    "the ability to cast at least one spell: at level 1 only bard, cleric, "
+    "druid, sorcerer, warlock, and wizard qualify (NOT barbarian, fighter, "
+    "monk, rogue, ranger, or paladin). If the player already chose a feat and "
+    "later picks a class that breaks its prerequisite, point out the conflict "
+    "and make them change one of the two.\n"
+    "7. When restating the sheet, list FINAL scores (base + racial) and never "
+    "contradict numbers already established this conversation.\n"
+)
+
+
 def generate_dm_reply(
     session_id: str,
     username: str,
@@ -2071,6 +2166,12 @@ def generate_dm_reply(
         )
 
     messages.append({"role": "system", "content": system_prompt})
+
+    # Character-creation sessions get the CREATION LAWS: legal stat generation
+    # (real dice via ROLL hooks, never invented numbers), score caps, and feat
+    # prerequisites. Without this the model improvises its own rules.
+    if session_id.startswith("cc_guide:"):
+        messages.append({"role": "system", "content": _CC_RULES_BLOCK})
 
     summary_block = _session_summary_block(session_id)
     if summary_block:
@@ -2909,6 +3010,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     # GPU for a render, so text-only turns keep the model warm.
     if image_reqs or reset_reqs:
         _unload_local_llm()
+        _mark_diffusion_dirty()
     try:
         image_payloads = process_image_hooks(
             image_reqs, reset_reqs,
@@ -3262,11 +3364,15 @@ async def register_character(req: RegisterCharacterRequest):
             detail="Characters must be created at level 1. Use /level_up to advance.",
         )
 
-    # Validate stats if present
+    # Validate stats if present. Characters are always created at level 1:
+    # legal generation (array / point buy / 4d6kh3) plus racial bonuses can
+    # never produce a score above 20 (or below 3).
     if req.stats:
         for k, v in req.stats.items():
-            if not isinstance(v, int) or v < 1 or v > 30:
-                raise HTTPException(status_code=400, detail=f"Invalid stat value for {k}: {v} (must be 1-30).")
+            if not isinstance(v, int) or v < 3 or v > 20:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid stat value for {k}: {v} (level-1 scores must be 3-20).")
 
     with Session(engine) as session:
         # Check uniqueness per player
@@ -3416,7 +3522,7 @@ def import_ddb_endpoint(req: DDBImportRequest):
             existing.hit_die = hit_die
             existing.max_hp = max(1, int(hit_die[1:]) + con_mod)
             existing.current_hp = existing.max_hp
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = _utcnow()
             session.add(existing)
             session.commit()
             session.refresh(existing)
@@ -3566,7 +3672,7 @@ def _progression(session: Session, char: Character, target_subclass: Optional[st
         char.level = new_level
         if target_subclass and chosen_row:
             char.subclass = chosen_row.name
-        char.updated_at = datetime.utcnow()
+        char.updated_at = _utcnow()
         session.add(char)
         session.commit()
         session.refresh(char)
@@ -4741,7 +4847,7 @@ async def crafting_advance(req: CraftingAdvanceRequest):
         project.progress_gp = step["progress_gp"]
         project.days_spent += req.days
         project.complete = step["complete"]
-        project.updated_at = datetime.utcnow()
+        project.updated_at = _utcnow()
 
         end_day = None
         if req.advance_world and req.days > 0:
@@ -4954,7 +5060,7 @@ async def bastion_turn(req: BastionTurnRequest):
             ))
         b.turns_taken += 1
         b.last_turn_day = end_day
-        b.updated_at = datetime.utcnow()
+        b.updated_at = _utcnow()
         session.add(b)
         session.commit()
         return {
@@ -5585,7 +5691,7 @@ async def reputation_adjust(req: RenownRequest):
             )
         result = adjust_renown(rep.renown, req.delta)
         rep.renown = result["renown"]
-        rep.updated_at = datetime.utcnow()
+        rep.updated_at = _utcnow()
         session.add(rep)
         session.commit()
         session.refresh(rep)
@@ -5810,6 +5916,7 @@ def imagery_ensure(req: ImageEnsureRequest):
     cfg = get_config().imagery
     if not cfg.enabled:
         raise HTTPException(status_code=503, detail="Imagery is disabled in config.")
+    _mark_diffusion_dirty()
     result = image_store.ensure_image(
         req.kind, req.subject, look=req.look, context=req.context,
         ref_slug=req.ref_slug, force_new=req.force_new,
@@ -5827,6 +5934,7 @@ def imagery_temp(req: ImageTempRequest):
     cfg = get_config().imagery
     if not cfg.enabled or not cfg.allow_temp:
         raise HTTPException(status_code=503, detail="Temp imagery is disabled.")
+    _mark_diffusion_dirty()
     result = image_store.generate_temp(
         req.kind, req.subject, look=req.look, context=req.context,
     )
@@ -5945,6 +6053,7 @@ async def character_portrait_generate(character_id: int, req: PortraitGenerateRe
         name = char.name
         base_look = _portrait_base_look(char)
     look = " ".join(p for p in (base_look, req.look or req.description) if p).strip()
+    _mark_diffusion_dirty()
     result = image_store.generate_portrait(name, description=req.description, look=look)
     if result is None:
         raise HTTPException(status_code=503, detail="Imagery is disabled.")

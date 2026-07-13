@@ -30,6 +30,11 @@ class ImageServiceUnavailable(RuntimeError):
     """Raised when the diffusion backend can't be reached or fails a job."""
 
 
+# Module-level (clients are constructed per call): whether the current
+# free_memory offline streak has already been logged.
+_FREE_MEMORY_ERR_LOGGED = False
+
+
 # Built-in SDXL txt2img graph in ComfyUI *API* format. Node ids are strings.
 _DEFAULT_WORKFLOW: dict[str, Any] = {
     "4": {
@@ -228,17 +233,24 @@ class ComfyClient:
 
         Used for single-GPU time-sharing so a self-hosted LLM can reclaim VRAM
         between image renders. Best-effort: returns False if ComfyUI is offline
-        or the request fails, and never raises.
+        or the request fails, and never raises. The failure is logged once per
+        offline streak (this runs before every chat turn, so per-call logging
+        floods the console when ComfyUI simply isn't running).
         """
+        global _FREE_MEMORY_ERR_LOGGED
         try:
             r = requests.post(
                 f"{self.base_url}/free",
                 json={"unload_models": unload_models, "free_memory": True},
                 timeout=10,
             )
+            _FREE_MEMORY_ERR_LOGGED = False
             return r.status_code == 200
         except Exception as e:
-            print(f"[imagery] free_memory failed: {e}")
+            if not _FREE_MEMORY_ERR_LOGGED:
+                print(f"[imagery] free_memory failed (ComfyUI offline? "
+                      f"further failures muted until it recovers): {e}")
+                _FREE_MEMORY_ERR_LOGGED = True
             return False
 
     def generate(

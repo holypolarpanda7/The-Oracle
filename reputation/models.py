@@ -1,7 +1,14 @@
 """Persistence for faction reputation (renown per character per faction)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from typing import Optional
 
 from sqlmodel import Field, SQLModel
@@ -16,4 +23,4 @@ class Reputation(SQLModel, table=True):
     faction_name: str = ""
     renown: int = Field(default=0)
     notes: Optional[str] = None
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)

@@ -13,7 +13,14 @@ Source: 5e-bits/5e-database (SRD 5.1, CC-BY-4.0). Attribution required if shared
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from typing import Any, Optional
 
 from sqlalchemy import Column, JSON, String, Float, Integer, Boolean
@@ -73,8 +80,8 @@ class Monster(SQLModel, table=True):
     source: str = Field(default=SRD_SOURCE, sa_column=Column(String))
     raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class Spell(SQLModel, table=True):
@@ -110,8 +117,8 @@ class Spell(SQLModel, table=True):
     source: str = Field(default=SRD_SOURCE, sa_column=Column(String))
     raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class DndClass(SQLModel, table=True):
@@ -137,8 +144,8 @@ class DndClass(SQLModel, table=True):
     source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
     raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class Subclass(SQLModel, table=True):
@@ -165,8 +172,8 @@ class Subclass(SQLModel, table=True):
     source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
     raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class Item(SQLModel, table=True):
@@ -215,8 +222,8 @@ class Item(SQLModel, table=True):
     source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
     raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class SrdEntry(SQLModel, table=True):
@@ -243,5 +250,5 @@ class SrdEntry(SQLModel, table=True):
 
     source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)

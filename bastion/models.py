@@ -5,7 +5,14 @@ lives in ``bastion.catalog`` (self-authored mechanical summaries).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from typing import Optional
 
 from sqlmodel import Field, SQLModel
@@ -24,8 +31,8 @@ class Bastion(SQLModel, table=True):
     turns_taken: int = 0          # number of resolved bastion turns
     last_turn_day: Optional[int] = None  # world-day of the last resolved turn
     notes: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class FacilityInstance(SQLModel, table=True):
@@ -42,7 +49,7 @@ class FacilityInstance(SQLModel, table=True):
     hirelings: int = 0
     current_order: Optional[str] = None  # order issued for the upcoming turn
     enabled: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class BastionEvent(SQLModel, table=True):
@@ -58,4 +65,4 @@ class BastionEvent(SQLModel, table=True):
     facility_slug: Optional[str] = None
     description: str = ""
     cp_delta: int = 0
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)

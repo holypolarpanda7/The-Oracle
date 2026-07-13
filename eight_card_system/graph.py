@@ -12,7 +12,14 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
@@ -343,7 +350,7 @@ class WorldGraph:
             meta = self._ensure_meta(s)
             self._roll_day(meta, n)
             meta.time_of_day = TimeOfDay.DAWN
-            meta.updated_at = datetime.utcnow()
+            meta.updated_at = _utcnow()
             s.add(meta)
             s.commit()
             return meta.world_day
@@ -359,7 +366,7 @@ class WorldGraph:
             meta = self._ensure_meta(s)
             if target_day > meta.world_day:
                 self._roll_day(meta, target_day - meta.world_day)
-                meta.updated_at = datetime.utcnow()
+                meta.updated_at = _utcnow()
                 s.add(meta)
                 s.commit()
             return meta.world_day
@@ -382,7 +389,7 @@ class WorldGraph:
                 (now - meta.real_anchor_ts) / 86400.0 * max(0.0, days_per_real_day))
             if floor > meta.world_day:
                 self._roll_day(meta, floor - meta.world_day)
-                meta.updated_at = datetime.utcnow()
+                meta.updated_at = _utcnow()
                 s.add(meta)
                 s.commit()
             return meta.world_day
@@ -399,7 +406,7 @@ class WorldGraph:
                     idx = 0
                     self._roll_day(meta, 1)
             meta.time_of_day = order[idx]
-            meta.updated_at = datetime.utcnow()
+            meta.updated_at = _utcnow()
             s.add(meta)
             s.commit()
             return meta.time_of_day
@@ -509,7 +516,7 @@ class WorldGraph:
                     existing.discord_user_id = discord_user_id
                 if character_id is not None:
                     existing.character_id = character_id
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = _utcnow()
                 s.add(existing)
                 s.commit()
                 s.refresh(existing)
@@ -534,7 +541,7 @@ class WorldGraph:
             ent = self._resolve_entity(s, ref)
             if ent:
                 ent.status = status
-                ent.updated_at = datetime.utcnow()
+                ent.updated_at = _utcnow()
                 s.add(ent)
                 s.commit()
 
@@ -676,7 +683,7 @@ class WorldGraph:
             s.add(rel)
             # Mirror the derived attitude onto the NPC for quick single-PC reads.
             npc_e.attributes = {**(npc_e.attributes or {}), NpcAttr.ATTITUDE: attitude}
-            npc_e.updated_at = datetime.utcnow()
+            npc_e.updated_at = _utcnow()
             s.add(npc_e)
             s.commit()
             return {"trust": new_trust, "attitude": attitude, "delta": int(delta)}
@@ -907,7 +914,7 @@ class WorldGraph:
                     if not far_from_pcs(self._coords_in_db(s, e)):
                         continue
                     e.status = "archived"
-                    e.updated_at = datetime.utcnow()
+                    e.updated_at = _utcnow()
                     s.add(e)
                     out["archived"] += 1
                 s.commit()
@@ -992,7 +999,7 @@ class WorldGraph:
                 ent = s.get(Entity, eid)
                 if ent and ent.status == "archived":
                     ent.status = "active"
-                    ent.updated_at = datetime.utcnow()
+                    ent.updated_at = _utcnow()
                     s.add(ent)
             s.commit()
 
