@@ -413,6 +413,26 @@ _CLASSES: list[dict] = [
     {"slug": "wizard", "name": "Wizard", "hit_die": 6, "primary_ability": "INT",
      "subclass_label": "Arcane Tradition", "subclass_level": 2, "spellcasting_ability": "INT",
      "saving_throws": ["INT", "WIS"]},
+    # ----- Allowed homebrew classes (owned third-party; concise own-word summaries) -----
+    {"slug": "illrigger", "name": "Illrigger", "hit_die": 10, "primary_ability": "CHA",
+     "subclass_label": "Diabolic Contract", "subclass_level": 3, "spellcasting_ability": None,
+     "saving_throws": ["CON", "CHA"], "source": "Homebrew (MCDM — Illrigger Revised)",
+     "description": ("Hell's enforcer-knight. L1: Baleful Interdict — pool of 3 seals "
+                     "(refresh on rest), place one on a hit or as a bonus action within "
+                     "30 ft; when a sealed target takes other damage, burn any number of "
+                     "seals for 1d6 fire/necrotic each; interdict save DC 8+prof+CHA. "
+                     "Forked Tongue — Infernal plus two spoken-only languages, one "
+                     "swappable per long rest. Armor: light/medium/shields; weapons: "
+                     "simple+martial.")},
+    {"slug": "gunslinger", "name": "Gunslinger", "hit_die": 8, "primary_ability": "DEX",
+     "subclass_label": "Gunslinger Subclass", "subclass_level": 3, "spellcasting_ability": None,
+     "saving_throws": ["DEX", "CHA"], "source": "Homebrew (Valda's Spire of Secrets)",
+     "description": ("Black-powder daredevil. L1: Fighting Style feat (melee styles work "
+                     "with ranged weapons); Quick Draw — advantage on initiative, draw/stow "
+                     "two one-handed weapons at once; Weapon Mastery — use mastery "
+                     "properties of two simple/martial ranged weapons, swap one per long "
+                     "rest. Armor: light; weapons: simple + martial ranged. Risk Dice "
+                     "maneuvers from L2.")},
 ]
 
 # Level-1 skill proficiencies per class (SRD): choose N from the options.
@@ -443,6 +463,12 @@ _CLASS_SKILLS: dict[str, tuple[int, list[str]]] = {
                       "Nature", "Religion"]),
     "wizard":    (2, ["Arcana", "History", "Insight", "Investigation", "Medicine",
                       "Religion"]),
+    # Allowed homebrew (owned third-party content, summarized in our own words).
+    "illrigger":  (2, ["Arcana", "Athletics", "Deception", "Insight", "Intimidation",
+                       "Investigation", "Persuasion", "Religion", "Stealth"]),
+    "gunslinger": (2, ["Acrobatics", "Animal Handling", "Athletics", "Deception",
+                       "Insight", "Intimidation", "Perception", "Persuasion",
+                       "Sleight of Hand", "Stealth"]),
 }
 
 # Playable races (SRD 5.1 core versions), offline — mechanically exact bonuses

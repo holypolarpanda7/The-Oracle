@@ -3264,6 +3264,9 @@ _CLASS_STARTING_KITS: Dict[str, List[tuple]] = {
     "sorcerer": [("Light Crossbow", 1), ("Crossbow Bolts", 20), ("Component Pouch", 1), ("Dagger", 2), ("Dungeoneer's Pack", 1)],
     "warlock": [("Light Crossbow", 1), ("Crossbow Bolts", 20), ("Component Pouch", 1), ("Leather Armor", 1), ("Dagger", 2), ("Scholar's Pack", 1)],
     "wizard": [("Quarterstaff", 1), ("Component Pouch", 1), ("Spellbook", 1), ("Scholar's Pack", 1)],
+    # Allowed homebrew classes (owned third-party content).
+    "illrigger": [("Longsword", 1), ("Shield", 1), ("Chain Shirt", 1), ("Javelin", 5), ("Priest's Pack", 1)],
+    "gunslinger": [("Leather Armor", 1), ("Dagger", 2), ("Revolver", 1), ("Bullets", 50), ("Explorer's Pack", 1)],
 }
 
 

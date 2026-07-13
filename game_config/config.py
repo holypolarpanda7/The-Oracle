@@ -214,9 +214,15 @@ class ImageryConfig:
     gen_height: int = 1024
     timeout_seconds: int = 180               # generation can be slow on lowvram
     # ----- prompt shaping (operator-controlled) -----
+    # House art direction: Hades 2-adjacent (Supergiant) — painterly with bold
+    # ink linework, saturated jewel tones, dramatic rim light. Expressed as
+    # style descriptors, not the game's name (diffusion models respond to the
+    # former; the latter is a trademark, not a style).
     style_prompt: str = (
-        "fantasy illustration, painterly digital art, dramatic lighting, "
-        "highly detailed, concept art"
+        "painterly digital illustration, bold ink outlines, high contrast "
+        "dramatic rim lighting, saturated jewel tones, stylized mythic "
+        "character art, dynamic composition, ornate engraved details, "
+        "graphic-novel key art"
     )
     negative_prompt: str = (
         "lowres, blurry, deformed, extra limbs, bad anatomy, watermark, text, "
