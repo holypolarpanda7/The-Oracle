@@ -43,3 +43,6 @@ ai-dm-sicord-bot/logs/
 voice-service/node_modules/
 voice-service/.env
 voice-service/*.log
+
+# Local-only owned-book extraction workspace (never commit book content)
+owned_books/

@@ -451,6 +451,8 @@ class RegisterCharacterRequest(BaseModel):
     source: Optional[str] = "manual"  # one of: 'avrae', 'guided', 'manual', 'ddb'
     # Skill proficiencies chosen at creation (deterministic CC wizard).
     skills: Optional[List[str]] = None
+    # Feats granted at creation (e.g. Custom Lineage origin feat).
+    feats: Optional[List[str]] = None
 
 
 class CheckCharacterRequest(BaseModel):
@@ -3442,11 +3444,15 @@ async def register_character(req: RegisterCharacterRequest):
             water=surv.starting_water,
         )
 
-        # Skill proficiencies from the CC wizard, tagged onto the sheet.
-        if req.skills:
+        # Skill proficiencies + feats from the CC wizard, tagged onto the sheet.
+        if req.skills or req.feats:
             tags = list(char.tags or [])
-            for sk in req.skills:
+            for sk in (req.skills or []):
                 t = f"skill: {sk}"
+                if t not in tags:
+                    tags.append(t)
+            for ft in (req.feats or []):
+                t = f"feat: {ft}"
                 if t not in tags:
                     tags.append(t)
             char.tags = tags
@@ -3471,10 +3477,17 @@ def cc_options():
     """Everything the deterministic CC wizard needs: races, classes (with
     level-1 skill choices), backgrounds, and the legal ability-score methods.
     All values come from the rules DB / server constants — never an LLM."""
-    from rules.models import Race as _Race, DndClass as _Cls
+    from rules.models import Race as _Race, DndClass as _Cls, Feat as _Feat
     with Session(rules_lib.engine) as s:
         races = s.exec(select(_Race)).all()
         classes = s.exec(select(_Cls)).all()
+        # Level-1-legal feats only (origin feats; locally ingested from the
+        # owned PHB when present — empty list degrades the wizard gracefully).
+        try:
+            feats = s.exec(select(_Feat).where(_Feat.min_level <= 1,
+                                               _Feat.category == "origin")).all()
+        except Exception:
+            feats = []
     return {
         "races": [{
             "slug": r.index_slug, "name": r.name,
@@ -3491,6 +3504,11 @@ def cc_options():
             "skill_choices_n": c.skill_choices_n or 2,
             "skill_options": c.skill_options or [],
         } for c in classes],
+        "feats": [{
+            "slug": f.index_slug, "name": f.name, "category": f.category,
+            "prerequisite": f.prerequisite,
+            "brief": (f.benefit or "")[:96],
+        } for f in feats],
         "backgrounds": [{
             "slug": bg, "name": bg.title(),
             "skills": kit.get("skills") or [],

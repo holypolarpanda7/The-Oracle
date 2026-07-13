@@ -528,12 +528,12 @@ _RACES: list[dict] = [
      "traits": ["Hellish Resistance: resistance to fire damage",
                 "Infernal Legacy: thaumaturgy cantrip (CHA); more spells at higher levels"]},
     {"slug": "custom-lineage", "name": "Custom Lineage",
-     "bonuses": {}, "choose_bonus": [2, 1],
+     "bonuses": {}, "choose_bonus": [2],
      "speed": 30, "size": "Medium", "darkvision": False,
      "languages": "Common + one extra of your choice",
-     "traits": ["Describe your own people: +2 to one ability and +1 to another (your choice)",
-                "One extra skill proficiency of your choice (picked with class skills)",
-                "Darkvision OR one additional language (your choice)"],
+     "traits": ["Describe your own people: +2 to one ability score of your choice",
+                "One Origin feat of your choice (prerequisites enforced)",
+                "Darkvision OR one extra skill proficiency (your choice)"],
      "source": "House rules (Custom Lineage variant)"},
 ]
 

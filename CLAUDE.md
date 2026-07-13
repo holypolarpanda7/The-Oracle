@@ -67,10 +67,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `resolve_roll_hooks` — the player never copy-pastes Avrae. The legacy
   `render_avrae_hooks`/`[[AVRAE:...]]` path remains in the file but is unused.
 - **LLM**: Configurable via `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` env vars. Defaults to OpenRouter; set `LLM_BASE_URL=http://127.0.0.1:11434/v1/chat/completions` for local Ollama.
-- **Rules content is split by type**: structured entities (monsters/spells/items) live
-  in `rules/` tables seeded from the open SRD (legally safe, CC-BY-4.0); prose rules
-  will be a later vector-RAG layer. Do NOT bulk-load copyrighted PDFs into a shared DB.
-  Retrieval is selective — only fetch rules when the action needs a mechanic.
+- **Rules content is split by SOURCE and DESTINATION**:
+  - Open SRD (CC-BY-4.0) → seeded into `rules/` tables from code in the repo. Safe to commit.
+  - **Owned books (WotC PDFs etc.) → LOCAL-ONLY ingestion** for this free campaign:
+    `rules/owned_ingest.py` extracts text from the user's PDF library
+    (`C:\Users\holyp\OneDrive\Documents\D&D`) into a gitignored workspace and parses
+    mechanics into `oracle.db` (also gitignored). Book-derived DATA must NEVER be
+    committed — no extracted text, no stat rows, no summaries of book content in
+    repo code. The public GitHub repo carries only the tooling. Small third-party
+    homebrew (Illrigger, Gunslinger) is summarized in own words in seeds — keep those
+    concise-mechanical, never verbatim.
+  - Retrieval is selective — only fetch rules when the action needs a mechanic; prose
+    lore stays out of prompts except brief mechanical facts.
 - **World persistence** = the graph, not maps. It's append-only: facts are opened/
   closed over in-world days (nothing deleted), and the DM is only ever fed the
   *relevant* subgraph via `get_world_context`, never the whole world.

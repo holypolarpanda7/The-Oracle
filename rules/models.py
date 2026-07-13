@@ -153,6 +153,32 @@ class Race(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
+class Feat(SQLModel, table=True):
+    """A feat. SRD feats may be seeded from repo code; feats from owned books are
+    ingested LOCALLY by ``rules/owned_ingest.py`` and never committed (see CLAUDE.md)."""
+    __tablename__ = "rules_feat"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    index_slug: str = Field(sa_column=Column(String, nullable=False, unique=True, index=True))
+    name: str = Field(sa_column=Column(String, nullable=False, index=True))
+
+    # "origin" | "general" | "fighting-style" | "epic-boon" (2024 categories);
+    # 2014-era feats ingest as "general".
+    category: str = Field(default="general", sa_column=Column(String, index=True))
+    prerequisite: Optional[str] = Field(default=None, sa_column=Column(String))
+    # Minimum character level to take it (origin=1, general=4, epic boon=19).
+    min_level: int = Field(default=1, sa_column=Column(Integer))
+    repeatable: bool = Field(default=False)
+    # Mechanical benefit text (local-only when book-derived).
+    benefit: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
+
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class DndClass(SQLModel, table=True):
     """A character class (Fighter, Wizard, ...) — the mechanical essentials only."""
     __tablename__ = "rules_class"

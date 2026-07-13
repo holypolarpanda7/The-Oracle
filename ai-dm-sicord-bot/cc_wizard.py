@@ -35,7 +35,8 @@ ALL_SKILLS = ["Acrobatics", "Animal Handling", "Arcana", "Athletics", "Deception
 # Skills a race grants automatically (excluded from the choice list).
 RACE_GRANTED_SKILLS = {"elf": ["Perception"], "half-orc": ["Intimidation"]}
 # Extra free-choice skills a race grants on top of the class picks.
-RACE_EXTRA_SKILLS = {"half-elf": 2, "custom-lineage": 1}
+# (Custom Lineage adds one only when its perk choice is the extra skill.)
+RACE_EXTRA_SKILLS = {"half-elf": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +136,7 @@ class NameModal(discord.ui.Modal, title="Name your character"):
             "name": str(self.name.value).strip(),
             "race": None, "char_class": None, "background": None,
             "base_scores": {}, "chosen_bonuses": {}, "skills": [],
-            "lineage_perk": None,
+            "lineage_perk": None, "feat": None,
         }
         wizard_state[interaction.channel.id] = state
         await interaction.followup.send(
@@ -156,7 +157,8 @@ async def _send_race_step(channel, state):
         if bonuses:
             btxt = ", ".join(f"+{v} {k.upper()[:3]}" for k, v in bonuses.items())
         else:
-            btxt = "+2/+1 to abilities of your choice"
+            chooses = "/".join(f"+{b}" for b in (r.get("choose_bonus") or [2]))
+            btxt = f"{chooses} to abilities of your choice"
         if r.get("choose_bonus") and bonuses:
             btxt += " and +1 to two others"
         desc = f"{btxt} · speed {r['speed']}" + (" · darkvision" if r.get("darkvision") else "")
@@ -222,14 +224,42 @@ async def _send_lineage_perk_step(channel, state):
         state["lineage_perk"] = perk
         await interaction.response.edit_message(
             content=f"Lineage gift: **{label}**", view=None)
-        await _send_class_step(interaction.channel, state)
+        await _send_feat_step(interaction.channel, state)
 
     b1 = discord.ui.Button(label="Darkvision (60 ft)", style=discord.ButtonStyle.secondary, emoji="🌑")
-    b2 = discord.ui.Button(label="One extra language", style=discord.ButtonStyle.secondary, emoji="🗣️")
+    b2 = discord.ui.Button(label="One extra skill", style=discord.ButtonStyle.secondary, emoji="🎯")
     b1.callback = lambda i: pick(i, "darkvision", "Darkvision (60 ft)")
-    b2.callback = lambda i: pick(i, "language", "One extra language")
+    b2.callback = lambda i: pick(i, "skill", "One extra skill proficiency")
     view.add_item(b1); view.add_item(b2)
-    await channel.send("**Lineage gift** — your people see in the dark, or speak widely:", view=view)
+    await channel.send("**Lineage gift** — your people see in the dark, or train broadly:", view=view)
+
+
+async def _send_feat_step(channel, state):
+    """Custom Lineage origin feat — options come from the locally ingested
+    rules_feat table (level-1-legal origin feats only, so prerequisites are
+    satisfied by construction). Skipped gracefully when no feats are ingested."""
+    feats = state["options"].get("feats") or []
+    if not feats:
+        await channel.send("*(No feat library ingested — skipping the lineage feat.)*")
+        await _send_class_step(channel, state)
+        return
+    view = _StepView(state)
+    sel = discord.ui.Select(placeholder="Choose your Origin feat…", min_values=1, max_values=1)
+    for f in feats[:25]:
+        sel.add_option(label=f["name"], value=f["slug"],
+                       description=(f.get("brief") or "")[:100])
+
+    async def on_pick(interaction: discord.Interaction):
+        slug = sel.values[0]
+        feat = next(f for f in feats if f["slug"] == slug)
+        state["feat"] = feat
+        await interaction.response.edit_message(
+            content=f"**Origin feat: {feat['name']}**", view=None)
+        await _send_class_step(interaction.channel, state)
+
+    sel.callback = on_pick
+    view.add_item(sel)
+    await channel.send("**Lineage feat** — every Origin feat is legal at level 1:", view=view)
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +443,8 @@ async def _send_skills_step(channel, state):
     bg_skills = state["background"].get("skills") or []
     granted = RACE_GRANTED_SKILLS.get(race_slug, [])
     extra_n = RACE_EXTRA_SKILLS.get(race_slug, 0)
+    if race_slug == "custom-lineage" and state.get("lineage_perk") == "skill":
+        extra_n += 1
 
     n = int(cls.get("skill_choices_n") or 2) + extra_n
     # Class options (plus the whole list when the race grants free-choice picks),
@@ -468,6 +500,8 @@ async def _send_review_step(channel, state):
     vision = "darkvision" if (race.get("darkvision") or perk == "darkvision") else "normal vision"
     embed.add_field(name="Senses", value=vision, inline=True)
     embed.add_field(name="Skills", value=", ".join(state["skills"]) or "—", inline=False)
+    if state.get("feat"):
+        embed.add_field(name="Feat", value=state["feat"]["name"], inline=True)
     embed.set_footer(text="Starting kit + background gear are granted on creation.")
 
     view = _StepView(state)
@@ -483,6 +517,7 @@ async def _send_review_step(channel, state):
             "stats": {a: finals[a] for a in ABILITIES},
             "background": bg["name"],
             "skills": state["skills"],
+            "feats": [state["feat"]["name"]] if state.get("feat") else [],
             "approve": True,
             "home_region": "Gatvorhain",
             "source": "guided",
@@ -500,7 +535,8 @@ async def _send_review_step(channel, state):
         await interaction.response.edit_message(content="🔁 Starting over.", embed=None, view=None)
         wizard_state.pop(channel.id, None)
         state2 = dict(state, race=None, char_class=None, background=None,
-                      base_scores={}, chosen_bonuses={}, skills=[], lineage_perk=None)
+                      base_scores={}, chosen_bonuses={}, skills=[],
+                      lineage_perk=None, feat=None)
         wizard_state[channel.id] = state2
         await _send_race_step(interaction.channel, state2)
 
