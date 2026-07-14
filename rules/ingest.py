@@ -165,10 +165,24 @@ def _map_spell(sp: dict) -> Spell:
 
 # ----- ingest -----
 
+def _edition_rank(source: Optional[str]) -> int:
+    """2024/2025-era content outranks 2014-era; used so re-running an older
+    ingest (e.g. the SRD 5.1 download) never clobbers newer rules."""
+    s = source or ""
+    return 1 if ("2024" in s or "2025" in s) else 0
+
+
 def _upsert(session: Session, model, index_slug: str, mapped) -> bool:
-    """Insert or update by index_slug. Returns True if newly created."""
+    """Insert or update by index_slug. Returns True if newly created.
+
+    Precedence: a row whose source is 2024/2025-era is never overwritten by
+    an older-edition mapping (new rules replace old, never the reverse).
+    """
     existing = session.exec(select(model).where(model.index_slug == index_slug)).first()
     if existing:
+        if (_edition_rank(getattr(existing, "source", None))
+                > _edition_rank(getattr(mapped, "source", None))):
+            return False
         data = mapped.model_dump(exclude={"id", "created_at"})
         for k, v in data.items():
             setattr(existing, k, v)

@@ -20,4 +20,11 @@ dependencies = [
     "sqlalchemy>=2.0.44",
     "sqlmodel>=0.0.27",
     "uvicorn[standard]>=0.38.0",
+    "wordninja>=2.0.0",
+]
+
+[dependency-groups]
+ocr = [
+    "pypdfium2>=5.11.0",
+    "rapidocr-onnxruntime>=1.4.4",
 ]
