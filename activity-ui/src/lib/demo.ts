@@ -57,6 +57,56 @@ export const demoScript = {
     } as ServerEvent,
   ],
   respond(action: string): ServerEvent[] {
+    if (/level ?up/i.test(action)) {
+      return [
+        {
+          t: "levelup",
+          data: {
+            character_id: 1,
+            current_level: 2, next_level: 3, class: "Ranger",
+            subclass: null, subclass_required: true,
+            subclass_label: "Ranger Archetype",
+            notes: [
+              "Gain hit points: roll 1d10+2 or take the fixed average of 8.",
+              "You reach the level where your class chooses its subclass (level 3). Pick one now.",
+            ],
+            class_features: [],
+            subclass_options: [
+              {
+                name: "Gloom Stalker", slug: "gloom-stalker",
+                source: "Owned (PHB 2024) — local ingest",
+                features: [
+                  { level: 3, name: "Dread Ambusher" },
+                  { level: 3, name: "Gloom Stalker Spells" },
+                  { level: 3, name: "Umbral Sight" },
+                ],
+              },
+              {
+                name: "Hunter", slug: "hunter",
+                source: "Owned (PHB 2024) — local ingest",
+                features: [
+                  { level: 3, name: "Hunter's Lore" },
+                  { level: 3, name: "Hunter's Prey" },
+                ],
+              },
+              {
+                name: "Beast Master", slug: "beast-master",
+                source: "Owned (PHB 2024) — local ingest",
+                features: [{ level: 3, name: "Primal Companion" }],
+              },
+              {
+                name: "Horizon Walker", slug: "horizon-walker",
+                source: "Owned (Xanathar's Guide) — local ingest",
+                features: [
+                  { level: 3, name: "Detect Portal" },
+                  { level: 3, name: "Planar Warrior" },
+                ],
+              },
+            ],
+          },
+        },
+      ];
+    }
     if (/sneak|stealth|hide|quiet/i.test(action)) {
       return [
         {

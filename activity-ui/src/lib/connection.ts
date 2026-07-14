@@ -51,6 +51,14 @@ function runDemo(onEvent: (ev: ServerEvent) => void) {
 }
 
 function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
+  if (ev.t === "levelup_apply") {
+    onEvent({ t: "levelup", data: null });
+    onEvent({
+      t: "narration",
+      text: "Kara rises to level 3 — new strength settles into old scars.",
+    });
+    return;
+  }
   if (ev.t !== "action") return;
   onEvent({ t: "player", text: ev.text });
   onEvent({ t: "busy", on: true });

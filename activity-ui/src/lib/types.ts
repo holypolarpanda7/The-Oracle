@@ -34,6 +34,32 @@ export interface Ally {
   condition?: string;
 }
 
+export interface SubclassFeature {
+  level: number;
+  name: string;
+  summary?: string;
+}
+
+export interface SubclassOption {
+  name: string;
+  slug: string;
+  source?: string;
+  features?: SubclassFeature[];
+}
+
+export interface LevelUpData {
+  character_id: number;
+  current_level: number;
+  next_level: number;
+  class: string;
+  subclass?: string | null;
+  subclass_required?: boolean;
+  subclass_label?: string | null;
+  notes: string[];
+  class_features: { name: string; summary?: string }[];
+  subclass_options: SubclassOption[];
+}
+
 export type ServerEvent =
   | { t: "lexicon"; entries: LexEntry[] }
   | { t: "player"; text: string; who?: string }
@@ -42,6 +68,9 @@ export type ServerEvent =
   | { t: "sheet"; sheet: SheetData }
   | { t: "party"; members: Ally[] }
   | { t: "scene"; url: string }
+  | { t: "levelup"; data: LevelUpData | null }
   | { t: "busy"; on: boolean };
 
-export type ClientEvent = { t: "action"; text: string };
+export type ClientEvent =
+  | { t: "action"; text: string }
+  | { t: "levelup_apply"; subclass?: string };

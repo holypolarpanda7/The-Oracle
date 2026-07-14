@@ -6239,12 +6239,57 @@ from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 
-def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
-    """Map the internal character sheet onto the Activity's compact shape."""
+def _activity_char_id(session_id: str, user_id: str) -> Optional[int]:
     state = _load_session_state(session_id)
     char_id = (state.get("meta", {}) or {}).get("character_id")
     if not char_id:
         char_id = _resolve_session_character(session_id, user_id)
+    return char_id
+
+
+def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
+    """When the PC has a pending level-up, the full overlay payload: report
+    notes, core class features gained, and subclass options (with their
+    features up to the new level) when the choice is due."""
+    char_id = _activity_char_id(session_id, user_id)
+    if not char_id:
+        return None
+    with Session(engine) as session:
+        char = session.get(Character, char_id)
+        if not char or not char.pending_level_up:
+            return None
+        prog = _progression(session, char, target_subclass=None, apply=False)
+    new_level = prog["next_level"]
+    try:
+        from rules.query import RulesLibrary
+        _lib = RulesLibrary(engine=engine)
+        class_feats = _lib.class_features_at(prog["class"], new_level)
+        options = []
+        for o in (prog.get("subclass_options") or []):
+            sc = _lib.get_subclass(o["slug"])
+            feats = [f for f in ((sc.features if sc else None) or [])
+                     if f.get("level", 99) <= new_level]
+            options.append({**o, "features": feats})
+    except Exception as e:
+        print(f"[activity] level-up enrichment failed: {e}")
+        class_feats, options = [], prog.get("subclass_options") or []
+    return {
+        "character_id": char_id,
+        "current_level": prog["current_level"],
+        "next_level": new_level,
+        "class": prog["class"],
+        "subclass": prog.get("subclass"),
+        "subclass_required": prog.get("subclass_required"),
+        "subclass_label": prog.get("subclass_label"),
+        "notes": (prog.get("report") or {}).get("notes") or [],
+        "class_features": class_feats,
+        "subclass_options": options,
+    }
+
+
+def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
+    """Map the internal character sheet onto the Activity's compact shape."""
+    char_id = _activity_char_id(session_id, user_id)
     if not char_id:
         return None
     with Session(engine) as session:
@@ -6330,6 +6375,14 @@ async def activity_ws(ws: WebSocket, session_id: str):
     user_id = ws.query_params.get("user_id", "activity-dev")
     username = ws.query_params.get("username", "Adventurer")
 
+    async def send_levelup():
+        try:
+            lv = _activity_levelup(session_id, user_id)
+        except Exception as e:
+            print(f"[activity] level-up check failed: {e}")
+            lv = None
+        await ws.send_json({"t": "levelup", "data": lv})
+
     sheet = _activity_sheet(session_id, user_id)
     if sheet:
         await ws.send_json({"t": "sheet", "sheet": sheet})
@@ -6338,10 +6391,39 @@ async def activity_ws(ws: WebSocket, session_id: str):
         }]})
         await ws.send_json({"t": "lexicon",
                             "entries": [{"text": sheet["name"], "kind": "name"}]})
+        await send_levelup()
 
     try:
         while True:
             msg = await ws.receive_json()
+
+            if msg.get("t") == "levelup_apply":
+                char_id = _activity_char_id(session_id, user_id)
+                if not char_id:
+                    continue
+                try:
+                    result = await level_up(LevelUpRequest(
+                        character_id=char_id, subclass=msg.get("subclass")))
+                except HTTPException as e:
+                    await ws.send_json({"t": "narration", "text": f"⚠ {e.detail}"})
+                    await send_levelup()
+                    continue
+                if result.get("applied"):
+                    sub = f" — {result['subclass']}" if result.get("subclass") else ""
+                    await ws.send_json({
+                        "t": "narration",
+                        "text": (f"{result['name']} rises to level "
+                                 f"{result['current_level']}{sub}. "
+                                 "New strength settles into old scars."),
+                    })
+                    await ws.send_json({"t": "levelup", "data": None})
+                    sheet = _activity_sheet(session_id, user_id)
+                    if sheet:
+                        await ws.send_json({"t": "sheet", "sheet": sheet})
+                else:
+                    await send_levelup()  # subclass still required
+                continue
+
             if msg.get("t") != "action" or not (msg.get("text") or "").strip():
                 continue
             text = msg["text"].strip()
@@ -6393,6 +6475,7 @@ async def activity_ws(ws: WebSocket, session_id: str):
                     "name": sheet["name"], "hp": sheet["hp"],
                     "hp_max": sheet["hp_max"],
                 }]})
+            await send_levelup()
             await ws.send_json({"t": "busy", "on": False})
 
             # Post-reply pipeline work (world extraction, compaction).

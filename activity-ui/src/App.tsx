@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { connect, type Connection } from "./lib/connection";
-import type { Ally, LexEntry, ServerEvent, SheetData } from "./lib/types";
+import type { Ally, LevelUpData, LexEntry, ServerEvent, SheetData } from "./lib/types";
 import { Block, makeOracleBlock, NarrationPane } from "./components/Narration";
+import { LevelUpOverlay } from "./components/LevelUp";
 import { PartyStrip, Rail } from "./components/Rail";
 
 /** Ornamental corner bracket — bold keylines with a brass stud. */
@@ -25,6 +26,7 @@ export default function App() {
   const [sheet, setSheet] = useState<SheetData | null>(null);
   const [party, setParty] = useState<Ally[]>([]);
   const [sceneUrl, setSceneUrl] = useState<string | null>(null);
+  const [levelUp, setLevelUp] = useState<LevelUpData | null>(null);
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState("");
   const lexRef = useRef<LexEntry[]>([]);
@@ -54,6 +56,9 @@ export default function App() {
         case "scene":
           setSceneUrl(ev.url);
           break;
+        case "levelup":
+          setLevelUp(ev.data);
+          break;
         case "busy":
           setBusy(ev.on);
           break;
@@ -80,6 +85,13 @@ export default function App() {
     <div className="table">
       <div className="frame">
         <Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" />
+        {levelUp && (
+          <LevelUpOverlay
+            data={levelUp}
+            onApply={(subclass) =>
+              connRef.current?.send({ t: "levelup_apply", subclass })}
+          />
+        )}
         <NarrationPane blocks={blocks} onBlockDone={markDone} onSkip={skipAll} />
         <Rail sheet={sheet} sceneUrl={sceneUrl} />
         <PartyStrip members={party} />

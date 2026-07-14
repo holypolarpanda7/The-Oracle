@@ -241,6 +241,81 @@ body {
 .inv-line { color: var(--text-dim); line-height: 1.5; }
 .inv-line b { color: var(--text); font-weight: 600; }
 
+/* ============ Level-up overlay ============ */
+.levelup-veil {
+  position: absolute;
+  inset: 0;
+  background: #171310e0;
+  display: grid;
+  place-items: center;
+  z-index: 10;
+  animation: veil-in 0.35s ease-out;
+}
+@keyframes veil-in { from { opacity: 0; } }
+.levelup {
+  width: min(680px, 88%);
+  max-height: 86%;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 2px solid var(--brass);
+  border-radius: var(--radius);
+  box-shadow: 0 0 40px #000000c0, inset 0 0 0 1px #00000080;
+  padding: 22px 26px;
+}
+.levelup-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px; }
+.lu-title {
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--brass);
+}
+.lu-arc { font-size: 19px; color: var(--parchment); }
+.lu-arrow { color: var(--brass); font-size: 14px; }
+.lu-notes { margin: 0 0 14px; padding-left: 18px; line-height: 1.6; font-size: 14px; }
+.lu-notes li { margin-bottom: 5px; }
+.lu-pick-label {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 4px 0 8px;
+}
+.lu-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.lu-option {
+  text-align: left;
+  background: color-mix(in srgb, var(--panel) 60%, black);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--serif);
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.lu-option:hover { border-color: color-mix(in srgb, var(--brass) 50%, transparent); }
+.lu-option.picked { border-color: var(--brass); box-shadow: 0 0 0 1px var(--brass); }
+.lu-opt-name { font-size: 15px; color: var(--parchment); }
+.lu-opt-tag { font-size: 9px; letter-spacing: 0.14em; color: var(--brass); margin-top: 2px; }
+.lu-opt-feats { font-size: 11px; color: var(--text-dim); margin-top: 5px; line-height: 1.45; }
+.lu-actions { display: flex; justify-content: flex-end; }
+.lu-confirm {
+  background: transparent;
+  border: 1px solid var(--brass);
+  color: var(--brass);
+  font-family: var(--serif);
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  padding: 9px 26px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.lu-confirm:hover:not(:disabled) { background: color-mix(in srgb, var(--brass) 12%, transparent); }
+.lu-confirm:disabled { opacity: 0.4; cursor: default; }
+
 /* ============ Party strip ============ */
 .party {
   flex: none;
