@@ -1,0 +1,26 @@
+/* The Candle-lit Instrument — design tokens.
+   Two diegetic surfaces: dark "table" chrome + "parchment" documents.
+   ONE interactive accent (brass). Ghost teal is the Oracle's voice only. */
+:root {
+  --ground: #171310;
+  --panel: #221c15;
+  --panel-edge: #2e2519;
+  --parchment: #e9dfc8;
+  --parchment-dim: #cfc3a6;
+  --ink: #2a2118;
+
+  --brass: #d9a441;
+  --brass-bright: #f0c866;
+  --teal: #6fc7b2;
+  --oxblood: #9c3b32;
+  --moss: #7d9c4a;
+
+  --text: #d8cdb4;
+  --text-dim: #9a8f78;
+
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --mono: "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+
+  --frame-w: 3px;
+  --radius: 4px;
+}

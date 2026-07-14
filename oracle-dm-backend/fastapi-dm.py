@@ -807,6 +807,13 @@ def render_avrae_hooks(text: str) -> str:
 ROLL_HOOK_PATTERN = re.compile(r"\[\[ROLL:(.+?)\]\]", re.IGNORECASE)
 _D20_EXPR = re.compile(r"^1?d20([+-]\d+)?$", re.IGNORECASE)
 
+# Structured roll capture for the Activity UI: when set (per task/thread via
+# contextvars), every resolved hook also appends a dict here so the web client
+# can render roll CARDS at the exact spots the inline "🎲 …" text sits.
+import contextvars as _contextvars
+_ACTIVITY_ROLLS: _contextvars.ContextVar = _contextvars.ContextVar(
+    "activity_rolls", default=None)
+
 
 def resolve_roll_hooks(text: str) -> str:
     """Replace [[ROLL: expr | label | DC n]] hooks with rolled results inline.
@@ -824,16 +831,31 @@ def resolve_roll_hooks(text: str) -> str:
             dcm = re.search(r"\d+", parts[2])
             if dcm:
                 dc = int(dcm.group())
+        collector = _ACTIVITY_ROLLS.get()
         try:
             compact = expr.replace(" ", "")
             m = _D20_EXPR.match(compact)
             if m and dc is not None:
                 mod = int(m.group(1)) if m.group(1) else 0
                 res = ability_check(mod, dc=dc, label=label)
-                return f"\U0001F3B2 {res.detail}"
+                out = f"\U0001F3B2 {res.detail}"
+                if collector is not None:
+                    collector.append({
+                        "expr": compact, "label": label or None, "dc": dc,
+                        "total": res.total, "detail": res.detail,
+                        "success": res.success, "marker": out,
+                    })
+                return out
             r = dice_roll(expr)
             lbl = f"{label}: " if label else ""
-            return f"\U0001F3B2 {lbl}{r.detail}"
+            out = f"\U0001F3B2 {lbl}{r.detail}"
+            if collector is not None:
+                collector.append({
+                    "expr": expr, "label": label or None, "dc": None,
+                    "total": r.total, "detail": r.detail,
+                    "success": None, "marker": out,
+                })
+            return out
         except Exception as e:
             print(f"[roll hook error] {e} in '{inner}'")
             return match.group(0)
@@ -6199,6 +6221,194 @@ async def character_portrait_get(character_id: int):
     if portrait is None:
         raise HTTPException(status_code=404, detail="No portrait stored for this character.")
     return portrait.payload()
+
+
+# ===========================================================================
+# Discord Activity web UI — WebSocket play surface (activity-ui/)
+# ===========================================================================
+# The Activity is a full play surface: the player acts from the web client,
+# the same /chat pipeline runs (world, rules, hooks, extraction), and the
+# reply is streamed back as typed events: narration blocks interleaved with
+# structured roll CARDS (captured via _ACTIVITY_ROLLS), sheet refreshes,
+# scene images as data URLs, and a lexicon so the client can highlight
+# meaningful names as the text types out.
+
+import asyncio
+
+from fastapi import WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+
+
+def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
+    """Map the internal character sheet onto the Activity's compact shape."""
+    state = _load_session_state(session_id)
+    char_id = (state.get("meta", {}) or {}).get("character_id")
+    if not char_id:
+        char_id = _resolve_session_character(session_id, user_id)
+    if not char_id:
+        return None
+    with Session(engine) as session:
+        char = session.get(Character, char_id)
+        if not char:
+            return None
+        sheet = _build_character_sheet(char)
+    bits = [f"Level {sheet['level']} {sheet['char_class'] or '?'}"]
+    if sheet.get("subclass"):
+        bits[0] += f" ({sheet['subclass']})"
+    if sheet.get("race"):
+        bits.append(sheet["race"])
+    phys = sheet.get("physical") or {}
+    return {
+        "name": sheet["name"],
+        "subtitle": " · ".join(bits),
+        "hp": sheet["combat"]["current_hp"],
+        "hp_max": sheet["combat"]["max_hp"],
+        "ac": phys.get("armor_class") or phys.get("ac") or 10,
+        "stats": {a[:3].upper(): v["score"] for a, v in sheet["abilities"].items()},
+        "skills": [c for c in (sheet.get("conditions") or [])] or
+                  [s for s in (sheet.get("spells") or [])][:6],
+        "inventory": (sheet.get("inventory_lines") or [])[:10],
+        "gold": (sheet.get("purse") or {}).get("gp"),
+    }
+
+
+def _activity_lexicon(session_id: str, pc_name: Optional[str],
+                      reply_text: str) -> list[dict]:
+    """Names worth colouring: the PC, world-slice entities, and any rules
+    entities (spells/monsters) referenced in the reply."""
+    entries: list[dict] = []
+    seen: set[str] = set()
+
+    def add(text: Optional[str], kind: str):
+        if not text or len(text) < 3 or text.lower() in seen:
+            return
+        seen.add(text.lower())
+        entries.append({"text": text, "kind": kind})
+
+    add(pc_name, "name")
+    try:
+        ctx, _ = assemble_context(session_id, reply_text[:400])
+        for e in getattr(ctx, "entities", []) or []:
+            etype = (getattr(e, "type", "") or "").lower()
+            kind = "place" if etype in (
+                "place", "settlement", "region", "ward", "building") else "name"
+            add(getattr(e, "name", None), kind)
+    except Exception:
+        pass
+    try:
+        for kind, obj in rules_lib.find_mentions(reply_text, limit=8):
+            add(obj.name, "magic" if kind == "spell" else "name")
+    except Exception:
+        pass
+    return entries[:40]
+
+
+def _activity_segments(reply: str, rolls: list[dict]) -> list[dict]:
+    """Split the reply into narration blocks interleaved with roll cards at
+    the exact positions their inline '🎲 …' markers occupy."""
+    events: list[dict] = []
+    rest = reply
+
+    def push_text(chunk: str):
+        chunk = chunk.strip()
+        if chunk:
+            events.append({"t": "narration", "text": chunk})
+
+    for r in rolls:
+        marker = r.pop("marker", None)
+        if marker and marker in rest:
+            pre, rest = rest.split(marker, 1)
+            push_text(pre)
+        events.append({"t": "roll", "roll": r})
+    push_text(rest)
+    return events
+
+
+@app.websocket("/ws/activity/{session_id}")
+async def activity_ws(ws: WebSocket, session_id: str):
+    await ws.accept()
+    user_id = ws.query_params.get("user_id", "activity-dev")
+    username = ws.query_params.get("username", "Adventurer")
+
+    sheet = _activity_sheet(session_id, user_id)
+    if sheet:
+        await ws.send_json({"t": "sheet", "sheet": sheet})
+        await ws.send_json({"t": "party", "members": [{
+            "name": sheet["name"], "hp": sheet["hp"], "hp_max": sheet["hp_max"],
+        }]})
+        await ws.send_json({"t": "lexicon",
+                            "entries": [{"text": sheet["name"], "kind": "name"}]})
+
+    try:
+        while True:
+            msg = await ws.receive_json()
+            if msg.get("t") != "action" or not (msg.get("text") or "").strip():
+                continue
+            text = msg["text"].strip()
+            await ws.send_json({"t": "busy", "on": True})
+            await ws.send_json({"t": "player", "text": text})
+
+            rolls: list[dict] = []
+            token = _ACTIVITY_ROLLS.set(rolls)
+            try:
+                bt = BackgroundTasks()
+                req = ChatRequest(session_id=session_id, user_id=user_id,
+                                  username=username, message=text)
+                # Sync endpoint with blocking I/O: run in a worker thread
+                # (contextvars propagate, so the roll collector works).
+                resp = await asyncio.to_thread(chat_endpoint, req, bt)
+            except HTTPException as e:
+                await ws.send_json({"t": "narration", "text": f"⚠ {e.detail}"})
+                await ws.send_json({"t": "busy", "on": False})
+                _ACTIVITY_ROLLS.reset(token)
+                continue
+            except Exception as e:
+                print(f"[activity] chat failed: {e}")
+                await ws.send_json({"t": "narration",
+                                    "text": "⚠ The Oracle's vision clouds. Try again."})
+                await ws.send_json({"t": "busy", "on": False})
+                _ACTIVITY_ROLLS.reset(token)
+                continue
+            _ACTIVITY_ROLLS.reset(token)
+
+            pc_name = (sheet or {}).get("name")
+            lex = _activity_lexicon(session_id, pc_name, resp.reply)
+            if lex:
+                await ws.send_json({"t": "lexicon", "entries": lex})
+
+            for ev in _activity_segments(resp.reply, rolls):
+                await ws.send_json(ev)
+
+            for img in resp.images or []:
+                if img.get("b64"):
+                    await ws.send_json({
+                        "t": "scene",
+                        "url": f"data:{img.get('mime', 'image/webp')};base64,{img['b64']}",
+                    })
+
+            sheet = _activity_sheet(session_id, user_id)
+            if sheet:
+                await ws.send_json({"t": "sheet", "sheet": sheet})
+                await ws.send_json({"t": "party", "members": [{
+                    "name": sheet["name"], "hp": sheet["hp"],
+                    "hp_max": sheet["hp_max"],
+                }]})
+            await ws.send_json({"t": "busy", "on": False})
+
+            # Post-reply pipeline work (world extraction, compaction).
+            try:
+                await bt()
+            except Exception as e:
+                print(f"[activity] background tasks failed: {e}")
+    except WebSocketDisconnect:
+        pass
+
+
+_ACTIVITY_DIST = Path(__file__).resolve().parent.parent / "activity-ui" / "dist"
+if _ACTIVITY_DIST.is_dir():
+    app.mount("/activity", StaticFiles(directory=str(_ACTIVITY_DIST), html=True),
+              name="activity")
+    print(f"[activity] serving UI from {_ACTIVITY_DIST} at /activity")
 
 
 if __name__ == "__main__":
