@@ -13,7 +13,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from .ingest import get_engine
-from .models import Monster, Spell, Item, SrdEntry
+from .models import Feat, Monster, Spell, Subclass, Item, SrdEntry
 
 
 def ability_modifier(score: Optional[int]) -> int:
@@ -90,13 +90,84 @@ class RulesLibrary:
             results = [sp for sp in results if any(cls_l == c.lower() for c in (sp.classes or []))]
         return results[:limit]
 
+    def legal_spells_for(self, cls: str, *, max_level: int,
+                         include_cantrips: bool = True) -> list[Spell]:
+        """Spells a class may legally know/prepare up to ``max_level`` spell
+        level — the legality check behind any spell-picking UI. Sorted by
+        level then name."""
+        cls_l = cls.strip().lower()
+        with Session(self.engine) as s:
+            stmt = select(Spell).where(Spell.level <= max_level)
+            rows = s.exec(stmt).all()
+        out = [sp for sp in rows
+               if any(cls_l == c.lower() for c in (sp.classes or []))
+               and (include_cantrips or sp.level > 0)]
+        return sorted(out, key=lambda sp: (sp.level, sp.name))
+
     def count(self) -> dict:
         with Session(self.engine) as s:
             m = len(s.exec(select(Monster.id)).all())
             sp = len(s.exec(select(Spell.id)).all())
             it = len(s.exec(select(Item.id)).all())
             ref = len(s.exec(select(SrdEntry.id)).all())
-        return {"monsters": m, "spells": sp, "items": it, "reference": ref}
+            ft = len(s.exec(select(Feat.id)).all())
+            sc = len(s.exec(select(Subclass.id)).all())
+        return {"monsters": m, "spells": sp, "items": it, "reference": ref,
+                "feats": ft, "subclasses": sc}
+
+    # ----- feats -----
+
+    def get_feat(self, ref: str) -> Optional[Feat]:
+        with Session(self.engine) as s:
+            f = s.exec(select(Feat).where(Feat.index_slug == ref)).first()
+            if f:
+                return f
+            ref_l = ref.strip().lower()
+            return s.exec(select(Feat).where(Feat.name.ilike(ref_l))).first()  # type: ignore[attr-defined]
+
+    def search_feats(
+        self,
+        query: str = "",
+        *,
+        category: Optional[str] = None,
+        max_level: Optional[int] = None,
+        limit: int = 20,
+    ) -> list[Feat]:
+        with Session(self.engine) as s:
+            stmt = select(Feat)
+            if query:
+                stmt = stmt.where(Feat.name.ilike(f"%{query}%"))  # type: ignore[attr-defined]
+            if category:
+                stmt = stmt.where(Feat.category == category)
+            if max_level is not None:
+                stmt = stmt.where(Feat.min_level <= max_level)
+            stmt = stmt.order_by(Feat.name).limit(limit)  # type: ignore[attr-defined]
+            return list(s.exec(stmt).all())
+
+    # ----- subclasses -----
+
+    def get_subclass(self, ref: str) -> Optional[Subclass]:
+        with Session(self.engine) as s:
+            sc = s.exec(select(Subclass).where(Subclass.index_slug == ref)).first()
+            if sc:
+                return sc
+            ref_l = ref.strip().lower()
+            return s.exec(select(Subclass).where(Subclass.name.ilike(ref_l))).first()  # type: ignore[attr-defined]
+
+    def subclasses_for_class(self, class_name: str) -> list[Subclass]:
+        """All subclasses of a class (e.g. the level-3 subclass choice menu)."""
+        with Session(self.engine) as s:
+            stmt = select(Subclass).where(
+                Subclass.class_name.ilike(class_name.strip())  # type: ignore[attr-defined]
+            ).order_by(Subclass.name)  # type: ignore[attr-defined]
+            return list(s.exec(stmt).all())
+
+    def subclass_features_at(self, ref: str, level: int) -> list[dict]:
+        """The features a subclass grants AT a given level (for level-up)."""
+        sc = self.get_subclass(ref)
+        if sc is None:
+            return []
+        return [f for f in (sc.features or []) if f.get("level") == level]
 
     # ----- items (equipment + magic items) -----
 
@@ -178,7 +249,10 @@ class RulesLibrary:
         if not names:
             self._mention_re = re.compile(r"(?!x)x")  # matches nothing
             return
-        self._mention_re = re.compile(r"\b(" + "|".join(re.escape(n) for n in names) + r")\b", re.IGNORECASE)
+        # Trailing s? so plurals ("goblin warriors") hit the full name instead
+        # of falling back to a shorter fragment.
+        self._mention_re = re.compile(
+            r"\b(" + "|".join(re.escape(n) for n in names) + r")s?\b", re.IGNORECASE)
 
     def refresh_index(self) -> None:
         """Drop the cached mention index (call after a fresh ingest)."""
@@ -230,19 +304,21 @@ def format_monster_brief(m: Monster) -> str:
     """
     if isinstance(m, dict):
         m = _AttrView(m)
+
+    def score(v: Optional[int]) -> str:
+        return f"{v} ({ability_modifier(v):+d})" if v is not None else "?"
+
+    hit_dice = m.hit_dice or m.hit_points_roll
     lines = [
         f"**{m.name}** ({m.size} {m.type}, CR {m.challenge_rating})",
         f"AC {m.armor_class}"
         + (f" ({m.ac_desc})" if m.ac_desc else "")
-        + f" | HP {m.hit_points} ({m.hit_dice})"
+        + f" | HP {m.hit_points}" + (f" ({hit_dice})" if hit_dice else "")
         + (f" | PB +{m.proficiency_bonus}" if m.proficiency_bonus else ""),
         (
-            f"STR {m.strength} ({ability_modifier(m.strength):+d}) "
-            f"DEX {m.dexterity} ({ability_modifier(m.dexterity):+d}) "
-            f"CON {m.constitution} ({ability_modifier(m.constitution):+d}) "
-            f"INT {m.intelligence} ({ability_modifier(m.intelligence):+d}) "
-            f"WIS {m.wisdom} ({ability_modifier(m.wisdom):+d}) "
-            f"CHA {m.charisma} ({ability_modifier(m.charisma):+d})"
+            f"STR {score(m.strength)} DEX {score(m.dexterity)} "
+            f"CON {score(m.constitution)} INT {score(m.intelligence)} "
+            f"WIS {score(m.wisdom)} CHA {score(m.charisma)}"
         ),
     ]
     for a in (m.actions or []):
@@ -251,7 +327,13 @@ def format_monster_brief(m: Monster) -> str:
             f"{d.get('damage_dice','')} {(d.get('damage_type') or {}).get('name','').lower()}".strip()
             for d in (a.get("damage") or [])
         )
-        atk = f" (+{bonus} to hit" + (f", {dmg}" if dmg else "") + ")" if bonus is not None else ""
+        if bonus is not None:
+            atk = f" (+{bonus} to hit" + (f", {dmg}" if dmg else "") + ")"
+        else:
+            # Book-ingested actions carry their math in prose; keep the part
+            # with the numbers.
+            desc = (a.get("desc") or "").strip()
+            atk = f": {desc[:160]}" if desc else ""
         lines.append(f"- {a.get('name','Action')}{atk}")
     return "\n".join(lines)
 
@@ -273,6 +355,42 @@ def format_spell_brief(sp: Spell) -> str:
         if slots:
             base = slots.get(str(sp.level)) or next(iter(slots.values()))
             bits.append(f"Damage: {base} {dtype}".strip())
+    elif sp.desc:
+        # Book-ingested 2024 spells carry mechanics in prose, not JSON.
+        desc = sp.desc.strip()
+        if len(desc) > 300:
+            desc = desc[:300].rsplit(" ", 1)[0] + "…"
+        bits.append(desc)
+    return "\n".join(bits)
+
+
+def format_feat_brief(f: Feat) -> str:
+    head = f"**{f.name}** ({f.category} feat"
+    if f.min_level > 1:
+        head += f", level {f.min_level}+"
+    head += ")"
+    bits = [head]
+    if f.prerequisite:
+        bits.append(f"Prerequisite: {f.prerequisite}")
+    benefit = (f.benefit or "").strip()
+    if benefit:
+        if len(benefit) > 400:
+            benefit = benefit[:400].rsplit(" ", 1)[0] + "…"
+        bits.append(benefit)
+    return "\n".join(bits)
+
+
+def format_subclass_brief(sc: Subclass, *, max_level: Optional[int] = None) -> str:
+    """Concise subclass summary; cap features at ``max_level`` (e.g. the PC's
+    current level) so the DM isn't fed abilities the PC doesn't have yet."""
+    bits = [f"**{sc.name}** ({sc.class_name} subclass)"]
+    for f in (sc.features or []):
+        if max_level is not None and f.get("level", 0) > max_level:
+            continue
+        summary = (f.get("summary") or "").strip()
+        if len(summary) > 220:
+            summary = summary[:220].rsplit(" ", 1)[0] + "…"
+        bits.append(f"- L{f.get('level')} {f.get('name')}: {summary}")
     return "\n".join(bits)
 
 

@@ -1266,6 +1266,8 @@ def _parse_mon_sections(body: str) -> dict[str, list[dict]]:
                          chunk, flags=re.M)
         for j in range(1, len(parts) - 1, 2):
             nm = parts[j].rstrip(".!").strip()
+            if nm.isupper():
+                continue  # art caption / next block's name, not an action
             desc = re.sub(r"\s+", " ", _fix_ocr_digits(parts[j + 1])).strip()[:1500]
             entries.append({"name": nm, "desc": desc})
         if entries:
@@ -1669,7 +1671,8 @@ def parse_2014_statblocks(text: str, source_book: str) -> list[dict]:
             es = [{"name": parts[j].rstrip(".!").strip(),
                    "desc": re.sub(r"\s+", " ",
                                   _fix_dice(parts[j + 1])).strip()[:1500]}
-                  for j in range(1, len(parts) - 1, 2)]
+                  for j in range(1, len(parts) - 1, 2)
+                  if not parts[j].rstrip(".!").strip().isupper()]
             return es or None
 
         out.append({
