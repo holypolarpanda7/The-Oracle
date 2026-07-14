@@ -17,7 +17,10 @@ Currently parsed:
   - PHB 2024 spells     -> ``rules_spell`` (all ~395; same-slug SRD 5.1 rows
     are OVERWRITTEN by the 2024 versions, renames keep the SRD slug).
   - PHB 2024 subclasses -> ``rules_subclass`` (all 48) and Xanathar's 31.
-  - MM 2024 stat blocks -> ``rules_monster`` (2024 math overwrites SRD 5.1).
+  - PHB 2024 core class features -> ``rules_srd_entry`` (category
+    'class-feature', data={'class','level','name'}) for the level-up flow.
+  - MM 2024 stat blocks -> ``rules_monster`` (2024 math overwrites SRD 5.1);
+    Bigby's, Volo's, and Van Richten's via the 2014-format parser.
 
 EDITION PRECEDENCE (see ``rules.ingest._upsert``): a row sourced from a
 2024/2025 book is never overwritten by an older-edition ingest — new rules
@@ -702,9 +705,10 @@ _SUBCLASS_RENAMES_2024 = {
 }
 _SUBCLASS_OLD_BY_NEW = {new: old for old, new in _SUBCLASS_RENAMES_2024.items()}
 
+# Leading junk class: page-margin artifacts prefix some headers ('I LEVEL l: RAGE').
 _SUBCLASS_FEATURE = re.compile(
-    r"^\s*(?i:" + _sp("Level") + r")\s*([0-9lJIO]{1,2})\s*:\s*([^\n]{2,60}?)\s*$",
-    re.M)
+    r"^[IVXl|/.,'\" ]{0,3}(?i:" + _sp("Level")
+    + r")\s*([0-9lJIO]{1,2})\s*:\s*([^\n]{2,60}?)\s*$", re.M)
 
 
 def _repair_int(raw: str) -> int:
@@ -919,6 +923,155 @@ def ingest_subclasses(engine=None, database_url=None,
             if row and row.subclass_level != 3:
                 row.subclass_level = 3
                 s.add(row)
+        s.commit()
+    return result
+
+
+# ===========================================================================
+# Parser: PHB 2024 core class features (Rage, Extra Attack, ...) -> SrdEntry
+# ===========================================================================
+# Class features share the 'LEVEL n: NAME' header format with subclass
+# features; a class feature is simply one that falls OUTSIDE every subclass
+# section. Stored in the generic rules_srd_entry table as
+# category='class-feature', slug '<class>-<level>-<feature>', with
+# data={'class','level','name'} — exactly what a level-up flow needs.
+
+def parse_phb_class_features(text: str) -> list[dict]:
+    feature_matches = list(_SUBCLASS_FEATURE.finditer(text))
+
+    # Locate class chapter starts via their 'X CLASS FEATURES' headings
+    # (junk-prefix tolerant: '-I BARD CLASS FEATURES'), falling back to the
+    # 'X FEATURES' table heading when the chapter title was destroyed.
+    # Validated by a low-level 'LEVEL n:' feature within reach.
+    class_starts: list[tuple[int, str]] = []
+    for cls in _SUBCLASSES_2024:
+        pats = [re.compile(r"^[-IVXl|/.,'\" ]{0,4}" + _sp(cls.upper())
+                           + r"\s*" + _sp(tail), re.M)
+                for tail in ("CLASS FEATURES", "FEATURES")]
+        pos = None
+        for pat in pats:
+            for m in pat.finditer(text):
+                nxt = _SUBCLASS_FEATURE.search(text, m.end(), m.end() + 6000)
+                if nxt and _repair_int(nxt.group(1)) <= 2:
+                    pos = m.start()
+                    break
+            if pos is not None:
+                break
+        if pos is not None:
+            class_starts.append((pos, cls))
+    class_starts.sort()
+    if not class_starts:
+        return []
+
+    # Subclass spans, reusing the subclass parser's located headers. A span
+    # ends at the next subclass OR the next class chapter — otherwise the
+    # last subclass of a class swallows the whole next chapter.
+    sub_headers = _locate_subclass_headers(text)
+    sub_spans: list[tuple[int, int]] = []
+    positions = sorted(p for p, *_ in sub_headers)
+    cls_positions = [p for p, _ in class_starts]
+    import bisect
+    for i, p in enumerate(positions):
+        end = positions[i + 1] if i + 1 < len(positions) else p + 30000
+        nc = bisect.bisect_right(cls_positions, p)
+        if nc < len(cls_positions):
+            end = min(end, cls_positions[nc])
+        sub_spans.append((p, min(end, p + 30000)))
+
+    def in_subclass(pos: int) -> bool:
+        return any(s <= pos < e for s, e in sub_spans)
+
+    out: list[dict] = []
+    for j, fm in enumerate(feature_matches):
+        pos = fm.start()
+        if in_subclass(pos):
+            continue
+        owner = None
+        for cpos, cls in class_starts:
+            if cpos <= pos:
+                owner = cls
+            else:
+                break
+        if owner is None:
+            continue
+        lvl = _repair_int(fm.group(1))
+        if not 1 <= lvl <= 20:
+            continue
+        name = _repair_caps_name(fm.group(2))
+        # 'LEVEL 3: <CLASS> SUBCLASS' placeholder rows, possibly glyph-damaged
+        # ('Ciub Class'): fuzzy-match against the owner's placeholder form.
+        import difflib
+        if ("subclass" in name.lower() or difflib.SequenceMatcher(
+                None, _collapse_key(name),
+                _collapse_key(owner + " subclass")).ratio() >= 0.6):
+            continue
+        fend = (feature_matches[j + 1].start()
+                if j + 1 < len(feature_matches) else fm.end() + 4000)
+        summary = re.sub(r"\s+", " ", _fix_ocr_digits(
+            text[fm.end():min(fend, fm.end() + 4000)])).strip()[:1200]
+        out.append({"class": owner, "level": lvl, "name": name,
+                    "summary": summary})
+    # Dedupe (running heads echo): keep longest summary per (class, lvl, name).
+    seen: dict[tuple, dict] = {}
+    for f in out:
+        k = (f["class"], f["level"], _collapse_key(f["name"]))
+        if k not in seen or len(f["summary"]) > len(seen[k]["summary"]):
+            seen[k] = f
+    return list(seen.values())
+
+
+def _locate_subclass_headers(text: str) -> list[tuple[int, str, str]]:
+    """Positions of all 48 PHB 2024 subclass sections (pos, class, name)."""
+    subs = parse_phb_subclasses(text)
+    # parse_phb_subclasses doesn't return positions; re-derive by matching
+    # each subclass's first feature back into the text.
+    import difflib
+    positions: list[tuple[int, str, str]] = []
+    fm_list = [(m.start(), _repair_int(m.group(1)), _collapse_key(m.group(2)))
+               for m in _SUBCLASS_FEATURE.finditer(text)]
+    for sc in subs:
+        if not sc["features"]:
+            continue
+        first_key = _collapse_key(sc["features"][0]["name"])
+        for pos, lvl, fkey in fm_list:
+            if lvl == sc["features"][0]["level"] and difflib.SequenceMatcher(
+                    None, fkey, first_key).ratio() >= 0.8:
+                positions.append((pos, sc["class"], sc["name"]))
+                break
+    return positions
+
+
+def ingest_class_features(engine=None, database_url=None,
+                          workspace: Path = WORKSPACE) -> dict:
+    from .models import SrdEntry
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    phb = next(iter(workspace.glob("*players-handbook-2024*.txt")), None)
+    if phb is None:
+        return {"error": "PHB 2024 extraction not found"}
+    feats = parse_phb_class_features(phb.read_text(encoding="utf-8"))
+    result = {"class_features_parsed": len(feats), "new": 0, "updated": 0}
+    with Session(engine) as s:
+        for f in feats:
+            slug = f"{_slugify(f['class'])}-{f['level']}-{_slugify(f['name'])}"
+            key = f"class-feature:{slug}"
+            existing = s.exec(
+                select(SrdEntry).where(SrdEntry.entry_key == key)).first()
+            if existing:
+                existing.desc = f["summary"]
+                existing.data = {"class": f["class"], "level": f["level"],
+                                 "name": f["name"]}
+                s.add(existing)
+                result["updated"] += 1
+            else:
+                s.add(SrdEntry(
+                    entry_key=key, category="class-feature", index_slug=slug,
+                    name=f"{f['class']} L{f['level']}: {f['name']}",
+                    desc=f["summary"],
+                    data={"class": f["class"], "level": f["level"],
+                          "name": f["name"]},
+                    source="Owned (PHB 2024) — local ingest"))
+                result["new"] += 1
         s.commit()
     return result
 
@@ -1783,6 +1936,7 @@ def main(argv: list[str]) -> None:
         print("[owned] feats:", ingest_feats())
         print("[owned] spells:", ingest_spells())
         print("[owned] subclasses:", ingest_subclasses())
+        print("[owned] class features:", ingest_class_features())
         print("[owned] xgte subclasses:", ingest_xgte_subclasses())
         print("[owned] monsters:", ingest_monsters())
         print("[owned] bigby monsters:", ingest_2014_monsters(
