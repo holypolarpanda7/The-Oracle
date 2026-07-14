@@ -144,11 +144,11 @@ def ocr_extract_pdf(pdf: Path, workspace: Path = WORKSPACE,
                 colboxes = sorted(b for b in boxes if b[0] == want_col)
                 row: list[tuple[float, str]] = []
                 row_y = None
-                for _c, y, x, txt in colboxes:
+                for _c, y, x, cell_text in colboxes:
                     if row_y is not None and y - row_y > 9:
                         ordered.extend(t for _x, t in sorted(row))
                         row = []
-                    row.append((x, txt))
+                    row.append((x, cell_text))
                     row_y = y
                 ordered.extend(t for _x, t in sorted(row))
             body = "\n".join(ordered)
