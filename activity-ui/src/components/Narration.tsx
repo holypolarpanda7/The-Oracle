@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { LexEntry, RollResult } from "../lib/types";
 import { markText, type Span } from "../lib/highlight";
+import { typeBlip } from "../lib/sound";
 
 export type Block =
   | { kind: "player"; text: string }
@@ -33,6 +34,7 @@ function RevealedSpans({ spans, done, onDone }: {
     const id = setInterval(() => {
       setShown((n) => {
         if (pauseRef.current > 0) { pauseRef.current -= 1; return n; }
+        typeBlip();
         let step = CHARS_PER_TICK;
         const next = Math.min(total, Math.floor(n + step));
         // breathe at punctuation just revealed

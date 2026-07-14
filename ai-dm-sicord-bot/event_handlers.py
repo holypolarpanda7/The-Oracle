@@ -7,6 +7,7 @@ import binascii
 import io
 import os
 import re
+import urllib.parse
 from datetime import datetime, timezone
 
 import discord
@@ -264,13 +265,35 @@ async def on_voice_state_update_handler(member: discord.Member, before: discord.
                     "⚠️ I couldn't start background music right now. "
                     "Check that the bot can connect/speak in voice, then react 🔊 to retry."
                 )
-        await text_channel.send(
-            f"🎭 **Welcome, {member.display_name}!** Choose your path:\n"
-            f"📥 **Import from D&D Beyond** — you already have a sheet\n"
-            f"⚒️ **Create Character** — forge one here, step by step\n"
-            f"🎵 toggles music · ❌ cancels the session",
-            view=CharacterCreationView(after.channel.id, character_creation.ephemeral_cc_channels[after.channel.id], bot)
-        )
+        # The Activity play channel gets the web experience instead of the
+        # component wizard: a login/landing page with create-or-resume.
+        activity_channel_id = int(os.getenv("ACTIVITY_CHANNEL_ID",
+                                            "1447775459533262868"))
+        if after.channel.id == activity_channel_id:
+            activity_url = os.getenv("ACTIVITY_URL",
+                                     "http://localhost:8000/activity/")
+            params = urllib.parse.urlencode({
+                "channel": str(after.channel.id),
+                "user_id": str(member.id),
+                "username": member.display_name,
+            })
+            view = View()
+            view.add_item(Button(label="Open The Oracle",
+                                 style=discord.ButtonStyle.link,
+                                 url=f"{activity_url}?{params}", emoji="🔮"))
+            await text_channel.send(
+                f"🔮 **Welcome, {member.display_name}!** The Oracle awaits at "
+                f"the table — create a character or resume your tale:",
+                view=view,
+            )
+        else:
+            await text_channel.send(
+                f"🎭 **Welcome, {member.display_name}!** Choose your path:\n"
+                f"📥 **Import from D&D Beyond** — you already have a sheet\n"
+                f"⚒️ **Create Character** — forge one here, step by step\n"
+                f"🎵 toggles music · ❌ cancels the session",
+                view=CharacterCreationView(after.channel.id, character_creation.ephemeral_cc_channels[after.channel.id], bot)
+            )
 
         # Update the session data to track this text channel
         character_creation.ephemeral_cc_channels[after.channel.id]["text_channel_id"] = text_channel.id

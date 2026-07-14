@@ -60,7 +60,19 @@ export interface LevelUpData {
   subclass_options: SubclassOption[];
 }
 
+export interface CharacterSummary {
+  id: number;
+  name: string;
+  race?: string | null;
+  char_class?: string | null;
+  subclass?: string | null;
+  level: number;
+  alive: boolean;
+  resume_session?: string | null;
+}
+
 export type ServerEvent =
+  | { t: "hello"; channel: string; characters: CharacterSummary[] }
   | { t: "lexicon"; entries: LexEntry[] }
   | { t: "player"; text: string; who?: string }
   | { t: "narration"; text: string }
@@ -69,8 +81,48 @@ export type ServerEvent =
   | { t: "party"; members: Ally[] }
   | { t: "scene"; url: string }
   | { t: "levelup"; data: LevelUpData | null }
+  | { t: "entered"; resumed: boolean }
+  | { t: "cc_done"; name: string; detail?: unknown }
+  | { t: "cc_error"; detail: string }
   | { t: "busy"; on: boolean };
 
 export type ClientEvent =
   | { t: "action"; text: string }
-  | { t: "levelup_apply"; subclass?: string };
+  | { t: "levelup_apply"; subclass?: string }
+  | { t: "enter"; character_name?: string }
+  | { t: "cc_register"; payload: CCPayload };
+
+export interface CCPayload {
+  name: string;
+  race: string;
+  char_class: string;
+  background: string;
+  stats: Record<string, number>;
+  skills: string[];
+  feats?: string[];
+}
+
+/** GET /cc/options response (deterministic CC data from the rules DB). */
+export interface CCOptions {
+  races: {
+    slug: string; name: string;
+    ability_bonuses: Record<string, number>;
+    choose_bonus: number[];
+    speed: number; size: string; darkvision: boolean;
+    languages?: string | null; traits: string[];
+  }[];
+  classes: {
+    slug: string; name: string; hit_die?: number | null;
+    primary_ability?: string | null;
+    spellcasting_ability?: string | null;
+    saving_throws: string[];
+    skill_choices_n: number; skill_options: string[];
+  }[];
+  feats: { slug: string; name: string; prerequisite?: string | null; brief: string }[];
+  backgrounds: { slug: string; name: string; skills: string[]; feature?: string | null }[];
+  ability_methods: {
+    standard_array: number[];
+    point_buy: { budget: number; min: number; max: number; costs: Record<string, number> };
+    roll: { expr: string; count: number };
+  };
+}

@@ -6369,11 +6369,72 @@ def _activity_segments(reply: str, rolls: list[dict]) -> list[dict]:
     return events
 
 
-@app.websocket("/ws/activity/{session_id}")
-async def activity_ws(ws: WebSocket, session_id: str):
+# session_id -> live sockets; narration/rolls/scenes broadcast to the whole
+# table so a future multiplayer session is just several sockets sharing an id.
+_ACTIVITY_SOCKETS: Dict[str, set] = {}
+
+
+async def _activity_broadcast(session_id: Optional[str], ev: dict,
+                              fallback: Optional[WebSocket] = None):
+    targets = list(_ACTIVITY_SOCKETS.get(session_id or "", ())) or (
+        [fallback] if fallback else [])
+    for sock in targets:
+        try:
+            await sock.send_json(ev)
+        except Exception:
+            pass
+
+
+def _activity_characters(user_id: str, channel: str) -> list[dict]:
+    """The landing page's character list: this player's PCs with liveness and
+    a resumable session id when one exists for this channel."""
+    with Session(engine) as session:
+        chars = session.exec(select(Character).where(
+            Character.discord_user_id == user_id,
+            Character.is_npc == False)).all()  # noqa: E712
+        out = []
+        for c in chars:
+            alive = True
+            try:
+                ent = world.find_pc(user_id, c.name)
+                alive = ent is None or ent.status != "dead"
+            except Exception:
+                pass
+            out.append({
+                "id": c.id, "name": c.name, "race": c.race,
+                "char_class": c.char_class, "subclass": c.subclass,
+                "level": c.level, "alive": alive,
+                "resume_session": _activity_find_session(
+                    session, user_id, channel, c.name),
+            })
+    return out
+
+
+def _activity_find_session(session: Session, user_id: str, channel: str,
+                           character_name: str) -> Optional[str]:
+    """Most recent Activity session for (player, channel, character)."""
+    import json as _json
+    rows = session.exec(select(SessionMemory).order_by(
+        SessionMemory.updated_at.desc()).limit(200)).all()  # type: ignore[attr-defined]
+    for r in rows:
+        try:
+            meta = _json.loads(r.meta_json or "{}")
+        except Exception:
+            continue
+        if (meta.get("user_id") == user_id
+                and meta.get("activity_channel") == channel
+                and (meta.get("character_name") or "").lower()
+                == character_name.lower()):
+            return r.session_id
+    return None
+
+
+@app.websocket("/ws/activity/{channel}")
+async def activity_ws(ws: WebSocket, channel: str):
     await ws.accept()
     user_id = ws.query_params.get("user_id", "activity-dev")
     username = ws.query_params.get("username", "Adventurer")
+    session_id: Optional[str] = None
 
     async def send_levelup():
         try:
@@ -6383,19 +6444,120 @@ async def activity_ws(ws: WebSocket, session_id: str):
             lv = None
         await ws.send_json({"t": "levelup", "data": lv})
 
-    sheet = _activity_sheet(session_id, user_id)
-    if sheet:
-        await ws.send_json({"t": "sheet", "sheet": sheet})
-        await ws.send_json({"t": "party", "members": [{
-            "name": sheet["name"], "hp": sheet["hp"], "hp_max": sheet["hp_max"],
-        }]})
-        await ws.send_json({"t": "lexicon",
-                            "entries": [{"text": sheet["name"], "kind": "name"}]})
+    async def send_hello():
+        await ws.send_json({"t": "hello", "channel": channel,
+                            "characters": _activity_characters(user_id, channel)})
+
+    async def bind_session(sid: str):
+        nonlocal session_id
+        if session_id and ws in _ACTIVITY_SOCKETS.get(session_id, set()):
+            _ACTIVITY_SOCKETS[session_id].discard(ws)
+        session_id = sid
+        _ACTIVITY_SOCKETS.setdefault(sid, set()).add(ws)
+
+    async def send_state():
+        nonlocal sheet
+        sheet = _activity_sheet(session_id, user_id)
+        if sheet:
+            await ws.send_json({"t": "sheet", "sheet": sheet})
+            await _activity_broadcast(session_id, {"t": "party", "members": [{
+                "name": sheet["name"], "hp": sheet["hp"],
+                "hp_max": sheet["hp_max"],
+            }]}, fallback=ws)
+            await ws.send_json({"t": "lexicon",
+                                "entries": [{"text": sheet["name"], "kind": "name"}]})
         await send_levelup()
+
+    sheet: Optional[dict] = None
+    await send_hello()
 
     try:
         while True:
             msg = await ws.receive_json()
+
+            # ---- landing: forge a new character (deterministic CC data) ----
+            if msg.get("t") == "cc_register":
+                p = msg.get("payload") or {}
+                try:
+                    req = RegisterCharacterRequest(
+                        discord_user_id=user_id,
+                        name=(p.get("name") or "").strip(),
+                        race=p.get("race"), char_class=p.get("char_class"),
+                        background=p.get("background"),
+                        stats=p.get("stats"), skills=p.get("skills"),
+                        feats=p.get("feats"), approve=True, source="guided",
+                    )
+                    result = await register_character(req)
+                except HTTPException as e:
+                    await ws.send_json({"t": "cc_error", "detail": e.detail})
+                    continue
+                except Exception as e:
+                    print(f"[activity] cc_register failed: {e}")
+                    await ws.send_json({"t": "cc_error",
+                                        "detail": "Character creation failed."})
+                    continue
+                await ws.send_json({"t": "cc_done",
+                                    "name": req.name,
+                                    "detail": result if isinstance(result, dict) else None})
+                await send_hello()
+                continue
+
+            # ---- landing: enter the world (resume or begin) ----
+            if msg.get("t") == "enter":
+                char_name = (msg.get("character_name") or "").strip()
+                await ws.send_json({"t": "busy", "on": True})
+                resume_sid = None
+                if char_name:
+                    with Session(engine) as s:
+                        resume_sid = _activity_find_session(
+                            s, user_id, channel, char_name)
+                if resume_sid:
+                    await bind_session(resume_sid)
+                    state = _load_session_state(session_id)
+                    recap = [t for t in (state.get("recent_turns") or [])
+                             if getattr(t, "role", None) == "dm"
+                             or (isinstance(t, dict) and t.get("role") == "dm")]
+                    last = recap[-1] if recap else None
+                    last_text = (last.get("content") if isinstance(last, dict)
+                                 else getattr(last, "content", "")) if last else ""
+                    await ws.send_json({"t": "entered", "resumed": True})
+                    if last_text:
+                        await ws.send_json({
+                            "t": "narration",
+                            "text": "*The tale resumes where it left off…*\n\n"
+                                    + last_text})
+                else:
+                    try:
+                        er = await enter_world(EnterRequest(
+                            user_id=user_id, username=username,
+                            guild_id=f"activity-{channel}",
+                            character_name=char_name or None))
+                    except Exception as e:
+                        print(f"[activity] enterworld failed: {e}")
+                        await ws.send_json({"t": "cc_error",
+                                            "detail": "Could not enter the world."})
+                        await ws.send_json({"t": "busy", "on": False})
+                        continue
+                    if er.status != "ok" or not er.session_id:
+                        await ws.send_json({"t": "cc_error", "detail": er.message})
+                        await ws.send_json({"t": "busy", "on": False})
+                        continue
+                    await bind_session(er.session_id)
+                    # Merge (never replace) so enterworld's meta survives.
+                    _state = _load_session_state(session_id)
+                    _meta = dict(_state.get("meta") or {})
+                    _meta["activity_channel"] = channel
+                    _set_session_meta(session_id, _meta)
+                    await ws.send_json({"t": "entered", "resumed": False})
+                    if er.intro:
+                        await ws.send_json({"t": "narration", "text": er.intro})
+                await send_state()
+                await ws.send_json({"t": "busy", "on": False})
+                continue
+
+            # Everything below requires a bound session.
+            if session_id is None:
+                continue
 
             if msg.get("t") == "levelup_apply":
                 char_id = _activity_char_id(session_id, user_id)
@@ -6410,12 +6572,12 @@ async def activity_ws(ws: WebSocket, session_id: str):
                     continue
                 if result.get("applied"):
                     sub = f" — {result['subclass']}" if result.get("subclass") else ""
-                    await ws.send_json({
+                    await _activity_broadcast(session_id, {
                         "t": "narration",
                         "text": (f"{result['name']} rises to level "
                                  f"{result['current_level']}{sub}. "
                                  "New strength settles into old scars."),
-                    })
+                    }, fallback=ws)
                     await ws.send_json({"t": "levelup", "data": None})
                     sheet = _activity_sheet(session_id, user_id)
                     if sheet:
@@ -6427,8 +6589,10 @@ async def activity_ws(ws: WebSocket, session_id: str):
             if msg.get("t") != "action" or not (msg.get("text") or "").strip():
                 continue
             text = msg["text"].strip()
-            await ws.send_json({"t": "busy", "on": True})
-            await ws.send_json({"t": "player", "text": text})
+            await _activity_broadcast(session_id, {"t": "busy", "on": True},
+                                      fallback=ws)
+            await _activity_broadcast(session_id, {
+                "t": "player", "text": text, "who": username}, fallback=ws)
 
             rolls: list[dict] = []
             token = _ACTIVITY_ROLLS.set(rolls)
@@ -6456,27 +6620,23 @@ async def activity_ws(ws: WebSocket, session_id: str):
             pc_name = (sheet or {}).get("name")
             lex = _activity_lexicon(session_id, pc_name, resp.reply)
             if lex:
-                await ws.send_json({"t": "lexicon", "entries": lex})
+                await _activity_broadcast(session_id, {"t": "lexicon",
+                                                       "entries": lex},
+                                          fallback=ws)
 
             for ev in _activity_segments(resp.reply, rolls):
-                await ws.send_json(ev)
+                await _activity_broadcast(session_id, ev, fallback=ws)
 
             for img in resp.images or []:
                 if img.get("b64"):
-                    await ws.send_json({
+                    await _activity_broadcast(session_id, {
                         "t": "scene",
                         "url": f"data:{img.get('mime', 'image/webp')};base64,{img['b64']}",
-                    })
+                    }, fallback=ws)
 
-            sheet = _activity_sheet(session_id, user_id)
-            if sheet:
-                await ws.send_json({"t": "sheet", "sheet": sheet})
-                await ws.send_json({"t": "party", "members": [{
-                    "name": sheet["name"], "hp": sheet["hp"],
-                    "hp_max": sheet["hp_max"],
-                }]})
-            await send_levelup()
-            await ws.send_json({"t": "busy", "on": False})
+            await send_state()
+            await _activity_broadcast(session_id, {"t": "busy", "on": False},
+                                      fallback=ws)
 
             # Post-reply pipeline work (world extraction, compaction).
             try:
@@ -6485,6 +6645,9 @@ async def activity_ws(ws: WebSocket, session_id: str):
                 print(f"[activity] background tasks failed: {e}")
     except WebSocketDisconnect:
         pass
+    finally:
+        if session_id:
+            _ACTIVITY_SOCKETS.get(session_id, set()).discard(ws)
 
 
 _ACTIVITY_DIST = Path(__file__).resolve().parent.parent / "activity-ui" / "dist"

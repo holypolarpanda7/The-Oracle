@@ -42,6 +42,17 @@ const party: ServerEvent = {
 };
 
 export const demoScript = {
+  hello: {
+    t: "hello",
+    channel: "demo",
+    characters: [
+      { id: 1, name: "Kara Emberfall", race: "Custom Lineage",
+        char_class: "Ranger", subclass: "Gloom Stalker", level: 3,
+        alive: true, resume_session: "demo:1" },
+      { id: 2, name: "Aldric the Bold", race: "Human", char_class: "Fighter",
+        level: 4, alive: false },
+    ],
+  } as Extract<ServerEvent, { t: "hello" }>,
   opening: [
     lexicon,
     sheet,
