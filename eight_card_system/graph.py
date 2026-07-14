@@ -371,6 +371,36 @@ class WorldGraph:
                 s.commit()
             return meta.world_day
 
+    def wall_floor(self, *, days_per_real_day: float = 1.0) -> Optional[int]:
+        """The wall-clock floor day (None before the anchor exists). The lead
+        cap is measured against this: story time may run ahead of the floor
+        by at most WORLD_LEAD_CAP_DAYS (enforced by the caller)."""
+        import time as _time
+        with Session(self.engine) as s:
+            meta = self._ensure_meta(s)
+            if meta.real_anchor_ts is None:
+                return None
+            return meta.anchor_world_day + int(
+                (_time.time() - meta.real_anchor_ts) / 86400.0
+                * max(0.0, days_per_real_day))
+
+    def coords_of(self, ref: EntityRef) -> Optional[tuple]:
+        """Public: an entity's coords, inherited via located_in/part_of."""
+        e = self.get_entity(ref)
+        if e is None:
+            return None
+        with Session(self.engine) as s:
+            row = s.get(Entity, e.id)
+            return self._coords_in_db(s, row) if row is not None else None
+
+    def location_of(self, ref: EntityRef) -> Optional[Entity]:
+        """Public: the place an entity is currently located_in (or None)."""
+        e = self.get_entity(ref)
+        if e is None:
+            return None
+        with Session(self.engine) as s:
+            return self._current_location(s, e.id)
+
     def sync_clock(self, *, days_per_real_day: float = 1.0) -> int:
         """Apply the wall-clock floor: the world keeps breathing while nobody
         plays. Anchored on first call; the floor never outruns a bubble that

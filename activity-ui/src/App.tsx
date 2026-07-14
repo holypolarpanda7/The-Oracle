@@ -38,7 +38,13 @@ export default function App() {
   const [levelUp, setLevelUp] = useState<LevelUpData | null>(null);
   const [busy, setBusy] = useState(false);
   const [ccError, setCcError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<
+    | { kind: "join_blocked"; reason: string; charName: string }
+    | { kind: "invite"; place: string; channel: string }
+    | null>(null);
+  const [rateWait, setRateWait] = useState(0);
   const [input, setInput] = useState("");
+  const lastEnterRef = useRef<string>("");
   const lexRef = useRef<LexEntry[]>([]);
   const connRef = useRef<Connection | null>(null);
   const pendingEnterRef = useRef<string | null>(null);
@@ -69,11 +75,22 @@ export default function App() {
         case "cc_error":
           setCcError(ev.detail);
           break;
+        case "join_blocked":
+          setNotice({ kind: "join_blocked", reason: ev.reason,
+                      charName: lastEnterRef.current });
+          break;
+        case "table_invite":
+          setNotice({ kind: "invite", place: ev.place, channel: ev.channel });
+          break;
+        case "rate_limited":
+          setRateWait(ev.wait);
+          setTimeout(() => setRateWait(0), ev.wait * 1000);
+          break;
         case "lexicon":
           lexRef.current = ev.entries;
           break;
         case "player":
-          setBlocks((b) => [...b, { kind: "player", text: ev.text }]);
+          setBlocks((b) => [...b, { kind: "player", text: ev.text, who: ev.who }]);
           break;
         case "narration":
           setBlocks((b) => [...b, makeOracleBlock(ev.text, lexRef.current)]);
@@ -125,9 +142,52 @@ export default function App() {
         {screen === "landing" && (
           <Landing
             characters={characters}
-            onEnter={(name) => connRef.current?.send({ t: "enter", character_name: name })}
+            onEnter={(name) => {
+              lastEnterRef.current = name;
+              connRef.current?.send({ t: "enter", character_name: name });
+            }}
             onCreate={() => { setCcError(null); setScreen("create"); }}
           />
+        )}
+
+        {notice && (
+          <div className="levelup-veil" onClick={() => setNotice(null)}>
+            <div className="levelup" onClick={(e) => e.stopPropagation()}>
+              {notice.kind === "join_blocked" ? (
+                <>
+                  <div className="levelup-head">
+                    <span className="lu-title">The Road Is Long</span>
+                  </div>
+                  <p style={{ lineHeight: 1.6 }}>{notice.reason}</p>
+                  <div className="lu-actions" style={{ gap: 10 }}>
+                    <button className="lu-confirm" onClick={() => {
+                      setNotice(null);
+                      connRef.current?.send({
+                        t: "enter", character_name: notice.charName, solo: true });
+                    }}>Travel on your own tale</button>
+                    <button className="lu-confirm" onClick={() => setNotice(null)}>
+                      Back
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="levelup-head">
+                    <span className="lu-title">A Familiar Fire</span>
+                  </div>
+                  <p style={{ lineHeight: 1.6 }}>
+                    Another party's tale is unfolding at {notice.place}. Join
+                    their channel in Discord to sit at their table.
+                  </p>
+                  <div className="lu-actions">
+                    <button className="lu-confirm" onClick={() => setNotice(null)}>
+                      Understood
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         )}
 
         {screen === "create" && (
@@ -158,8 +218,10 @@ export default function App() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && submit()}
-                placeholder={busy ? "the Oracle is weaving…" : "What do you do?"}
-                disabled={busy}
+                placeholder={rateWait > 0
+                  ? `the table needs a breath — ${rateWait}s…`
+                  : busy ? "the Oracle is weaving…" : "What do you do?"}
+                disabled={busy || rateWait > 0}
               />
               <button onClick={submit} disabled={busy || !input.trim()}>Act</button>
             </div>

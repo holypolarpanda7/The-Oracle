@@ -26,6 +26,7 @@ export function Landing({ characters, onEnter, onCreate }: {
             <button
               key={c.id}
               className="char-card"
+              disabled={!!c.returns_in}
               onClick={() => { uiTick(); onEnter(c.name); }}
             >
               <div className="cc-name">{c.name}</div>
@@ -35,7 +36,9 @@ export function Landing({ characters, onEnter, onCreate }: {
                 {c.race ? ` · ${c.race}` : ""}
               </div>
               <div className="cc-go">
-                {c.resume_session ? "Resume the tale ➤" : "Begin the tale ➤"}
+                {c.returns_in
+                  ? `returns in ${c.returns_in} day${c.returns_in > 1 ? "s" : ""}…`
+                  : c.resume_session ? "Resume the tale ➤" : "Begin the tale ➤"}
               </div>
             </button>
           ))}

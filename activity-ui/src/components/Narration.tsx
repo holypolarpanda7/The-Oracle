@@ -4,7 +4,7 @@ import { markText, type Span } from "../lib/highlight";
 import { typeBlip } from "../lib/sound";
 
 export type Block =
-  | { kind: "player"; text: string }
+  | { kind: "player"; text: string; who?: string }
   | { kind: "oracle"; spans: Span[]; done: boolean }
   | { kind: "roll"; roll: RollResult };
 
@@ -92,7 +92,12 @@ export function NarrationPane({ blocks, onBlockDone, onSkip }: {
       <div className="narration-scroll" ref={scrollRef}>
         {blocks.map((b, i) => {
           if (b.kind === "player") {
-            return <p key={i} className="narration-block player">{b.text}</p>;
+            return (
+              <p key={i} className="narration-block player">
+                {b.who && <span className="hl-name">{b.who} · </span>}
+                {b.text}
+              </p>
+            );
           }
           if (b.kind === "roll") {
             const r = b.roll;

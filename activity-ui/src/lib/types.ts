@@ -69,6 +69,8 @@ export interface CharacterSummary {
   level: number;
   alive: boolean;
   resume_session?: string | null;
+  /** Days of downtime commitment left before this PC is playable again. */
+  returns_in?: number | null;
 }
 
 export type ServerEvent =
@@ -84,12 +86,15 @@ export type ServerEvent =
   | { t: "entered"; resumed: boolean }
   | { t: "cc_done"; name: string; detail?: unknown }
   | { t: "cc_error"; detail: string }
+  | { t: "join_blocked"; reason: string; travel_days?: number; away_days?: number }
+  | { t: "table_invite"; place: string; channel: string }
+  | { t: "rate_limited"; wait: number }
   | { t: "busy"; on: boolean };
 
 export type ClientEvent =
   | { t: "action"; text: string }
   | { t: "levelup_apply"; subclass?: string }
-  | { t: "enter"; character_name?: string }
+  | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload };
 
 export interface CCPayload {

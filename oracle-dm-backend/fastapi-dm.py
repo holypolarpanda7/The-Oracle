@@ -171,6 +171,11 @@ EXTRACTOR_MODEL = os.getenv("EXTRACTOR_MODEL", "").strip() or LLM_MODEL
 # Session bubbles run in PARALLEL world time and ratchet the clock to the max
 # closing bubble (never the sum), so player count never inflates world pace.
 WORLD_DAYS_PER_REAL_DAY = float(os.getenv("WORLD_DAYS_PER_REAL_DAY", "1.0"))
+# Lead cap: story time may run ahead of the wall-clock floor by at most this
+# many days. Bounds the "I logged in and months had passed" whiplash a fast
+# table could otherwise inflict on everyone else. Excess days become personal
+# busy_until_day commitments instead of moving the shared clock.
+WORLD_LEAD_CAP_DAYS = int(os.getenv("WORLD_LEAD_CAP_DAYS", "15"))
 # In-bubble skips longer than this become a personal downtime commitment
 # (PC attr busy_until_day) instead of dragging the shared clock forward.
 BUBBLE_SKIP_CAP_DAYS = int(os.getenv("BUBBLE_SKIP_CAP_DAYS", "7"))
@@ -1590,6 +1595,52 @@ def _call_extractor_llm(messages: List[Dict[str, str]]) -> str:
 _DM_ERROR_FALLBACK_MARKER = "The Oracle strains to speak"
 
 
+def _session_members(meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """The session's seated players: {user_id: {character_id, character_name,
+    pc_slug}}. Solo sessions predate the members map — synthesize one entry
+    from the legacy single-PC meta keys so every code path sees one shape."""
+    members = dict(meta.get("members") or {})
+    if not members and meta.get("user_id") and meta.get("character_id"):
+        members[str(meta["user_id"])] = {
+            "character_id": meta.get("character_id"),
+            "character_name": meta.get("character_name"),
+            "pc_slug": meta.get("pc_slug"),
+        }
+    return members
+
+
+def _acting_member(meta: Dict[str, Any], user_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Resolve the ACTING player's seat at the table (falls back to the
+    session owner for legacy/solo sessions)."""
+    members = _session_members(meta)
+    if user_id and str(user_id) in members:
+        return members[str(user_id)]
+    if len(members) == 1:
+        return next(iter(members.values()))
+    if meta.get("character_id"):
+        return {"character_id": meta.get("character_id"),
+                "character_name": meta.get("character_name"),
+                "pc_slug": meta.get("pc_slug")}
+    return None
+
+
+def _pc_busy_until(pc_slug: Optional[str]) -> Optional[int]:
+    """Days remaining on a PC's downtime commitment, or None when free."""
+    if not pc_slug:
+        return None
+    try:
+        e = world.get_entity(pc_slug)
+        if e is None:
+            return None
+        busy = (e.attributes or {}).get("busy_until_day")
+        if busy is None:
+            return None
+        today = world.current_day()
+        return int(busy) - today if int(busy) > today else None
+    except Exception:
+        return None
+
+
 def _reconcile_bubble_time(session_id: str, days: int) -> None:
     """Fold a turn's fictional days into this session's time bubble.
 
@@ -1609,8 +1660,17 @@ def _reconcile_bubble_time(session_id: str, days: int) -> None:
         if start is None:
             start = world.current_day()
         skip = min(days, BUBBLE_SKIP_CAP_DAYS)
+        # Lead cap: the bubble may not push the canonical clock more than
+        # WORLD_LEAD_CAP_DAYS ahead of the wall floor. Days the world won't
+        # absorb become personal commitments, same as skip-cap overflow.
+        prev_bubble = int(meta.get("bubble_days", 0))
+        floor = world.wall_floor(days_per_real_day=WORLD_DAYS_PER_REAL_DAY)
+        if floor is not None:
+            headroom = max(0, (floor + WORLD_LEAD_CAP_DAYS)
+                           - (int(start) + prev_bubble))
+            skip = min(skip, headroom)
         extra = days - skip
-        bubble_days = int(meta.get("bubble_days", 0)) + skip
+        bubble_days = prev_bubble + skip
         meta["bubble_start_day"] = int(start)
         meta["bubble_days"] = bubble_days
         _set_session_meta(session_id, meta)
@@ -1619,9 +1679,14 @@ def _reconcile_bubble_time(session_id: str, days: int) -> None:
         print(f"[clock] {session_id}: bubble +{skip}d "
               f"(start day {start}, total {bubble_days}) -> world day {new_day}")
 
-        if extra > 0 and meta.get("pc_slug"):
-            pc_e = world.get_entity(meta["pc_slug"])
-            if pc_e is not None:
+        if extra > 0:
+            # The commitment binds every PC seated at the table alike.
+            for m in _session_members(meta).values():
+                if not m.get("pc_slug"):
+                    continue
+                pc_e = world.get_entity(m["pc_slug"])
+                if pc_e is None:
+                    continue
                 busy_until = new_day + extra
                 world.upsert_entity(pc_e.name, pc_e.type, slug=pc_e.slug,
                                     status=pc_e.status,
@@ -2311,9 +2376,12 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
         if resolved:
             state = _load_session_state(session_id)
             meta = state.get("meta", {})
-    if meta and meta.get("pc_slug"):
+    # Anchor the world slice on the ACTING player's PC at a shared table.
+    acting = _acting_member(meta or {}, user_id)
+    anchor_slug = (acting or {}).get("pc_slug") or (meta or {}).get("pc_slug")
+    if meta and anchor_slug:
         try:
-            ctx_obj = world.get_world_context(meta["pc_slug"], message)
+            ctx_obj = world.get_world_context(anchor_slug, message)
             rendered = ctx_obj.render()
             if rendered.strip():
                 texts.append(rendered)
@@ -2324,12 +2392,19 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
         # danger outstrips their level, tell the DM to warn and to scale —
         # but never to soften a fight the players walk into anyway.
         try:
+            # Danger keys on the LOWEST-level PC at the table: warnings must
+            # protect the most fragile member, not the average.
             char_level = 1
-            if meta.get("character_id"):
+            member_ids = [m.get("character_id")
+                          for m in _session_members(meta).values()
+                          if m.get("character_id")]
+            if member_ids:
                 with Session(engine) as s:
-                    ch = s.get(Character, meta["character_id"])
-                    if ch:
-                        char_level = max(1, int(ch.level or 1))
+                    levels = [max(1, int(ch.level or 1))
+                              for cid in member_ids
+                              if (ch := s.get(Character, cid))]
+                if levels:
+                    char_level = min(levels)
             danger_floor = {"low": 1, "moderate": 3, "high": 5}
             hot: list[str] = []
             if ctx_obj is not None:
@@ -2362,7 +2437,7 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
         # (another party's bubble, or the wall-clock floor), tell the DM so
         # they can welcome the player back and offer downtime catch-up.
         try:
-            pc_e = world.get_entity(meta["pc_slug"])
+            pc_e = world.get_entity(anchor_slug)
             today = ctx_obj.world_day if ctx_obj else world.current_day()
             if pc_e is not None:
                 last = (pc_e.attributes or {}).get("last_active_day")
@@ -2993,8 +3068,9 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
 
     game_state = _load_session_state(req.session_id)
 
-    # Level-up gate: if character has pending level-up, block adventure.
-    char_id = game_state.get("meta", {}).get("character_id")
+    # Per-PC gates: they bind the ACTING player's character, never the table.
+    member = _acting_member(game_state.get("meta", {}) or {}, req.user_id)
+    char_id = (member or {}).get("character_id")
     if char_id:
         with Session(engine) as session:
             char = session.get(Character, char_id)
@@ -3006,6 +3082,18 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                         "Complete level-up choices via /level_up before continuing."
                     ),
                 )
+        # Downtime commitment: a PC mid-commitment can't act until the
+        # canonical clock reaches their busy_until_day.
+        wait = _pc_busy_until((member or {}).get("pc_slug"))
+        if wait:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{(member or {}).get('character_name') or 'This character'} "
+                    f"is committed to downtime for {wait} more world day(s) — "
+                    "the tale resumes when they are free."
+                ),
+            )
 
     # Player turn
     state = _append_turn(req.session_id, Turn(role="player", user=req.username, content=req.message))
@@ -3091,7 +3179,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     if condition_ops:
         try:
             state = _load_session_state(req.session_id)
-            character_id = (state.get("meta", {}) or {}).get("character_id")
+            character_id = (_acting_member(state.get("meta", {}) or {}, req.user_id) or {}).get("character_id")
             if not character_id:
                 character_id = _resolve_session_character(req.session_id, req.user_id)
             apply_condition_hooks(character_id, condition_ops)
@@ -3103,7 +3191,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     if trust_ops:
         try:
             state = _load_session_state(req.session_id)
-            character_id = (state.get("meta", {}) or {}).get("character_id")
+            character_id = (_acting_member(state.get("meta", {}) or {}, req.user_id) or {}).get("character_id")
             if not character_id:
                 character_id = _resolve_session_character(req.session_id, req.user_id)
             apply_trust_hooks(character_id, trust_ops)
@@ -6241,7 +6329,8 @@ from fastapi.staticfiles import StaticFiles
 
 def _activity_char_id(session_id: str, user_id: str) -> Optional[int]:
     state = _load_session_state(session_id)
-    char_id = (state.get("meta", {}) or {}).get("character_id")
+    member = _acting_member(state.get("meta", {}) or {}, user_id)
+    char_id = (member or {}).get("character_id")
     if not char_id:
         char_id = _resolve_session_character(session_id, user_id)
     return char_id
@@ -6370,8 +6459,14 @@ def _activity_segments(reply: str, rolls: list[dict]) -> list[dict]:
 
 
 # session_id -> live sockets; narration/rolls/scenes broadcast to the whole
-# table so a future multiplayer session is just several sockets sharing an id.
+# table so a multiplayer session is just several sockets sharing an id.
 _ACTIVITY_SOCKETS: Dict[str, set] = {}
+# channel -> the live table session in that channel (channel = table rule).
+_ACTIVITY_TABLES: Dict[str, str] = {}
+# (session_id, user_id) -> [timestamps] for the table-only action rate limit.
+_ACTIVITY_ACTION_LOG: Dict[tuple, list] = {}
+ACTIVITY_RATE_BURST = 3          # actions allowed in the window…
+ACTIVITY_RATE_WINDOW_S = 60.0    # …per this many seconds (tables only)
 
 
 async def _activity_broadcast(session_id: Optional[str], ev: dict,
@@ -6406,8 +6501,98 @@ def _activity_characters(user_id: str, channel: str) -> list[dict]:
                 "level": c.level, "alive": alive,
                 "resume_session": _activity_find_session(
                     session, user_id, channel, c.name),
+                # Downtime commitment: days until this PC is playable again.
+                "returns_in": _pc_busy_until(
+                    getattr(world.find_pc(user_id, c.name), "slug", None))
+                    if alive else None,
             })
     return out
+
+
+def _activity_party(session_id: str) -> list[dict]:
+    """Party strip data for every seated member (live HP from Character)."""
+    state = _load_session_state(session_id)
+    members = _session_members(state.get("meta", {}) or {})
+    out = []
+    with Session(engine) as s:
+        for m in members.values():
+            if not m.get("character_id"):
+                continue
+            c = s.get(Character, m["character_id"])
+            if c:
+                out.append({"name": c.name, "hp": c.current_hp,
+                            "hp_max": c.max_hp})
+    return out
+
+
+def _activity_join_table(table_sid: str, user_id: str, username: str,
+                         char_name: str, channel: str) -> dict:
+    """Seat a player's PC at a live table, gated by spatial plausibility:
+    the PC's unwritten away-days must be able to contain the journey to the
+    table. Returns {'ok': True, 'arrival': str} or {'ok': False, 'reason',
+    'travel_days', 'away_days'}."""
+    with Session(engine) as s:
+        char = s.exec(select(Character).where(
+            Character.discord_user_id == user_id,
+            Character.name.ilike(char_name))).first()  # type: ignore[attr-defined]
+    if not char:
+        return {"ok": False, "reason": f"No character named {char_name!r}."}
+    wait = _pc_busy_until(getattr(world.find_pc(user_id, char.name), "slug", None))
+    if wait:
+        return {"ok": False, "reason": f"{char.name} is committed to downtime "
+                                       f"for {wait} more world day(s)."}
+
+    state = _load_session_state(table_sid)
+    meta = dict(state.get("meta", {}) or {})
+    members = _session_members(meta)
+    owner = next(iter(members.values()), None)
+    table_loc = world.location_of(owner["pc_slug"]) if owner and owner.get("pc_slug") else None
+    today = world.current_day()
+
+    pc_ent = world.find_pc(user_id, char.name)
+    arrival = f"{char.name} joins the tale."
+    if pc_ent is None:
+        # Never placed: spawn directly at the table.
+        pc_ent = place_pc(world, char.name, discord_user_id=user_id,
+                          location_slug=(table_loc.slug if table_loc
+                                         else "the-silver-tankard"),
+                          attributes={"race": char.race, "class": char.char_class,
+                                      "subclass": char.subclass,
+                                      "level": char.level})
+        arrival = f"{char.name} arrives, new to these roads."
+    elif table_loc is not None:
+        pc_loc = world.location_of(pc_ent.slug)
+        if pc_loc is None or pc_loc.slug != table_loc.slug:
+            from eight_card_system import geo
+            a = world.coords_of(pc_ent.slug)
+            b = world.coords_of(table_loc.slug)
+            travel_days = 0
+            if a and b:
+                travel_days = max(0, round(
+                    geo.distance_mi(a, b) / geo.MILES_PER_DAY_ON_FOOT))
+            last = (pc_ent.attributes or {}).get("last_active_day")
+            away = (today - int(last)) if last is not None else 9999
+            if travel_days > away + 1:
+                return {"ok": False,
+                        "reason": (f"{char.name} is roughly {travel_days} days' "
+                                   f"travel from {table_loc.name}, but only "
+                                   f"{away} unwritten day(s) have passed for "
+                                   "them — they cannot be in this tale yet."),
+                        "travel_days": travel_days, "away_days": away}
+            world.move_entity(pc_ent.slug, table_loc.slug)
+            arrival = (f"{char.name} arrives at {table_loc.name} after "
+                       f"{max(1, travel_days)} day(s) on the road.")
+
+    world.upsert_entity(pc_ent.name, pc_ent.type, slug=pc_ent.slug,
+                        status=pc_ent.status,
+                        attributes={"last_active_day": today})
+    members[str(user_id)] = {"character_id": char.id,
+                             "character_name": char.name,
+                             "pc_slug": pc_ent.slug}
+    meta["members"] = members
+    meta["activity_channel"] = channel
+    _set_session_meta(table_sid, meta)
+    return {"ok": True, "arrival": arrival}
 
 
 def _activity_find_session(session: Session, user_id: str, channel: str,
@@ -6460,10 +6645,12 @@ async def activity_ws(ws: WebSocket, channel: str):
         sheet = _activity_sheet(session_id, user_id)
         if sheet:
             await ws.send_json({"t": "sheet", "sheet": sheet})
-            await _activity_broadcast(session_id, {"t": "party", "members": [{
+            party = _activity_party(session_id) or [{
                 "name": sheet["name"], "hp": sheet["hp"],
-                "hp_max": sheet["hp_max"],
-            }]}, fallback=ws)
+                "hp_max": sheet["hp_max"]}]
+            await _activity_broadcast(session_id, {"t": "party",
+                                                   "members": party},
+                                      fallback=ws)
             await ws.send_json({"t": "lexicon",
                                 "entries": [{"text": sheet["name"], "kind": "name"}]})
         await send_levelup()
@@ -6506,6 +6693,43 @@ async def activity_ws(ws: WebSocket, channel: str):
             if msg.get("t") == "enter":
                 char_name = (msg.get("character_name") or "").strip()
                 await ws.send_json({"t": "busy", "on": True})
+
+                # Channel = table: if another player's session is live in this
+                # channel, entering means JOINING it (spatial gate applies) —
+                # unless the client explicitly asked for a solo tale.
+                live_sid = _ACTIVITY_TABLES.get(channel)
+                if live_sid and not _ACTIVITY_SOCKETS.get(live_sid):
+                    live_sid = None  # stale registry entry: table went dark
+                    _ACTIVITY_TABLES.pop(channel, None)
+                if (live_sid and char_name and not msg.get("solo")):
+                    _lm = _session_members(
+                        _load_session_state(live_sid).get("meta", {}) or {})
+                    already = str(user_id) in _lm
+                    if _lm and not already:
+                        res = _activity_join_table(
+                            live_sid, user_id, username, char_name, channel)
+                        if not res.get("ok"):
+                            await ws.send_json({
+                                "t": "join_blocked",
+                                "reason": res.get("reason"),
+                                "travel_days": res.get("travel_days"),
+                                "away_days": res.get("away_days")})
+                            await ws.send_json({"t": "busy", "on": False})
+                            continue
+                        await bind_session(live_sid)
+                        await ws.send_json({"t": "entered", "resumed": True})
+                        await _activity_broadcast(session_id, {
+                            "t": "narration", "text": f"*{res['arrival']}*"})
+                        await send_state()
+                        await ws.send_json({"t": "busy", "on": False})
+                        continue
+                    if already:
+                        await bind_session(live_sid)
+                        await ws.send_json({"t": "entered", "resumed": True})
+                        await send_state()
+                        await ws.send_json({"t": "busy", "on": False})
+                        continue
+
                 resume_sid = None
                 if char_name:
                     with Session(engine) as s:
@@ -6513,6 +6737,7 @@ async def activity_ws(ws: WebSocket, channel: str):
                             s, user_id, channel, char_name)
                 if resume_sid:
                     await bind_session(resume_sid)
+                    _ACTIVITY_TABLES.setdefault(channel, session_id)
                     state = _load_session_state(session_id)
                     recap = [t for t in (state.get("recent_turns") or [])
                              if getattr(t, "role", None) == "dm"
@@ -6543,14 +6768,43 @@ async def activity_ws(ws: WebSocket, channel: str):
                         await ws.send_json({"t": "busy", "on": False})
                         continue
                     await bind_session(er.session_id)
-                    # Merge (never replace) so enterworld's meta survives.
+                    # Merge (never replace) so enterworld's meta survives;
+                    # seed the members map with the table's founder.
                     _state = _load_session_state(session_id)
                     _meta = dict(_state.get("meta") or {})
                     _meta["activity_channel"] = channel
+                    if _meta.get("character_id"):
+                        _meta["members"] = {str(user_id): {
+                            "character_id": _meta.get("character_id"),
+                            "character_name": _meta.get("character_name"),
+                            "pc_slug": _meta.get("pc_slug"),
+                        }}
                     _set_session_meta(session_id, _meta)
+                    _ACTIVITY_TABLES.setdefault(channel, session_id)
                     await ws.send_json({"t": "entered", "resumed": False})
                     if er.intro:
                         await ws.send_json({"t": "narration", "text": er.intro})
+                    # Merge-invite: another live table at the same place is an
+                    # invitation, not a contradiction.
+                    try:
+                        my_loc = world.location_of(_meta.get("pc_slug"))
+                        for other_ch, other_sid in _ACTIVITY_TABLES.items():
+                            if other_sid == session_id or not _ACTIVITY_SOCKETS.get(other_sid):
+                                continue
+                            om = _session_members(_load_session_state(
+                                other_sid).get("meta", {}) or {})
+                            owner = next(iter(om.values()), None)
+                            if not (owner and owner.get("pc_slug") and my_loc):
+                                continue
+                            other_loc = world.location_of(owner["pc_slug"])
+                            if other_loc and other_loc.slug == my_loc.slug:
+                                await ws.send_json({
+                                    "t": "table_invite",
+                                    "place": my_loc.name,
+                                    "channel": other_ch})
+                                break
+                    except Exception as e:
+                        print(f"[activity] merge-invite scan failed: {e}")
                 await send_state()
                 await ws.send_json({"t": "busy", "on": False})
                 continue
@@ -6589,6 +6843,23 @@ async def activity_ws(ws: WebSocket, channel: str):
             if msg.get("t") != "action" or not (msg.get("text") or "").strip():
                 continue
             text = msg["text"].strip()
+
+            # Table-only rate limit: shared narration is a commons; one player
+            # can't monopolize it. Solo sessions are never limited.
+            _members_now = _session_members(
+                _load_session_state(session_id).get("meta", {}) or {})
+            if len(_members_now) > 1:
+                import time as _time
+                key = (session_id, str(user_id))
+                log = [t for t in _ACTIVITY_ACTION_LOG.get(key, [])
+                       if _time.time() - t < ACTIVITY_RATE_WINDOW_S]
+                if len(log) >= ACTIVITY_RATE_BURST:
+                    wait = int(ACTIVITY_RATE_WINDOW_S - (_time.time() - log[0])) + 1
+                    await ws.send_json({"t": "rate_limited", "wait": wait})
+                    continue
+                log.append(_time.time())
+                _ACTIVITY_ACTION_LOG[key] = log
+
             await _activity_broadcast(session_id, {"t": "busy", "on": True},
                                       fallback=ws)
             await _activity_broadcast(session_id, {
@@ -6648,6 +6919,11 @@ async def activity_ws(ws: WebSocket, channel: str):
     finally:
         if session_id:
             _ACTIVITY_SOCKETS.get(session_id, set()).discard(ws)
+            if not _ACTIVITY_SOCKETS.get(session_id):
+                # Table went dark: free the channel for the next gathering.
+                for ch, sid in list(_ACTIVITY_TABLES.items()):
+                    if sid == session_id:
+                        _ACTIVITY_TABLES.pop(ch, None)
 
 
 _ACTIVITY_DIST = Path(__file__).resolve().parent.parent / "activity-ui" / "dist"
