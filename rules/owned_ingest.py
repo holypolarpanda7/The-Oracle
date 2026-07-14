@@ -128,15 +128,30 @@ def ocr_extract_pdf(pdf: Path, workspace: Path = WORKSPACE,
             bitmap = page.render(scale=scale)
             img = np.asarray(bitmap.to_pil().convert("RGB"))
             result, _ = ocr(img)
-            lines: list[tuple[int, float, str]] = []
+            boxes: list[tuple[int, float, float, str]] = []
             if result:
                 mid_x = img.shape[1] / 2
                 for box, text, _conf in result:
                     xs = [p[0] for p in box]
                     ys = [p[1] for p in box]
                     col = 0 if (sum(xs) / len(xs)) < mid_x else 1
-                    lines.append((col, min(ys), text))
-            body = "\n".join(t for _, _, t in sorted(lines, key=lambda r: (r[0], r[1])))
+                    boxes.append((col, min(ys), min(xs), text))
+            # Row clustering: within a column, boxes whose tops are within
+            # ~half a line of the current row belong to it; rows then read
+            # left-to-right. (Fixed buckets split real rows at boundaries.)
+            ordered: list[str] = []
+            for want_col in (0, 1):
+                colboxes = sorted(b for b in boxes if b[0] == want_col)
+                row: list[tuple[float, str]] = []
+                row_y = None
+                for _c, y, x, txt in colboxes:
+                    if row_y is not None and y - row_y > 9:
+                        ordered.extend(t for _x, t in sorted(row))
+                        row = []
+                    row.append((x, txt))
+                    row_y = y
+                ordered.extend(t for _x, t in sorted(row))
+            body = "\n".join(ordered)
             pages_text.append(body)
             if (i + 1) % 10 == 0:
                 print(f"[ocr] {pdf.name}: page {i + 1}/{len(doc)}", flush=True)
@@ -1125,18 +1140,26 @@ def _mon_int(raw: str) -> Optional[int]:
 
 
 _MON_AC = re.compile(r"^\s*AC\s*([\dlJO\]]{1,2})\b[^\n]*$", re.M)
-_MON_HP = re.compile(r"(?i)^\s*HP\s*([\dlJOrs\],]{1,4})\s*\(([^)]+)\)", re.M)
+_MON_HP = re.compile(
+    r"(?i)^\s*HP\s*([\dlJOrs\],]{1,4})\s*[（(]([^)）]+)[)）]", re.M)
 _MON_SPEED = re.compile(r"(?i)^\s*" + _sp_fuzzy("speed") + r"\s*([^\n]+)", re.M)
+# CR line tolerates OCR full-width parens and the 'or N in Lair' XP variant:
+# 'CR14（XP11,500,or13,000inLair;PB+5)'.
 _MON_CR = re.compile(
     r"(?i)^\s*CR\s*([\dlJOr\]]{1,2}(?:/[\dlJOr\]]{1,2})?)\s*"
-    r"\(\s*XP\s*([\dlJOrs\],]+)\s*[;,.]?\s*PB\s*\+?\s*([\dlJOr\]]{1,2})", re.M)
-# Labelled score/mod/save triples ('Srn 17 +3 +3', 'Cor.r l0 +0 +0'). Layout
+    r"[（(]\s*XP\s*([\dlJOrs\],]+)[^)）]*?PB\s*\+?\s*([\dlJOr\]]{1,2})", re.M)
+# Labelled score/mod/save triples ('Srn 17 +3 +3', 'STR23+6+6'). Layout
 # damage can drop whole columns, so scores are slotted into STR..CHA by
 # aligning the damaged labels against the canonical order — never by position
 # alone. Modifiers are matched (glyph junk like \"-'l\" = -1) then discarded.
+# (?<![A-Za-z]) not \b: merged cells ('…+10DEX10+0+7') put a digit before
+# the next label, which \b treats as word-internal.
 _MON_TRIPLE = re.compile(
-    r"\b([A-Za-z.'’]{2,6})\s+([\dlJOrs\]]{1,2})\s+"
-    r"([+-]\s*'?[\dlJOr\]]{1,2})\s+([+-]\s*'?[\dlJOr\]]{1,2})")
+    r"(?<![A-Za-z])([A-Za-z.'’]{2,6})\s*([\dlJOrs\]]{1,2})\s*"
+    r"([+-]\s*'?[\dlJOr\]]{1,2})\s*([+-]\s*'?[\dlJOr\]]{1,2})")
+_MON_DOUBLE = re.compile(
+    r"(?<![A-Za-z])([A-Za-z.'’]{2,6})\s*([\dlJOrs\]]{1,2})\s*"
+    r"([+-]\s*'?[\dlJOr\]]{1,2})")
 _ABILITY_ORDER = ("str", "dex", "con", "int", "wis", "cha")
 
 
@@ -1161,22 +1184,14 @@ def _classify_ability_label(label: str) -> Optional[str]:
 
 
 def _align_abilities(pairs: list[tuple[str, Optional[int]]]) -> dict:
-    """Slot (damaged label, score) pairs into the canonical ability order,
-    tolerating missing columns. Order is enforced so a misread label can't
-    land in a slot the table already passed."""
+    """Slot (damaged label, score) pairs into STR..CHA by classified label.
+    First value per ability wins; OCR row-bucket flips can reorder rows, so
+    document order is NOT enforced."""
     scores: dict[str, Optional[int]] = {a: None for a in _ABILITY_ORDER}
-    c = 0
     for label, val in pairs:
         k = _classify_ability_label(label)
-        if k is None:
-            continue
-        j = _ABILITY_ORDER.index(k)
-        if j < c:
-            continue
-        scores[k] = val
-        c = j + 1
-        if c >= len(_ABILITY_ORDER):
-            break
+        if k is not None and scores[k] is None:
+            scores[k] = val
     return scores
 
 
@@ -1194,7 +1209,8 @@ _MON_LINE_FIELDS = {
     "immunities": "Immunities", "vulnerabilities": "Vulnerabilities",
     "senses": "Senses", "languages": "Languages", "gear": "Gear",
 }
-_MON_LINE_RX = {k: re.compile(r"(?i)^\s*" + _sp_fuzzy(lbl) + r"\s+([^\n]+)", re.M)
+# \s* not \s+: OCR glues labels to values ('SkillsPerception +11').
+_MON_LINE_RX = {k: re.compile(r"(?i)^\s*" + _sp_fuzzy(lbl) + r"\s*([^\n]+)", re.M)
                 for k, lbl in _MON_LINE_FIELDS.items()}
 
 _MON_SECTIONS = ("Traits", "Actions", "Bonus Actions", "Reactions",
@@ -1244,8 +1260,10 @@ def _parse_mon_sections(body: str) -> dict[str, list[dict]]:
         end = marks[i + 1][0] if i + 1 < len(marks) else min(len(body), s + 6000)
         chunk = body[e:end]
         entries = []
-        # 'Bold Name. Description...' entries.
-        parts = re.split(r"^([A-Z][A-Za-z'’ ()/\-]{2,60}?[.!])\s", chunk, flags=re.M)
+        # 'Bold Name. Description...' entries (OCR may drop the space after
+        # the period, so a following capital also counts as the boundary).
+        parts = re.split(r"^([A-Z][A-Za-z'’ ()/\-]{2,60}?[.!])(?=\s|[A-Z])",
+                         chunk, flags=re.M)
         for j in range(1, len(parts) - 1, 2):
             nm = parts[j].rstrip(".!").strip()
             desc = re.sub(r"\s+", " ", _fix_ocr_digits(parts[j + 1])).strip()[:1500]
@@ -1268,11 +1286,8 @@ def _mm_contents(text: str, canon_names: list[str]) -> list[tuple[str, int]]:
     import difflib
     canon_by_key = {re.sub(r"[^a-z]", "", n.lower()): n for n in canon_names}
     keys = list(canon_by_key)
-    out: list[tuple[str, int]] = []
-    for m in _MM_TOC_ROW.finditer(text):
-        raw, page = m.group(1), _mon_int(m.group(2))
-        if page is None:
-            continue
+
+    def clean(raw: str) -> tuple[str, str]:
         name = re.sub(r"(?<=[A-Za-z])1(?=[a-zA-Z])", "l", raw)
         name = re.sub(r"(?<=[A-Za-z])0(?=[a-zA-Z])", "o", name)
         name = re.sub(r"\b4(?=[a-z])", "A", name)
@@ -1280,7 +1295,28 @@ def _mm_contents(text: str, canon_names: list[str]) -> list[tuple[str, int]]:
         name = " ".join(name.split())
         key = re.sub(r"[^a-z]", "", name.lower())
         hit = difflib.get_close_matches(key, keys, n=1, cutoff=0.85)
-        out.append((canon_by_key[hit[0]] if hit else name, page))
+        return (canon_by_key[hit[0]] if hit else _repair_caps_name(name)), key
+
+    out: list[tuple[str, int]] = []
+    # pypdf-style rows: 'Aboleth....... 12' on one line.
+    for m in _MM_TOC_ROW.finditer(text):
+        page = _mon_int(m.group(2))
+        if page is not None:
+            out.append((clean(m.group(1))[0], page))
+    # OCR-style rows split over two lines in the front matter:
+    # 'AarakocraAeromancer...' / '..10' (dots even inside the number).
+    front = text[:60000].splitlines()
+    for a, b in zip(front, front[1:]):
+        nm = re.match(r"^([A-Z][A-Za-z'’ \-]{2,40}?)[. ]*$", a.strip())
+        pg = re.match(r"^[. ]*([\d.]{1,6})$", b.strip())
+        if not (nm and pg):
+            continue
+        digits = re.sub(r"\D", "", pg.group(1))
+        if not digits or len(digits) > 3:
+            continue
+        name, key = clean(nm.group(1))
+        if len(key) >= 4:
+            out.append((name, int(digits)))
     # The contents block appears once; drop echoes of the same (name, page).
     return list(dict.fromkeys(out))
 
@@ -1363,17 +1399,23 @@ def parse_mm_monsters(text: str, canon_names: list[str]) -> list[dict]:
             continue
         size_line = pre_lines[-1].strip()
         raw_name = pre_lines[-2].strip()
-        size = _fuzzy_pick(size_line.split()[0] if size_line.split() else "",
+        # OCR drops word spaces ('MediumorSmallHumanoid'): substring match on
+        # the collapsed line, fuzzy per-word as fallback for glyph damage.
+        lkey = re.sub(r"[^a-z]", "", size_line.lower())
+        size = next((s for s in _MON_SIZES if s.lower() in lkey), None) \
+            or _fuzzy_pick(size_line.split()[0] if size_line.split() else "",
                            _MON_SIZES)
-        words = re.findall(r"[A-Za-z']+", size_line)
-        mtype = next((t for w in words for t in [_fuzzy_pick(w, _MON_TYPES, 0.8)]
-                      if t), None)
+        mtype = next((t for t in _MON_TYPES if t.lower() in lkey), None)
+        if mtype is None:
+            words = re.findall(r"[A-Za-z']+", size_line)
+            mtype = next((t for w in words
+                          for t in [_fuzzy_pick(w, _MON_TYPES, 0.8)] if t), None)
         if size is None and mtype is None:
             continue  # AC line that isn't a stat block
         alignment = None
         al = re.search(r",\s*([^,\n]+)$", size_line)
         if al:
-            alignment = al.group(1).strip()
+            alignment = _repair_caps_name(al.group(1).strip())
 
         block_end = anchors[i + 1].start() - 300 if i + 1 < len(anchors) \
             else len(text)
@@ -1399,9 +1441,15 @@ def parse_mm_monsters(text: str, canon_names: list[str]) -> list[dict]:
         hp = _MON_HP.search(body[:400])
         speed = _MON_SPEED.search(body[:500])
         cr = _MON_CR.search(body)
-        pairs = [(t[0], _mon_int(t[1])) for t in _MON_TRIPLE.findall(
-            body[:cr.start()] if cr else body[:900])][:8]
+        table = body[:cr.start()] if cr else body[:900]
+        pairs = [(t[0], _mon_int(t[1])) for t in _MON_TRIPLE.findall(table)][:8]
         abil_scores = _align_abilities(pairs)
+        if not all(abil_scores.values()):
+            # OCR can sever a cell's save bonus ('CHA5-3' alone): fall back
+            # to label+score+one modifier for the slots still empty.
+            doubles = [(t[0], _mon_int(t[1])) for t in _MON_DOUBLE.findall(table)]
+            for k, v in _align_abilities(doubles).items():
+                abil_scores[k] = abil_scores[k] or v
         cr_val = None
         if cr:
             frac = cr.group(1)
@@ -1513,6 +1561,206 @@ def ingest_monsters(engine=None, database_url=None,
     return result
 
 
+# ===========================================================================
+# Parser: 2014-format stat blocks (Bigby's; reusable for Volo's/VRGtR later)
+# ===========================================================================
+# Format: 'Armor Class 16 (natural armor)' / 'Hit Points 84 (8d10+40)' /
+# ability table as a labels row then a values row / 'Challenge 7 (2,900 XP)'.
+
+_B14_AC = re.compile(r"(?i)^\s*Armor ?Class\s*(\d{1,2})\s*(\(([^)]*)\))?", re.M)
+_B14_HP = re.compile(r"(?i)^\s*Hit ?Points?\s*(\d{1,4})\s*\(([^)]+)\)", re.M)
+_B14_SPEED = re.compile(r"(?i)^\s*Speed\s*([^\n]+)", re.M)
+_B14_CR = re.compile(
+    r"(?i)^\s*Challenge\s*(\d{1,2}(?:/\d)?)\s*\(([\d,]+)\s*XP\)", re.M)
+_B14_PB = re.compile(r"(?i)^\s*Proficiency ?Bonus\s*\+?\s*(\d)", re.M)
+# 'N (+M)' ability cells; both halves tolerate letter-digit glyphs ('+O').
+_B14_SCORE = re.compile(
+    r"\b(\d[\dOlJIrs]?|[OlJIrs]\d)\s*\(\s*([+-]\s*[\dOlJIrs]{1,2})\s*\)")
+_B14_LINE_FIELDS = {
+    "skills": "Skills", "senses": "Senses", "languages": "Languages",
+    "resistances": "Damage Resistances", "immunities": "Damage Immunities",
+    "vulnerabilities": "Damage Vulnerabilities",
+    "condition_immunities": "Condition Immunities",
+    "saving_throws": "Saving Throws",
+}
+_B14_LINE_RX = {k: re.compile(r"(?i)^\s*" + _sp_fuzzy(lbl) + r"\s+([^\n]+)", re.M)
+                for k, lbl in _B14_LINE_FIELDS.items()}
+_B14_SECTIONS = ("Actions", "Bonus Actions", "Reactions", "Legendary Actions",
+                 "Lair Actions")
+
+
+def parse_2014_statblocks(text: str, source_book: str) -> list[dict]:
+    out: list[dict] = []
+    anchors = list(_B14_AC.finditer(text))
+    for i, am in enumerate(anchors):
+        pre_lines = [l for l in text[max(0, am.start() - 300):am.start()]
+                     .splitlines() if l.strip()]
+        if len(pre_lines) < 2:
+            continue
+        size_line = pre_lines[-1].strip()
+        raw_name = pre_lines[-2].strip()
+        # OCR drops word spaces ('MediumOoze,Unaligned'): substring match on
+        # the collapsed line, fuzzy per-word as fallback for glyph damage.
+        lkey = re.sub(r"[^a-z]", "", size_line.lower())
+        size = next((s for s in _MON_SIZES if s.lower() in lkey), None) \
+            or _fuzzy_pick(size_line.split()[0] if size_line.split() else "",
+                           _MON_SIZES)
+        mtype = next((t for t in _MON_TYPES if t.lower() in lkey), None)
+        if mtype is None:
+            words = re.findall(r"[A-Za-z']+", size_line)
+            mtype = next((t for w in words
+                          for t in [_fuzzy_pick(w, _MON_TYPES, 0.8)] if t), None)
+        if size is None and mtype is None:
+            continue
+        alignment = None
+        al = re.search(r",\s*(?:typically\s*)?([^,\n]+)$", size_line, re.I)
+        if al:
+            alignment = _repair_caps_name(
+                re.sub(r"(?i)^typically", "", al.group(1)).strip())
+        name = _repair_caps_name(raw_name)
+        if len(re.sub(r"[^A-Za-z]", "", name)) < 3:
+            continue
+
+        block_end = anchors[i + 1].start() - 300 if i + 1 < len(anchors) \
+            else len(text)
+        body = text[am.start():max(block_end, am.start() + 800)]
+
+        hp = _B14_HP.search(body[:400])
+        speed = _B14_SPEED.search(body[:500])
+        cr = _B14_CR.search(body)
+        pb = _B14_PB.search(body)
+        # Ability scores: six 'N (+M)' cells, paired positionally. Column
+        # interleave can push trailing cells past the Challenge line, so the
+        # window extends a little beyond it (dice rolls can't false-match:
+        # their parens hold dice, not a signed modifier).
+        head = body[:cr.end() + 600 if cr else 900]
+        cells = [_mon_int(m.group(1)) for m in _B14_SCORE.finditer(head)][:6]
+        abil = dict(zip(("strength", "dexterity", "constitution",
+                         "intelligence", "wisdom", "charisma"),
+                        cells + [None] * (6 - len(cells))))
+        cr_val = None
+        if cr:
+            frac = cr.group(1)
+            cr_val = (int(frac.split("/")[0]) / int(frac.split("/")[1])
+                      if "/" in frac else float(frac))
+        fields = {k: (re.sub(r"\s+", " ", rx.search(body).group(1)).strip()
+                      if rx.search(body) else None)
+                  for k, rx in _B14_LINE_RX.items()}
+
+        # Sections: caps-ish header lines; traits live between CR and ACTIONS.
+        sec_marks: list[tuple[int, int, str]] = []
+        sec_zone = body[cr.end():] if cr else body
+        for m in re.finditer(r"^\s*([A-Za-z][A-Za-z ]{3,22})\s*$", sec_zone, re.M):
+            sec = _fuzzy_pick(m.group(1), _B14_SECTIONS, cutoff=0.85)
+            if sec:
+                sec_marks.append((m.start(), m.end(), sec))
+        sections: dict[str, str] = {}
+        traits_txt = sec_zone[:sec_marks[0][0]] if sec_marks else sec_zone[:4000]
+        for j, (s, e, sec) in enumerate(sec_marks):
+            end = sec_marks[j + 1][0] if j + 1 < len(sec_marks) \
+                else min(len(sec_zone), s + 6000)
+            sections[sec] = sec_zone[e:end]
+
+        def entries(chunk: Optional[str]) -> Optional[list]:
+            if not chunk:
+                return None
+            parts = re.split(r"^([A-Z][A-Za-z'’ ()/\-]{2,60}?[.!])(?=\s|[A-Z])",
+                             chunk, flags=re.M)
+            es = [{"name": parts[j].rstrip(".!").strip(),
+                   "desc": re.sub(r"\s+", " ",
+                                  _fix_dice(parts[j + 1])).strip()[:1500]}
+                  for j in range(1, len(parts) - 1, 2)]
+            return es or None
+
+        out.append({
+            "slug": _slugify(name), "name": name, "size": size,
+            "type": (mtype or "").lower() or None, "alignment": alignment,
+            "armor_class": _mon_int(am.group(1)), "ac_desc": am.group(3),
+            "hit_points": _mon_int(hp.group(1)) if hp else None,
+            "hit_points_roll": (_fix_dice(hp.group(2)).replace(" ", "")
+                                if hp else None),
+            "speed": _parse_speed(speed.group(1)) if speed else None,
+            **abil,
+            "challenge_rating": cr_val,
+            "xp": _mon_int(cr.group(2).replace(",", "")) if cr else None,
+            "proficiency_bonus": _mon_int(pb.group(1)) if pb else None,
+            "languages": fields["languages"], "senses": fields["senses"],
+            "damage_resistances": fields["resistances"],
+            "damage_immunities": fields["immunities"],
+            "damage_vulnerabilities": fields["vulnerabilities"],
+            "condition_immunities": fields["condition_immunities"],
+            "skills": fields["skills"],
+            "special_abilities": entries(traits_txt),
+            "actions": (entries(sections.get("Actions")) or [])
+                + [dict(e, name=f"Bonus Action: {e['name']}")
+                   for e in entries(sections.get("Bonus Actions")) or []]
+                + [dict(e, name=f"Reaction: {e['name']}")
+                   for e in entries(sections.get("Reactions")) or []],
+            "legendary_actions": entries(sections.get("Legendary Actions")),
+            "source": source_book,
+        })
+    # Dedupe by slug, keep the richest block.
+    seen: dict[str, dict] = {}
+    for mo in out:
+        rich = len(mo.get("actions") or []) + len(mo.get("special_abilities") or [])
+        prev = seen.get(mo["slug"])
+        if prev is None or rich > (len(prev.get("actions") or [])
+                                   + len(prev.get("special_abilities") or [])):
+            seen[mo["slug"]] = mo
+    return list(seen.values())
+
+
+def ingest_2014_monsters(glob_pat: str, source_book: str, engine=None,
+                         database_url=None, workspace: Path = WORKSPACE) -> dict:
+    """Ingest any 2014-format book's stat blocks (Bigby's, Volo's, …)."""
+    from .models import Monster
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    bb = next(iter(workspace.glob(glob_pat)), None)
+    if bb is None:
+        return {"error": f"extraction not found: {glob_pat}"}
+    monsters = parse_2014_statblocks(bb.read_text(encoding="utf-8"), source_book)
+    result = {"monsters_parsed": len(monsters), "new": 0, "updated": 0}
+    with Session(engine) as s:
+        slug_by_key = {_collapse_key(n): slug for n, slug in
+                       s.exec(select(Monster.name, Monster.index_slug))}
+        for mo in monsters:
+            slug = slug_by_key.get(_collapse_key(mo["name"])) or mo["slug"]
+            mapped = Monster(
+                index_slug=slug, name=mo["name"], size=mo["size"],
+                type=mo["type"], alignment=mo["alignment"],
+                armor_class=mo["armor_class"], ac_desc=mo.get("ac_desc"),
+                hit_points=mo["hit_points"],
+                hit_points_roll=mo["hit_points_roll"],
+                strength=mo["strength"], dexterity=mo["dexterity"],
+                constitution=mo["constitution"],
+                intelligence=mo["intelligence"], wisdom=mo["wisdom"],
+                charisma=mo["charisma"], challenge_rating=mo["challenge_rating"],
+                xp=mo["xp"], proficiency_bonus=mo["proficiency_bonus"],
+                languages=mo["languages"], speed=mo["speed"],
+                senses={"raw": mo["senses"]} if mo["senses"] else None,
+                proficiencies=([{"skill": mo["skills"]}] if mo["skills"] else None),
+                damage_resistances=([mo["damage_resistances"]]
+                                    if mo["damage_resistances"] else None),
+                damage_immunities=([mo["damage_immunities"]]
+                                   if mo["damage_immunities"] else None),
+                damage_vulnerabilities=([mo["damage_vulnerabilities"]]
+                                        if mo["damage_vulnerabilities"] else None),
+                condition_immunities=([mo["condition_immunities"]]
+                                      if mo["condition_immunities"] else None),
+                special_abilities=mo["special_abilities"],
+                actions=mo["actions"] or None,
+                legendary_actions=mo["legendary_actions"],
+                source=mo["source"],
+            )
+            if _upsert(s, Monster, slug, mapped):
+                result["new"] += 1
+            else:
+                result["updated"] += 1
+        s.commit()
+    return result
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -1534,6 +1782,13 @@ def main(argv: list[str]) -> None:
         print("[owned] subclasses:", ingest_subclasses())
         print("[owned] xgte subclasses:", ingest_xgte_subclasses())
         print("[owned] monsters:", ingest_monsters())
+        print("[owned] bigby monsters:", ingest_2014_monsters(
+            "*bigby*.txt", "Owned (Bigby's Glory of the Giants) — local ingest"))
+        print("[owned] volo monsters:", ingest_2014_monsters(
+            "*volo*.txt", "Owned (Volo's Guide to Monsters) — local ingest"))
+        print("[owned] vrgtr monsters:", ingest_2014_monsters(
+            "*van-richten*.txt",
+            "Owned (Van Richten's Guide to Ravenloft) — local ingest"))
 
 
 if __name__ == "__main__":
