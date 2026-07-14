@@ -169,6 +169,21 @@ class RulesLibrary:
             return []
         return [f for f in (sc.features or []) if f.get("level") == level]
 
+    def class_features_at(self, cls: str, level: int) -> list[dict]:
+        """Core class features gained AT a given level, as
+        [{'class','level','name','summary'}] — pair with
+        ``subclass_features_at`` for the full level-up picture."""
+        cls_l = cls.strip().lower()
+        with Session(self.engine) as s:
+            rows = s.exec(select(SrdEntry).where(
+                SrdEntry.category == "class-feature")).all()
+        out = []
+        for e in rows:
+            d = e.data or {}
+            if d.get("level") == level and (d.get("class") or "").lower() == cls_l:
+                out.append({**d, "summary": e.desc})
+        return sorted(out, key=lambda f: f["name"])
+
     # ----- items (equipment + magic items) -----
 
     def get_item(self, ref: str) -> Optional[Item]:
