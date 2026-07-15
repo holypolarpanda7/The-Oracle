@@ -16,7 +16,6 @@ import backend_integration
 import dm_commands
 import event_handlers
 import character_display
-import game_session
 
 
 # Load env vars
@@ -79,11 +78,6 @@ async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
 
 
 @bot.event
-async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    await event_handlers.on_voice_state_update_handler(member, before, after, bot)
-
-
-@bot.event
 async def on_message(message: discord.Message):
     await event_handlers.on_message_handler(message, bot, active_dm_channels)
 
@@ -119,34 +113,13 @@ async def reset_dm(ctx: commands.Context):
 
 @bot.command(name="enterworld")
 async def enter_world(ctx: commands.Context, *, character_name: str = None):
-    """Enter the world with your character."""
-    user_id = str(ctx.author.id)
-    
-    # Check if user has a character
-    has_character = await backend_integration.check_character_in_db(user_id, CHECK_CHARACTER_URL)
-    
-    if not has_character:
-        # Start character creation flow
-        await ctx.send(f"👋 Welcome, {ctx.author.display_name}! Let's create your character.")
-        await character_creation.create_character_creation_session(ctx, bot)
-    else:
-        # Enter world
-        await dm_commands.enter_world_command(ctx, character_name, CHECK_CHARACTER_URL, ENTER_URL)
-
-
-@bot.command(name="leave", aliases=["endsession", "logout"])
-async def leave_session(ctx: commands.Context):
-    """End the play session tied to this channel (session owner or admin only)."""
-    session = game_session.active_sessions.get(ctx.channel.id)
-    if not session:
-        await ctx.send("There's no active session in this channel to leave.")
-        return
-    if str(ctx.author.id) != session["owner_id"] and not dm_commands.is_admin(ctx.author, ADMIN_ID):
-        await ctx.send("Only the session's player (or the Oracle) can end this session.")
-        return
-    char_name = session["participants"].get(session["owner_id"], {}).get("character_name", "your character")
-    await ctx.send(f"🌙 Ending **{char_name}**'s session — this channel will close shortly. Safe travels!")
-    await game_session.end_session_for_channel(ctx.channel.id, bot, reason="Player ended session")
+    """Legacy entry point. Character creation and play now live in the web
+    Activity; this command just points players there."""
+    entry = getattr(bot, "entry_channel_name", "enter-the-world-of-gatvorhain")
+    await ctx.send(
+        f"🔮 The Oracle now runs as an in-Discord **Activity**. Head to "
+        f"**#{entry}**, join a voice channel, and press **Enter the Oracle** — "
+        f"you'll create a character or resume your tale right there.")
 
 
 @bot.command(name="voicetest")

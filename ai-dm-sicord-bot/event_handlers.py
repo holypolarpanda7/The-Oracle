@@ -20,7 +20,6 @@ import character_creation
 import backend_integration
 import dm_commands
 import character_display
-import game_session
 
 
 class CharacterCreationView(View):
@@ -142,168 +141,6 @@ async def on_reaction_add_handler(reaction: discord.Reaction, user: discord.User
             await reaction.message.channel.send("🔊 Music has been turned back on.")
         else:
             await reaction.message.channel.send("🔊 Music is already on.")
-
-
-async def on_voice_state_update_handler(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState, bot):
-    """Handle player joining character creation voice channels."""
-    # Ignore bot's own voice state changes
-    if member.bot:
-        return
-
-    # Owner left a session voice channel -> start the 2-minute end timer.
-    if before.channel is not None and before.channel is not after.channel:
-        if game_session.is_session_voice(before.channel.id):
-            try:
-                await game_session.on_session_voice_leave(member, before.channel.id, bot)
-            except Exception as e:
-                print(f"[session voice leave error] {e}")
-
-    # Check if the member joined a voice channel
-    if after.channel is None:
-        return  # Member left or was moved, ignore
-
-    # Owner rejoined an active session voice channel -> cancel the end timer.
-    if game_session.is_session_voice(after.channel.id):
-        try:
-            await game_session.on_session_voice_rejoin(member, after.channel.id, bot)
-        except Exception as e:
-            print(f"[session voice rejoin error] {e}")
-
-    # If this is a pending play-session voice channel, start the session there.
-    if after.channel.id in game_session.pending_sessions:
-        try:
-            await game_session.on_session_voice_join(member, after.channel, bot)
-        except Exception as e:
-            print(f"[session voice join error] {e}")
-        return
-
-    # Check if this voice channel is tracked as ephemeral CC session
-    if after.channel.id not in character_creation.ephemeral_cc_channels:
-        return
-
-    session_data = character_creation.ephemeral_cc_channels[after.channel.id]
-
-    # Verify it's the owner joining
-    if str(member.id) != session_data["user_id"]:
-        return
-
-    print(f"[on_voice_state_update] {member.display_name} joined character creation voice channel: {after.channel.name}")
-
-    # The CC channel may have been sitting idle for a while before the player
-    # actually joined. Reset the one-hour cleanup window from first join so
-    # late joins don't inherit an almost-expired session.
-    if session_data.get("joined_at") is None:
-        session_data["joined_at"] = datetime.now(timezone.utc)
-    session_data["last_message_at"] = datetime.now(timezone.utc)
-    character_creation.rearm_cleanup_task(
-        after.channel.guild,
-        after.channel.id,
-        session_data["user_id"],
-        3600,
-    )
-
-    # Check if text channel already exists
-    text_channel_id = session_data.get("text_channel_id")
-    text_channel = None
-
-    if text_channel_id:
-        text_channel = after.channel.guild.get_channel(text_channel_id)
-
-    if not text_channel:
-        # Create a linked text channel
-        overwrites = {
-            after.channel.guild.default_role: discord.PermissionOverwrite(view_channel=False, read_messages=False),
-            member: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True),
-            bot.user: discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True),
-        }
-
-        # Add Avrae permissions
-        avrae_member = discord.utils.find(lambda m: m.name.lower() == "avrae", after.channel.guild.members)
-        if avrae_member:
-            overwrites[avrae_member] = discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True)
-
-        # Find category
-        category = discord.utils.find(
-            lambda c: isinstance(c, discord.CategoryChannel) and c.name == "Character Creation",
-            after.channel.guild.channels
-        )
-
-        text_channel_name = after.channel.name.replace("cc-", "cc-chat-")
-
-        try:
-            text_channel = await after.channel.guild.create_text_channel(
-                text_channel_name,
-                category=category,
-                overwrites=overwrites,
-                reason="Text chat for character creation session"
-            )
-            print(f"[on_voice_state_update] Created new text channel: {text_channel.name}")
-                
-        except discord.Forbidden as e:
-            print(f"[on_voice_state_update] Permission denied creating text channel: {e}")
-            return
-        except Exception as e:
-            print(f"[on_voice_state_update] Error creating text channel: {e}")
-            return
-    
-    try:
-        # Send character creation instructions to the text channel
-        print(f"[on_voice_state_update] Sending instructions to text channel: {text_channel.name}")
-        
-        # Start music in the voice channel (if enabled).
-        if after.channel.id in music_control.music_preferences and music_control.music_preferences[after.channel.id]["enabled"]:
-            started = await music_player.play_music_in_channel(
-                after.channel, "cc_menu", bot=bot, volume=65)
-            if not started:
-                # One immediate retry after a short pause for voice/sidecar races.
-                import asyncio
-                await asyncio.sleep(1.0)
-                started = await music_player.play_music_in_channel(
-                    after.channel, "cc_menu", bot=bot, volume=65)
-            if not started:
-                await text_channel.send(
-                    "⚠️ I couldn't start background music right now. "
-                    "Check that the bot can connect/speak in voice, then react 🔊 to retry."
-                )
-        # The Activity play channel gets the web experience instead of the
-        # component wizard: a login/landing page with create-or-resume.
-        activity_channel_id = int(os.getenv("ACTIVITY_CHANNEL_ID",
-                                            "1447775459533262868"))
-        if after.channel.id == activity_channel_id:
-            activity_url = os.getenv("ACTIVITY_URL",
-                                     "http://localhost:8000/activity/")
-            params = urllib.parse.urlencode({
-                "channel": str(after.channel.id),
-                "user_id": str(member.id),
-                "username": member.display_name,
-            })
-            view = View()
-            view.add_item(Button(label="Open The Oracle",
-                                 style=discord.ButtonStyle.link,
-                                 url=f"{activity_url}?{params}", emoji="🔮"))
-            await text_channel.send(
-                f"🔮 **Welcome, {member.display_name}!** The Oracle awaits at "
-                f"the table — create a character or resume your tale:",
-                view=view,
-            )
-        else:
-            await text_channel.send(
-                f"🎭 **Welcome, {member.display_name}!** Choose your path:\n"
-                f"📥 **Import from D&D Beyond** — you already have a sheet\n"
-                f"⚒️ **Create Character** — forge one here, step by step\n"
-                f"🎵 toggles music · ❌ cancels the session",
-                view=CharacterCreationView(after.channel.id, character_creation.ephemeral_cc_channels[after.channel.id], bot)
-            )
-
-        # Update the session data to track this text channel
-        character_creation.ephemeral_cc_channels[after.channel.id]["text_channel_id"] = text_channel.id
-        
-        print(f"[on_voice_state_update] Successfully posted instructions to {text_channel.name}")
-        
-    except discord.Forbidden as e:
-        print(f"[on_voice_state_update Forbidden error] {e} (likely text channel permission issue)")
-    except Exception as e:
-        print(f"[on_voice_state_update error] {e}")
 
 
 # Natural-language triggers for showing the structured character sheet / inventory
@@ -487,6 +324,65 @@ def _build_scene_files(images) -> list:
     return files
 
 
+class ActivityLaunchView(View):
+    """Entry-channel launcher for the web Activity (the new play surface).
+
+    Embedded Discord Activities always run *inside a voice call*, so there's no
+    way to open the Activities tray straight from a text channel. Instead this
+    button mints an embedded-application invite for the player's current voice
+    channel; clicking that invite launches The Oracle in that call. Character
+    creation, resume, and play all happen in the web UI — the old component
+    wizard and per-character session channels are no longer routed to."""
+
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @button(label="Enter the Oracle", style=discord.ButtonStyle.primary,
+            emoji="🔮", custom_id="oracle_activity_launch")
+    async def enter(self, interaction: discord.Interaction, _btn: Button):
+        client_id = os.getenv("ORACLE_DM_CLIENT_ID", "").strip()
+        if not client_id:
+            await interaction.response.send_message(
+                "⚠️ The Activity isn't configured yet (missing `ORACLE_DM_CLIENT_ID`).",
+                ephemeral=True)
+            return
+
+        voice = getattr(interaction.user, "voice", None)
+        if not voice or not voice.channel:
+            await interaction.response.send_message(
+                "🔊 Join a **voice channel** first, then press **Enter the Oracle** again — "
+                "the Activity opens inside your voice call.",
+                ephemeral=True)
+            return
+
+        try:
+            invite = await voice.channel.create_invite(
+                target_type=discord.InviteTarget.embedded_application,
+                target_application_id=int(client_id),
+                max_age=86400, unique=True,
+                reason="Launch The Oracle Activity")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ I need **Create Invite** permission on that voice channel.",
+                ephemeral=True)
+            return
+        except Exception as e:
+            print(f"[activity launch] invite failed: {e}")
+            await interaction.response.send_message(
+                "❌ Couldn't open the Activity — check my permissions and try again.",
+                ephemeral=True)
+            return
+
+        launch = View()
+        launch.add_item(Button(label="Launch The Oracle",
+                               style=discord.ButtonStyle.link,
+                               url=invite.url, emoji="🔮"))
+        await interaction.response.send_message(
+            f"🔮 Your table awaits in **{voice.channel.name}** — click to open The Oracle:",
+            view=launch, ephemeral=True)
+
+
 async def on_message_handler(message: discord.Message, bot, active_dm_channels: set):
     """Handle incoming messages."""
     # Ignore messages from bots (including ourselves)
@@ -501,104 +397,33 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
     if message.guild is None:
         return
 
-    # Active play-session channel? Only logged-in characters act here; everyone
-    # else is told (out-of-character) that they aren't part of the game.
-    if message.channel.id in game_session.active_sessions:
-        try:
-            if await game_session.handle_session_message(message, bot):
-                return
-        except Exception as e:
-            print(f"[session message error] {e}")
-        return
-
     # Check if message is in the entry channel
     entry_id = getattr(bot, "entry_channel_id", None)
     is_entry = (getattr(message.channel, "name", None) == bot.entry_channel_name
                 or (entry_id and message.channel.id == int(entry_id)))
     if is_entry:
-        # Check if player has characters in DB
-        has_char, characters = await backend_integration.check_character_in_db(str(message.author.id), bot.check_character_url)
-        
-        # Create button view
-        view = discord.ui.View(timeout=300)
-        
-        if has_char:
-            # Show existing characters as buttons + create new option
-            embed = discord.Embed(
-                title="🌍 Welcome to the World of Gatvorhain!",
-                description="Select a character to enter the world, or create a new one.",
-                color=discord.Color.gold()
-            )
-            
-            for char in characters:
-                char_label = f"{char['name']} (Lvl {char['level']} {char['char_class'] or 'Adventurer'})"
-                button = discord.ui.Button(
-                    label=char_label[:80],  # Discord button label limit
-                    style=discord.ButtonStyle.primary,
-                    custom_id=f"select_char_{char['id']}"
-                )
-                
-                async def char_callback(interaction: discord.Interaction, char=char):
-                    if interaction.user.id != message.author.id:
-                        await interaction.response.send_message("This isn't your character selection!", ephemeral=True)
-                        return
-                    await interaction.response.send_message(
-                        f"🎭 Entering the world as **{char['name']}** — I'm opening your session channel now...",
-                        ephemeral=True)
-                    await game_session.start_login_session(
-                        interaction.guild, interaction.user, interaction.channel, bot, char)
-                
-                button.callback = char_callback
-                view.add_item(button)
-            
-            # Add "Create New Character" button
-            create_btn = discord.ui.Button(
-                label="✨ Create New Character",
-                style=discord.ButtonStyle.success,
-                custom_id="create_new_char"
-            )
-            
-            async def create_callback(interaction: discord.Interaction):
-                if interaction.user.id != message.author.id:
-                    await interaction.response.send_message("This isn't your character creation!", ephemeral=True)
-                    return
-                await interaction.response.send_message("Starting character creation...", ephemeral=True)
-                await character_creation.create_character_creation_session(message, bot)
-            
-            create_btn.callback = create_callback
-            view.add_item(create_btn)
-        else:
-            # No characters - only show create button
-            embed = discord.Embed(
-                title="🌟 Welcome, New Adventurer!",
-                description="You don't have any characters yet. Let's create your first one!",
-                color=discord.Color.green()
-            )
-            
-            create_btn = discord.ui.Button(
-                label="✨ Create Your Character",
-                style=discord.ButtonStyle.success,
-                custom_id="create_first_char"
-            )
-            
-            async def create_first_callback(interaction: discord.Interaction):
-                if interaction.user.id != message.author.id:
-                    await interaction.response.send_message("This isn't your character creation!", ephemeral=True)
-                    return
-                await interaction.response.send_message("Starting character creation...", ephemeral=True)
-                await character_creation.create_character_creation_session(message, bot)
-            
-            create_btn.callback = create_first_callback
-            view.add_item(create_btn)
-        
-        # Add tavern info footer
+        # The web Activity is now the single entry point: character creation,
+        # resume, and play all live there. We no longer post per-character
+        # buttons or the old component-wizard "Create" flow here.
+        embed = discord.Embed(
+            title="🌍 The World of Gatvorhain",
+            description=(
+                "Step into the living world. Forge a new character or resume your "
+                "tale — all inside **The Oracle**."),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="🔊 One step first",
+            value="Join a **voice channel**, then press **Enter the Oracle** below.",
+            inline=False,
+        )
         embed.add_field(
             name="💬 Just want to chat?",
-            value="Head over to the **🌌tavern-between-worlds** channel to mingle with other adventurers out-of-character!",
-            inline=False
+            value=("Head to **🌌tavern-between-worlds** to mingle with other "
+                   "adventurers out-of-character!"),
+            inline=False,
         )
-        
-        await message.reply(embed=embed, view=view)
+        await message.reply(embed=embed, view=ActivityLaunchView(bot))
         return
 
     # Check if this is in an ephemeral CC text channel
