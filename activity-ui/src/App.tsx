@@ -10,6 +10,7 @@ import { Landing } from "./components/Landing";
 import { LevelUpOverlay } from "./components/LevelUp";
 import { PartyStrip, Rail } from "./components/Rail";
 import { levelChime, rollThunk } from "./lib/sound";
+import type { Session } from "./lib/session";
 
 /** Ornamental corner bracket — bold keylines with a brass stud. */
 function Corner({ pos }: { pos: string }) {
@@ -22,13 +23,9 @@ function Corner({ pos }: { pos: string }) {
   );
 }
 
-function param(name: string, dflt: string): string {
-  return new URLSearchParams(location.search).get(name) ?? dflt;
-}
-
 type Screen = "landing" | "create" | "play";
 
-export default function App() {
+export default function App({ session }: { session: Session }) {
   const [screen, setScreen] = useState<Screen>("landing");
   const [characters, setCharacters] = useState<CharacterSummary[]>([]);
   const [blocks, setBlocks] = useState<Block[]>([]);
@@ -52,7 +49,7 @@ export default function App() {
   screenRef.current = screen;
 
   useEffect(() => {
-    const channel = param("channel", "1447775459533262868");
+    const channel = session.channel;
     const conn = connect((ev: ServerEvent) => {
       switch (ev.t) {
         case "hello":
@@ -116,7 +113,7 @@ export default function App() {
           setBusy(ev.on);
           break;
       }
-    }, channel);
+    }, channel, session.userId, session.username);
     connRef.current = conn;
     return () => conn.close();
   }, []);

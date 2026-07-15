@@ -11,14 +11,12 @@ export interface Connection {
 export function connect(
   onEvent: (ev: ServerEvent) => void,
   channel: string,
+  userId: string,
+  username: string,
 ): Connection {
   let demo = false;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const params = new URLSearchParams(location.search);
-  const q = new URLSearchParams({
-    user_id: params.get("user_id") ?? "activity-dev",
-    username: params.get("username") ?? "Adventurer",
-  });
+  const q = new URLSearchParams({ user_id: userId, username });
   const ws = new WebSocket(
     `${proto}://${location.host}/ws/activity/${channel}?${q}`);
   let opened = false;
