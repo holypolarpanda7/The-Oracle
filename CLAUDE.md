@@ -91,3 +91,16 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Don't reintroduce DDB-as-storage assumptions.
 - Don't block the playable MVP (create char → enter world → narrated play) on
   advanced world-graph features.
+
+## Committing & syncing
+- Commit work in logical, single-purpose chunks and push after each — don't let
+  changes pile up uncommitted.
+- **Scope every commit deliberately.** Stage the specific files for that chunk
+  (`git add <paths>`); never `git add -A`. The working tree usually carries
+  unrelated in-progress changes (and sometimes pre-staged ones) — check
+  `git status` and keep them out of your commit.
+- **On WSL, push via Windows git**: `git.exe push origin master` (routes through
+  the Windows credential manager; the Linux `git` has no stored creds). Regular
+  `git` is fine for local ops (add/commit/status).
+- Never commit secrets (`*cred.env`, `.env`), `oracle.db`, or any book-derived
+  data — see the rules-content split in "Key facts & constraints".
