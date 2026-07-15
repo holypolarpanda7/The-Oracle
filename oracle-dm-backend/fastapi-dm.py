@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 
 import requests
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -3050,8 +3050,21 @@ def _character_resource_block(character_id: int) -> str:
 
 # ----- Routes -----
 
+# Embedded Discord Activities always load at the mapped origin ROOT, so "/"
+# serves the built Activity SPA when present. Programmatic health lives at
+# /healthz; the launcher's check only inspects status, and "/" still 200s.
+_ACTIVITY_INDEX_PATH = Path(__file__).resolve().parent.parent / "activity-ui" / "dist" / "index.html"
+
+
 @app.get("/")
 async def root():
+    if _ACTIVITY_INDEX_PATH.is_file():
+        return FileResponse(str(_ACTIVITY_INDEX_PATH))
+    return {"status": "ok", "message": "Oracle DM backend with OpenRouter + Avrae hooks running"}
+
+
+@app.get("/healthz")
+async def healthz():
     return {"status": "ok", "message": "Oracle DM backend with OpenRouter + Avrae hooks running"}
 
 
@@ -6926,11 +6939,50 @@ async def activity_ws(ws: WebSocket, channel: str):
                         _ACTIVITY_TABLES.pop(ch, None)
 
 
+class _ActivityTokenReq(BaseModel):
+    code: str
+
+
+@app.post("/api/token")
+def activity_token(req: _ActivityTokenReq):
+    """Exchange a Discord OAuth2 authorization `code` (from the Embedded App
+    SDK's authorize() call) for an access token. The client secret stays on the
+    server; the browser never sees it. See docs/ACTIVITY_SETUP.md."""
+    client_id = os.getenv("ORACLE_DM_CLIENT_ID", "").strip()
+    client_secret = os.getenv("ORACLE_DM_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="Activity OAuth not configured (set ORACLE_DM_CLIENT_ID/SECRET in backend-cred.env).")
+    resp = requests.post(
+        "https://discord.com/api/oauth2/token",
+        data={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "grant_type": "authorization_code",
+            "code": req.code,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=10,
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502,
+                            detail=f"Discord token exchange failed: {resp.text[:200]}")
+    return {"access_token": resp.json().get("access_token")}
+
+
 _ACTIVITY_DIST = Path(__file__).resolve().parent.parent / "activity-ui" / "dist"
 if _ACTIVITY_DIST.is_dir():
     app.mount("/activity", StaticFiles(directory=str(_ACTIVITY_DIST), html=True),
               name="activity")
-    print(f"[activity] serving UI from {_ACTIVITY_DIST} at /activity")
+    # The SPA is also served at "/" (see root()); its bundle uses relative
+    # asset URLs (vite base "./"), which resolve to "/assets/..." from root, so
+    # mount that too for the embedded-iframe path.
+    _ACTIVITY_ASSETS = _ACTIVITY_DIST / "assets"
+    if _ACTIVITY_ASSETS.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_ACTIVITY_ASSETS)),
+                  name="activity-assets")
+    print(f"[activity] serving UI from {_ACTIVITY_DIST} at /activity and /")
 
 
 if __name__ == "__main__":
