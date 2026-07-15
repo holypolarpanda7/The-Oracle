@@ -18,7 +18,7 @@ set "CF=cloudflared"
 where cloudflared >nul 2>nul || set "CF=%ProgramFiles(x86)%\cloudflared\cloudflared.exe"
 
 if defined ORACLE_TUNNEL_NAME goto named
-"%CF%" tunnel --url http://localhost:8000 --logfile "%CF_LOG%"
+"%CF%" tunnel --url http://127.0.0.1:8000 --logfile "%CF_LOG%"
 goto stopped
 
 :named
