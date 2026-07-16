@@ -1948,8 +1948,49 @@ _COMMON_ITEM_BY_KEY = {re.sub(r"[^a-z0-9]", "", n.lower()): n
 
 _ITEM_TYPE_LINE = re.compile(
     r"(?im)^\s*(wondrous\s*[il]tems?|armou?r|rings?|rods?|staffs?|staves|wands?|"
-    r"weapons?|potions?|scrolls?|ammunitions?)\b[^\n]*?,\s*common\b"
+    r"weapons?|potions?|scrolls?|ammunitions?)\b[^\n]*?,\s*"
+    r"(?P<rarity>common|uncommon|very\s*rare|rare|legendary|artifact)\b"
     r"(?P<att>[^\n]*attunement)?")
+
+_RARITY_LABEL = {
+    "common": "Common", "uncommon": "Uncommon", "rare": "Rare",
+    "veryrare": "Very Rare", "legendary": "Legendary", "artifact": "Artifact",
+}
+
+_NAME_SMALL_WORDS = {"of", "the", "and", "a", "an", "to", "in", "on", "for",
+                     "from", "with", "at", "by", "or"}
+
+
+def _respace_name(raw: str) -> str:
+    """Turn an item header into a clean name. Canonical list wins; an already-
+    spaced header is kept (2025 books); an OCR-merged one is split on the word
+    dictionary. Returns "" when the result looks like OCR garbage."""
+    raw = raw.strip()
+    key = re.sub(r"[^a-z0-9]", "", raw.lower())
+    if key in _COMMON_ITEM_BY_KEY:
+        return _COMMON_ITEM_BY_KEY[key]
+    # De-merge each long alpha run so partially-spaced headers
+    # ("HELM OFPERFECTPOTENTIAL") split too, not just fully-merged ones.
+    tokens: list[str] = []
+    for t in raw.split():
+        core = re.sub(r"[^A-Za-z]", "", t)
+        if _wordninja is not None and len(core) >= 7:
+            tokens.extend(_wordninja.split(core))
+        else:
+            tokens.append(t)
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return ""
+    # Garbage guard: OCR-corrupted headers segment into many 1-2 char fragments.
+    tiny = sum(1 for t in tokens if len(re.sub(r"[^A-Za-z]", "", t)) <= 2)
+    if len(tokens) >= 3 and tiny > len(tokens) / 2:
+        return ""
+    out = []
+    for i, w in enumerate(tokens):
+        lw = w.lower()
+        out.append(lw if (i > 0 and lw in _NAME_SMALL_WORDS)
+                   else lw[:1].upper() + lw[1:])
+    return " ".join(out)
 
 _TYPE_LABELS = [
     ("wondrous", "Wondrous Item"), ("armor", "Armor"), ("armour", "Armor"),
@@ -1993,8 +2034,13 @@ def _clean_item_desc(text: str) -> str:
     return text[:600]
 
 
-def parse_common_items(text: str) -> list[dict]:
-    """Extract common magic items whose headers match the canonical name list."""
+def parse_magic_items(text: str, *, canonical_only: bool = False) -> list[dict]:
+    """Extract magic items (all rarities) from an owned-book extraction.
+
+    Names come from the canonical common list where known, else a de-merged
+    header; garbage headers (unrecoverable OCR, e.g. the DMG's small-caps font)
+    yield "" and are skipped. Set ``canonical_only`` for books whose header OCR
+    can't be trusted — only known-canonical names get through."""
     lines = text.splitlines()
     offsets, pos = [], 0
     for ln in lines:
@@ -2016,9 +2062,11 @@ def parse_common_items(text: str) -> list[dict]:
     for k, m in enumerate(matches):
         name_idx = prev_nonblank(line_of(m.start()))
         raw_name = lines[name_idx].strip() if name_idx >= 0 else ""
-        key = re.sub(r"[^a-z0-9]", "", raw_name.lower())
-        name = _COMMON_ITEM_BY_KEY.get(key)
-        if not name:
+        if canonical_only:
+            name = _COMMON_ITEM_BY_KEY.get(re.sub(r"[^a-z0-9]", "", raw_name.lower()), "")
+        else:
+            name = _respace_name(raw_name)
+        if not name or len(name) < 3:
             continue
         # Description runs from after the type line to just before the NEXT
         # item's name line (so a neighbouring header never bleeds into it).
@@ -2027,9 +2075,11 @@ def parse_common_items(text: str) -> list[dict]:
             desc_end = offsets[ni] if ni >= 0 else matches[k + 1].start()
         else:
             desc_end = m.end() + 800
+        rarity_key = re.sub(r"\s+", "", m.group("rarity").lower())
         out.append({
             "slug": _slugify(name), "name": name,
             "item_type": _item_type_label(m.group(1)),
+            "rarity": _RARITY_LABEL.get(rarity_key, "Common"),
             "requires_attunement": bool(m.group("att")),
             "desc": _clean_item_desc(text[m.end():desc_end]),
         })
@@ -2040,38 +2090,57 @@ def parse_common_items(text: str) -> list[dict]:
     return list(seen.values())
 
 
+# Owned books to sweep for magic items. Header OCR is clean-lettered in these
+# (merged spaces at worst — wordninja fixes that). The DMG 2024 is deliberately
+# ``canonical_only``: its small-caps header font OCRs to letter-garbage
+# ("Bneo oF NoURTSHMENT"), so only names we can verify against the canonical
+# list get through — its standard higher-rarity items already live in the SRD.
+_ITEM_BOOKS = [
+    ("*xanathar*.txt", "Owned (Xanathar's Guide to Everything) — local ingest", False),
+    ("*bigby*.txt", "Owned (Bigby's Glory of the Giants) — local ingest", False),
+    ("*van-richten*.txt", "Owned (Van Richten's Guide to Ravenloft) — local ingest", False),
+    ("*eberron*.txt", "Owned (Eberron: Forge of the Artificer 2025) — local ingest", False),
+    ("*forgotten-realms*.txt", "Owned (Forgotten Realms 2025) — local ingest", False),
+    ("*dungeon-master-guide-2024*.txt", "Owned (DMG 2024) — local ingest", True),
+]
+
+
 def ingest_owned_items(engine=None, database_url=None,
                        workspace: Path = WORKSPACE) -> dict:
-    """Parse common magic items from owned books into rules_item (LOCAL only)."""
+    """Parse magic items (ALL rarities) from owned books into rules_item.
+
+    LOCAL only — names are facts, descriptions never leave the machine. The SRD
+    already carries the standard catalogue across every rarity; this adds the
+    owned-book-exclusive items (Bigby's giant relics, 2025-book items, etc.)."""
     from .models import Item
     engine = engine or get_engine(database_url)
     SQLModel.metadata.create_all(engine)
 
-    books = [
-        ("*xanathar*.txt", "Owned (Xanathar's Guide to Everything) — local ingest"),
-        ("*dungeon-master-guide-2024*.txt", "Owned (DMG 2024) — local ingest"),
-    ]
     parsed: dict[str, dict] = {}
-    for glob_pat, source in books:
+    for glob_pat, source, canonical_only in _ITEM_BOOKS:
         f = next(iter(workspace.glob(glob_pat)), None)
         if f is None:
             continue
-        for it in parse_common_items(f.read_text(encoding="utf-8")):
+        for it in parse_magic_items(f.read_text(encoding="utf-8"),
+                                    canonical_only=canonical_only):
             if it["slug"] not in parsed or len(it["desc"]) > len(parsed[it["slug"]]["desc"]):
                 parsed[it["slug"]] = dict(it, source=source)
 
-    result = {"common_items_parsed": len(parsed), "common_items_new": 0}
+    by_rarity: dict[str, int] = {}
+    result = {"items_parsed": len(parsed), "items_new": 0}
     with Session(engine) as s:
         for it in parsed.values():
+            by_rarity[it["rarity"]] = by_rarity.get(it["rarity"], 0) + 1
             mapped = Item(
                 index_slug=it["slug"], name=it["name"],
                 category="magic-item", item_type=it["item_type"],
-                rarity="Common", requires_attunement=it["requires_attunement"],
+                rarity=it["rarity"], requires_attunement=it["requires_attunement"],
                 desc=it["desc"] or None, source=it["source"],
             )
             if _upsert(s, Item, it["slug"], mapped):
-                result["common_items_new"] += 1
+                result["items_new"] += 1
         s.commit()
+    result["by_rarity"] = by_rarity
     return result
 
 
