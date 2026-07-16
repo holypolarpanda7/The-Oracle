@@ -17,6 +17,7 @@ from discord.ui import View, Button, button
 import music_player
 import music_control
 import character_creation
+import session_channels
 import backend_integration
 import dm_commands
 import character_display
@@ -327,12 +328,12 @@ def _build_scene_files(images) -> list:
 class ActivityLaunchView(View):
     """Entry-channel launcher for the web Activity (the new play surface).
 
-    Embedded Discord Activities always run *inside a voice call*, so there's no
-    way to open the Activities tray straight from a text channel. Instead this
-    button mints an embedded-application invite for the player's current voice
-    channel; clicking that invite launches The Oracle in that call. Character
-    creation, resume, and play all happen in the web UI — the old component
-    wizard and per-character session channels are no longer routed to."""
+    Pressing the button spawns a fresh, PRIVATE ephemeral table (voice channel)
+    for the player and DMs them a one-click button that both seats them at the
+    table and opens The Oracle inside it. Because the table is private to that
+    player, the invite is effectively single-player. Character creation, resume,
+    and play all happen in the web UI — there is no separate CC channel and no
+    requirement to join a voice channel first. See ``session_channels``."""
 
     def __init__(self, bot):
         super().__init__(timeout=None)
@@ -341,46 +342,72 @@ class ActivityLaunchView(View):
     @button(label="Enter the Oracle", style=discord.ButtonStyle.primary,
             emoji="🔮", custom_id="oracle_activity_launch")
     async def enter(self, interaction: discord.Interaction, _btn: Button):
-        client_id = os.getenv("ORACLE_DM_CLIENT_ID", "").strip()
-        if not client_id:
+        if not session_channels.activity_client_id():
             await interaction.response.send_message(
                 "⚠️ The Activity isn't configured yet (missing `ORACLE_DM_CLIENT_ID`).",
                 ephemeral=True)
             return
 
-        voice = getattr(interaction.user, "voice", None)
-        if not voice or not voice.channel:
+        guild = interaction.guild
+        member = interaction.user
+        if guild is None or not isinstance(member, discord.Member):
             await interaction.response.send_message(
-                "🔊 Join a **voice channel** first, then press **Enter the Oracle** again — "
-                "the Activity opens inside your voice call.",
+                "Press **Enter the Oracle** from within the server, not a DM.",
                 ephemeral=True)
             return
 
+        # Spawning a channel + minting an invite can take a beat.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # Reuse a table this player already owns (avoids spawning duplicates on
+        # repeated clicks); otherwise spawn a fresh one.
+        existing_id = session_channels.find_session_by_owner(str(member.id))
+        channel = guild.get_channel(existing_id) if existing_id else None
+        if existing_id and channel is None:
+            # Tracked table was deleted out from under us (e.g. by an admin);
+            # forget the stale mapping so we don't keep pointing at a dead id.
+            session_channels.ephemeral_session_channels.pop(existing_id, None)
+        if channel is None:
+            channel = await session_channels.create_session_channel(guild, member, self.bot)
+        if channel is None:
+            await interaction.followup.send(
+                "❌ I couldn't open a table — check my **Manage Channels** permission.",
+                ephemeral=True)
+            return
+
+        invite_url = await session_channels.make_launch_invite(channel)
+        if invite_url is None:
+            await interaction.followup.send(
+                "❌ Couldn't create the launch invite — check my **Create Invite** permission.",
+                ephemeral=True)
+            return
+
+        # Primary delivery: DM the private launch button. Build a fresh view per
+        # message (link buttons are stateless, but this keeps things tidy).
+        dm_ok = True
         try:
-            invite = await voice.channel.create_invite(
-                target_type=discord.InviteTarget.embedded_application,
-                target_application_id=int(client_id),
-                max_age=86400, unique=True,
-                reason="Launch The Oracle Activity")
+            await member.send(
+                f"🔮 Your private table **{channel.name}** is set. "
+                "Click below to take your seat and open The Oracle:",
+                view=session_channels.launch_view_from_url(invite_url))
+            session_channels.note_launch_notified(channel.id)
         except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ I need **Create Invite** permission on that voice channel.",
-                ephemeral=True)
-            return
-        except Exception as e:
-            print(f"[activity launch] invite failed: {e}")
-            await interaction.response.send_message(
-                "❌ Couldn't open the Activity — check my permissions and try again.",
-                ephemeral=True)
-            return
+            dm_ok = False
 
-        launch = View()
-        launch.add_item(Button(label="Launch The Oracle",
-                               style=discord.ButtonStyle.link,
-                               url=invite.url, emoji="🔮"))
-        await interaction.response.send_message(
-            f"🔮 Your table awaits in **{voice.channel.name}** — click to open The Oracle:",
-            view=launch, ephemeral=True)
+        if dm_ok:
+            await interaction.followup.send(
+                f"🔮 Your private table **{channel.name}** is ready — **check your DMs** "
+                "for the one-click launch. (No DM? Enable *Direct Messages* for this "
+                "server and press **Enter the Oracle** again.)",
+                ephemeral=True)
+        else:
+            # DMs are closed: hand them the button here instead (still only they
+            # can see this ephemeral reply).
+            await interaction.followup.send(
+                f"🔮 Your private table **{channel.name}** is ready. I couldn't DM you "
+                "(your DMs are off), so take your seat here:",
+                view=session_channels.launch_view_from_url(invite_url),
+                ephemeral=True)
 
 
 async def on_message_handler(message: discord.Message, bot, active_dm_channels: set):
@@ -413,8 +440,9 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
             color=discord.Color.gold(),
         )
         embed.add_field(
-            name="🔊 One step first",
-            value="Join a **voice channel**, then press **Enter the Oracle** below.",
+            name="🔮 How to enter",
+            value="Press **Enter the Oracle** below. I'll open a private table just "
+                  "for you and DM you a one-click button that seats you and starts play.",
             inline=False,
         )
         embed.add_field(

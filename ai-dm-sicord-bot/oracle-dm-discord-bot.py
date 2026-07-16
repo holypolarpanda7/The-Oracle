@@ -12,6 +12,7 @@ from discord.ext import commands
 import music_player
 import music_control
 import character_creation
+import session_channels
 import backend_integration
 import dm_commands
 import event_handlers
@@ -80,6 +81,16 @@ async def on_reaction_add(reaction: discord.Reaction, user: discord.User):
 @bot.event
 async def on_message(message: discord.Message):
     await event_handlers.on_message_handler(message, bot, active_dm_channels)
+
+
+@bot.event
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState,
+):
+    # Ephemeral session tables: DM joiners the launch button, sweep empty tables.
+    await session_channels.handle_voice_state_update(member, before, after, bot)
 
 
 # ==================== COMMANDS ====================
