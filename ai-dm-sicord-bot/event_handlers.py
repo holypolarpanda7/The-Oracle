@@ -91,6 +91,9 @@ async def on_ready_handler(bot):
     """Called when bot connects to Discord."""
     print(f"Bot is online as {bot.user} (ID: {bot.user.id})")
 
+    # Make sure the Activity has a launchable entry point (self-healing).
+    await session_channels.ensure_entry_point_command(bot)
+
     # Connect to the DAVE-capable voice sidecar (replaces Lavalink).
     voice_ok = await music_player.setup_voice_service(bot)
     if not voice_ok:

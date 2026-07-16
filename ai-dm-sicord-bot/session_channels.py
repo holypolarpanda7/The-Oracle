@@ -23,6 +23,7 @@ import random
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
+import aiohttp
 import discord
 
 
@@ -97,6 +98,48 @@ def generate_session_name(guild: Optional[discord.Guild] = None) -> str:
 
 def activity_client_id() -> str:
     return os.getenv("ORACLE_DM_CLIENT_ID", "").strip()
+
+
+async def ensure_entry_point_command(bot) -> None:
+    """Guarantee the app has a PRIMARY_ENTRY_POINT command.
+
+    An app with Activities must expose an entry-point command or launching the
+    Activity fails with *"make sure the app is installed and there is a proper
+    app entrypoint"*. Discord only auto-creates one under certain install
+    settings, so we ensure it ourselves on startup. Idempotent, and uses POST
+    (create) — never a bulk overwrite that could wipe the bot's other commands.
+    """
+    app_id = getattr(bot, "application_id", None)
+    token = os.getenv("ORACLE_DM_TOKEN", "").strip()
+    if not app_id or not token:
+        return
+    base = f"https://discord.com/api/v10/applications/{app_id}/commands"
+    headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(base, headers=headers) as resp:
+                if resp.status != 200:
+                    print(f"[activity] entry-point check failed: HTTP {resp.status}")
+                    return
+                commands = await resp.json()
+            # type 4 == PRIMARY_ENTRY_POINT
+            if any(c.get("type") == 4 for c in commands):
+                print("[activity] entry-point command already present.")
+                return
+            payload = {
+                "name": "launch",
+                "description": "Launch The Oracle",
+                "type": 4,      # PRIMARY_ENTRY_POINT
+                "handler": 2,   # DISCORD_LAUNCH_ACTIVITY — Discord opens the Activity
+            }
+            async with session.post(base, headers=headers, json=payload) as resp:
+                if resp.status in (200, 201):
+                    print("[activity] created PRIMARY_ENTRY_POINT command 'launch'.")
+                else:
+                    body = await resp.text()
+                    print(f"[activity] entry-point create failed: HTTP {resp.status} {body}")
+    except Exception as e:  # noqa: BLE001 - never block startup on this
+        print(f"[activity] entry-point ensure error: {e}")
 
 
 def launch_view_from_url(url: str) -> discord.ui.View:
