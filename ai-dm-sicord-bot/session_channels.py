@@ -36,6 +36,11 @@ _idle_tasks: Dict[int, asyncio.Task] = {}
 SESSION_CATEGORY_NAME = "The Oracle — Tables"
 # How long an untouched (never-joined) table lingers before it's swept.
 IDLE_SWEEP_SECONDS = 900  # 15 minutes
+# Ambient playlist a fresh table starts with. Players begin at the Silver
+# Tankard, so a warm tavern bed fits the opening; the DM's per-scene music cues
+# are a separate (not-yet-wired) layer. Playlists live in ai-dm-sicord-bot/
+# playlists/ and voice-service/audio/.
+DEFAULT_TABLE_PLAYLIST = "tavern"
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +283,7 @@ async def create_session_channel(
     try:
         import music_control
         music_control.music_preferences[channel.id] = {
-            "enabled": True, "current_playlist": "cc_menu"}
+            "enabled": True, "current_playlist": DEFAULT_TABLE_PLAYLIST}
     except Exception:
         pass
 
@@ -287,6 +292,25 @@ async def create_session_channel(
         _idle_sweep(guild, channel.id))
     print(f"[session] created table '{name}' ({channel.id}) for {owner.display_name}")
     return channel
+
+
+async def _start_table_music(channel: discord.VoiceChannel, bot) -> None:
+    """Begin the table's ambient playlist when someone takes a seat.
+
+    Idempotent: no-ops if music is disabled for the table or a player is already
+    running. Failures are non-fatal — a quiet table is better than a crash."""
+    try:
+        import music_player
+        import music_control
+        prefs = music_control.music_preferences.get(channel.id, {})
+        if not prefs.get("enabled", True):
+            return
+        if channel.id in music_player.active_players:
+            return  # already playing
+        playlist = prefs.get("current_playlist") or DEFAULT_TABLE_PLAYLIST
+        await music_player.play_music_in_channel(channel, playlist, bot=bot)
+    except Exception as e:  # noqa: BLE001
+        print(f"[session] music start failed for {channel.id}: {e}")
 
 
 async def _idle_sweep(guild: discord.Guild, channel_id: int) -> None:
@@ -357,6 +381,10 @@ async def handle_voice_state_update(
         task = _idle_tasks.pop(after_id, None)
         if task is not None:
             task.cancel()
+
+        # Begin the table's ambient music now that someone's seated.
+        await _start_table_music(after.channel, bot)
+
         if not _recently_notified(after_id):
             view = await make_launch_view(after.channel)
             if view is not None:
