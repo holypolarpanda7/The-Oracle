@@ -29,6 +29,12 @@ export function LevelUpOverlay({ data, onApply }: {
               {f.summary ? ` — ${f.summary.slice(0, 180)}${f.summary.length > 180 ? "…" : ""}` : ""}
             </li>
           ))}
+          {(data.race_features ?? []).map((f, i) => (
+            <li key={`rf${i}`}>
+              <b className="hl-name">✦ {f.name}</b>
+              {f.summary ? ` — ${f.summary.slice(0, 180)}${f.summary.length > 180 ? "…" : ""}` : ""}
+            </li>
+          ))}
         </ul>
 
         {needsPick && (

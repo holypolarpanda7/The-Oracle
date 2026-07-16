@@ -184,6 +184,25 @@ class RulesLibrary:
                 out.append({**d, "summary": e.desc})
         return sorted(out, key=lambda f: f["name"])
 
+    def _race_feature_rows(self, race: str) -> list[dict]:
+        race_l = (race or "").strip().lower()
+        with Session(self.engine) as s:
+            rows = s.exec(select(SrdEntry).where(
+                SrdEntry.category == "race-feature")).all()
+        return [{**(e.data or {}), "summary": e.desc}
+                for e in rows if ((e.data or {}).get("race") or "").lower() == race_l]
+
+    def race_features_at(self, race: str, level: int) -> list[dict]:
+        """Species features GAINED at exactly ``level`` (for the level-up flow)."""
+        return sorted((f for f in self._race_feature_rows(race)
+                       if f.get("level") == level), key=lambda f: f["name"])
+
+    def race_features_up_to(self, race: str, level: int) -> list[dict]:
+        """All species features a character of ``level`` has (for the DM prompt)."""
+        return sorted((f for f in self._race_feature_rows(race)
+                       if (f.get("level") or 1) <= level),
+                      key=lambda f: (f.get("level") or 1, f["name"]))
+
     # ----- items (equipment + magic items) -----
 
     def get_item(self, ref: str) -> Optional[Item]:

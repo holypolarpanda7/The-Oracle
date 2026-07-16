@@ -57,6 +57,7 @@ export interface LevelUpData {
   subclass_label?: string | null;
   notes: string[];
   class_features: { name: string; summary?: string }[];
+  race_features?: { name: string; summary?: string }[];
   subclass_options: SubclassOption[];
 }
 

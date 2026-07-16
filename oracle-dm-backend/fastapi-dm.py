@@ -3054,6 +3054,20 @@ def _character_resource_block(character_id: int) -> str:
         # Physical limits — movement, jumps, lifting, reach — so the DM can gate
         # feats of athletics that are impossible without magic or special items.
         lines.append(_physical_capabilities_summary(char))
+
+        # Species features the character has at this level (exact mechanics, so
+        # the DM adjudicates Breath Weapon/resistances/etc. by the numbers, not
+        # from memory). Only features up to the PC's current level are included.
+        try:
+            from rules.query import RulesLibrary
+            rfeats = RulesLibrary(engine=engine).race_features_up_to(
+                char.race or "", char.level)
+            if rfeats:
+                rendered = "; ".join(
+                    f"{f['name']} ({f['summary'][:150].rstrip()})" for f in rfeats[:8])
+                lines.append(f"Species features — {char.race}: {rendered}")
+        except Exception as e:
+            print(f"[race features block] {e}")
         return "\n".join(lines)
 
 
@@ -6548,12 +6562,15 @@ def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
         char = session.get(Character, char_id)
         if not char or not char.pending_level_up:
             return None
+        char_race = char.race
         prog = _progression(session, char, target_subclass=None, apply=False)
     new_level = prog["next_level"]
+    race_feats: list = []
     try:
         from rules.query import RulesLibrary
         _lib = RulesLibrary(engine=engine)
         class_feats = _lib.class_features_at(prog["class"], new_level)
+        race_feats = _lib.race_features_at(char_race or "", new_level)
         options = []
         for o in (prog.get("subclass_options") or []):
             sc = _lib.get_subclass(o["slug"])
@@ -6573,6 +6590,7 @@ def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
         "subclass_label": prog.get("subclass_label"),
         "notes": (prog.get("report") or {}).get("notes") or [],
         "class_features": class_feats,
+        "race_features": race_feats,
         "subclass_options": options,
     }
 

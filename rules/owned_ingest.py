@@ -2153,6 +2153,41 @@ def ingest_owned_items(engine=None, database_url=None,
 # bonuses (those come from the background, applied in the CC ability stage), so
 # both ability_bonuses and choose_bonus are empty.
 
+# Non-trait bullets that share the " Name. text" shape (headers, feat-table
+# fields that bleed in, 2014 fluff) — never real species features.
+_FEATURE_STOP = {
+    "size", "speed", "creature type", "age", "alignment", "languages",
+    "category", "prerequisite", "benefit", "repeatable", "special traits",
+    "quirks table", "suggested characteristics",
+}
+_FEATURE_BULLET = re.compile(
+    r"(?m)^[ \t]+([A-Z][A-Za-z'’/ -]{2,34})\.\s+(.+?)"
+    r"(?=\n[ \t]+[A-Z][A-Za-z'’/ -]{2,34}\.\s|\Z)", re.S)
+
+
+def _extract_features(block: str) -> list[dict]:
+    """Trait bullets as [{name, desc, level}]. ``level`` is where the trait is
+    GAINED (default 1; parsed from a "reach character level N" opener), so a
+    level-gated species feature surfaces at the right level."""
+    feats: list[dict] = []
+    seen: set[str] = set()
+    for bm in _FEATURE_BULLET.finditer(block):
+        name = re.sub(r"\s+", " ", bm.group(1)).strip()
+        key = name.lower()
+        if key in _FEATURE_STOP or key in seen:
+            continue
+        desc = re.sub(r"\s+", " ", bm.group(2)).strip()
+        if len(desc) < 12:
+            continue
+        lm = re.search(r"reach character level (\d+)", desc[:100], re.I)
+        seen.add(key)
+        feats.append({"name": name, "desc": desc[:700],
+                      "level": int(lm.group(1)) if lm else 1})
+        if len(feats) >= 10:
+            break
+    return feats
+
+
 def parse_species(text: str) -> list[dict]:
     lines = text.splitlines()
     anchors = [i for i, l in enumerate(lines) if re.match(r"\s*Creature Type:", l)]
@@ -2184,19 +2219,16 @@ def parse_species(text: str) -> list[dict]:
         sm = re.search(r"Speed:\s*(\d+)", block)
         speed = int(sm.group(1)) if sm else 30
         darkvision = bool(re.search(r"Darkvision", block))
-        traits: list[str] = []
-        for tm in re.finditer(r"(?m)^\s+([A-Z][A-Za-z'’/ -]{2,34})\.\s", block):
-            t = re.sub(r"\s+", " ", tm.group(1)).strip()
-            if t and t not in traits and len(traits) < 8:
-                traits.append(t)
+        feats = _extract_features(block)
         out.append({
             "slug": _slugify(name), "name": name, "size": size, "speed": speed,
-            "darkvision": darkvision, "traits": traits,
+            "darkvision": darkvision, "features": feats,
+            "traits": [f["name"] for f in feats],
         })
-    # Dedupe by slug, keep the richest (most traits).
+    # Dedupe by slug, keep the richest (most features).
     seen: dict[str, dict] = {}
     for r in out:
-        if r["slug"] not in seen or len(r["traits"]) > len(seen[r["slug"]]["traits"]):
+        if r["slug"] not in seen or len(r["features"]) > len(seen[r["slug"]]["features"]):
             seen[r["slug"]] = r
     return list(seen.values())
 
@@ -2229,16 +2261,13 @@ def parse_species_2014(text: str) -> list[dict]:
         sm = re.search(r"walking speed is (\d+)", block, re.I) or re.search(r"Speed[.:]\s*(\d+)", block)
         speed = int(sm.group(1)) if sm else 30
         darkvision = bool(re.search(r"Darkvision", block))
-        traits: list[str] = []
-        for tm in re.finditer(r"(?m)^\s*([A-Z][A-Za-z'’/ -]{2,34})\.\s", block):
-            t = re.sub(r"\s+", " ", tm.group(1)).strip()
-            if t and t not in traits and len(traits) < 8 and not t.endswith("Increase"):
-                traits.append(t)
+        feats = _extract_features(block)
         out.append({"slug": _slugify(name), "name": name, "size": size,
-                    "speed": speed, "darkvision": darkvision, "traits": traits})
+                    "speed": speed, "darkvision": darkvision, "features": feats,
+                    "traits": [f["name"] for f in feats]})
     seen: dict[str, dict] = {}
     for r in out:
-        if r["slug"] not in seen or len(r["traits"]) > len(seen[r["slug"]]["traits"]):
+        if r["slug"] not in seen or len(r["features"]) > len(seen[r["slug"]]["features"]):
             seen[r["slug"]] = r
     return list(seen.values())
 
@@ -2280,7 +2309,8 @@ def ingest_species(engine=None, database_url=None,
         if f is not None:
             _absorb(parse_species_2014(f.read_text(encoding="utf-8")), source)
 
-    result = {"species_parsed": len(parsed), "species_new": 0}
+    from .models import SrdEntry
+    result = {"species_parsed": len(parsed), "species_new": 0, "features": 0}
     with Session(engine) as s:
         for r in parsed.values():
             mapped = Race(
@@ -2294,6 +2324,25 @@ def ingest_species(engine=None, database_url=None,
             )
             if _upsert(s, Race, r["slug"], mapped):
                 result["species_new"] += 1
+            # Race features (with level triggers) for level-up + DM context,
+            # keyed like class features: category 'race-feature', data has the
+            # race NAME (matches Character.race), level, and feature name.
+            for f in r.get("features", []):
+                fslug = f"{r['slug']}-{f['level']}-{_slugify(f['name'])}"
+                key = f"race-feature:{fslug}"
+                existing = s.exec(
+                    select(SrdEntry).where(SrdEntry.entry_key == key)).first()
+                data = {"race": r["name"], "level": f["level"], "name": f["name"]}
+                if existing:
+                    existing.desc = f["desc"]
+                    existing.data = data
+                    s.add(existing)
+                else:
+                    s.add(SrdEntry(
+                        entry_key=key, category="race-feature", index_slug=fslug,
+                        name=f"{r['name']} L{f['level']}: {f['name']}",
+                        desc=f["desc"], data=data, source=r["source"]))
+                result["features"] += 1
         s.commit()
     return result
 
