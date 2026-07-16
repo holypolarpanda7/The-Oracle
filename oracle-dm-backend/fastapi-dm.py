@@ -3466,6 +3466,41 @@ _BACKGROUND_KITS: Dict[str, Dict[str, Any]] = {
 }
 
 
+_LOCAL_BG_LOADED = False
+
+
+def _ensure_local_backgrounds() -> None:
+    """Merge locally-ingested 2024 backgrounds (owned_books/backgrounds.json,
+    gitignored) into _BACKGROUND_KITS once. 2024 versions overwrite the 2014
+    entries; new ones (Artisan, Farmer, Guard...) are added. Existing equipment
+    is preserved for overlapping names."""
+    global _LOCAL_BG_LOADED
+    if _LOCAL_BG_LOADED:
+        return
+    _LOCAL_BG_LOADED = True
+    path = Path(__file__).resolve().parent.parent / "owned_books" / "backgrounds.json"
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[cc] local backgrounds load failed: {e}")
+        return
+    n = 0
+    for b in data:
+        name = (b.get("name") or "").strip()
+        if not name or not b.get("skills"):
+            continue
+        key = name.lower()
+        _BACKGROUND_KITS[key] = {
+            "skills": b.get("skills") or [],
+            "items": _BACKGROUND_KITS.get(key, {}).get("items", []),
+            "feature": b.get("feat") or _BACKGROUND_KITS.get(key, {}).get("feature"),
+        }
+        n += 1
+    print(f"[cc] merged {n} local (2024) backgrounds")
+
+
 def _apply_background(char: Character, background: Optional[str],
                       *, grant_items: bool = True) -> Optional[str]:
     """Store the background, grant its kit, tag its feature. Returns feature name.
@@ -3473,6 +3508,7 @@ def _apply_background(char: Character, background: Optional[str],
     ``grant_items=False`` on re-import sync: identity updates must not
     duplicate gear into an inventory play may have changed.
     """
+    _ensure_local_backgrounds()
     if not background:
         return None
     char.background = background
@@ -3717,6 +3753,7 @@ def cc_options():
     """Everything the deterministic CC wizard needs: races, classes (with
     level-1 skill choices), backgrounds, and the legal ability-score methods.
     All values come from the rules DB / server constants — never an LLM."""
+    _ensure_local_backgrounds()
     from rules.models import (Race as _Race, DndClass as _Cls, Feat as _Feat,
                               Item as _Item)
     with Session(rules_lib.engine) as s:

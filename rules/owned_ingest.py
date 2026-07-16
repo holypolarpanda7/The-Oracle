@@ -2235,6 +2235,109 @@ def ingest_species(engine=None, database_url=None,
     return result
 
 
+# ===========================================================================
+# Parser: 2024 backgrounds -> gitignored owned_books/backgrounds.json
+# ===========================================================================
+# Structured block: "<Name> / Ability Scores: A, B, C / Feat: X / Skill
+# Proficiencies: A and B / Tool Proficiency: T". Backgrounds live in a dict on
+# the backend (not a table), so we write a local JSON it merges at startup —
+# tooling committed, book DATA stays local.
+
+# In the PHB the background NAME is detached from its stat block, but each 2024
+# background has a UNIQUE ability-score triple (a fact) — so we key blocks to
+# canonical names by that triple rather than by a fragile name-line/order match.
+_BG_BY_TRIPLE = {
+    frozenset({"int", "wis", "cha"}): "Acolyte",
+    frozenset({"str", "dex", "int"}): "Artisan",
+    frozenset({"dex", "con", "cha"}): "Charlatan",
+    frozenset({"dex", "con", "int"}): "Criminal",
+    frozenset({"str", "dex", "cha"}): "Entertainer",
+    frozenset({"str", "con", "wis"}): "Farmer",
+    frozenset({"str", "int", "wis"}): "Guard",
+    frozenset({"dex", "con", "wis"}): "Guide",
+    frozenset({"con", "wis", "cha"}): "Hermit",
+    frozenset({"con", "int", "cha"}): "Merchant",
+    frozenset({"str", "int", "cha"}): "Noble",
+    frozenset({"con", "int", "wis"}): "Sage",
+    frozenset({"str", "dex", "wis"}): "Sailor",
+    frozenset({"dex", "int", "wis"}): "Scribe",
+    frozenset({"str", "dex", "con"}): "Soldier",
+    frozenset({"dex", "wis", "cha"}): "Wayfarer",
+}
+_ABIL_CODES = {"str", "dex", "con", "int", "wis", "cha"}
+
+# Canonical skills (facts) — repair OCR-spaced skill names ("Percept ion").
+_SKILLS = [
+    "Acrobatics", "Animal Handling", "Arcana", "Athletics", "Deception",
+    "History", "Insight", "Intimidation", "Investigation", "Medicine", "Nature",
+    "Perception", "Performance", "Persuasion", "Religion", "Sleight of Hand",
+    "Stealth", "Survival",
+]
+_SKILL_BY_KEY = {re.sub(r"[^a-z]", "", s.lower()): s for s in _SKILLS}
+
+
+def _abil_code(tok: str) -> Optional[str]:
+    t = re.sub(r"[^a-z]", "", tok.lower())[:3]   # OCR-spaced "Const itut ion" -> "con"
+    return t if t in _ABIL_CODES else None
+
+
+def _repair_skill(s: str) -> str:
+    return _SKILL_BY_KEY.get(re.sub(r"[^a-z]", "", s.lower()), re.sub(r"\s+", " ", s).strip())
+
+
+def _repair_feat(s: str) -> str:
+    return _CANONICAL_BY_KEY.get(re.sub(r"[^a-z]", "", s.lower()), re.sub(r"\s+", " ", s).strip())
+
+
+def parse_backgrounds(text: str) -> list[dict]:
+    lines = text.splitlines()
+    out: dict[str, dict] = {}
+    for i, l in enumerate(lines):
+        m = re.match(r"\s*Ability Scores:\s*(.+)", l)
+        if not m:
+            continue
+        codes = {c for c in (_abil_code(t) for t in re.split(r"[,/]", m.group(1))) if c}
+        name = _BG_BY_TRIPLE.get(frozenset(codes))
+        if not name:
+            continue
+        block = "\n".join(lines[i:i + 9])
+        fm = re.search(r"Feat:\s*([^(\n]+)", block)
+        sm = re.search(r"Skill\s*Prof[\w ]*?:\s*([^\n]+)", block, re.I)
+        tm = re.search(r"Tool\s*Prof[\w ]*?:\s*([^\n]+)", block, re.I)
+        skills = ([_repair_skill(s)
+                   for s in re.split(r"\s+and\s+|,", sm.group(1)) if s.strip()][:3]
+                  if sm else [])
+        # Keep only real skills (drop OCR fragments that don't match canonical).
+        skills = [s for s in skills if s in _SKILLS]
+        slug = _slugify(name)
+        row = {
+            "slug": slug, "name": name,
+            "feat": _repair_feat(fm.group(1)) if fm else None,
+            "skills": skills,
+            "tool": re.sub(r"\s+", " ", tm.group(1)).strip() if tm else None,
+        }
+        # Keep the first well-formed row (SRD parsed first = cleaner text).
+        if slug not in out or (not out[slug]["skills"] and skills):
+            out[slug] = row
+    return list(out.values())
+
+
+def ingest_backgrounds(workspace: Path = WORKSPACE) -> dict:
+    """Parse 2024 backgrounds (SRD 5.2.1 + PHB 2024) to owned_books/backgrounds.json."""
+    import json
+    parsed: dict[str, dict] = {}
+    for glob_pat in ("*srd-cc-v5-2-1*.txt", "*players-handbook-2024*.txt"):
+        f = next(iter(workspace.glob(glob_pat)), None)
+        if f is None:
+            continue
+        for b in parse_backgrounds(f.read_text(encoding="utf-8")):
+            parsed[b["slug"]] = b   # PHB (last) wins on overlap
+    out = workspace / "backgrounds.json"
+    out.write_text(json.dumps(sorted(parsed.values(), key=lambda x: x["name"]),
+                              indent=2, ensure_ascii=False), encoding="utf-8")
+    return {"backgrounds_parsed": len(parsed), "path": str(out)}
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -2266,6 +2369,7 @@ def main(argv: list[str]) -> None:
             "Owned (Van Richten's Guide to Ravenloft) — local ingest"))
         print("[owned] magic items:", ingest_owned_items())
         print("[owned] species:", ingest_species())
+        print("[owned] backgrounds:", ingest_backgrounds())
 
 
 if __name__ == "__main__":
