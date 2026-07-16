@@ -6,7 +6,7 @@ import asyncio
 import os
 from dotenv import load_dotenv
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 # Import modules
 import music_player
@@ -71,6 +71,40 @@ active_dm_channels: set[int] = set()
 @bot.event
 async def on_ready():
     await event_handlers.on_ready_handler(bot)
+    if not music_cue_poll.is_running():
+        music_cue_poll.start()
+
+
+# ---- Scene music: poll the backend for the DM's cues and switch playlists -----
+# The Activity plays via the browser and can't reach the bot's voice player, so
+# the backend records per-channel music cues and we poll them for active tables.
+_music_cue_seq: dict[int, int] = {}
+
+
+@tasks.loop(seconds=6.0)
+async def music_cue_poll():
+    for channel_id in list(session_channels.ephemeral_session_channels.keys()):
+        try:
+            since = _music_cue_seq.get(channel_id, 0)
+            cue = await backend_integration.get_activity_music_cue(
+                BACKEND_URL, channel_id, since)
+            if not cue:
+                continue
+            seq, query = cue.get("seq", since), cue.get("query")
+            if query and seq > since:
+                _music_cue_seq[channel_id] = seq
+                vc = bot.get_channel(channel_id)
+                if isinstance(vc, discord.VoiceChannel):
+                    mood = await music_control.apply_music_cue(vc, query)
+                    if mood:
+                        print(f"[music cue] {vc.name}: '{query}' -> {mood}")
+        except Exception as e:
+            print(f"[music cue loop] {e}")
+
+
+@music_cue_poll.before_loop
+async def _before_music_cue_poll():
+    await bot.wait_until_ready()
 
 
 @bot.event

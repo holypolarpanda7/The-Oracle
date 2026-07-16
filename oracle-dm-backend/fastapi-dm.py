@@ -6513,6 +6513,32 @@ _ACTIVITY_ACTION_LOG: Dict[tuple, list] = {}
 ACTIVITY_RATE_BURST = 3          # actions allowed in the window…
 ACTIVITY_RATE_WINDOW_S = 60.0    # …per this many seconds (tables only)
 
+# Latest DM music cue per channel (= Discord voice channel id), so the bot can
+# poll and switch the voice-channel playlist to match the scene. The Activity
+# plays via the browser and never touches the bot's voice player directly, so
+# this seq-versioned store is the backend->bot bridge. GET /activity/music/{ch}.
+_ACTIVITY_MUSIC: Dict[str, dict] = {}
+_ACTIVITY_MUSIC_SEQ = 0
+
+
+def _set_activity_music(channel: Optional[str], query: Optional[str]) -> None:
+    """Record the DM's latest ambient-music cue for a channel (bumps the seq)."""
+    global _ACTIVITY_MUSIC_SEQ
+    if not channel or not query:
+        return
+    _ACTIVITY_MUSIC_SEQ += 1
+    _ACTIVITY_MUSIC[str(channel)] = {"query": query, "seq": _ACTIVITY_MUSIC_SEQ}
+
+
+@app.get("/activity/music/{channel}")
+def activity_music(channel: str, since: int = 0):
+    """The bot polls this per active table to sync the voice-channel playlist to
+    the scene. Returns the latest cue if newer than ``since``, else a no-op."""
+    cue = _ACTIVITY_MUSIC.get(str(channel))
+    if cue and cue["seq"] > since:
+        return {"query": cue["query"], "seq": cue["seq"]}
+    return {"query": None, "seq": since}
+
 
 async def _activity_broadcast(session_id: Optional[str], ev: dict,
                               fallback: Optional[WebSocket] = None):
@@ -6827,6 +6853,8 @@ async def activity_ws(ws: WebSocket, channel: str):
                     _set_session_meta(session_id, _meta)
                     _ACTIVITY_TABLES.setdefault(channel, session_id)
                     await ws.send_json({"t": "entered", "resumed": False})
+                    # Opening ambient-music cue (the bot polls and switches).
+                    _set_activity_music(channel, er.music)
                     if er.intro:
                         await ws.send_json({"t": "narration", "text": er.intro})
                     # Opening establishing scene (guaranteed by enter_world).
@@ -6939,6 +6967,9 @@ async def activity_ws(ws: WebSocket, channel: str):
                 _ACTIVITY_ROLLS.reset(token)
                 continue
             _ACTIVITY_ROLLS.reset(token)
+
+            # Relay the DM's scene music cue to the bot (voice channel = channel).
+            _set_activity_music(channel, resp.music)
 
             pc_name = (sheet or {}).get("name")
             lex = _activity_lexicon(session_id, pc_name, resp.reply)

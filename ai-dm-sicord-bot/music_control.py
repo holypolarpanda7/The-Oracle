@@ -11,6 +11,51 @@ import music_player
 music_preferences: Dict[int, Dict] = {}
 
 
+# The DM emits free-text music cues ([[MUSIC: keywords]]); local audio only
+# exists for these named moods, so we snap each cue to the nearest mood by
+# keyword hits. Order matters only for readability — scoring picks the best.
+_MOOD_KEYWORDS: Dict[str, tuple] = {
+    "combat": ("combat", "battle", "fight", "clash", "war", "danger", "ambush",
+               "chase", "boss", "duel", "skirmish", "onslaught"),
+    "dungeon": ("dungeon", "cave", "crypt", "tomb", "catacomb", "underground",
+                "dark", "eerie", "haunt", "ruin", "sewer", "creepy", "dread", "gloom"),
+    "tavern": ("tavern", "inn", "pub", "bar", "drink", "feast", "cheer", "bard",
+               "song", "celebrat", "merry", "jovial", "festive", "hearth"),
+    "town": ("town", "city", "market", "village", "street", "square", "shop",
+             "crowd", "settlement", "bustle", "road", "travel"),
+    "desert": ("desert", "sand", "dune", "arid", "wasteland", "oasis", "barren", "scorch"),
+}
+DEFAULT_MOOD = "town"
+
+
+def mood_for_query(query: str) -> str:
+    """Map a DM music cue (free text) to the nearest local mood playlist."""
+    q = (query or "").lower()
+    best, best_hits = None, 0
+    for mood, kws in _MOOD_KEYWORDS.items():
+        hits = sum(1 for k in kws if k in q)
+        if hits > best_hits:
+            best, best_hits = mood, hits
+    return best or DEFAULT_MOOD
+
+
+async def apply_music_cue(voice_channel: "discord.VoiceChannel", query: str):
+    """Switch a table's playlist to match the DM's scene cue.
+
+    Returns the mood applied, or None when it's disabled, unknown, or already
+    playing that mood (so we never restart the track for the same mood)."""
+    if voice_channel is None or not query:
+        return None
+    prefs = music_preferences.get(voice_channel.id)
+    if not prefs or not prefs.get("enabled", True):
+        return None
+    mood = mood_for_query(query)
+    if prefs.get("current_playlist") == mood:
+        return None
+    await switch_music(voice_channel, mood)
+    return mood
+
+
 async def switch_music(voice_channel: discord.VoiceChannel, new_playlist: str):
     """Switch to a different playlist in the given voice channel."""
     if voice_channel.id not in music_preferences:

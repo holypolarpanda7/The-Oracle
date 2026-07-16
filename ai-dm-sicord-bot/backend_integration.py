@@ -26,6 +26,24 @@ async def check_character_in_db(user_id: str, check_url: str):
     return False, []
 
 
+async def get_activity_music_cue(backend_url: str, channel_id, since: int = 0) -> Optional[Dict]:
+    """Poll the backend for the DM's latest scene music cue for a voice channel.
+
+    Returns ``{"query": str|None, "seq": int}`` (query is None when there's
+    nothing newer than ``since``), or None on transport error.
+    """
+    url = f"{_api_base(backend_url)}/activity/music/{channel_id}"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, params={"since": since},
+                                   timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            print(f"[music cue poll error] {e}")
+    return None
+
+
 async def register_character_backend(payload: Dict, register_url: str) -> Dict:
     """POST to backend /register_character and return JSON result or error dict."""
     async with aiohttp.ClientSession() as session:
