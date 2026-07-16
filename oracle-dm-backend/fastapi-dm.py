@@ -3729,13 +3729,14 @@ def cc_options():
                                                _Feat.category == "origin")).all()
         except Exception:
             feats = []
-        # Free common wondrous item pick (locally ingested; empty degrades ok).
+        # Free common magic-item pick — ALL common items (wondrous, wands,
+        # staves, common armor/weapons, potions...), not just wondrous. Level-1
+        # balance is held by the Common-rarity gate. Empty degrades gracefully.
         try:
-            wondrous = s.exec(select(_Item).where(
-                _Item.rarity == "Common",
-                _Item.item_type == "Wondrous Item").order_by(_Item.name)).all()
+            common_items = s.exec(select(_Item).where(
+                _Item.rarity == "Common").order_by(_Item.name)).all()
         except Exception:
-            wondrous = []
+            common_items = []
         # Buyable mundane gear for the "buy your own" path.
         try:
             buyable = s.exec(select(_Item).where(
@@ -3776,11 +3777,12 @@ def cc_options():
                                      "12": 4, "13": 5, "14": 7, "15": 9}},
             "roll": {"expr": "4d6kh3", "count": 6},
         },
-        "wondrous_items": [{
+        "common_items": [{
             "slug": w.index_slug, "name": w.name,
+            "item_type": w.item_type,
             "attunement": bool(w.requires_attunement),
             "brief": (w.desc or "")[:160],
-        } for w in wondrous],
+        } for w in common_items],
         "buyable_items": [{
             "slug": b.index_slug, "name": b.name, "category": b.category,
             "cost_gp": b.cost_gp,

@@ -313,10 +313,10 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         {stage === "wondrous" && (
           <>
             <div className="cf-sub-label">
-              Choose one free <b>common wondrous item</b> to start with — or none.
+              Choose one free <b>common magic item</b> to start with — or none.
             </div>
             <div className="cf-grid">
-              {opts.wondrous_items.map((w) => (
+              {opts.common_items.map((w) => (
                 <button
                   key={w.slug}
                   className={`cf-card ${d.wondrous === w.slug ? "picked" : ""}`}
@@ -326,12 +326,14 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                   }}
                 >
                   <div className="cf-card-name">{w.name}{w.attunement ? " ✦" : ""}</div>
-                  <div className="cf-card-sub">{w.brief}…</div>
+                  <div className="cf-card-sub">
+                    {w.item_type ? `${w.item_type} · ` : ""}{w.brief}…
+                  </div>
                 </button>
               ))}
             </div>
-            {opts.wondrous_items.length === 0 && (
-              <p className="cf-hint">No wondrous items are ingested yet — skip onward.</p>
+            {opts.common_items.length === 0 && (
+              <p className="cf-hint">No common items are ingested yet — skip onward.</p>
             )}
           </>
         )}
@@ -364,8 +366,8 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 ? `bought ${Object.keys(d.cart).length} item(s), ${(budget - cartCost).toFixed(0)} gp left`
                 : "standard class & background kit"}</p>
               {d.wondrous && (
-                <p className="inv-line"><b>Wondrous</b> · {
-                  opts.wondrous_items.find((w) => w.slug === d.wondrous)?.name}</p>
+                <p className="inv-line"><b>Item</b> · {
+                  opts.common_items.find((w) => w.slug === d.wondrous)?.name}</p>
               )}
             </div>
             {ccError && <p className="cf-error">⚠ {ccError}</p>}
