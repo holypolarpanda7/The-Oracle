@@ -1917,6 +1917,164 @@ def ingest_2014_monsters(glob_pat: str, source_book: str, engine=None,
     return result
 
 
+# ===========================================================================
+# Parser: common magic items (Xanathar's + DMG 2024) -> rules_item
+# ===========================================================================
+# Only NAMES/type/rarity live here (uncopyrightable facts, like the feat list).
+# Item DESCRIPTIONS are parsed from the LOCAL extraction into the gitignored
+# oracle.db and never committed. Extractions are OCR'd (spaces merged in XGtE;
+# char-swaps like "ltem" in the DMG), so headers are matched on a letters-only
+# key against the canonical name list — OCR garbage never becomes a row.
+
+_COMMON_ITEM_NAMES = [
+    "Armor of Gleaming", "Bead of Nourishment", "Bead of Refreshment",
+    "Boots of False Tracks", "Candle of the Deep", "Cast-Off Armor",
+    "Charlatan's Die",
+    "Cloak of Billowing", "Cloak of Many Fashions", "Clockwork Amulet",
+    "Clothes of Mending", "Darkshard Amulet", "Dread Helm", "Ear Horn of Hearing",
+    "Enduring Spellbook", "Ersatz Eye", "Hat of Vermin", "Hat of Wizardry",
+    "Heward's Handy Spice Pouch", "Horn of Silent Alarm", "Instrument of Illusions",
+    "Instrument of Scribing", "Lock of Trickery", "Moon-Touched Sword",
+    "Mystery Key", "Orb of Direction", "Orb of Time", "Perfume of Bewitching",
+    "Pipe of Smoke Monsters", "Pole of Angling", "Pole of Collapsing",
+    "Pot of Awakening", "Rope of Mending", "Ruby of the War Mage",
+    "Shield of Expression", "Smoldering Armor", "Staff of Birdcalls",
+    "Staff of Flowers", "Talking Doll", "Tankard of Sobriety", "Unbreakable Arrow",
+    "Veteran's Cane", "Walloping Ammunition", "Wand of Conducting",
+    "Wand of Pyrotechnics", "Wand of Scowls", "Wand of Smiles",
+]
+_COMMON_ITEM_BY_KEY = {re.sub(r"[^a-z0-9]", "", n.lower()): n
+                       for n in _COMMON_ITEM_NAMES}
+
+_ITEM_TYPE_LINE = re.compile(
+    r"(?im)^\s*(wondrous\s*[il]tems?|armou?r|rings?|rods?|staffs?|staves|wands?|"
+    r"weapons?|potions?|scrolls?|ammunitions?)\b[^\n]*?,\s*common\b"
+    r"(?P<att>[^\n]*attunement)?")
+
+_TYPE_LABELS = [
+    ("wondrous", "Wondrous Item"), ("armor", "Armor"), ("armour", "Armor"),
+    ("ring", "Ring"), ("rod", "Rod"), ("staff", "Staff"), ("staves", "Staff"),
+    ("wand", "Wand"), ("weapon", "Weapon"), ("potion", "Potion"),
+    ("scroll", "Scroll"), ("ammunition", "Ammunition"),
+]
+
+
+def _item_type_label(raw: str) -> str:
+    r = raw.lower().replace(" ", "")
+    for key, label in _TYPE_LABELS:
+        if r.startswith(key):
+            return label
+    return "Wondrous Item"
+
+
+try:                       # OCR de-merger (optional; falls back to raw text)
+    import wordninja as _wordninja
+except Exception:          # pragma: no cover
+    _wordninja = None
+
+
+def _demerge(text: str) -> str:
+    """Re-insert spaces the OCR dropped, splitting long alpha runs on a word
+    dictionary. Best-effort — OCR char-drops (e.g. 'flavorless'->'avorless')
+    can't be recovered, but the majority of words are restored."""
+    if _wordninja is None:
+        return text
+    return re.sub(r"[A-Za-z]{6,}",
+                  lambda m: " ".join(_wordninja.split(m.group(0))), text)
+
+
+def _clean_item_desc(text: str) -> str:
+    text = re.sub(r"\f", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.replace("ltem", "Item")
+    text = _demerge(text)
+    text = re.sub(r"([,.;:])(?=\S)", r"\1 ", text)   # space after punctuation
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:600]
+
+
+def parse_common_items(text: str) -> list[dict]:
+    """Extract common magic items whose headers match the canonical name list."""
+    lines = text.splitlines()
+    offsets, pos = [], 0
+    for ln in lines:
+        offsets.append(pos)
+        pos += len(ln) + 1
+
+    def line_of(char_pos: int) -> int:
+        import bisect
+        return max(0, bisect.bisect_right(offsets, char_pos) - 1)
+
+    def prev_nonblank(i: int) -> int:
+        j = i - 1
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        return j
+
+    out: list[dict] = []
+    matches = list(_ITEM_TYPE_LINE.finditer(text))
+    for k, m in enumerate(matches):
+        name_idx = prev_nonblank(line_of(m.start()))
+        raw_name = lines[name_idx].strip() if name_idx >= 0 else ""
+        key = re.sub(r"[^a-z0-9]", "", raw_name.lower())
+        name = _COMMON_ITEM_BY_KEY.get(key)
+        if not name:
+            continue
+        # Description runs from after the type line to just before the NEXT
+        # item's name line (so a neighbouring header never bleeds into it).
+        if k + 1 < len(matches):
+            ni = prev_nonblank(line_of(matches[k + 1].start()))
+            desc_end = offsets[ni] if ni >= 0 else matches[k + 1].start()
+        else:
+            desc_end = m.end() + 800
+        out.append({
+            "slug": _slugify(name), "name": name,
+            "item_type": _item_type_label(m.group(1)),
+            "requires_attunement": bool(m.group("att")),
+            "desc": _clean_item_desc(text[m.end():desc_end]),
+        })
+    seen: dict[str, dict] = {}
+    for it in out:
+        if it["slug"] not in seen or len(it["desc"]) > len(seen[it["slug"]]["desc"]):
+            seen[it["slug"]] = it
+    return list(seen.values())
+
+
+def ingest_owned_items(engine=None, database_url=None,
+                       workspace: Path = WORKSPACE) -> dict:
+    """Parse common magic items from owned books into rules_item (LOCAL only)."""
+    from .models import Item
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+
+    books = [
+        ("*xanathar*.txt", "Owned (Xanathar's Guide to Everything) — local ingest"),
+        ("*dungeon-master-guide-2024*.txt", "Owned (DMG 2024) — local ingest"),
+    ]
+    parsed: dict[str, dict] = {}
+    for glob_pat, source in books:
+        f = next(iter(workspace.glob(glob_pat)), None)
+        if f is None:
+            continue
+        for it in parse_common_items(f.read_text(encoding="utf-8")):
+            if it["slug"] not in parsed or len(it["desc"]) > len(parsed[it["slug"]]["desc"]):
+                parsed[it["slug"]] = dict(it, source=source)
+
+    result = {"common_items_parsed": len(parsed), "common_items_new": 0}
+    with Session(engine) as s:
+        for it in parsed.values():
+            mapped = Item(
+                index_slug=it["slug"], name=it["name"],
+                category="magic-item", item_type=it["item_type"],
+                rarity="Common", requires_attunement=it["requires_attunement"],
+                desc=it["desc"] or None, source=it["source"],
+            )
+            if _upsert(s, Item, it["slug"], mapped):
+                result["common_items_new"] += 1
+        s.commit()
+    return result
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -1946,6 +2104,7 @@ def main(argv: list[str]) -> None:
         print("[owned] vrgtr monsters:", ingest_2014_monsters(
             "*van-richten*.txt",
             "Owned (Van Richten's Guide to Ravenloft) — local ingest"))
+        print("[owned] common items:", ingest_owned_items())
 
 
 if __name__ == "__main__":
