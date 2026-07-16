@@ -375,11 +375,9 @@ class ActivityLaunchView(View):
                 ephemeral=True)
             return
 
-        invite_url = await session_channels.make_launch_invite(channel)
+        invite_url, invite_err = await session_channels.make_launch_invite(channel)
         if invite_url is None:
-            await interaction.followup.send(
-                "❌ Couldn't create the launch invite — check my **Create Invite** permission.",
-                ephemeral=True)
+            await interaction.followup.send(f"❌ {invite_err}", ephemeral=True)
             return
 
         # Primary delivery: DM the private launch button. Build a fresh view per

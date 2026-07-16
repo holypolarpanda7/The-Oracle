@@ -108,14 +108,15 @@ def launch_view_from_url(url: str) -> discord.ui.View:
     return view
 
 
-async def make_launch_invite(channel: discord.VoiceChannel) -> Optional[str]:
+async def make_launch_invite(channel: discord.VoiceChannel) -> "tuple[Optional[str], Optional[str]]":
     """Mint an embedded-application invite URL for ``channel`` (join + launch).
 
-    Returns None if the Activity isn't configured or Discord refuses the invite.
+    Returns ``(url, None)`` on success, or ``(None, reason)`` with a
+    player-facing explanation of why the invite couldn't be made.
     """
     client_id = activity_client_id()
     if not client_id:
-        return None
+        return None, "the Activity isn't configured yet (missing `ORACLE_DM_CLIENT_ID`)."
     try:
         invite = await channel.create_invite(
             target_type=discord.InviteTarget.embedded_application,
@@ -124,16 +125,26 @@ async def make_launch_invite(channel: discord.VoiceChannel) -> Optional[str]:
             reason="Launch The Oracle Activity")
     except discord.Forbidden:
         print(f"[session] no Create Invite permission on {channel.id}")
-        return None
+        return None, "I need the **Create Invite** permission on that channel."
+    except discord.HTTPException as e:
+        print(f"[session] launch invite failed for {channel.id}: {e}")
+        # 50035 + "not embedded" = the app hasn't had Activities enabled in the
+        # Developer Portal, so it can't be an embedded-app invite target.
+        if getattr(e, "code", None) == 50035 and "not embedded" in str(e).lower():
+            return None, (
+                "this app isn't enabled as a Discord **Activity** yet. In the "
+                "Developer Portal → your app → **Activities**, turn Activities on and "
+                "add a URL mapping to `oracle.oracle-dm.com`, then try again.")
+        return None, f"Discord rejected the launch invite (error {getattr(e, 'code', '?')})."
     except Exception as e:  # noqa: BLE001 - surface, don't crash the flow
         print(f"[session] launch invite failed for {channel.id}: {e}")
-        return None
-    return invite.url
+        return None, "something went wrong creating the launch invite."
+    return invite.url, None
 
 
 async def make_launch_view(channel: discord.VoiceChannel) -> Optional[discord.ui.View]:
     """Convenience: an invite + button view in one call (None if unavailable)."""
-    url = await make_launch_invite(channel)
+    url, _reason = await make_launch_invite(channel)
     return launch_view_from_url(url) if url else None
 
 
