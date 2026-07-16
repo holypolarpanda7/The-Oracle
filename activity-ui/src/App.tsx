@@ -6,6 +6,7 @@ import type {
 } from "./lib/types";
 import { Block, makeOracleBlock, NarrationPane } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
+import { PortraitStep } from "./components/PortraitStep";
 import { Landing } from "./components/Landing";
 import { LevelUpOverlay } from "./components/LevelUp";
 import { PartyStrip, Rail } from "./components/Rail";
@@ -23,7 +24,7 @@ function Corner({ pos }: { pos: string }) {
   );
 }
 
-type Screen = "landing" | "create" | "play";
+type Screen = "landing" | "create" | "portrait" | "play";
 
 export default function App({ session }: { session: Session }) {
   const [screen, setScreen] = useState<Screen>("landing");
@@ -40,6 +41,7 @@ export default function App({ session }: { session: Session }) {
     | { kind: "invite"; place: string; channel: string }
     | null>(null);
   const [rateWait, setRateWait] = useState(0);
+  const [newChar, setNewChar] = useState<{ name: string; id: number | null } | null>(null);
   const [input, setInput] = useState("");
   const lastEnterRef = useRef<string>("");
   const lexRef = useRef<LexEntry[]>([]);
@@ -66,9 +68,16 @@ export default function App({ session }: { session: Session }) {
         case "entered":
           setScreen("play");
           break;
-        case "cc_done":
-          pendingEnterRef.current = ev.name;
+        case "cc_done": {
+          // Detour through the portrait step before entering the world. We do
+          // NOT set pendingEnterRef, so the following `hello` won't auto-enter;
+          // PortraitStep triggers the enter when the player is ready.
+          const det = ev.detail as { character_id?: number } | undefined;
+          const id = det && typeof det.character_id === "number" ? det.character_id : null;
+          setNewChar({ name: ev.name, id });
+          setScreen("portrait");
           break;
+        }
         case "cc_error":
           setCcError(ev.detail);
           break;
@@ -194,6 +203,17 @@ export default function App({ session }: { session: Session }) {
             onDone={(payload: CCPayload) => {
               setCcError(null);
               connRef.current?.send({ t: "cc_register", payload });
+            }}
+          />
+        )}
+
+        {screen === "portrait" && newChar && (
+          <PortraitStep
+            name={newChar.name}
+            characterId={newChar.id}
+            onDone={() => {
+              lastEnterRef.current = newChar.name;
+              connRef.current?.send({ t: "enter", character_name: newChar.name });
             }}
           />
         )}

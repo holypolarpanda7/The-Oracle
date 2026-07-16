@@ -550,3 +550,58 @@ body {
 }
 .ally .hp-bar { margin: 3px 0 0; }
 .ally .cond { font-size: 10px; color: var(--oxblood); font-style: italic; }
+
+/* ---- Portrait step (post-creation) ------------------------------------ */
+.portrait-step {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 1fr auto;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+}
+.ps-head { text-align: center; }
+.ps-head h2 {
+  font-family: var(--serif); color: var(--brass-bright);
+  font-size: 1.5rem; margin: 0 0 4px; letter-spacing: 0.02em;
+}
+.ps-sub { color: var(--text-dim); font-size: 0.85rem; margin: 0; }
+.ps-body {
+  display: grid; grid-template-columns: 240px 1fr; gap: 20px;
+  min-height: 0; align-items: start;
+}
+.ps-frame {
+  aspect-ratio: 3 / 4;
+  border: var(--frame-w) solid var(--panel-edge); border-radius: var(--radius);
+  background: radial-gradient(120% 90% at 50% 0%, #1d1712 0%, #0d0a08 70%);
+  display: grid; place-items: center; overflow: hidden;
+  box-shadow: inset 0 0 40px #000000a0;
+}
+.ps-frame img { width: 100%; height: 100%; object-fit: cover; }
+.ps-empty, .ps-spin {
+  color: var(--text-dim); font-style: italic; font-size: 0.85rem;
+  text-align: center; padding: 12px;
+}
+.ps-spin { color: var(--brass); animation: ps-pulse 1.4s ease-in-out infinite; }
+@keyframes ps-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+.ps-controls { display: flex; flex-direction: column; gap: 12px; }
+.ps-desc {
+  width: 100%; min-height: 120px; resize: vertical;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--panel-edge); border-radius: var(--radius);
+  padding: 10px 12px; font-family: var(--serif); font-size: 0.95rem; line-height: 1.5;
+}
+.ps-desc:focus { outline: none; border-color: var(--brass); }
+.ps-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ps-upload {
+  cursor: pointer; color: var(--text-dim); font-size: 0.85rem;
+  border: 1px dashed var(--panel-edge); border-radius: var(--radius);
+  padding: 9px 14px; transition: color 0.2s, border-color 0.2s;
+}
+.ps-upload:hover { color: var(--brass); border-color: var(--brass); }
+.ps-upload.disabled { opacity: 0.5; pointer-events: none; }
+.ps-note { color: var(--text-dim); font-size: 0.8rem; font-style: italic; margin: 0; }
+.ps-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+@media (max-width: 560px) {
+  .ps-body { grid-template-columns: 1fr; }
+  .ps-frame { max-width: 240px; margin: 0 auto; }
+}
