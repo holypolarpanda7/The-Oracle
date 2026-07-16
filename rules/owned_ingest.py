@@ -2144,6 +2144,97 @@ def ingest_owned_items(engine=None, database_url=None,
     return result
 
 
+# ===========================================================================
+# Parser: 2024 species -> rules_race   (SRD 5.2.1 = CC-BY; PHB 2024 = owned)
+# ===========================================================================
+# Both extractions share the structured block: a name line, then
+#   Creature Type: Humanoid / Size: Medium (...) / Speed: 30 feet
+# then " Trait Name. text" bullet traits. 2024 species carry NO ability
+# bonuses (those come from the background); to keep the CC's assign-at-species
+# UX we give every species choose_bonus [2,1] (the +2/+1 the player assigns).
+
+def parse_species(text: str) -> list[dict]:
+    lines = text.splitlines()
+    anchors = [i for i, l in enumerate(lines) if re.match(r"\s*Creature Type:", l)]
+
+    def prev_nonblank(i: int) -> int:
+        j = i - 1
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        return j
+
+    out: list[dict] = []
+    for idx, ai in enumerate(anchors):
+        nj = prev_nonblank(ai)
+        name = lines[nj].strip() if nj >= 0 else ""
+        # PHB 2024 headers arrive as "AASIMAR TRAITS"/"DRAGONBORN"; normalize to
+        # the clean species name so slugs match the SRD rows (overwrite, not dup).
+        name = re.sub(r"\s+traits$", "", name, flags=re.I).strip()
+        if name.isupper():
+            name = name.title()
+        # A species header is a short Title-Case word or two, nothing else.
+        if not re.match(r"^[A-Z][A-Za-z'’-]+( [A-Z][A-Za-z'’-]+)?$", name):
+            continue
+        end = prev_nonblank(anchors[idx + 1]) if idx + 1 < len(anchors) else ai + 130
+        block = "\n".join(lines[ai:end if end > ai else ai + 130])
+        size = "Small" if re.search(r"Size:\s*Small", block) and not \
+            re.search(r"Size:\s*Medium", block) else "Medium"
+        sm = re.search(r"Speed:\s*(\d+)", block)
+        speed = int(sm.group(1)) if sm else 30
+        darkvision = bool(re.search(r"Darkvision", block))
+        traits: list[str] = []
+        for tm in re.finditer(r"(?m)^\s+([A-Z][A-Za-z'’/ -]{2,34})\.\s", block):
+            t = re.sub(r"\s+", " ", tm.group(1)).strip()
+            if t and t not in traits and len(traits) < 8:
+                traits.append(t)
+        out.append({
+            "slug": _slugify(name), "name": name, "size": size, "speed": speed,
+            "darkvision": darkvision, "traits": traits,
+        })
+    # Dedupe by slug, keep the richest (most traits).
+    seen: dict[str, dict] = {}
+    for r in out:
+        if r["slug"] not in seen or len(r["traits"]) > len(seen[r["slug"]]["traits"]):
+            seen[r["slug"]] = r
+    return list(seen.values())
+
+
+def ingest_species(engine=None, database_url=None,
+                   workspace: Path = WORKSPACE) -> dict:
+    """Parse 2024 species from the SRD 5.2.1 (CC-BY) and PHB 2024 into rules_race."""
+    from .models import Race
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+
+    books = [
+        ("*srd-cc-v5-2-1*.txt", "SRD 5.2.1 (CC-BY-4.0) 2024"),
+        ("*players-handbook-2024*.txt", "Owned (PHB 2024) — local ingest"),
+    ]
+    parsed: dict[str, dict] = {}
+    for glob_pat, source in books:
+        f = next(iter(workspace.glob(glob_pat)), None)
+        if f is None:
+            continue
+        for r in parse_species(f.read_text(encoding="utf-8")):
+            if r["slug"] not in parsed or len(r["traits"]) > len(parsed[r["slug"]]["traits"]):
+                parsed[r["slug"]] = dict(r, source=source)
+
+    result = {"species_parsed": len(parsed), "species_new": 0}
+    with Session(engine) as s:
+        for r in parsed.values():
+            mapped = Race(
+                index_slug=r["slug"], name=r["name"],
+                ability_bonuses={}, choose_bonus=[2, 1],
+                speed=r["speed"], size=r["size"], darkvision=r["darkvision"],
+                languages="Common plus one more of your choice",
+                traits=r["traits"], source=r["source"],
+            )
+            if _upsert(s, Race, r["slug"], mapped):
+                result["species_new"] += 1
+        s.commit()
+    return result
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -2173,7 +2264,8 @@ def main(argv: list[str]) -> None:
         print("[owned] vrgtr monsters:", ingest_2014_monsters(
             "*van-richten*.txt",
             "Owned (Van Richten's Guide to Ravenloft) — local ingest"))
-        print("[owned] common items:", ingest_owned_items())
+        print("[owned] magic items:", ingest_owned_items())
+        print("[owned] species:", ingest_species())
 
 
 if __name__ == "__main__":
