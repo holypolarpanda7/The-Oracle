@@ -2150,8 +2150,8 @@ def ingest_owned_items(engine=None, database_url=None,
 # Both extractions share the structured block: a name line, then
 #   Creature Type: Humanoid / Size: Medium (...) / Speed: 30 feet
 # then " Trait Name. text" bullet traits. 2024 species carry NO ability
-# bonuses (those come from the background); to keep the CC's assign-at-species
-# UX we give every species choose_bonus [2,1] (the +2/+1 the player assigns).
+# bonuses (those come from the background, applied in the CC ability stage), so
+# both ability_bonuses and choose_bonus are empty.
 
 def parse_species(text: str) -> list[dict]:
     lines = text.splitlines()
@@ -2166,14 +2166,16 @@ def parse_species(text: str) -> list[dict]:
     out: list[dict] = []
     for idx, ai in enumerate(anchors):
         nj = prev_nonblank(ai)
-        name = lines[nj].strip() if nj >= 0 else ""
-        # PHB 2024 headers arrive as "AASIMAR TRAITS"/"DRAGONBORN"; normalize to
-        # the clean species name so slugs match the SRD rows (overwrite, not dup).
-        name = re.sub(r"\s+traits$", "", name, flags=re.I).strip()
-        if name.isupper():
+        raw = lines[nj].strip() if nj >= 0 else ""
+        # Species names are single words. Headers arrive clean ("Dragonborn"),
+        # all-caps ("AASIMAR TRAITS"), or OCR-spaced small-caps
+        # ("C HANGELING  T RAITS") — collapse spaces, drop a trailing "TRAITS".
+        collapsed = re.sub(r"\s+", "", raw)
+        mm = re.match(r"^(.+?)traits$", collapsed, re.I)
+        name = mm.group(1) if mm and mm.group(1) else collapsed
+        if name.isupper() or name.islower():
             name = name.title()
-        # A species header is a short Title-Case word or two, nothing else.
-        if not re.match(r"^[A-Z][A-Za-z'’-]+( [A-Z][A-Za-z'’-]+)?$", name):
+        if not re.match(r"^[A-Za-z'’-]{3,20}$", name):
             continue
         end = prev_nonblank(anchors[idx + 1]) if idx + 1 < len(anchors) else ai + 130
         block = "\n".join(lines[ai:end if end > ai else ai + 130])
@@ -2209,6 +2211,7 @@ def ingest_species(engine=None, database_url=None,
     books = [
         ("*srd-cc-v5-2-1*.txt", "SRD 5.2.1 (CC-BY-4.0) 2024"),
         ("*players-handbook-2024*.txt", "Owned (PHB 2024) — local ingest"),
+        ("*eberron*.txt", "Owned (Eberron: Forge of the Artificer 2025) — local ingest"),
     ]
     parsed: dict[str, dict] = {}
     for glob_pat, source in books:
@@ -2224,7 +2227,9 @@ def ingest_species(engine=None, database_url=None,
         for r in parsed.values():
             mapped = Race(
                 index_slug=r["slug"], name=r["name"],
-                ability_bonuses={}, choose_bonus=[2, 1],
+                # 2024: species grant NO ability bonuses — those come from the
+                # background (see the CC ability stage). Empty on both.
+                ability_bonuses={}, choose_bonus=[],
                 speed=r["speed"], size=r["size"], darkvision=r["darkvision"],
                 languages="Common plus one more of your choice",
                 traits=r["traits"], source=r["source"],
