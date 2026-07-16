@@ -438,6 +438,8 @@ class EnterResponse(BaseModel):
     characters: Optional[List[str]] = None
     # Optional AI-recommended opening ambient-music search query.
     music: Optional[str] = None
+    # Opening scene picture(s) — same transport payload as chat images.
+    images: Optional[List[dict]] = None
 
 
 class RegisterCharacterRequest(BaseModel):
@@ -3357,6 +3359,35 @@ async def enter_world(req: EnterRequest):
     # Pull the opening ambient-music cue out of the intro (if the DM set one).
     intro, music_query = extract_music_cue(intro)
 
+    # Resolve any opening scene picture the DM asked for — and GUARANTEE an
+    # establishing shot of the starting locale even when it emitted no hook, so
+    # the very first thing a player sees is a drawn scene, not a wall of text.
+    intro, image_reqs, reset_reqs = extract_image_hooks(intro)
+    if not image_reqs:
+        try:
+            loc = world.location_of(pc_slug)
+            place_name = getattr(loc, "name", None) or "the Silver Tankard"
+        except Exception:
+            place_name = "the Silver Tankard"
+        image_reqs = [{
+            "kind": "place",
+            "subject": place_name,
+            "context": f"arrival at {getattr(chosen, 'home_region', 'Greenfields')}",
+            "look": "",
+        }]
+    opening_images: list[dict] = []
+    try:
+        if image_reqs or reset_reqs:
+            _unload_local_llm()   # single-GPU: free the LLM before we render
+            _mark_diffusion_dirty()
+        opening_images = process_image_hooks(
+            image_reqs, reset_reqs,
+            pc_name=chosen.name,
+            ctx_entities=list(_ctx_obj.entities) if _ctx_obj else None,
+        )
+    except Exception as e:
+        print(f"[enterworld imagery error] {e}")
+
     # Store the DM turn in the session history
     _append_turn(session_id, Turn(role="dm", user="Oracle DM", content=intro))
 
@@ -3370,6 +3401,7 @@ async def enter_world(req: EnterRequest):
         starting_region=getattr(chosen, 'home_region', 'Greenfields'),
         characters=[c.name for c in chars],
         music=music_query,
+        images=opening_images or None,
     )
 
 
@@ -6797,6 +6829,13 @@ async def activity_ws(ws: WebSocket, channel: str):
                     await ws.send_json({"t": "entered", "resumed": False})
                     if er.intro:
                         await ws.send_json({"t": "narration", "text": er.intro})
+                    # Opening establishing scene (guaranteed by enter_world).
+                    for img in er.images or []:
+                        if img.get("b64"):
+                            await ws.send_json({
+                                "t": "scene",
+                                "url": f"data:{img.get('mime', 'image/webp')};base64,{img['b64']}",
+                            })
                     # Merge-invite: another live table at the same place is an
                     # invitation, not a contradiction.
                     try:
