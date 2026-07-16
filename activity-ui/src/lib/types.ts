@@ -127,7 +127,10 @@ export interface CCOptions {
     skill_choices_n: number; skill_options: string[];
   }[];
   feats: { slug: string; name: string; prerequisite?: string | null; brief: string }[];
-  backgrounds: { slug: string; name: string; skills: string[]; feature?: string | null }[];
+  backgrounds: {
+    slug: string; name: string; skills: string[];
+    feature?: string | null; abilities?: string[];
+  }[];
   ability_methods: {
     standard_array: number[];
     point_buy: { budget: number; min: number; max: number; costs: Record<string, number> };

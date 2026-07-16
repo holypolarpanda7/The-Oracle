@@ -3496,6 +3496,7 @@ def _ensure_local_backgrounds() -> None:
             "skills": b.get("skills") or [],
             "items": _BACKGROUND_KITS.get(key, {}).get("items", []),
             "feature": b.get("feat") or _BACKGROUND_KITS.get(key, {}).get("feature"),
+            "abilities": b.get("abilities") or [],
         }
         n += 1
     print(f"[cc] merged {n} local (2024) backgrounds")
@@ -3806,6 +3807,9 @@ def cc_options():
             "slug": bg, "name": bg.title(),
             "skills": kit.get("skills") or [],
             "feature": kit.get("feature"),
+            # 2024: the background grants the ability boosts. 3-letter codes;
+            # empty list (legacy backgrounds) means "any ability".
+            "abilities": [(a or "")[:3].upper() for a in (kit.get("abilities") or [])],
         } for bg, kit in _BACKGROUND_KITS.items()],
         "ability_methods": {
             "standard_array": [15, 14, 13, 12, 10, 8],

@@ -25,9 +25,13 @@ const NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
 
 interface Draft {
   race?: string;
-  bonusPicks: Ability[];     // choose_bonus assignment, in order
   cls?: string;
   background?: string;
+  // 2024 ability boosts come from the background: +2/+1 to two of its abilities,
+  // or +1 to each of three. (boost2/boost1 for "two-one" mode.)
+  boostMode: "two-one" | "spread";
+  boost2?: Ability;
+  boost1?: Ability;
   method: "standard_array" | "point_buy" | "roll";
   pool: number[];            // values available to assign (array/roll)
   assigned: Partial<Record<Ability, number>>;
@@ -41,7 +45,7 @@ interface Draft {
 }
 
 const freshDraft = (): Draft => ({
-  bonusPicks: [], method: "standard_array", pool: [], assigned: {},
+  boostMode: "two-one", method: "standard_array", pool: [], assigned: {},
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
   skills: [], gearMode: "kit", cart: {}, name: "",
 });
@@ -64,10 +68,19 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   const race = opts?.races.find((r) => r.slug === d.race);
   const cls = opts?.classes.find((c) => c.slug === d.cls);
   const bg = opts?.backgrounds.find((b) => b.slug === d.background);
-  const needsBonusPicks = (race?.choose_bonus?.length ?? 0) > 0;
   // 2024 rules: every character's background grants an Origin feat, so everyone
   // picks one (not just Custom Lineage-style races) whenever feats are ingested.
   const needsFeat = (opts?.feats.length ?? 0) > 0;
+
+  // 2024 ability boosts come from the background's listed abilities (3 of them;
+  // a legacy background with none falls back to "any ability"). +1/+1/+1 is only
+  // offered when there are exactly three to spread across.
+  const boostPool: Ability[] = useMemo(() => {
+    const codes = (bg?.abilities ?? []).filter(
+      (a): a is Ability => (ABILITIES as readonly string[]).includes(a));
+    return codes.length ? codes : [...ABILITIES];
+  }, [bg]);
+  const canSpread = boostPool.length === 3;
 
   // ----- final scores -----
   const baseScores = useMemo((): Partial<Record<Ability, number>> => {
@@ -77,28 +90,26 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
 
   const bonuses = useMemo((): Partial<Record<Ability, number>> => {
     const out: Partial<Record<Ability, number>> = {};
-    if (!race) return out;
-    if (needsBonusPicks) {
-      race.choose_bonus.forEach((amt, i) => {
-        const a = d.bonusPicks[i];
-        if (a) out[a] = (out[a] ?? 0) + amt;
-      });
+    if (d.boostMode === "spread" && canSpread) {
+      for (const a of boostPool) out[a] = 1;
     } else {
-      for (const [k, v] of Object.entries(race.ability_bonuses)) {
-        const a = k.slice(0, 3).toUpperCase() as Ability;
-        if (ABILITIES.includes(a)) out[a] = (out[a] ?? 0) + v;
-      }
+      if (d.boost2) out[d.boost2] = 2;
+      if (d.boost1) out[d.boost1] = (out[d.boost1] ?? 0) + 1;
     }
     return out;
-  }, [race, d.bonusPicks, needsBonusPicks]);
+  }, [d.boostMode, d.boost2, d.boost1, boostPool, canSpread]);
+
+  const boostDone = (d.boostMode === "spread" && canSpread)
+    || (!!d.boost2 && !!d.boost1 && d.boost2 !== d.boost1);
 
   const finalScore = (a: Ability) =>
     (baseScores[a] ?? 0) + (bonuses[a] ?? 0) || undefined;
 
   // ----- stage gating -----
-  const abilitiesDone = d.method === "point_buy"
+  const abilitiesBase = d.method === "point_buy"
     ? pointBuySpent(d.pointBuy, opts) <= (opts?.ability_methods.point_buy.budget ?? 27)
     : ABILITIES.every((a) => d.assigned[a] !== undefined);
+  const abilitiesDone = abilitiesBase && boostDone;
   const skillsNeeded = cls?.skill_choices_n ?? 2;
 
   // Buy-mode gear budget (per-class starting gold) + running cart cost.
@@ -111,8 +122,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   }, 0), [d.cart, opts]);
 
   const stageDone: Record<Stage, boolean> = {
-    race: !!d.race && (!needsBonusPicks
-      || d.bonusPicks.length === (race?.choose_bonus.length ?? 0)),
+    race: !!d.race,
     class: !!d.cls,
     background: !!d.background,
     abilities: abilitiesDone,
@@ -168,53 +178,24 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
       <main className="cf-main">
         {stage === "race" && (
           <>
+            <div className="cf-sub-label">
+              Your species shapes body and blood — ability boosts come from your
+              background (2024 rules).
+            </div>
             <div className="cf-grid">
               {opts.races.map((r) => (
                 <button
                   key={r.slug}
                   className={`cf-card ${d.race === r.slug ? "picked" : ""}`}
-                  onClick={() => {
-                    uiTick();
-                    setD({ ...d, race: r.slug, bonusPicks: [] });
-                    setDetail(r.slug);
-                  }}
+                  onClick={() => { uiTick(); setD({ ...d, race: r.slug }); setDetail(r.slug); }}
                 >
                   <div className="cf-card-name">{r.name}</div>
                   <div className="cf-card-sub">
-                    {r.choose_bonus.length
-                      ? `+${r.choose_bonus.join(" / +")} to abilities of your choice`
-                      : Object.entries(r.ability_bonuses)
-                          .map(([k, v]) => `+${v} ${k.slice(0, 3).toUpperCase()}`)
-                          .join(", ") || "—"}
+                    {r.size} · {r.speed} ft{r.darkvision ? " · darkvision" : ""}
                   </div>
                 </button>
               ))}
             </div>
-            {needsBonusPicks && (
-              <div className="cf-subpanel">
-                <div className="cf-sub-label">
-                  Assign {race!.choose_bonus.map((b) => `+${b}`).join(" and ")}
-                </div>
-                {race!.choose_bonus.map((amt, i) => (
-                  <div className="cf-bonus-row" key={i}>
-                    <span className="cf-bonus-amt">+{amt}</span>
-                    {ABILITIES.map((a) => (
-                      <button
-                        key={a}
-                        className={`cf-chip ${d.bonusPicks[i] === a ? "picked" : ""}`}
-                        disabled={d.bonusPicks.includes(a) && d.bonusPicks[i] !== a}
-                        onClick={() => {
-                          uiTick();
-                          const picks = [...d.bonusPicks];
-                          picks[i] = a;
-                          setD({ ...d, bonusPicks: picks });
-                        }}
-                      >{a}</button>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )}
           </>
         )}
 
@@ -255,7 +236,8 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         )}
 
         {stage === "abilities" && (
-          <AbilityStage opts={opts} d={d} setD={setD} bonuses={bonuses} />
+          <AbilityStage opts={opts} d={d} setD={setD} bonuses={bonuses}
+                        bg={bg} boostPool={boostPool} canSpread={canSpread} />
         )}
 
         {stage === "skills" && (
@@ -398,10 +380,12 @@ function pointBuySpent(pb: Record<Ability, number>, opts: CCOptions | null): num
   return ABILITIES.reduce((n, a) => n + (costs[String(pb[a])] ?? 0), 0);
 }
 
-function AbilityStage({ opts, d, setD, bonuses }: {
+function AbilityStage({ opts, d, setD, bonuses, bg, boostPool, canSpread }: {
   opts: CCOptions;
   d: Draft; setD: (d: Draft) => void;
   bonuses: Partial<Record<Ability, number>>;
+  bg?: CCOptions["backgrounds"][number];
+  boostPool: Ability[]; canSpread: boolean;
 }) {
   const pb = opts.ability_methods.point_buy;
   const spent = pointBuySpent(d.pointBuy, opts);
@@ -435,8 +419,49 @@ function AbilityStage({ opts, d, setD, bonuses }: {
     }
   }
 
+  const setBoost2 = (a: Ability) =>
+    setD({ ...d, boost2: a, boost1: d.boost1 === a ? undefined : d.boost1 });
+  const setBoost1 = (a: Ability) => setD({ ...d, boost1: a });
+
   return (
     <div>
+      {/* 2024 background ability boosts */}
+      <div className="cf-subpanel" style={{ marginBottom: 14 }}>
+        <div className="cf-sub-label">
+          {bg ? bg.name : "Background"} boosts{" "}
+          {boostPool.length === 3 ? `(${boostPool.join(", ")})` : "(choose any)"}
+        </div>
+        <div className="cf-chips" style={{ marginBottom: 8 }}>
+          <button className={`cf-chip ${d.boostMode === "two-one" ? "picked" : ""}`}
+                  onClick={() => { uiTick(); setD({ ...d, boostMode: "two-one" }); }}>+2 / +1</button>
+          {canSpread && (
+            <button className={`cf-chip ${d.boostMode === "spread" ? "picked" : ""}`}
+                    onClick={() => { uiTick(); setD({ ...d, boostMode: "spread" }); }}>+1 to each</button>
+          )}
+        </div>
+        {d.boostMode === "spread" && canSpread ? (
+          <p className="cf-hint">+1 to {boostPool.join(", ")}.</p>
+        ) : (
+          <>
+            <div className="cf-bonus-row">
+              <span className="cf-bonus-amt">+2</span>
+              {boostPool.map((a) => (
+                <button key={a} className={`cf-chip ${d.boost2 === a ? "picked" : ""}`}
+                        onClick={() => { uiTick(); setBoost2(a); }}>{a}</button>
+              ))}
+            </div>
+            <div className="cf-bonus-row">
+              <span className="cf-bonus-amt">+1</span>
+              {boostPool.map((a) => (
+                <button key={a} className={`cf-chip ${d.boost1 === a ? "picked" : ""}`}
+                        disabled={d.boost2 === a}
+                        onClick={() => { uiTick(); setBoost1(a); }}>{a}</button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
       <div className="cf-chips" style={{ marginBottom: 14 }}>
         {(["standard_array", "point_buy", "roll"] as const).map((m) => (
           <button key={m} className={`cf-chip big ${d.method === m ? "picked" : ""}`}
