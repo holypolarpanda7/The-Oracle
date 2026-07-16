@@ -58,7 +58,9 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   const cls = opts?.classes.find((c) => c.slug === d.cls);
   const bg = opts?.backgrounds.find((b) => b.slug === d.background);
   const needsBonusPicks = (race?.choose_bonus?.length ?? 0) > 0;
-  const needsFeat = needsBonusPicks && (opts?.feats.length ?? 0) > 0;
+  // 2024 rules: every character's background grants an Origin feat, so everyone
+  // picks one (not just Custom Lineage-style races) whenever feats are ingested.
+  const needsFeat = (opts?.feats.length ?? 0) > 0;
 
   // ----- final scores -----
   const baseScores = useMemo((): Partial<Record<Ability, number>> => {
@@ -261,7 +263,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
             {needsFeat && (
               <>
                 <div className="cf-sub-label" style={{ marginTop: 18 }}>
-                  Your lineage grants an Origin feat
+                  Your background grants an Origin feat
                 </div>
                 <div className="cf-grid">
                   {opts.feats.map((f) => (
