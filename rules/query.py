@@ -184,6 +184,17 @@ class RulesLibrary:
                 out.append({**d, "summary": e.desc})
         return sorted(out, key=lambda f: f["name"])
 
+    def class_features_up_to(self, cls: str, level: int) -> list[dict]:
+        """All core class features a character of ``level`` has (for the DM prompt)."""
+        cls_l = cls.strip().lower()
+        with Session(self.engine) as s:
+            rows = s.exec(select(SrdEntry).where(
+                SrdEntry.category == "class-feature")).all()
+        out = [{**(e.data or {}), "summary": e.desc} for e in rows
+               if ((e.data or {}).get("level") or 1) <= level
+               and ((e.data or {}).get("class") or "").lower() == cls_l]
+        return sorted(out, key=lambda f: ((f.get("level") or 1), f["name"]))
+
     def _race_feature_rows(self, race: str) -> list[dict]:
         race_l = (race or "").strip().lower()
         with Session(self.engine) as s:

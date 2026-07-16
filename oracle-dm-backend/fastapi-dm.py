@@ -3055,19 +3055,32 @@ def _character_resource_block(character_id: int) -> str:
         # feats of athletics that are impossible without magic or special items.
         lines.append(_physical_capabilities_summary(char))
 
-        # Species features the character has at this level (exact mechanics, so
-        # the DM adjudicates Breath Weapon/resistances/etc. by the numbers, not
-        # from memory). Only features up to the PC's current level are included.
+        # Class + subclass + species features the character has at this level
+        # (exact mechanics, so the DM adjudicates by the numbers, not from
+        # memory). Only features up to the PC's current level are included.
         try:
             from rules.query import RulesLibrary
-            rfeats = RulesLibrary(engine=engine).race_features_up_to(
-                char.race or "", char.level)
+            _lib = RulesLibrary(engine=engine)
+
+            cfeats = _lib.class_features_up_to(char.char_class or "", char.level)
+            cls_row = _get_class_row(session, char.char_class)
+            sfeats = (_subclass_features_up_to(session, cls_row, char.subclass, char.level)
+                      if cls_row else [])
+            class_all = cfeats + [f for f in sfeats]
+            if class_all:
+                rendered = "; ".join(
+                    f"{f['name']} ({(f.get('summary') or '')[:130].rstrip()})"
+                    for f in class_all[:10])
+                label = char.char_class + (f"/{char.subclass}" if char.subclass else "")
+                lines.append(f"Class features — {label}: {rendered}")
+
+            rfeats = _lib.race_features_up_to(char.race or "", char.level)
             if rfeats:
                 rendered = "; ".join(
                     f"{f['name']} ({f['summary'][:150].rstrip()})" for f in rfeats[:8])
                 lines.append(f"Species features — {char.race}: {rendered}")
         except Exception as e:
-            print(f"[race features block] {e}")
+            print(f"[features block] {e}")
         return "\n".join(lines)
 
 
