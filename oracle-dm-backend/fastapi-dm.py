@@ -460,6 +460,13 @@ class RegisterCharacterRequest(BaseModel):
     skills: Optional[List[str]] = None
     # Feats granted at creation (e.g. Custom Lineage origin feat).
     feats: Optional[List[str]] = None
+    # Starting gear choice: "kit" = the class/background package (default);
+    # "buy" = skip those and spend class starting gold on `bought_items`.
+    gear_mode: Optional[str] = "kit"
+    # [{"name": str, "quantity": int}] purchased in buy mode.
+    bought_items: Optional[List[Dict[str, Any]]] = None
+    # A free common wondrous item chosen at creation (rules_item slug).
+    wondrous_item: Optional[str] = None
 
 
 class CheckCharacterRequest(BaseModel):
@@ -3524,6 +3531,68 @@ def _grant_starting_kit(char: Character) -> List[str]:
     return [f"{name} x{qty}" if qty > 1 else name for name, qty in kit]
 
 
+# Average starting gold (gp) by class when a player forgoes the equipment
+# package and buys gear instead — the standard 5e per-class rolls, taken at
+# average (dice formulas are game facts). Falls back to config starting_gold.
+_CLASS_STARTING_GOLD: Dict[str, int] = {
+    "barbarian": 50, "bard": 125, "cleric": 125, "druid": 50, "fighter": 125,
+    "monk": 12, "paladin": 125, "ranger": 125, "rogue": 100, "sorcerer": 75,
+    "warlock": 100, "wizard": 100, "illrigger": 125, "gunslinger": 100,
+}
+
+
+def _starting_gold_for(char_class: Optional[str]) -> int:
+    return _CLASS_STARTING_GOLD.get(
+        (char_class or "").strip().lower(), get_config().economy.starting_gold)
+
+
+def _item_cost_gp(session: Session, name: str) -> Optional[float]:
+    """Look up a mundane item's price (gp) from rules_item by name."""
+    from rules.models import Item as _Item
+    row = session.exec(
+        select(_Item).where(_Item.name == name)).first()
+    return row.cost_gp if row else None
+
+
+def _grant_bought_items(char: Character, session: Session,
+                        bought: List[Dict[str, Any]], budget: int) -> Dict[str, Any]:
+    """Buy-mode gear: add purchased items, deduct cost from ``budget``. Returns a
+    summary. Over-budget carts are clamped (server-side price is authoritative)."""
+    spent = 0.0
+    granted: List[str] = []
+    for entry in bought or []:
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        qty = max(1, int(entry.get("quantity", 1) or 1))
+        unit = _item_cost_gp(session, name)
+        if unit is None:
+            continue  # unknown/unpriced item — never silently free it
+        line = unit * qty
+        if spent + line > budget:
+            continue  # skip anything that would overspend
+        spent += line
+        _add_inventory_item(char, name, quantity=qty)
+        granted.append(f"{name} x{qty}" if qty > 1 else name)
+    char.gp = max(0, int(round(budget - spent)))
+    return {"granted": granted, "spent_gp": round(spent, 2), "gp_left": char.gp}
+
+
+def _grant_wondrous_item(char: Character, session: Session,
+                         slug: str) -> Optional[str]:
+    """Grant the chosen free common wondrous item. Returns its name if valid."""
+    from rules.models import Item as _Item
+    row = session.exec(
+        select(_Item).where(_Item.index_slug == slug,
+                            _Item.rarity == "Common")).first()
+    if not row:
+        return None
+    _add_inventory_item(char, row.name, quantity=1,
+                        extra={"magic": True, "rarity": "Common",
+                               "item_type": row.item_type})
+    return row.name
+
+
 @app.post("/register_character")
 async def register_character(req: RegisterCharacterRequest):
     """Register a new character for a discord user.
@@ -3612,9 +3681,23 @@ async def register_character(req: RegisterCharacterRequest):
                     tags.append(t)
             char.tags = tags
 
-        # Starting gear: every fresh character walks out equipped for the road.
-        kit_granted = _grant_starting_kit(char)
-        bg_feature = _apply_background(char, req.background)
+        # Starting gear: either the class/background package, or buy-your-own.
+        buy_mode = (req.gear_mode or "kit").strip().lower() == "buy"
+        purchase = None
+        if buy_mode:
+            # Skip the class kit + background gear; grant starting gold to spend.
+            budget = _starting_gold_for(req.char_class)
+            purchase = _grant_bought_items(char, session, req.bought_items or [], budget)
+            kit_granted = purchase["granted"] or None
+            bg_feature = _apply_background(char, req.background, grant_items=False)
+        else:
+            kit_granted = _grant_starting_kit(char)
+            bg_feature = _apply_background(char, req.background)
+
+        # A free common wondrous item (independent of the gear choice).
+        wondrous_granted = None
+        if req.wondrous_item:
+            wondrous_granted = _grant_wondrous_item(char, session, req.wondrous_item)
 
         session.add(char)
         session.commit()
@@ -3622,7 +3705,9 @@ async def register_character(req: RegisterCharacterRequest):
 
     return {"status": "ok", "message": "Character registered", "character_id": char.id,
             "starting_kit": kit_granted or None,
-            "background_feature": bg_feature}
+            "background_feature": bg_feature,
+            "purchase": purchase,
+            "wondrous_item": wondrous_granted}
 
 
 # ----- Deterministic character creation (the CC wizard's data source) -----
@@ -3632,7 +3717,8 @@ def cc_options():
     """Everything the deterministic CC wizard needs: races, classes (with
     level-1 skill choices), backgrounds, and the legal ability-score methods.
     All values come from the rules DB / server constants — never an LLM."""
-    from rules.models import Race as _Race, DndClass as _Cls, Feat as _Feat
+    from rules.models import (Race as _Race, DndClass as _Cls, Feat as _Feat,
+                              Item as _Item)
     with Session(rules_lib.engine) as s:
         races = s.exec(select(_Race)).all()
         classes = s.exec(select(_Cls)).all()
@@ -3643,6 +3729,20 @@ def cc_options():
                                                _Feat.category == "origin")).all()
         except Exception:
             feats = []
+        # Free common wondrous item pick (locally ingested; empty degrades ok).
+        try:
+            wondrous = s.exec(select(_Item).where(
+                _Item.rarity == "Common",
+                _Item.item_type == "Wondrous Item").order_by(_Item.name)).all()
+        except Exception:
+            wondrous = []
+        # Buyable mundane gear for the "buy your own" path.
+        try:
+            buyable = s.exec(select(_Item).where(
+                _Item.category != "magic-item",
+                _Item.cost_gp.is_not(None)).order_by(_Item.name)).all()
+        except Exception:
+            buyable = []
     return {
         "races": [{
             "slug": r.index_slug, "name": r.name,
@@ -3675,6 +3775,19 @@ def cc_options():
                           "costs": {"8": 0, "9": 1, "10": 2, "11": 3,
                                      "12": 4, "13": 5, "14": 7, "15": 9}},
             "roll": {"expr": "4d6kh3", "count": 6},
+        },
+        "wondrous_items": [{
+            "slug": w.index_slug, "name": w.name,
+            "attunement": bool(w.requires_attunement),
+            "brief": (w.desc or "")[:160],
+        } for w in wondrous],
+        "buyable_items": [{
+            "slug": b.index_slug, "name": b.name, "category": b.category,
+            "cost_gp": b.cost_gp,
+        } for b in buyable],
+        "starting_gold": {
+            "by_class": _CLASS_STARTING_GOLD,
+            "default": get_config().economy.starting_gold,
         },
     }
 
@@ -6744,6 +6857,9 @@ async def activity_ws(ws: WebSocket, channel: str):
                         background=p.get("background"),
                         stats=p.get("stats"), skills=p.get("skills"),
                         feats=p.get("feats"), approve=True, source="guided",
+                        gear_mode=p.get("gear_mode") or "kit",
+                        bought_items=p.get("bought_items"),
+                        wondrous_item=p.get("wondrous_item"),
                     )
                     result = await register_character(req)
                 except HTTPException as e:
