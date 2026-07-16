@@ -2201,6 +2201,48 @@ def parse_species(text: str) -> list[dict]:
     return list(seen.values())
 
 
+_TRAITS_HDR = re.compile(r"(?im)^\s*([A-Z][A-Z'’ -]{2,28}?)\s+TRAITS\s*$")
+
+# Valid pre-2024 playable species (facts) — gates out "PERSONALITY TRAITS"
+# tables, "RACIAL TRAITS" generic headers, and other non-species headers.
+_EXOTIC_SPECIES = {
+    "aasimar", "firbolg", "goliath", "kenku", "lizardfolk", "tabaxi", "triton",
+    "bugbear", "goblin", "hobgoblin", "kobold", "orc", "yuan-ti-pureblood",
+    "dhampir", "hexblood", "reborn", "tortle", "aarakocra", "grung",
+}
+
+
+def parse_species_2014(text: str) -> list[dict]:
+    """Parse pre-2024 races (Volo's etc.): "<NAME> TRAITS" header, then Size./
+    Speed./Darkvision + " Trait. " bullets. We ignore the prose Ability Score
+    Increase — 2024 species carry no bonuses (they come from the background).
+    Only names on the ``_EXOTIC_SPECIES`` whitelist are kept."""
+    lines = text.splitlines()
+    idxs = [i for i, l in enumerate(lines) if _TRAITS_HDR.match(l)]
+    out: list[dict] = []
+    for k, li in enumerate(idxs):
+        name = re.sub(r"\s+", " ", _TRAITS_HDR.match(lines[li]).group(1)).strip().title()
+        if _slugify(name) not in _EXOTIC_SPECIES:
+            continue
+        block = "\n".join(lines[li:(idxs[k + 1] if k + 1 < len(idxs) else li + 90)])
+        size = "Small" if re.search(r"size is Small", block, re.I) else "Medium"
+        sm = re.search(r"walking speed is (\d+)", block, re.I) or re.search(r"Speed[.:]\s*(\d+)", block)
+        speed = int(sm.group(1)) if sm else 30
+        darkvision = bool(re.search(r"Darkvision", block))
+        traits: list[str] = []
+        for tm in re.finditer(r"(?m)^\s*([A-Z][A-Za-z'’/ -]{2,34})\.\s", block):
+            t = re.sub(r"\s+", " ", tm.group(1)).strip()
+            if t and t not in traits and len(traits) < 8 and not t.endswith("Increase"):
+                traits.append(t)
+        out.append({"slug": _slugify(name), "name": name, "size": size,
+                    "speed": speed, "darkvision": darkvision, "traits": traits})
+    seen: dict[str, dict] = {}
+    for r in out:
+        if r["slug"] not in seen or len(r["traits"]) > len(seen[r["slug"]]["traits"]):
+            seen[r["slug"]] = r
+    return list(seen.values())
+
+
 def ingest_species(engine=None, database_url=None,
                    workspace: Path = WORKSPACE) -> dict:
     """Parse 2024 species from the SRD 5.2.1 (CC-BY) and PHB 2024 into rules_race."""
@@ -2213,14 +2255,30 @@ def ingest_species(engine=None, database_url=None,
         ("*players-handbook-2024*.txt", "Owned (PHB 2024) — local ingest"),
         ("*eberron*.txt", "Owned (Eberron: Forge of the Artificer 2025) — local ingest"),
     ]
+    # Pre-2024 books use a different block layout ("<NAME> TRAITS" + Size./Speed.).
+    books_2014 = [
+        ("*volo*.txt", "Owned (Volo's Guide to Monsters) — local ingest"),
+        ("*van-richten*.txt", "Owned (Van Richten's Guide to Ravenloft) — local ingest"),
+    ]
     parsed: dict[str, dict] = {}
+
+    def _absorb(rows, source):
+        for r in rows:
+            cur = parsed.get(r["slug"])
+            # Prefer the 2024 (SRD/PHB/Eberron) row for a species that appears in
+            # both editions; otherwise keep the richest.
+            if cur is None or (not str(cur["source"]).count("202") and
+                               len(r["traits"]) >= len(cur["traits"])):
+                parsed[r["slug"]] = dict(r, source=source)
+
     for glob_pat, source in books:
         f = next(iter(workspace.glob(glob_pat)), None)
-        if f is None:
-            continue
-        for r in parse_species(f.read_text(encoding="utf-8")):
-            if r["slug"] not in parsed or len(r["traits"]) > len(parsed[r["slug"]]["traits"]):
-                parsed[r["slug"]] = dict(r, source=source)
+        if f is not None:
+            _absorb(parse_species(f.read_text(encoding="utf-8")), source)
+    for glob_pat, source in books_2014:
+        f = next(iter(workspace.glob(glob_pat)), None)
+        if f is not None:
+            _absorb(parse_species_2014(f.read_text(encoding="utf-8")), source)
 
     result = {"species_parsed": len(parsed), "species_new": 0}
     with Session(engine) as s:
