@@ -9,15 +9,19 @@ const ABILITY_FULL: Record<Ability, string> = {
   INT: "intelligence", WIS: "wisdom", CHA: "charisma",
 };
 
-type Stage = "race" | "class" | "background" | "abilities" | "skills" | "review";
+type Stage = "race" | "class" | "background" | "abilities" | "skills"
+  | "gear" | "wondrous" | "review";
 const STAGES: { id: Stage; label: string }[] = [
   { id: "race", label: "Origin" },
   { id: "class", label: "Class" },
   { id: "background", label: "Background" },
   { id: "abilities", label: "Abilities" },
   { id: "skills", label: "Skills" },
+  { id: "gear", label: "Gear" },
+  { id: "wondrous", label: "Wonder" },
   { id: "review", label: "Name & Seal" },
 ];
+const NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
 
 interface Draft {
   race?: string;
@@ -30,13 +34,16 @@ interface Draft {
   pointBuy: Record<Ability, number>;
   skills: string[];
   feat?: string;
+  gearMode: "kit" | "buy";
+  cart: Record<string, number>;   // buyable item name -> quantity
+  wondrous?: string;              // rules_item slug
   name: string;
 }
 
 const freshDraft = (): Draft => ({
   bonusPicks: [], method: "standard_array", pool: [], assigned: {},
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
-  skills: [], name: "",
+  skills: [], gearMode: "kit", cart: {}, name: "",
 });
 
 export function CreateFlow({ onDone, onCancel, ccError }: {
@@ -93,6 +100,16 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     ? pointBuySpent(d.pointBuy, opts) <= (opts?.ability_methods.point_buy.budget ?? 27)
     : ABILITIES.every((a) => d.assigned[a] !== undefined);
   const skillsNeeded = cls?.skill_choices_n ?? 2;
+
+  // Buy-mode gear budget (per-class starting gold) + running cart cost.
+  const budget = cls
+    ? (opts?.starting_gold.by_class[cls.slug] ?? opts?.starting_gold.default ?? 0)
+    : (opts?.starting_gold.default ?? 0);
+  const cartCost = useMemo(() => Object.entries(d.cart).reduce((sum, [name, qty]) => {
+    const it = opts?.buyable_items.find((b) => b.name === name);
+    return sum + (it ? it.cost_gp * qty : 0);
+  }, 0), [d.cart, opts]);
+
   const stageDone: Record<Stage, boolean> = {
     race: !!d.race && (!needsBonusPicks
       || d.bonusPicks.length === (race?.choose_bonus.length ?? 0)),
@@ -100,6 +117,8 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     background: !!d.background,
     abilities: abilitiesDone,
     skills: d.skills.length === skillsNeeded && (!needsFeat || !!d.feat),
+    gear: d.gearMode === "kit" || cartCost <= budget,  // buy is fine even empty
+    wondrous: true,                                     // optional — always ok
     review: d.name.trim().length >= 2,
   };
   const stageIdx = STAGES.findIndex((s) => s.id === stage);
@@ -114,6 +133,11 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         name: d.name.trim(),
         race: race!.name, char_class: cls!.name, background: bg!.slug,
         stats, skills: d.skills, feats: d.feat ? [d.feat] : undefined,
+        gear_mode: d.gearMode,
+        bought_items: d.gearMode === "buy"
+          ? Object.entries(d.cart).map(([name, quantity]) => ({ name, quantity }))
+          : undefined,
+        wondrous_item: d.wondrous,
       });
       return;
     }
@@ -134,7 +158,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
             disabled={i > 0 && !STAGES.slice(0, i).every((p) => stageDone[p.id])}
             onClick={() => { uiTick(); setStage(s.id); }}
           >
-            <span className="cf-stage-n">{["I", "II", "III", "IV", "V", "VI"][i]}</span>
+            <span className="cf-stage-n">{NUMERALS[i]}</span>
             {s.label}
           </button>
         ))}
@@ -282,6 +306,36 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
           </>
         )}
 
+        {stage === "gear" && (
+          <GearStage opts={opts} d={d} setD={setD} budget={budget} spent={cartCost} />
+        )}
+
+        {stage === "wondrous" && (
+          <>
+            <div className="cf-sub-label">
+              Choose one free <b>common wondrous item</b> to start with — or none.
+            </div>
+            <div className="cf-grid">
+              {opts.wondrous_items.map((w) => (
+                <button
+                  key={w.slug}
+                  className={`cf-card ${d.wondrous === w.slug ? "picked" : ""}`}
+                  onClick={() => {
+                    uiTick();
+                    setD({ ...d, wondrous: d.wondrous === w.slug ? undefined : w.slug });
+                  }}
+                >
+                  <div className="cf-card-name">{w.name}{w.attunement ? " ✦" : ""}</div>
+                  <div className="cf-card-sub">{w.brief}…</div>
+                </button>
+              ))}
+            </div>
+            {opts.wondrous_items.length === 0 && (
+              <p className="cf-hint">No wondrous items are ingested yet — skip onward.</p>
+            )}
+          </>
+        )}
+
         {stage === "review" && (
           <div className="cf-review">
             <input
@@ -305,6 +359,13 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
               <p className="inv-line"><b>Skills</b> · {[...(bg?.skills ?? []), ...d.skills].join(", ")}</p>
               {d.feat && (
                 <p className="inv-line"><b>Feat</b> · {opts.feats.find((f) => f.slug === d.feat)?.name}</p>
+              )}
+              <p className="inv-line"><b>Gear</b> · {d.gearMode === "buy"
+                ? `bought ${Object.keys(d.cart).length} item(s), ${(budget - cartCost).toFixed(0)} gp left`
+                : "standard class & background kit"}</p>
+              {d.wondrous && (
+                <p className="inv-line"><b>Wondrous</b> · {
+                  opts.wondrous_items.find((w) => w.slug === d.wondrous)?.name}</p>
               )}
             </div>
             {ccError && <p className="cf-error">⚠ {ccError}</p>}
@@ -453,6 +514,76 @@ function AbilityStage({ opts, d, setD, bonuses }: {
           ? "Spend the budget; racial bonuses apply on top."
           : "Pick a value, then place it in an ability. Click a filled slot to clear it."}
       </p>
+    </div>
+  );
+}
+
+function GearStage({ opts, d, setD, budget, spent }: {
+  opts: CCOptions;
+  d: Draft; setD: (d: Draft) => void;
+  budget: number; spent: number;
+}) {
+  const [filter, setFilter] = useState("");
+  const remaining = budget - spent;
+  const setQty = (name: string, qty: number) => {
+    const cart = { ...d.cart };
+    if (qty <= 0) delete cart[name];
+    else cart[name] = qty;
+    setD({ ...d, cart });
+  };
+  const q = filter.trim().toLowerCase();
+  const items = opts.buyable_items
+    .filter((b) => !q || b.name.toLowerCase().includes(q))
+    .slice(0, 80);
+
+  return (
+    <div>
+      <div className="cf-chips" style={{ marginBottom: 14 }}>
+        {(["kit", "buy"] as const).map((m) => (
+          <button key={m} className={`cf-chip big ${d.gearMode === m ? "picked" : ""}`}
+                  onClick={() => { uiTick(); setD({ ...d, gearMode: m }); }}>
+            {m === "kit" ? "Standard kit" : "Buy your own"}
+          </button>
+        ))}
+      </div>
+
+      {d.gearMode === "kit" ? (
+        <p className="cf-hint">
+          You'll walk out with your class's standard kit and your background's
+          gear — ready for the road, no accounting required.
+        </p>
+      ) : (
+        <>
+          <div className="gear-budget">
+            <span>Purse <b>{budget} gp</b></span>
+            <span className={remaining < 0 ? "over" : ""}>
+              Remaining <b>{remaining.toFixed(2)} gp</b>
+            </span>
+          </div>
+          <input className="gear-search" placeholder="search gear…"
+                 value={filter} onChange={(e) => setFilter(e.target.value)} />
+          <div className="gear-list">
+            {items.map((b) => {
+              const qty = d.cart[b.name] ?? 0;
+              const canAdd = spent + b.cost_gp <= budget;
+              return (
+                <div key={b.slug} className={`gear-row ${qty ? "in" : ""}`}>
+                  <span className="gear-name">{b.name}</span>
+                  <span className="gear-cost">{b.cost_gp} gp</span>
+                  <div className="gear-qty">
+                    <button disabled={qty <= 0} onClick={() => { uiTick(); setQty(b.name, qty - 1); }}>−</button>
+                    <span>{qty}</span>
+                    <button disabled={!canAdd} onClick={() => { uiTick(); setQty(b.name, qty + 1); }}>+</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {opts.buyable_items.length > 80 && !q && (
+            <p className="cf-hint">Showing 80 of {opts.buyable_items.length} — search to narrow.</p>
+          )}
+        </>
+      )}
     </div>
   );
 }

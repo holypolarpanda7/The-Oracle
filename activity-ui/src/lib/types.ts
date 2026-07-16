@@ -105,6 +105,9 @@ export interface CCPayload {
   stats: Record<string, number>;
   skills: string[];
   feats?: string[];
+  gear_mode?: "kit" | "buy";
+  bought_items?: { name: string; quantity: number }[];
+  wondrous_item?: string;
 }
 
 /** GET /cc/options response (deterministic CC data from the rules DB). */
@@ -130,4 +133,7 @@ export interface CCOptions {
     point_buy: { budget: number; min: number; max: number; costs: Record<string, number> };
     roll: { expr: string; count: number };
   };
+  wondrous_items: { slug: string; name: string; attunement: boolean; brief: string }[];
+  buyable_items: { slug: string; name: string; category?: string | null; cost_gp: number }[];
+  starting_gold: { by_class: Record<string, number>; default: number };
 }

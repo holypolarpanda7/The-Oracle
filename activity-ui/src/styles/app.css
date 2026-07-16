@@ -605,3 +605,35 @@ body {
   .ps-body { grid-template-columns: 1fr; }
   .ps-frame { max-width: 240px; margin: 0 auto; }
 }
+
+/* ---- Gear buy stage ---------------------------------------------------- */
+.gear-budget {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-family: var(--serif); color: var(--text); margin-bottom: 10px;
+}
+.gear-budget b { color: var(--brass-bright); }
+.gear-budget .over b { color: var(--oxblood); }
+.gear-search {
+  width: 100%; background: var(--panel); color: var(--text);
+  border: 1px solid var(--panel-edge); border-radius: var(--radius);
+  padding: 8px 12px; font-family: var(--serif); margin-bottom: 10px;
+}
+.gear-search:focus { outline: none; border-color: var(--brass); }
+.gear-list { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow-y: auto; }
+.gear-row {
+  display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px;
+  padding: 6px 10px; border: 1px solid transparent; border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel) 60%, black);
+}
+.gear-row.in { border-color: var(--brass); }
+.gear-name { color: var(--text); font-family: var(--serif); }
+.gear-cost { color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gear-qty { display: flex; align-items: center; gap: 8px; }
+.gear-qty button {
+  width: 26px; height: 26px; border-radius: var(--radius);
+  border: 1px solid var(--panel-edge); background: var(--panel); color: var(--text);
+  cursor: pointer; font-size: 1rem; line-height: 1;
+}
+.gear-qty button:hover:not(:disabled) { border-color: var(--brass); color: var(--brass); }
+.gear-qty button:disabled { opacity: 0.35; cursor: default; }
+.gear-qty span { min-width: 14px; text-align: center; font-variant-numeric: tabular-nums; }
