@@ -212,7 +212,8 @@ class ImageStore:
     # ----- generation -----
 
     def _render(self, cfg, prompt, ckey: str,
-                reference_filenames: Optional[list[str]] = None
+                reference_filenames: Optional[list[str]] = None,
+                mature: bool = False,
                 ) -> tuple[Optional[bytes], Optional[int], bool]:
         """Return (raw_bytes, seed, offline). raw_bytes is None only if offline."""
         seed = random.randint(0, 2**31 - 1)
@@ -226,6 +227,7 @@ class ImageStore:
                 steps=cfg.steps,
                 seed=seed,
                 reference_filenames=reference_filenames,
+                mature=mature,
             )
             return raw, seed, False
         except ImageServiceUnavailable as e:
@@ -245,11 +247,15 @@ class ImageStore:
         ref_slug: Optional[str] = None,
         extra: str = "",
         force_new: bool = False,
+        mature: bool = False,
     ) -> Optional[ImageResult]:
         """Return an image for (subject x context), reusing or generating as needed.
 
         Returns ``None`` when imagery is disabled. When the backend is offline a
         result with ``offline=True`` (placeholder bytes, not stored) is returned.
+        ``mature`` routes the render through the NSFW-capable checkpoint + its
+        prompt tags; it is the caller's (per-table maturity policy) decision, and
+        is a no-op unless ``checkpoint_mature`` is configured.
         """
         cfg = self._cfg()
         if not cfg.enabled:
@@ -257,11 +263,15 @@ class ImageStore:
 
         kind = normalize_kind(kind)
         ref = slugify(ref_slug or subject)
-        ckey = context_key(context)
+        # Keep mature/safe renders in separate buckets so one never draws the
+        # other from cache.
+        ckey = context_key((context + " __mature" if mature else context))
 
+        use_mature = bool(mature and getattr(cfg, "checkpoint_mature", None))
         prompt = build_prompt(
             kind, subject, look=look, context=context, ref_slug=ref,
-            style_prompt=cfg.style_prompt, negative_prompt=cfg.negative_prompt,
+            style_prompt=(cfg.mature_style_prompt if use_mature else cfg.style_prompt),
+            negative_prompt=(cfg.mature_negative_prompt if use_mature else cfg.negative_prompt),
             extra=extra,
         )
 
@@ -272,7 +282,7 @@ class ImageStore:
                 return self._draw_random(s, existing, prompt.caption)
 
         # Otherwise render a fresh image (building bucket variety up to the cap).
-        raw, seed, offline = self._render(cfg, prompt, ckey)
+        raw, seed, offline = self._render(cfg, prompt, ckey, mature=use_mature)
         if offline or raw is None:
             # Backend down: prefer any stored art for this bucket over a
             # placeholder — a slightly-repeated picture beats a blank one.

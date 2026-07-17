@@ -87,6 +87,7 @@ class ComfyClient:
         base_url: str = "http://127.0.0.1:8188",
         *,
         checkpoint: str = "sd_xl_base_1.0.safetensors",
+        checkpoint_mature: Optional[str] = None,
         workflow_path: Optional[str] = None,
         steps: int = 25,
         cfg_scale: float = 7.0,
@@ -99,6 +100,7 @@ class ComfyClient:
     ):
         self.base_url = base_url.rstrip("/")
         self.checkpoint = checkpoint
+        self.checkpoint_mature = checkpoint_mature
         self.steps = steps
         self.cfg_scale = cfg_scale
         self.sampler = sampler
@@ -192,8 +194,10 @@ class ComfyClient:
         g[sampler_id]["inputs"]["model"] = prev_model
 
     def _build_graph(
-        self, positive: str, negative: str, width: int, height: int, seed: int, steps: int
+        self, positive: str, negative: str, width: int, height: int, seed: int,
+        steps: int, checkpoint: Optional[str] = None,
     ) -> dict:
+        ckpt = checkpoint or self.checkpoint
         g = copy.deepcopy(self._template)
         # Best-effort fill of the well-known node ids from the default graph. If
         # a custom workflow uses different ids this still works when it follows
@@ -202,7 +206,7 @@ class ComfyClient:
             ct = node.get("class_type")
             ins = node.setdefault("inputs", {})
             if ct == "CheckpointLoaderSimple":
-                ins["ckpt_name"] = self.checkpoint
+                ins["ckpt_name"] = ckpt
             elif ct == "EmptyLatentImage":
                 ins["width"], ins["height"] = width, height
             elif ct == "KSampler":
@@ -263,16 +267,20 @@ class ComfyClient:
         steps: Optional[int] = None,
         seed: Optional[int] = None,
         reference_filenames: Optional[list[str]] = None,
+        mature: bool = False,
     ) -> bytes:
         """Queue a job and return the produced image bytes (PNG).
 
         ``reference_filenames`` (already uploaded via ``upload_image``) make
         the render resemble those images — see ``_inject_references``.
+        ``mature`` routes the render to the NSFW-capable checkpoint when one is
+        configured; otherwise it falls back to the default (safe) checkpoint.
         Raises ``ImageServiceUnavailable`` on any connection/generation failure.
         """
         seed = random.randint(0, 2**31 - 1) if seed is None else seed
+        ckpt = self.checkpoint_mature if (mature and self.checkpoint_mature) else None
         graph = self._build_graph(positive, negative, width, height, seed,
-                                   steps or self.steps)
+                                   steps or self.steps, checkpoint=ckpt)
         if reference_filenames:
             self._inject_references(graph, list(reference_filenames))
         try:
@@ -346,6 +354,7 @@ def client_from_config(cfg) -> ComfyClient:
     return ComfyClient(
         base_url=cfg.base_url,
         checkpoint=cfg.checkpoint,
+        checkpoint_mature=getattr(cfg, "checkpoint_mature", None),
         workflow_path=cfg.workflow_path,
         steps=cfg.steps,
         cfg_scale=cfg.cfg_scale,

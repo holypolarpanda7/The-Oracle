@@ -201,7 +201,28 @@ class ImageryConfig:
     # ----- generation backend -----
     backend: str = "comfyui"                 # "comfyui" (only backend for now)
     base_url: str = "http://127.0.0.1:8188"  # ComfyUI listen address
+    # Default ("safe") checkpoint — the strong non-NSFW model. Point this at a
+    # quality SDXL finetune (Juggernaut XL / RealVisXL / a dark-fantasy concept
+    # model), NOT base SDXL. See imagery/MODELS.md.
     checkpoint: str = "sd_xl_base_1.0.safetensors"
+    # Mature checkpoint — used ONLY when a render is flagged mature (a Pony-family
+    # SDXL model). Leave None to disable NSFW-capable rendering entirely; when
+    # None, mature-flagged renders silently fall back to ``checkpoint``.
+    checkpoint_mature: Optional[str] = None   # e.g. "ponyDiffusionV6XL.safetensors"
+    # Pony-family models key their quality off score tags and a rating token, and
+    # want their own negatives — applied instead of style_prompt/negative_prompt
+    # when a render is mature. Kept editable; operator owns content policy.
+    mature_style_prompt: str = (
+        "score_9, score_8_up, score_7_up, rating_explicit, "
+        "painterly digital illustration, dramatic rim lighting, "
+        "saturated jewel tones, stylized mythic character art, "
+        "ornate details, detailed anatomy"
+    )
+    mature_negative_prompt: str = (
+        "score_6, score_5, score_4, lowres, blurry, deformed, extra limbs, "
+        "bad anatomy, bad hands, watermark, text, signature, jpeg artifacts, "
+        "child, childlike, underage, loli, shota"
+    )
     # Optional path to a custom ComfyUI workflow JSON (API format). When set it
     # overrides the built-in SDXL txt2img graph. Placeholders are filled in by
     # the client (positive/negative/seed/width/height/steps/checkpoint).
