@@ -204,11 +204,11 @@ class ImageryConfig:
     # Default ("safe") checkpoint — the strong non-NSFW model. Point this at a
     # quality SDXL finetune (Juggernaut XL / RealVisXL / a dark-fantasy concept
     # model), NOT base SDXL. See imagery/MODELS.md.
-    checkpoint: str = "sd_xl_base_1.0.safetensors"
+    checkpoint: str = "juggernautXL_v9.safetensors"
     # Mature checkpoint — used ONLY when a render is flagged mature (a Pony-family
     # SDXL model). Leave None to disable NSFW-capable rendering entirely; when
     # None, mature-flagged renders silently fall back to ``checkpoint``.
-    checkpoint_mature: Optional[str] = None   # e.g. "ponyDiffusionV6XL.safetensors"
+    checkpoint_mature: Optional[str] = "ponyDiffusionV6XL.safetensors"
     # Pony-family models key their quality off score tags and a rating token, and
     # want their own negatives — applied instead of style_prompt/negative_prompt
     # when a render is mature. Kept editable; operator owns content policy.

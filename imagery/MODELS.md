@@ -37,6 +37,21 @@ model reload, not a code path.
    ```
 4. Restart the backend. No ComfyUI restart needed — it loads checkpoints on demand.
 
+## ComfyUI checkpoint-switch crash (worked around in-client)
+Some 2026 ComfyUI nightlies (seen on `328144c`, 2026-07-11) crash their
+`prompt_worker` thread when auto-evicting one large checkpoint to load another —
+a `None`-deref in `comfy/model_management.py::free_memory`
+(`'NoneType' object has no attribute 'is_dynamic'`). Symptom: the first render of
+a checkpoint works, but the next render that needs the *other* checkpoint hangs
+(job stuck "running", GPU idle) and the executor is dead until ComfyUI restarts.
+
+`ComfyClient` works around this: before rendering with a checkpoint different from
+the one it last loaded, it calls `/free` (`free_memory(unload_models=True)`) to
+unload cleanly, so ComfyUI never takes the buggy auto-eviction path. Cost is one
+model reload per switch (~a few seconds). If you later update/roll back ComfyUI
+past this regression, the workaround stays harmless. Verified: safe→mature→safe
+all render crash-free.
+
 ## Wiring `mature` (per-table policy)
 `ImageStore.ensure_image(..., mature=...)` is the switch. The **caller** owns the
 decision — pass the table's maturity setting (a per-table opt-in, age-confirmed

@@ -101,6 +101,7 @@ class ComfyClient:
         self.base_url = base_url.rstrip("/")
         self.checkpoint = checkpoint
         self.checkpoint_mature = checkpoint_mature
+        self._last_checkpoint: Optional[str] = None
         self.steps = steps
         self.cfg_scale = cfg_scale
         self.sampler = sampler
@@ -279,6 +280,17 @@ class ComfyClient:
         """
         seed = random.randint(0, 2**31 - 1) if seed is None else seed
         ckpt = self.checkpoint_mature if (mature and self.checkpoint_mature) else None
+        effective = ckpt or self.checkpoint
+        # Some 2026 ComfyUI nightlies crash their prompt_worker thread when they
+        # auto-evict one large checkpoint to make room for another (a None-deref
+        # in model_management.free_memory). Pre-emptively unload whatever is loaded
+        # whenever we're about to use a different checkpoint than we last loaded —
+        # so that buggy auto-eviction path is never taken. ``None`` (unknown loaded
+        # state: fresh client, or ComfyUI left something loaded from before) counts
+        # as "different", so the first render of a process unloads first too. The
+        # explicit /free is safe while the model ref is still valid.
+        if effective != self._last_checkpoint:
+            self.free_memory(unload_models=True)
         graph = self._build_graph(positive, negative, width, height, seed,
                                    steps or self.steps, checkpoint=ckpt)
         if reference_filenames:
@@ -293,6 +305,7 @@ class ComfyClient:
             prompt_id = resp.json().get("prompt_id")
             if not prompt_id:
                 raise ImageServiceUnavailable("ComfyUI did not return a prompt_id")
+            self._last_checkpoint = effective
         except ImageServiceUnavailable:
             raise
         except Exception as e:
