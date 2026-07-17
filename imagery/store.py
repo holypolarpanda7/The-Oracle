@@ -386,6 +386,7 @@ class ImageStore:
         context: str = "",
         extra: str = "",
         reference_refs: Optional[list[tuple[str, str]]] = None,
+        mature: bool = False,
     ) -> Optional[ImageResult]:
         """Render a moment in play, guided by stored art of its participants.
 
@@ -399,9 +400,11 @@ class ImageStore:
         cfg = self._cfg()
         if not cfg.enabled or not cfg.allow_temp:
             return None
+        use_mature = bool(mature and getattr(cfg, "checkpoint_mature", None))
         prompt = build_prompt(
             "scene", subject, context=context,
-            style_prompt=cfg.style_prompt, negative_prompt=cfg.negative_prompt,
+            style_prompt=(cfg.mature_style_prompt if use_mature else cfg.style_prompt),
+            negative_prompt=(cfg.mature_negative_prompt if use_mature else cfg.negative_prompt),
             extra=extra,
         )
         ref_files: list[str] = []
@@ -427,7 +430,8 @@ class ImageStore:
             print(f"[imagery] scene render with {len(ref_files)} reference(s)")
 
         raw, seed, offline = self._render(cfg, prompt, context_key(context),
-                                          reference_filenames=ref_files or None)
+                                          reference_filenames=ref_files or None,
+                                          mature=use_mature)
         if offline or raw is None:
             return ImageResult(
                 kind=ImageKind.SCENE, ref_slug=slugify(subject),

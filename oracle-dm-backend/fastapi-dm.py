@@ -634,6 +634,28 @@ def _set_session_meta(session_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     return state
 
 
+def _table_is_mature(session_id: str) -> bool:
+    """Whether this table has opted into mature (NSFW-capable) scene art.
+
+    Off by default and per-table — a shared Discord surface, so mature imagery
+    must be explicitly enabled for a table, never global. Gated further by
+    ``ImageryConfig.checkpoint_mature`` being configured (the switch is a no-op
+    without a mature model installed)."""
+    try:
+        meta = _load_session_state(session_id).get("meta", {}) or {}
+        return bool(meta.get("mature", False))
+    except Exception:
+        return False
+
+
+def _set_table_mature(session_id: str, enabled: bool) -> bool:
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    meta["mature"] = bool(enabled)
+    _set_session_meta(session_id, meta)
+    return bool(enabled)
+
+
 def _append_turn(session_id: str, turn: Turn) -> Dict[str, Any]:
     state = _load_session_state(session_id)
     recent_turns = list(state.get("recent_turns", []))
@@ -970,7 +992,8 @@ def _scene_reference_refs(subject: str, pc_name: Optional[str],
 
 def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict],
                         *, pc_name: Optional[str] = None,
-                        ctx_entities: Optional[list] = None) -> list[dict]:
+                        ctx_entities: Optional[list] = None,
+                        mature: bool = False) -> list[dict]:
     """Apply image-reset purges and render/reuse pictures for image requests.
 
     Returns a list of transport payloads (base64 image + metadata) for the bot,
@@ -1008,11 +1031,13 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict],
                 result = image_store.generate_scene(
                     subject, context=rq.get("context") or "",
                     extra=rq.get("look") or "", reference_refs=refs,
+                    mature=mature,
                 )
             else:
                 result = image_store.ensure_image(
                     rq.get("kind") or "creature", subject,
                     look=rq.get("look") or "", context=rq.get("context") or "",
+                    mature=mature,
                 )
         except Exception as e:
             print(f"[imagery] generation error for '{subject}': {e}")
@@ -3200,6 +3225,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             image_reqs, reset_reqs,
             pc_name=(state.get("meta", {}) or {}).get("character_name"),
             ctx_entities=list(ctx_obj.entities) if ctx_obj else None,
+            mature=bool((state.get("meta", {}) or {}).get("mature", False)),
         )
         # Player cartography: rendered map artifacts ride the image channel.
         dm_text, map_ops = extract_map_hooks(dm_text)
@@ -3418,6 +3444,7 @@ async def enter_world(req: EnterRequest):
             image_reqs, reset_reqs,
             pc_name=chosen.name,
             ctx_entities=list(_ctx_obj.entities) if _ctx_obj else None,
+            mature=_table_is_mature(session_id),
         )
     except Exception as e:
         print(f"[enterworld imagery error] {e}")
@@ -4429,6 +4456,37 @@ async def npc_trust(req: NpcTrustRequest):
         except Exception:
             pass
         return {"status": "ok", "npc": ent.slug, **result}
+
+
+class TableMaturityRequest(BaseModel):
+    session_id: str
+    enabled: bool
+    confirm_adult: bool = False   # explicit adult opt-in; required to enable
+
+
+@app.post("/table/maturity")
+async def table_maturity(req: TableMaturityRequest):
+    """Toggle a table's opt-in to mature (NSFW-capable) scene art.
+
+    Per-table and OFF by default — a shared Discord surface, so mature imagery
+    is never global. Enabling requires ``confirm_adult`` (an explicit adult
+    opt-in). This is a no-op for actual rendering unless a mature checkpoint is
+    also configured (``ImageryConfig.checkpoint_mature``)."""
+    if req.enabled and not req.confirm_adult:
+        raise HTTPException(
+            status_code=400,
+            detail="Enabling mature content requires an explicit adult opt-in (confirm_adult=true).",
+        )
+    val = _set_table_mature(req.session_id, req.enabled)
+    model_ready = bool(getattr(get_config().imagery, "checkpoint_mature", None))
+    return {
+        "status": "ok",
+        "session_id": req.session_id,
+        "mature": val,
+        "model_ready": model_ready,
+        "note": None if model_ready else
+                "Mature enabled, but no mature checkpoint is configured — renders stay safe.",
+    }
 
 
 class NpcActivityRequest(BaseModel):
