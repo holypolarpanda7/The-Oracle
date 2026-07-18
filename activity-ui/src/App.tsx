@@ -135,6 +135,9 @@ export default function App({ session }: { session: Session }) {
         case "item_error":
           setItemView((v) => (v ? { ...v, loading: false, error: ev.detail } : v));
           break;
+        case "item_gone":
+          setItemView((v) => (v && v.name === ev.name ? null : v));
+          break;
         case "levelup":
           if (ev.data) levelChime();
           setLevelUp(ev.data);
@@ -162,6 +165,10 @@ export default function App({ session }: { session: Session }) {
   const inscribeSpell = (book: string, spell: string) => {
     setItemView((v) => (v ? { ...v, loading: true, error: undefined } : v));
     connRef.current?.send({ t: "inscribe_spell", spell, book });
+  };
+  const itemAction = (name: string, action: string) => {
+    setItemView((v) => (v ? { ...v, loading: true, error: undefined } : v));
+    connRef.current?.send({ t: "item_action", name, action });
   };
 
   const skipAll = () =>
@@ -276,6 +283,7 @@ export default function App({ session }: { session: Session }) {
               view={itemView}
               onClose={() => setItemView(null)}
               onInscribe={inscribeSpell}
+              onAction={itemAction}
             />
           </>
         )}

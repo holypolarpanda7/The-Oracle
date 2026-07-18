@@ -322,3 +322,26 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
   background: radial-gradient(circle at 35% 30%, #c3a4ff, var(--amethyst)); box-shadow: 0 0 12px rgba(154, 107, 255, 0.4); }
 .sb-inscribe button:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
 .sb-note { margin-top: 8px; }
+
+/* item interactions: state badges, charge pips, action buttons */
+.item-state { display: flex; gap: 6px; margin: 0 0 12px; }
+.state-badge { font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 3px; }
+.state-badge.on { color: #061012; background: radial-gradient(circle at 35% 30%, #6bf0d3, var(--teal)); }
+.state-badge.att { color: #1a1030; background: radial-gradient(circle at 35% 30%, #c3a4ff, var(--amethyst)); }
+.charges { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
+.charges .ch-label { font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim); }
+.charges .ch-pips { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.charges .ch-pip { width: 11px; height: 11px; border-radius: 50%; background: rgba(8, 11, 20, 0.85); border: 1px solid var(--gold-dim); }
+.charges .ch-pip.on { background: radial-gradient(circle at 35% 30%, #ffd98a, var(--ember)); border-color: var(--ember); box-shadow: 0 0 7px rgba(245, 154, 60, 0.6); }
+.charges .ch-num { font-family: var(--mono); font-size: 0.66rem; color: var(--gold-2); }
+.item-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.iact { font-family: var(--serif); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.7rem; font-weight: 700;
+  cursor: pointer; padding: 8px 14px; border-radius: 5px; color: var(--text);
+  background: linear-gradient(180deg, #182036, #101627); border: 1px solid var(--edge);
+  box-shadow: inset 0 0 0 1px rgba(230, 188, 100, 0.12); }
+.iact:hover:not(:disabled) { border-color: var(--gold); color: #fff; }
+.iact:disabled { opacity: 0.4; cursor: default; }
+.iact.use { border-color: color-mix(in srgb, var(--teal) 45%, var(--edge)); color: #d6fff4; }
+.iact.attune, .iact.unattune { border-color: color-mix(in srgb, var(--amethyst) 45%, var(--edge)); color: #e7dcff; }
+.iact.expend { border-color: color-mix(in srgb, var(--ember) 45%, var(--edge)); color: #ffe6c9; }

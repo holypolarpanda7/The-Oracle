@@ -12,6 +12,10 @@ function gemColor(rarity?: string): string {
   return RARITY_COLOR[(rarity || "").toLowerCase()] || "var(--gold)";
 }
 
+const ITEM_BADGE: Record<string, string> = {
+  spellbook: "📖", charged: "✨", consumable: "🧪", container: "🎒", attunement: "◈",
+};
+
 function mod(v: number): string {
   const m = Math.floor((v - 10) / 2);
   return m >= 0 ? `+${m}` : `${m}`;
@@ -143,7 +147,9 @@ export function CharacterSheet({ sheet, panel, onInspect }: {
                     >
                       <span className="gem" style={{ color: gemColor(it.rarity) }} />
                       <span className="iname">{it.name}</span>
-                      {it.interactive === "spellbook" && <span className="ibadge">📖</span>}
+                      {it.interactive && (
+                        <span className="ibadge">{ITEM_BADGE[it.interactive] ?? "◆"}</span>
+                      )}
                       {it.qty && it.qty > 1 ? <span className="q">×{it.qty}</span> : null}
                     </button>
                   );

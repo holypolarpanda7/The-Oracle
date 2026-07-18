@@ -28,11 +28,13 @@ export interface InventoryItem {
   qty?: number;
   type?: string;
   rarity?: string;
-  brief?: string;              // hover tooltip
-  interactive?: "spellbook";   // special inspector widget
+  brief?: string;         // hover tooltip
+  interactive?: string;   // family badge: spellbook | charged | consumable | container | attunement
 }
 
 export interface SpellEntry { name: string; level?: number | null; }
+export interface ItemAction { id: string; label: string; }
+export interface ItemCharges { current: number; max: number; }
 
 export interface ItemDetail {
   name: string;
@@ -42,7 +44,13 @@ export interface ItemDetail {
   description?: string;
   stats?: string[];
   image?: string | null;
-  interactive?: "spellbook";
+  // interactions
+  interactive?: string;         // special widget: "spellbook" | "container"
+  actions?: ItemAction[];       // quick buttons (equip/attune/expend/use…)
+  charges?: ItemCharges;
+  equipped?: boolean;
+  attuned?: boolean;
+  // spellbook widget
   spells?: SpellEntry[];
   can_inscribe?: boolean;
 }
@@ -127,6 +135,7 @@ export type ServerEvent =
   | { t: "item_detail"; item: ItemDetail }
   | { t: "item_image"; name: string; url: string }
   | { t: "item_error"; detail: string }
+  | { t: "item_gone"; name: string }
   | { t: "levelup"; data: LevelUpData | null }
   | { t: "entered"; resumed: boolean }
   | { t: "cc_done"; name: string; detail?: unknown }
@@ -142,7 +151,8 @@ export type ClientEvent =
   | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload }
   | { t: "inspect_item"; name: string }
-  | { t: "inscribe_spell"; spell: string; book?: string };
+  | { t: "inscribe_spell"; spell: string; book?: string }
+  | { t: "item_action"; name: string; action: string };
 
 export interface CCPayload {
   name: string;

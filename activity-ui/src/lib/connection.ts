@@ -1,4 +1,4 @@
-import type { ClientEvent, ServerEvent } from "./types";
+import type { ClientEvent, ItemDetail, ServerEvent } from "./types";
 import { demoScript } from "./demo";
 
 export interface Connection {
@@ -58,31 +58,75 @@ const DEMO_BOOK_DESC =
   "A leather-bound tome of 100 vellum pages. Its inscribed spells can be cast, " +
   "and a trained hand may write more into the blank leaves.";
 
+const demoState = { wandCharges: 7, potions: 2, ringAttuned: false, armorEquipped: false };
+
+function demoItemDetail(name: string): ItemDetail {
+  const n = name.toLowerCase();
+  if (/spellbook/.test(n)) {
+    return { name, type: "Wondrous Item", description: DEMO_BOOK_DESC,
+      interactive: "spellbook", spells: [...demoSpells], can_inscribe: true };
+  }
+  if (/wand of magic missiles/.test(n)) {
+    return { name, type: "Wand", rarity: "Uncommon",
+      description: "While holding this wand you can expend charges to cast Magic Missile. " +
+        "It regains 1d6+1 expended charges each dawn.",
+      stats: ["Cost: 500 gp"],
+      charges: { current: demoState.wandCharges, max: 7 },
+      actions: [
+        ...(demoState.wandCharges > 0 ? [{ id: "expend", label: "Expend a charge" }] : []),
+        { id: "recharge", label: "Recharge" },
+      ] };
+  }
+  if (/potion of healing/.test(n)) {
+    return { name, type: "Potion", rarity: "Common",
+      description: "You regain 2d4 + 2 hit points when you drink this potion. " +
+        "Its red liquid glimmers when agitated.",
+      actions: [{ id: "use", label: "Drink" }] };
+  }
+  if (/ring of protection/.test(n)) {
+    return { name, type: "Ring", rarity: "Rare", attunement: true, attuned: demoState.ringAttuned,
+      description: "You gain a +1 bonus to AC and saving throws while wearing this ring.",
+      actions: [{ id: demoState.ringAttuned ? "unattune" : "attune",
+                  label: demoState.ringAttuned ? "Break Attunement" : "Attune" }] };
+  }
+  if (/leather armor/.test(n)) {
+    return { name, type: "Light Armor", equipped: demoState.armorEquipped,
+      description: "Supple boiled leather. Base AC 11 + your Dexterity modifier.",
+      stats: ["Base AC: 11", "Weight: 10 lb"],
+      actions: [{ id: demoState.armorEquipped ? "unequip" : "equip",
+                  label: demoState.armorEquipped ? "Unequip" : "Equip" }] };
+  }
+  return { name, type: "Gear",
+    description: `${name} — a fine example of its kind, worn smooth by the road. ` +
+      "In a real session the Oracle fills this from the rules library and conjures its likeness.",
+    stats: ["Weight: 1 lb"] };
+}
+
 function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
   if (ev.t === "inspect_item") {
-    if (/spellbook/i.test(ev.name)) {
-      onEvent({ t: "item_detail", item: {
-        name: ev.name, type: "Wondrous Item", description: DEMO_BOOK_DESC,
-        interactive: "spellbook", spells: [...demoSpells], can_inscribe: true,
-      } });
-    } else {
-      onEvent({ t: "item_detail", item: {
-        name: ev.name, type: "Wondrous Item", rarity: "Common",
-        description: `${ev.name} — a fine example of its kind, worn smooth by the road. ` +
-          "In a real session the Oracle fills this from the rules library and conjures its likeness.",
-        stats: ["Weight: 1 lb"],
-      } });
+    onEvent({ t: "item_detail", item: demoItemDetail(ev.name) });
+    return;
+  }
+  if (ev.t === "item_action") {
+    const n = ev.name.toLowerCase();
+    if (ev.action === "expend" && /wand/.test(n)) demoState.wandCharges = Math.max(0, demoState.wandCharges - 1);
+    else if (ev.action === "recharge" && /wand/.test(n)) demoState.wandCharges = 7;
+    else if (ev.action === "attune") demoState.ringAttuned = true;
+    else if (ev.action === "unattune") demoState.ringAttuned = false;
+    else if (ev.action === "equip") demoState.armorEquipped = true;
+    else if (ev.action === "unequip") demoState.armorEquipped = false;
+    else if (ev.action === "use" && /potion/.test(n)) {
+      demoState.potions -= 1;
+      if (demoState.potions <= 0) { onEvent({ t: "item_gone", name: ev.name }); return; }
     }
+    onEvent({ t: "item_detail", item: demoItemDetail(ev.name) });
     return;
   }
   if (ev.t === "inscribe_spell") {
     if (!demoSpells.some((s) => s.name.toLowerCase() === ev.spell.toLowerCase())) {
       demoSpells.push({ name: ev.spell, level: 1 });
     }
-    onEvent({ t: "item_detail", item: {
-      name: ev.book || "Spellbook", type: "Wondrous Item", description: DEMO_BOOK_DESC,
-      interactive: "spellbook", spells: [...demoSpells], can_inscribe: true,
-    } });
+    onEvent({ t: "item_detail", item: demoItemDetail(ev.book || "Spellbook") });
     return;
   }
   if (ev.t === "levelup_apply") {

@@ -14,10 +14,11 @@ function spellLevel(l?: number | null): string {
   return LEVELS[l] ?? `L${l}`;
 }
 
-export function ItemInspector({ view, onClose, onInscribe }: {
+export function ItemInspector({ view, onClose, onInscribe, onAction }: {
   view: ItemView | null;
   onClose: () => void;
   onInscribe: (book: string, spell: string) => void;
+  onAction: (name: string, action: string) => void;
 }) {
   const [spellInput, setSpellInput] = useState("");
   if (!view) return null;
@@ -62,6 +63,40 @@ export function ItemInspector({ view, onClose, onInscribe }: {
             <ul className="item-stats">
               {d.stats.map((s, i) => <li key={i}>{s}</li>)}
             </ul>
+          ) : null}
+
+          {(d?.equipped || d?.attuned) && (
+            <div className="item-state">
+              {d?.equipped && <span className="state-badge on">Equipped</span>}
+              {d?.attuned && <span className="state-badge att">Attuned</span>}
+            </div>
+          )}
+
+          {d?.charges && (
+            <div className="charges">
+              <span className="ch-label">Charges</span>
+              <span className="ch-pips">
+                {Array.from({ length: d.charges.max }).map((_, i) => (
+                  <i key={i} className={`ch-pip ${i < d!.charges!.current ? "on" : ""}`} />
+                ))}
+              </span>
+              <span className="ch-num">{d.charges.current}/{d.charges.max}</span>
+            </div>
+          )}
+
+          {d?.actions?.length ? (
+            <div className="item-actions">
+              {d.actions.map((a) => (
+                <button
+                  key={a.id}
+                  className={`iact ${a.id}`}
+                  disabled={view.loading}
+                  onClick={() => onAction(view.name, a.id)}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
           ) : null}
 
           {isBook && (
