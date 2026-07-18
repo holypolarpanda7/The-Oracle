@@ -115,7 +115,9 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
     else if (ev.action === "unattune") demoState.ringAttuned = false;
     else if (ev.action === "equip") demoState.armorEquipped = true;
     else if (ev.action === "unequip") demoState.armorEquipped = false;
-    else if (ev.action === "use" && /potion/.test(n)) {
+    else if (ev.action === "use" && /potion of healing/.test(n)) {
+      onEvent({ t: "roll", roll: { expr: "2d4+2", label: ev.name, total: 7, detail: "2d4+2 → 3  2 +2 = 7" } });
+      onEvent({ t: "narration", text: "Kara drinks the Potion of Healing and regains 7 hit points." });
       demoState.potions -= 1;
       if (demoState.potions <= 0) { onEvent({ t: "item_gone", name: ev.name }); return; }
     }
