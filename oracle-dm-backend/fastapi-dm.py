@@ -6666,6 +6666,121 @@ def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
     }
 
 
+# Standard single-class 5e spell-slot progressions (slot counts for spell
+# levels 1..9 at each character level). Used counts aren't tracked in the
+# narrative game, so the Activity shows total capacity (used=0).
+_FULL_CASTER_SLOTS = {
+    1: [2], 2: [3], 3: [4, 2], 4: [4, 3], 5: [4, 3, 2], 6: [4, 3, 3],
+    7: [4, 3, 3, 1], 8: [4, 3, 3, 2], 9: [4, 3, 3, 3, 1], 10: [4, 3, 3, 3, 2],
+    11: [4, 3, 3, 3, 2, 1], 12: [4, 3, 3, 3, 2, 1], 13: [4, 3, 3, 3, 2, 1, 1],
+    14: [4, 3, 3, 3, 2, 1, 1], 15: [4, 3, 3, 3, 2, 1, 1, 1], 16: [4, 3, 3, 3, 2, 1, 1, 1],
+    17: [4, 3, 3, 3, 2, 1, 1, 1, 1], 18: [4, 3, 3, 3, 3, 1, 1, 1, 1],
+    19: [4, 3, 3, 3, 3, 2, 1, 1, 1], 20: [4, 3, 3, 3, 3, 2, 2, 1, 1],
+}
+_HALF_CASTER_SLOTS = {
+    1: [], 2: [2], 3: [3], 4: [3], 5: [4, 2], 6: [4, 2], 7: [4, 3], 8: [4, 3],
+    9: [4, 3, 2], 10: [4, 3, 2], 11: [4, 3, 3], 12: [4, 3, 3], 13: [4, 3, 3, 1],
+    14: [4, 3, 3, 1], 15: [4, 3, 3, 2], 16: [4, 3, 3, 2], 17: [4, 3, 3, 3, 1],
+    18: [4, 3, 3, 3, 1], 19: [4, 3, 3, 3, 2], 20: [4, 3, 3, 3, 2],
+}
+# Warlock Pact Magic: (slot spell-level, slot count) by character level.
+_PACT_SLOTS = {
+    1: (1, 1), 2: (1, 2), 3: (2, 2), 4: (2, 2), 5: (3, 2), 6: (3, 2), 7: (4, 2),
+    8: (4, 2), 9: (5, 2), 10: (5, 2), 11: (5, 3), 12: (5, 3), 13: (5, 3),
+    14: (5, 3), 15: (5, 3), 16: (5, 3), 17: (5, 4), 18: (5, 4), 19: (5, 4), 20: (5, 4),
+}
+_FULL_CASTERS = {"bard", "cleric", "druid", "sorcerer", "wizard"}
+_HALF_CASTERS = {"paladin", "ranger", "artificer"}
+
+
+def _spell_slots_for(char_class: Optional[str], level: int) -> list[dict]:
+    cls = (char_class or "").strip().lower()
+    lvl = max(1, min(20, int(level or 1)))
+    if cls in _FULL_CASTERS:
+        counts = _FULL_CASTER_SLOTS.get(lvl, [])
+    elif cls in _HALF_CASTERS:
+        counts = _HALF_CASTER_SLOTS.get(lvl, [])
+    elif cls == "warlock":
+        slvl, n = _PACT_SLOTS.get(lvl, (1, 1))
+        return [{"level": slvl, "total": n, "used": 0}]
+    else:
+        return []
+    return [{"level": i, "total": c, "used": 0}
+            for i, c in enumerate(counts, start=1) if c > 0]
+
+
+def _class_resources_for(char: Character) -> list[dict]:
+    """Curated per-class pip resources (Bardic Inspiration, Ki, Rage…).
+    Not exhaustive; classes without an entry simply show none."""
+    cls = (char.char_class or "").strip().lower()
+    lvl = int(char.level or 1)
+    stats = char.stats or {}
+
+    def amod(stat: str) -> int:
+        for key in (stat, stat[:3], stat.capitalize(), stat[:3].capitalize(), stat.upper()):
+            if key in stats and stats[key] is not None:
+                return (int(stats[key]) - 10) // 2
+        return 0
+
+    if cls == "bard":
+        die = "d6" if lvl < 5 else "d8" if lvl < 10 else "d10" if lvl < 15 else "d12"
+        return [{"name": "Bardic Insp.", "total": max(1, amod("charisma")), "used": 0, "die": die}]
+    if cls == "monk":
+        return [{"name": "Ki", "total": lvl, "used": 0}]
+    if cls == "barbarian":
+        rage = 2 if lvl < 3 else 3 if lvl < 6 else 4 if lvl < 12 else 5 if lvl < 17 else 6
+        return [{"name": "Rage", "total": rage, "used": 0}]
+    if cls == "sorcerer" and lvl >= 2:
+        return [{"name": "Sorcery Pts", "total": lvl, "used": 0}]
+    return []
+
+
+def _feat_kind(name: str) -> str:
+    n = (name or "").lower()
+    if any(w in n for w in ("breath", "flame", "fire", "ember", "dragon")):
+        return "fire"
+    if any(w in n for w in ("spell", "arcane", "magic", "cantrip", "incant", "eldritch", "invocation")):
+        return "arcane"
+    if any(w in n for w in ("attack", "weapon", "fighting", "martial", "rage", "strike", "maneuver", "ambush")):
+        return "martial"
+    return "other"
+
+
+def _sheet_features(session: Session, char: Character) -> list[dict]:
+    """Class + subclass + species features up to the PC's level, as compact
+    {name, note, kind} rows for the Activity's Features tab."""
+    out: list[dict] = []
+    try:
+        from rules.query import RulesLibrary
+        _lib = RulesLibrary(engine=engine)
+        cfeats = _lib.class_features_up_to(char.char_class or "", char.level)
+        cls_row = _get_class_row(session, char.char_class)
+        sfeats = _subclass_features_up_to(session, cls_row, char.subclass, char.level) if cls_row else []
+        rfeats = _lib.race_features_up_to(char.race or "", char.level)
+        seen: set[str] = set()
+        for f in [*cfeats, *sfeats, *rfeats]:
+            name = (f.get("name") or "").strip()
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            note = (f.get("summary") or "").strip()
+            out.append({"name": name, "note": (note[:90] or None), "kind": _feat_kind(name)})
+    except Exception as e:
+        print(f"[activity features] {e}")
+    return out[:12]
+
+
+def _activity_portrait_url(character_name: str) -> Optional[str]:
+    try:
+        portrait = image_store.get_portrait(character_name)
+        if portrait is None:
+            return None
+        pl = portrait.payload()
+        return f"data:{pl.get('mime', 'image/webp')};base64,{pl['b64']}"
+    except Exception:
+        return None
+
+
 def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
     """Map the internal character sheet onto the Activity's compact shape."""
     char_id = _activity_char_id(session_id, user_id)
@@ -6676,6 +6791,13 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         if not char:
             return None
         sheet = _build_character_sheet(char)
+        # Derived, themeable extras for the v1 Activity sheet (all optional on
+        # the client; computed while the character row is live).
+        features = _sheet_features(session, char)
+        resources = _class_resources_for(char)
+        spell_slots = _spell_slots_for(char.char_class, char.level)
+        background = char.background
+        portrait = _activity_portrait_url(char.name)
     bits = [f"Level {sheet['level']} {sheet['char_class'] or '?'}"]
     if sheet.get("subclass"):
         bits[0] += f" ({sheet['subclass']})"
@@ -6693,6 +6815,15 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
                   [s for s in (sheet.get("spells") or [])][:6],
         "inventory": (sheet.get("inventory_lines") or [])[:10],
         "gold": (sheet.get("purse") or {}).get("gp"),
+        # ---- v1 structured / themeable fields ----
+        "race": sheet.get("race"),
+        "char_class": sheet.get("char_class"),
+        "subclass": sheet.get("subclass"),
+        "background": background,
+        "portrait": portrait,
+        "spell_slots": spell_slots,
+        "resources": resources,
+        "features": features,
     }
 
 
