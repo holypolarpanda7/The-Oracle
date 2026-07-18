@@ -1,0 +1,494 @@
+<title>The Oracle — Visual Direction</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --abyss:    #090C15;
+    --abyss-2:  #0C1020;
+    --panel:    #131A2E;
+    --panel-2:  #0D1220;
+    --well:     #080B14;
+    --edge:     #29344F;
+    --edge-lit: #45608C;
+
+    --teal:     #24E0B8;
+    --teal-dim: #128E77;
+    --amethyst: #9A6BFF;
+    --ember:    #F59A3C;
+    --crimson:  #D23843;
+    --gold:     #E6BC64;
+    --gold-2:   #F6D695;
+    --gold-dim: #8a6d33;
+
+    --hp:   #E0457B;
+    --mana: #3AA0E0;
+
+    --parchment:  #ECE1C4;
+    --parchment-2:#D8CAA4;
+    --ink:        #2B2417;
+    --ink-dim:    #5f5236;
+
+    --text:      #DBE7E8;
+    --text-dim:  #8091A6;
+    --text-faint:#55627A;
+
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --mono:  "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+    --maxw: 1180px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #05070D; }
+
+  /* ---- Living background --------------------------------------------- */
+  .bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+  .bg .cavern {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(90% 60% at 20% -8%, rgba(154,107,255,.18) 0%, transparent 46%),
+      radial-gradient(80% 60% at 88% 4%, rgba(36,224,184,.14) 0%, transparent 44%),
+      radial-gradient(120% 80% at 50% 118%, rgba(245,154,60,.14) 0%, transparent 55%),
+      radial-gradient(100% 70% at 50% 50%, #0d1426 0%, #090c16 60%, #05070d 100%);
+  }
+  .bg .arcane {
+    position: absolute; top: 46%; left: 50%; width: min(120vh, 1000px); aspect-ratio: 1;
+    transform: translate(-50%,-50%); opacity: .10; color: var(--teal);
+    animation: spin 140s linear infinite;
+  }
+  .bg .arcane.two { color: var(--amethyst); width: min(78vh, 640px); opacity: .09; animation: spin 90s linear infinite reverse; }
+  .bg .runes { position: absolute; inset: 0; opacity: .05; color: var(--gold);
+    font-family: var(--serif); font-size: 26px; line-height: 2.4; letter-spacing: .5em;
+    word-break: break-all; overflow: hidden; user-select: none; }
+  .bg canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .bg .crystal { position: absolute; bottom: -4%; opacity: .5; filter: drop-shadow(0 0 18px rgba(36,224,184,.35)); }
+  .bg .crystal.l { left: -2%; color: #1a6f7e; }
+  .bg .crystal.r { right: -2%; color: #4a3a7a; transform: scaleX(-1); filter: drop-shadow(0 0 18px rgba(154,107,255,.35)); }
+  .bg .vignette { position: absolute; inset: 0; box-shadow: inset 0 0 240px 40px rgba(0,0,0,.85); background: radial-gradient(120% 100% at 50% 40%, transparent 55%, rgba(4,6,12,.7) 100%); }
+  @keyframes spin { to { transform: translate(-50%,-50%) rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .bg .arcane { animation: none; } }
+
+  .page { position: relative; z-index: 1; min-height: 100vh; color: var(--text);
+    font-family: var(--serif); line-height: 1.6; padding: clamp(20px,4vw,56px) clamp(16px,4vw,40px) 90px; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; }
+
+  /* ---- Type ---------------------------------------------------------- */
+  .rune-head { font-family: var(--serif); text-transform: uppercase; letter-spacing: .16em; font-weight: 700;
+    color: var(--teal); text-shadow: 0 0 14px rgba(36,224,184,.45), 0 0 2px rgba(36,224,184,.6); margin: 0; }
+  .eyebrow { font-family: var(--mono); text-transform: uppercase; letter-spacing: .34em; font-size: .72rem; color: var(--text-faint); margin: 0; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .masthead { text-align: center; padding: clamp(18px,5vw,46px) 0 clamp(28px,4vw,44px); }
+  .masthead .eyebrow { margin-bottom: 18px; }
+  .title { font-family: var(--serif); text-transform: uppercase; letter-spacing: .22em; font-weight: 700;
+    font-size: clamp(2.4rem,7vw,4.6rem); line-height: .98; margin: 0; color: #F3ECDA; text-wrap: balance;
+    text-shadow: 0 0 30px rgba(36,224,184,.28), 0 0 60px rgba(154,107,255,.16); }
+  .title .glow { color: var(--teal); text-shadow: 0 0 26px rgba(36,224,184,.6); }
+  .tagline { margin: 18px auto 0; max-width: 54ch; color: var(--text-dim); font-size: 1.05rem; font-style: italic; text-wrap: balance; }
+  .divider { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 26px auto 0; color: var(--gold); }
+  .divider .ln { height: 1px; width: 120px; background: linear-gradient(90deg, transparent, var(--gold-dim), var(--gold)); }
+  .divider .ln.r { background: linear-gradient(270deg, transparent, var(--gold-dim), var(--gold)); }
+  .divider svg { width: 30px; height: 30px; filter: drop-shadow(0 0 6px rgba(230,188,100,.5)); }
+
+  section { margin-top: clamp(42px,6vw,74px); }
+  .sec-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 22px; }
+  .sec-head h2 { font-size: 1.15rem; }
+  .sec-head .n { font-family: var(--mono); color: var(--gold); font-size: .8rem; letter-spacing: .1em; opacity: .85; }
+  .sec-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--edge), transparent); }
+
+  /* ---- Ornate frame -------------------------------------------------- */
+  .frame {
+    position: relative;
+    background:
+      radial-gradient(90% 60% at 22% 0%, rgba(154,107,255,.09) 0%, transparent 42%),
+      radial-gradient(90% 60% at 100% 100%, rgba(36,224,184,.06) 0%, transparent 46%),
+      linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+    border: 1.5px solid var(--edge);
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.55), inset 0 0 44px rgba(0,0,0,.5), 0 14px 44px rgba(0,0,0,.55);
+  }
+  /* inner beveled gold keyline */
+  .frame::before {
+    content: ""; position: absolute; inset: 6px; border-radius: 2px; pointer-events: none;
+    border: 1px solid color-mix(in srgb, var(--gold) 34%, transparent);
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,.5), inset 0 0 22px rgba(230,188,100,.05);
+  }
+  /* etched rune band on the outer edge (top+bottom) */
+  .frame::after {
+    content: ""; position: absolute; left: 34px; right: 34px; top: 3px; height: 15px; pointer-events: none;
+    background: var(--rune-strip) repeat-x center / auto 15px; opacity: .75;
+  }
+  .frame > .rband-b { position: absolute; left: 34px; right: 34px; bottom: 3px; height: 15px; pointer-events: none;
+    background: var(--rune-strip) repeat-x center / auto 15px; opacity: .75; transform: scaleY(-1); }
+  /* ornate filigree corners (injected) */
+  .oc { position: absolute; width: 50px; height: 50px; pointer-events: none; z-index: 3;
+    filter: drop-shadow(0 0 5px rgba(230,188,100,.55)); }
+  .oc.tl { top: 0; left: 0; }
+  .oc.tr { top: 0; right: 0; transform: scaleX(-1); }
+  .oc.bl { bottom: 0; left: 0; transform: scaleY(-1); }
+  .oc.br { bottom: 0; right: 0; transform: scale(-1); }
+
+  /* Palette */
+  .swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px,1fr)); gap: 12px; }
+  .swatch { border: 1px solid var(--edge); border-radius: 4px; overflow: hidden; background: var(--panel-2); }
+  .swatch .chip { height: 66px; box-shadow: inset 0 0 22px rgba(0,0,0,.35); }
+  .swatch .meta { padding: 9px 11px; }
+  .swatch .nm { font-size: .82rem; color: var(--text); }
+  .swatch .hex { font-family: var(--mono); font-size: .72rem; color: var(--text-faint); letter-spacing: .04em; }
+
+  /* Type specimen */
+  .spec-row { padding: 18px 22px; border: 1px solid var(--edge); border-radius: 4px; background: var(--panel-2); }
+  .spec-row + .spec-row { margin-top: 10px; }
+  .spec-row .role { color: var(--text-faint); font-family: var(--mono); font-size: .66rem; letter-spacing: .2em; text-transform: uppercase; margin-bottom: 8px; }
+  .spec-display { font-family: var(--serif); text-transform: uppercase; letter-spacing: .14em; font-size: clamp(1.6rem,4vw,2.4rem); color: var(--teal); text-shadow: 0 0 16px rgba(36,224,184,.4); }
+  .spec-body { font-family: var(--serif); font-size: 1.12rem; color: var(--ink); max-width: 62ch; }
+  .spec-data { font-family: var(--mono); letter-spacing: .06em; color: var(--text); font-size: 1rem; }
+
+  /* Play surface */
+  .surface { display: grid; grid-template-columns: 1fr 322px; gap: 18px; align-items: start; }
+  @media (max-width: 860px) { .surface { grid-template-columns: 1fr; } }
+  .stage { display: flex; flex-direction: column; gap: 16px; }
+
+  .scene { position: relative; aspect-ratio: 16 / 8; border-radius: 4px; overflow: hidden; }
+  .scene .art { position: absolute; inset: 0;
+    background:
+      radial-gradient(80% 120% at 30% 100%, rgba(245,154,60,.55) 0%, transparent 45%),
+      radial-gradient(70% 100% at 78% 25%, rgba(36,224,184,.35) 0%, transparent 50%),
+      radial-gradient(120% 120% at 50% -10%, rgba(154,107,255,.30) 0%, transparent 55%),
+      linear-gradient(180deg, #0d1b24 0%, #0a0f1c 60%, #060911 100%); }
+  .scene .pillars { position: absolute; inset: 0; opacity: .5;
+    background:
+      linear-gradient(90deg, rgba(0,0,0,.5) 0 5%, transparent 9% 14%, rgba(0,0,0,.45) 18% 22%, transparent 26%),
+      linear-gradient(270deg, rgba(0,0,0,.5) 0 5%, transparent 9% 14%, rgba(0,0,0,.4) 18% 22%, transparent 26%); }
+  .scene .vignette2 { position: absolute; inset: 0; box-shadow: inset 0 0 90px rgba(0,0,0,.85); }
+  .scene .cap { position: absolute; left: 16px; bottom: 12px; right: 16px; font-family: var(--serif); font-style: italic; color: #e9f6f2; text-shadow: 0 2px 10px #000; font-size: .96rem; z-index: 2; }
+  .scene .tag { position: absolute; top: 12px; left: 16px; z-index: 2; font-family: var(--mono); font-size: .62rem; letter-spacing: .22em; text-transform: uppercase; color: var(--teal); background: rgba(6,10,18,.7); border: 1px solid var(--edge); padding: 4px 9px; border-radius: 3px; }
+
+  .scroll { padding: 24px 28px; }
+  .scroll .inner { background: radial-gradient(140% 120% at 50% 0%, #F2E9CF 0%, var(--parchment) 55%, var(--parchment-2) 100%);
+    color: var(--ink); border-radius: 3px; padding: 22px 26px;
+    box-shadow: inset 0 0 40px rgba(90,70,30,.28), inset 0 0 0 1px rgba(120,95,45,.4); font-size: 1.08rem; }
+  .scroll .who { font-family: var(--mono); text-transform: uppercase; letter-spacing: .22em; font-size: .64rem; color: var(--teal-dim); margin-bottom: 10px; }
+  .scroll p { margin: 0 0 12px; max-width: 64ch; } .scroll p:last-child { margin-bottom: 0; }
+  .scroll .lex { color: #7a4b12; font-weight: 700; border-bottom: 1px dotted #b98a3f; }
+
+  .roll { display: inline-flex; align-items: center; gap: 12px; margin: 6px 0 14px; padding: 9px 14px;
+    background: linear-gradient(180deg, #141b2f, #0e1322); border: 1px solid var(--edge); border-left: 3px solid var(--teal);
+    border-radius: 4px; box-shadow: 0 0 18px rgba(36,224,184,.14); }
+  .roll .die { width: 34px; height: 34px; display: grid; place-items: center; font-family: var(--mono); font-weight: 700; color: #061012;
+    background: radial-gradient(circle at 35% 30%, #6bf0d3, var(--teal)); border-radius: 6px; box-shadow: 0 0 14px rgba(36,224,184,.5); }
+  .roll .rmeta { font-family: var(--mono); font-size: .82rem; color: var(--text); }
+  .roll .rmeta b { color: var(--teal); } .roll .rmeta .dc { color: var(--text-dim); }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .btn { font-family: var(--serif); text-transform: uppercase; letter-spacing: .14em; font-size: .82rem; font-weight: 700;
+    color: var(--text); cursor: pointer; padding: 11px 20px; border-radius: 4px;
+    background: linear-gradient(180deg, #182036, #101627); border: 1px solid var(--edge);
+    box-shadow: inset 0 0 0 1px rgba(230,188,100,.16), 0 2px 0 rgba(0,0,0,.4);
+    transition: border-color .18s, box-shadow .18s, color .18s, transform .05s; }
+  .btn:hover { border-color: var(--teal); color: #eafffb; box-shadow: inset 0 0 0 1px rgba(36,224,184,.3), 0 0 18px rgba(36,224,184,.22); }
+  .btn:active { transform: translateY(1px); }
+  .btn:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+  .btn--combat { color: #ffd9db; border-color: color-mix(in srgb, var(--crimson) 55%, var(--edge)); }
+  .btn--combat:hover { border-color: var(--crimson); box-shadow: inset 0 0 0 1px rgba(210,56,67,.4), 0 0 18px rgba(210,56,67,.28); color: #fff; }
+  .btn--cast { color: #e7dcff; border-color: color-mix(in srgb, var(--amethyst) 50%, var(--edge)); }
+  .btn--cast:hover { border-color: var(--amethyst); box-shadow: inset 0 0 0 1px rgba(154,107,255,.4), 0 0 18px rgba(154,107,255,.28); }
+
+  .inputbar { display: flex; gap: 10px; align-items: center; padding: 12px 14px; }
+  .inputbar .field { flex: 1; color: var(--text-dim); font-family: var(--serif); font-style: italic; background: var(--well); border: 1px solid var(--edge); border-radius: 4px; padding: 11px 14px; }
+  .inputbar .send { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 4px; background: radial-gradient(circle at 35% 30%, #6bf0d3, var(--teal)); color: #04110e; box-shadow: 0 0 16px rgba(36,224,184,.4); cursor: pointer; border: none; }
+
+  .rail { display: flex; flex-direction: column; gap: 16px; }
+  .hero { padding: 0; overflow: hidden; }
+  .portrait { position: relative; height: 172px;
+    background: radial-gradient(60% 70% at 50% 32%, rgba(224,69,123,.5) 0%, transparent 60%), radial-gradient(90% 90% at 50% 120%, rgba(36,224,184,.4) 0%, transparent 60%), linear-gradient(180deg, #1a1030, #0c1020);
+    border-bottom: 1px solid var(--edge); }
+  .portrait .fig { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); height: 158px; width: auto; filter: drop-shadow(0 0 14px rgba(36,224,184,.4)); }
+  .portrait .name { position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 16px 10px; background: linear-gradient(180deg, transparent, rgba(8,11,20,.94)); font-family: var(--serif); font-size: 1.2rem; letter-spacing: .04em; color: #F2ECDB; }
+  .hero-body { padding: 16px 16px 18px; }
+  .bar { position: relative; height: 16px; border-radius: 8px; background: var(--well); border: 1px solid var(--edge); overflow: hidden; margin-bottom: 8px; }
+  .bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 8px; }
+  .bar .fill-hp { background: linear-gradient(90deg, #a8214d, var(--hp)); box-shadow: 0 0 14px rgba(224,69,123,.5); }
+  .bar .fill-mana { background: linear-gradient(90deg, #1c5f96, var(--mana)); box-shadow: 0 0 14px rgba(58,160,224,.45); }
+  .bar .txt { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--mono); font-size: .7rem; color: #fff; text-shadow: 0 1px 2px #000; letter-spacing: .05em; }
+  .stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; margin: 14px 0; }
+  .stat { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 9px 4px 7px;
+    background: radial-gradient(120% 90% at 50% 0%, #172142, #0c1120);
+    border: 1px solid var(--edge); border-radius: 5px; box-shadow: inset 0 0 10px rgba(0,0,0,.5); }
+  .stat .si { width: 22px; height: 22px; color: var(--gold-2); filter: drop-shadow(0 0 4px rgba(230,188,100,.5)); }
+  .stat .k { font-family: var(--mono); font-size: .56rem; letter-spacing: .14em; color: var(--text-faint); }
+  .stat .v { font-family: var(--serif); font-size: 1.22rem; color: var(--text); line-height: 1.1; }
+  .stat .m { font-family: var(--mono); font-size: .62rem; color: var(--teal); }
+  .meta-line { display: flex; justify-content: space-between; align-items: center; font-family: var(--mono); font-size: .72rem; color: var(--text-dim); letter-spacing: .06em; border-top: 1px solid var(--edge); padding-top: 12px; margin-top: 4px; }
+  .meta-line .lvl { color: var(--gold); }
+  .boons { margin-top: 14px; }
+  .boons .hd { font-family: var(--mono); text-transform: uppercase; letter-spacing: .16em; font-size: .62rem; color: var(--text-dim); margin-bottom: 9px; }
+  .boon-icons { display: flex; gap: 8px; margin-bottom: 11px; }
+  /* Illustrated rune-tiles with a cast-metal gold frame */
+  .tile { position: relative; width: 46px; height: 46px; border-radius: 11px; display: grid; place-items: center;
+    background: radial-gradient(circle at 42% 30%, #1e2a4e 0%, #0a0e1c 78%);
+    box-shadow: inset 0 0 14px rgba(0,0,0,.75), 0 3px 7px rgba(0,0,0,.55); }
+  .tile::before { content: ""; position: absolute; inset: 0; border-radius: 11px; padding: 2px; pointer-events: none;
+    background: linear-gradient(150deg, var(--gold-2) 0%, var(--gold) 45%, #6a5326 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude; }
+  .tile .ico { width: 27px; height: 27px; position: relative; z-index: 1; }
+  .tile.t { color: var(--teal); filter: drop-shadow(0 0 7px rgba(36,224,184,.85)); }
+  .tile.p { color: var(--amethyst); filter: drop-shadow(0 0 7px rgba(154,107,255,.85)); }
+  .tile.e { color: var(--ember); filter: drop-shadow(0 0 8px rgba(245,154,60,.9)); }
+  .tile.g { color: var(--gold-2); filter: drop-shadow(0 0 7px rgba(230,188,100,.7)); }
+  .tile.k { color: var(--hp); filter: drop-shadow(0 0 7px rgba(224,69,123,.85)); }
+  .boon-row { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; font-size: .9rem; color: var(--text); }
+  .boon-row .dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
+  .boon-row small { color: var(--text-faint); font-family: var(--mono); font-size: .64rem; }
+  .divination { padding: 13px 15px; display: flex; align-items: center; gap: 11px; }
+  .divination .orb { width: 12px; height: 12px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 12px var(--teal); animation: pulse 2.4s ease-in-out infinite; }
+  .divination .d-txt { font-family: var(--mono); font-size: .72rem; letter-spacing: .08em; color: var(--text-dim); }
+  .divination .d-txt b { color: var(--teal); display: block; letter-spacing: .18em; text-transform: uppercase; font-size: .64rem; }
+  @keyframes pulse { 0%,100% { opacity: .5; transform: scale(.85); } 50% { opacity: 1; transform: scale(1.15); } }
+  @media (prefers-reduced-motion: reduce) { .divination .orb { animation: none; } }
+
+  .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap: 14px; }
+  .note { padding: 18px 20px; }
+  .note h3 { margin: 0 0 8px; font-family: var(--serif); text-transform: uppercase; letter-spacing: .1em; font-size: .84rem; color: var(--gold); }
+  .note p { margin: 0; color: var(--text-dim); font-size: .92rem; }
+  .note code { font-family: var(--mono); font-size: .82rem; color: var(--teal); background: var(--well); padding: 1px 5px; border-radius: 3px; }
+  footer { margin-top: 62px; text-align: center; color: var(--text-faint); font-family: var(--mono); font-size: .72rem; letter-spacing: .1em; }
+</style>
+
+<!-- shared defs + illustrated icon library (bold-outlined, BG3-flavoured) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="au" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F6D695"/><stop offset=".5" stop-color="#E6BC64"/><stop offset="1" stop-color="#9c7a34"/>
+    </linearGradient>
+  </defs>
+  <!-- Ability icons -->
+  <symbol id="i-str" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4.5" y="3.5" width="15" height="7" rx="1.6" fill="currentColor" fill-opacity=".16"/><path d="M12 10.5V21"/><path d="M8 7h8"/></g></symbol>
+  <symbol id="i-dex" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 3a13 13 0 0 1 0 18"/><path d="M6 3v18" stroke-width="1.1"/><path d="M3 12h17"/><path d="M17 8.5 20.5 12 17 15.5"/><path d="M3 12l2.5-2.2M3 12l2.5 2.2"/></g></symbol>
+  <symbol id="i-con" viewBox="0 0 24 24"><path d="M12 20.6C4.8 15 3.3 10.4 5.4 7.4 7 5.1 10 5.4 12 8c2-2.6 5-2.9 6.6-.6 2.1 3 .6 7.6-6.6 13.2Z" fill="currentColor" fill-opacity=".2" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+  <symbol id="i-int" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
+    <path d="M12 6C10 4.4 6.2 4.4 4 5.6V18.4C6.2 17.2 10 17.2 12 18.8" fill="currentColor" fill-opacity=".12"/><path d="M12 6c2-1.6 5.8-1.6 8-.4V18.4C17.8 17.2 14 17.2 12 18.8" fill="currentColor" fill-opacity=".12"/><path d="M12 6.4V18.8"/><path d="M6.5 9h3M6.5 12h3M14.5 9h3M14.5 12h3" stroke-width="1.1"/></g></symbol>
+  <symbol id="i-wis" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
+    <path d="M2.5 12C5.5 7.2 9 5.2 12 5.2s6.5 2 9.5 6.8c-3 4.8-6.5 6.8-9.5 6.8S5.5 16.8 2.5 12Z"/><circle cx="12" cy="12" r="3.1" fill="currentColor" fill-opacity=".3"/><path d="M12 2.6V4M12 20v1.4M4.5 5 5.5 6M19.5 5l-1 1" stroke-width="1.3" stroke-linecap="round"/></g></symbol>
+  <symbol id="i-cha" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round"><circle cx="12" cy="12" r="4.6" fill="currentColor" fill-opacity=".2" stroke-width="1.7"/><g stroke-width="1.8"><path d="M12 1.6V4M12 20v2.4M1.6 12H4M20 12h2.4M4.4 4.4 6 6M18 18l1.6 1.6M19.6 4.4 18 6M6 18l-1.6 1.6"/></g></g></symbol>
+  <!-- Boon / feature icons -->
+  <symbol id="i-breath" viewBox="0 0 24 24"><path d="M12 2.5c1.2 4-2 5.5-2 8.5 0-2 3-2.4 3 .5 0 2-2 2.5-2 4.5C11 14 8 15 8 18c0 2.6 2.4 4 4 4-4 0-8-3-8-8C4 7.5 11.5 8 12 2.5Z" fill="currentColor" fill-opacity=".22" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M15 11c2 1.5 3 3.5 3 6 0 3-2.5 5-6 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+  <symbol id="i-wings" viewBox="0 0 24 24"><g fill="currentColor" fill-opacity=".16" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 5C8.5 3 3.5 3.5 2 8c3-1.2 5-.2 6 2-3.2-1-5.2 1-5.5 4.2 4-2.4 6.5-.3 9.5 2"/><path d="M12 5c3.5-2 8.5-1.5 10 3-3-1.2-5-.2-6 2 3.2-1 5.2 1 5.5 4.2-4-2.4-6.5-.3-9.5 2"/></g><path d="M12 5v14" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5.5l10-2.5V15"/><path d="M9 9.5l10-2.5"/></g><circle cx="6.4" cy="18" r="2.6" fill="currentColor" fill-opacity=".3" stroke="currentColor" stroke-width="1.6"/><circle cx="16.4" cy="15" r="2.6" fill="currentColor" fill-opacity=".3" stroke="currentColor" stroke-width="1.6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 1 1 10.2 3.6 6.8 6.8 0 0 0 20.5 14.5Z" fill="currentColor" fill-opacity=".22" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M17.5 6.2l.7 1.6 1.6.7-1.6.7-.7 1.6-.7-1.6L15.2 8.5l1.6-.7z" fill="currentColor"/></symbol>
+</svg>
+
+<div class="bg" aria-hidden="true">
+  <div class="cavern"></div>
+  <svg class="arcane" viewBox="0 0 200 200" fill="none" stroke="currentColor" stroke-width="0.5">
+    <circle cx="100" cy="100" r="96"/><circle cx="100" cy="100" r="82"/><circle cx="100" cy="100" r="60"/>
+    <polygon points="100,14 174,142 26,142"/><polygon points="100,186 26,58 174,58"/>
+    <circle cx="100" cy="100" r="34"/>
+    <g stroke-width="0.8">
+      <path d="M100 4v20M100 176v20M4 100h20M176 100h20"/>
+    </g>
+  </svg>
+  <svg class="arcane two" viewBox="0 0 200 200" fill="none" stroke="currentColor" stroke-width="0.6">
+    <circle cx="100" cy="100" r="90"/><circle cx="100" cy="100" r="48"/>
+    <polygon points="100,10 148,100 100,190 52,100"/>
+  </svg>
+  <div class="runes" id="runes"></div>
+  <svg class="crystal l" width="220" height="360" viewBox="0 0 110 180" fill="currentColor" opacity=".55">
+    <polygon points="30,180 12,70 40,20 52,90"/><polygon points="52,180 40,60 66,10 78,80"/><polygon points="72,180 62,90 88,50 96,180"/>
+  </svg>
+  <svg class="crystal r" width="220" height="360" viewBox="0 0 110 180" fill="currentColor" opacity=".55">
+    <polygon points="30,180 12,70 40,20 52,90"/><polygon points="52,180 40,60 66,10 78,80"/><polygon points="72,180 62,90 88,50 96,180"/>
+  </svg>
+  <canvas id="embers"></canvas>
+  <div class="vignette"></div>
+</div>
+
+<div class="page">
+  <div class="wrap">
+
+    <header class="masthead">
+      <p class="eyebrow">Visual Direction · Discord Activity</p>
+      <h1 class="title">The <span class="glow">Oracle</span></h1>
+      <p class="tagline">An arcane instrument for the living world of Gatvorhain — dark-fantasy underworld, lit by rune-glow and ember, in the key of Hades II.</p>
+      <div class="divider"><span class="ln"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="url(#au)" stroke-width="1.4"><path d="M12 2l3 7 7 0-5.5 4.5 2 7L12 16l-6.5 4.5 2-7L2 9l7 0z"/></svg>
+        <span class="ln r"></span></div>
+    </header>
+
+    <section>
+      <div class="sec-head"><span class="n">I</span><h2 class="rune-head">The Palette</h2><span class="line"></span></div>
+      <div class="swatches">
+        <div class="swatch"><div class="chip" style="background:#090C15"></div><div class="meta"><div class="nm">Abyss</div><div class="hex">#090C15</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#131A2E"></div><div class="meta"><div class="nm">Panel Steel</div><div class="hex">#131A2E</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#2A3552"></div><div class="meta"><div class="nm">Rune Edge</div><div class="hex">#2A3552</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#24E0B8"></div><div class="meta"><div class="nm">Radiant Teal</div><div class="hex">#24E0B8</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#9A6BFF"></div><div class="meta"><div class="nm">Arcane Amethyst</div><div class="hex">#9A6BFF</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#F59A3C"></div><div class="meta"><div class="nm">Ember</div><div class="hex">#F59A3C</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#D23843"></div><div class="meta"><div class="nm">Crimson</div><div class="hex">#D23843</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#E6BC64"></div><div class="meta"><div class="nm">Burnished Gold</div><div class="hex">#E6BC64</div></div></div>
+        <div class="swatch"><div class="chip" style="background:#ECE1C4"></div><div class="meta"><div class="nm">Parchment</div><div class="hex">#ECE1C4</div></div></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="sec-head"><span class="n">II</span><h2 class="rune-head">The Voice</h2><span class="line"></span></div>
+      <div>
+        <div class="spec-row"><div class="role">Display · engraved rune-caps</div><div class="spec-display">Enter the World</div></div>
+        <div class="spec-row" style="background:linear-gradient(140% 120% at 50% 0%,#F2E9CF,#ECE1C4);"><div class="role" style="color:var(--ink-dim)">Narration · aged serif on parchment</div><div class="spec-body">The Silver Tankard breathes warmth against the cold road behind you — woodsmoke, spilled ale, a bard tuning a string she keeps flatting on purpose.</div></div>
+        <div class="spec-row"><div class="role">Data · tabular mono</div><div class="spec-data num">STR 16 · DEX 14 · CON 15 &nbsp;|&nbsp; HP 48/60 &nbsp;|&nbsp; 1d20+7 → 23 vs DC 15</div></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="sec-head"><span class="n">III</span><h2 class="rune-head">The Play Surface</h2><span class="line"></span></div>
+      <div class="surface">
+        <div class="stage">
+          <div class="frame scene">
+            <div class="art"></div><div class="pillars"></div><div class="vignette2"></div>
+            <span class="tag">Scene · rendered</span>
+            <div class="cap">Beneath the Emberfall crossroads, a spectral toll-keeper bars the sunken stair.</div>
+          </div>
+
+          <div class="frame scroll">
+            <div class="inner">
+              <div class="who">The Oracle speaks</div>
+              <p>The toll-keeper's hollow gaze settles on you, <span class="lex">Kara</span>. "Coin, or a truth," it rasps. "The stair below remembers every liar who ever descended it."</p>
+              <div class="roll"><span class="die">18</span><span class="rmeta"><b>Persuasion</b> &nbsp;1d20+7 → <b>18</b> &nbsp;<span class="dc">vs DC 15 · success</span></span></div>
+              <p>You offer the truth of why you've come. The spectre studies you a long moment, then draws aside like smoke pulled through a keyhole — the way down is yours.</p>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="btn">Act</button>
+            <button class="btn btn--cast">Cast a Spell</button>
+            <button class="btn btn--combat">Combat</button>
+            <button class="btn">Look Closer</button>
+          </div>
+
+          <div class="frame inputbar">
+            <div class="field">Speak your deed, and the Oracle shall answer…</div>
+            <button class="send" aria-label="Send">➤</button>
+          </div>
+        </div>
+
+        <aside class="rail">
+          <div class="frame hero">
+            <div class="portrait">
+              <svg class="fig" viewBox="0 0 100 100" aria-hidden="true">
+                <g fill="#0d1226" stroke="url(#au)" stroke-width="1.7" stroke-linejoin="round">
+                  <path d="M14 100c0-26 14-36 36-36s36 10 36 36Z"/>
+                  <path d="M29 67c-3-6-4-13-4-21C25 30 34 20 50 20s25 10 25 26c0 8-1 15-4 21-6 7-36 7-42 0Z"/>
+                </g>
+                <path d="M37 46c2-9 6-13 13-13s11 4 13 13c-4 10-22 10-26 0Z" fill="#161d3a"/>
+                <circle cx="43" cy="48" r="2.7" fill="#3BF0CE"/><circle cx="57" cy="48" r="2.7" fill="#3BF0CE"/>
+                <path d="M50 58l-3.5 9h7z" fill="none" stroke="url(#au)" stroke-width="1.3" opacity=".85"/>
+                <path d="M33 34q17-9 34 0" fill="none" stroke="url(#au)" stroke-width="1.2" opacity=".7"/>
+              </svg>
+              <div class="name">Kara Emberfall</div>
+            </div>
+            <div class="hero-body">
+              <div class="bar"><span class="fill-hp" style="width:80%"></span><span class="txt num">48 / 60</span></div>
+              <div class="bar"><span class="fill-mana" style="width:100%"></span><span class="txt num">35 / 35</span></div>
+              <div class="stats">
+                <div class="stat"><svg class="si"><use href="#i-str"/></svg><div class="k">STR</div><div class="v num">16</div><div class="m">+3</div></div>
+                <div class="stat"><svg class="si"><use href="#i-dex"/></svg><div class="k">DEX</div><div class="v num">14</div><div class="m">+2</div></div>
+                <div class="stat"><svg class="si"><use href="#i-con"/></svg><div class="k">CON</div><div class="v num">15</div><div class="m">+2</div></div>
+                <div class="stat"><svg class="si"><use href="#i-int"/></svg><div class="k">INT</div><div class="v num">10</div><div class="m">+0</div></div>
+                <div class="stat"><svg class="si"><use href="#i-wis"/></svg><div class="k">WIS</div><div class="v num">12</div><div class="m">+1</div></div>
+                <div class="stat"><svg class="si"><use href="#i-cha"/></svg><div class="k">CHA</div><div class="v num">18</div><div class="m">+4</div></div>
+              </div>
+              <div class="meta-line"><span class="lvl">Level 5 · Dragonborn Bard</span><span>Silver Tankard</span></div>
+              <div class="boons">
+                <div class="hd">Traits &amp; Boons</div>
+                <div class="boon-icons">
+                  <div class="tile e" title="Breath Weapon"><svg class="ico"><use href="#i-breath"/></svg></div>
+                  <div class="tile t" title="Draconic Flight"><svg class="ico"><use href="#i-wings"/></svg></div>
+                  <div class="tile p" title="Bardic Inspiration"><svg class="ico"><use href="#i-note"/></svg></div>
+                  <div class="tile g" title="Song of Rest"><svg class="ico"><use href="#i-moon"/></svg></div>
+                </div>
+                <div class="boon-row"><span class="dot" style="color:var(--ember)"></span> Breath Weapon <small>2d10 · L5</small></div>
+                <div class="boon-row"><span class="dot" style="color:var(--teal)"></span> Draconic Flight <small>gained L5</small></div>
+                <div class="boon-row"><span class="dot" style="color:var(--amethyst)"></span> Bardic Inspiration <small>d8</small></div>
+              </div>
+            </div>
+          </div>
+          <div class="frame divination"><span class="orb"></span><span class="d-txt"><b>Divination Engine</b> weaving the next scene…</span></div>
+        </aside>
+      </div>
+    </section>
+
+    <section>
+      <div class="sec-head"><span class="n">IV</span><h2 class="rune-head">How It Maps</h2><span class="line"></span></div>
+      <div class="notes">
+        <div class="frame note"><h3>Single, committed world</h3><p>The underworld is dark by nature, so this ships as one deliberate dark theme — no light mode to betray the abyss.</p></div>
+        <div class="frame note"><h3>Parchment is sacred</h3><p>Cream + <code>--ink</code> appear <em>only</em> inside narration scrolls. Everything else lives on the abyss ground.</p></div>
+        <div class="frame note"><h3>Teal is the Oracle's voice</h3><p>One accent carries meaning: teal = the Oracle &amp; success, crimson = combat, ember = danger &amp; fire, amethyst = arcane. Gold is trim.</p></div>
+        <div class="frame note"><h3>Drops into your tokens</h3><p>Replaces <code>tokens.css</code> — same variable names, new values — so <code>app.css</code> restyles with almost no structural change.</p></div>
+      </div>
+    </section>
+
+    <footer>THE ORACLE · VISUAL DIRECTION v2 · GATVORHAIN</footer>
+  </div>
+</div>
+
+<script>
+  // --- Ornate frame ornamentation: inject filigree corners + rune bands ---
+  const CORNER = `<svg class="oc {p}" viewBox="0 0 52 52" fill="none">
+    <g stroke="url(#au)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 51V19Q5 5 19 5H51"/>
+      <path d="M12 51V22Q12 12 22 12H51" stroke-width="1.2" opacity=".65"/>
+      <path d="M5 23C13 21 17 14 15 4"/>
+      <path d="M23 4C21 14 14 18 4 16" opacity=".85"/>
+      <path d="M5 34C10 33 12 30 12 26" stroke-width="1.2" opacity=".6"/>
+    </g>
+    <circle cx="15" cy="15" r="3.2" fill="url(#au)"/>
+    <path d="M14 24q7-2 8-9 1 7 8 9-7 2-8 9-1-7-8-9Z" fill="url(#au)" opacity=".5"/>
+  </svg>`;
+  const RUNE_STRIP = "data:image/svg+xml;utf8," + encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' width='64' height='15'>
+      <g stroke='#E6BC64' stroke-width='1.7' fill='none' stroke-linecap='round' stroke-linejoin='round'>
+        <line x1='0' y1='7.5' x2='64' y2='7.5' stroke-width='1'/>
+        <path d='M9 2V13M9 4l5 3.5-5 3.5'/>
+        <path d='M28 2V13M28 2q5 0 5 4 0 3-5 2.5l5 4.5'/>
+        <path d='M48 2.5L53 7.5L48 12.5L43 7.5Z' fill='#E6BC64'/>
+      </g></svg>`);
+  document.documentElement.style.setProperty('--rune-strip', `url("${RUNE_STRIP}")`);
+  // Full ornamentation (filigree corners + top & bottom rune bands) on the
+  // major frames; the smaller frames keep just the gold keyline + top band.
+  document.querySelectorAll('.scene, .scroll, .hero').forEach(f => {
+    ['tl','tr','bl','br'].forEach(p => f.insertAdjacentHTML('afterbegin', CORNER.replace('{p}', p)));
+    const b = document.createElement('span'); b.className = 'rband-b'; f.appendChild(b);
+  });
+
+  // --- Background rune text fill ---
+  const glyphs = "ᚠᚢᚦᚨᚱᚲᚷᚹᚻᚾᛁᛃᛇᛈᛉᛊᛏᛒᛖᛗᛚᛜᛞᛟ";
+  let s = ""; for (let i=0;i<900;i++) s += glyphs[Math.floor(Math.random()*glyphs.length)];
+  document.getElementById('runes').textContent = s;
+
+  // --- Drifting embers (canvas) ---
+  const cv = document.getElementById('embers'), ctx = cv.getContext('2d');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let W, H, motes = [];
+  function size(){ W = cv.width = innerWidth; H = cv.height = innerHeight; }
+  size(); addEventListener('resize', size);
+  const COLORS = ['245,154,60','36,224,184','154,107,255','230,188,100'];
+  function spawn(){ return { x: Math.random()*W, y: H + Math.random()*H, r: Math.random()*1.8+0.6,
+    v: Math.random()*0.5+0.15, drift: (Math.random()-0.5)*0.3, a: Math.random()*0.5+0.2,
+    c: COLORS[Math.random()*COLORS.length|0], ph: Math.random()*6.28 }; }
+  for (let i=0;i<(reduce?0:60);i++) motes.push(spawn());
+  function tick(t){
+    ctx.clearRect(0,0,W,H);
+    for (const m of motes){
+      m.y -= m.v; m.x += m.drift + Math.sin(t/1400 + m.ph)*0.15;
+      if (m.y < -10){ Object.assign(m, spawn(), { y: H+10 }); }
+      const flick = m.a * (0.6 + 0.4*Math.sin(t/500 + m.ph));
+      ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, 6.28);
+      ctx.fillStyle = `rgba(${m.c},${flick})`;
+      ctx.shadowBlur = 8; ctx.shadowColor = `rgba(${m.c},${flick})`;
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+    requestAnimationFrame(tick);
+  }
+  if (!reduce) requestAnimationFrame(tick);
+</script>
