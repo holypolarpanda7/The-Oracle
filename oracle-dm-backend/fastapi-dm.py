@@ -6885,6 +6885,7 @@ def _compute_ac(char: Character) -> int:
     base = 10 + dex
     shield = 0
     misc = 0
+    armored = False
     for it in _inventory_items(char):
         name = it.get("name") or ""
         low = name.lower()
@@ -6917,7 +6918,27 @@ def _compute_ac(char: Character) -> int:
             else:
                 dex_part = dex
             base = acb + dex_part + plus
-    return base + shield + misc
+            armored = True
+
+    # Unarmored defenses + AC spells apply only with no worn armor.
+    cls = (char.char_class or "").strip().lower()
+    conds = {(c.get("name") or "").lower() for c in _character_conditions(char)}
+    if not armored:
+        if cls == "barbarian":
+            base = max(base, 10 + dex + ability_modifier(_ability_score(char, "constitution")))
+        elif cls == "monk":
+            base = max(base, 10 + dex + ability_modifier(_ability_score(char, "wisdom")))
+        if "mage armor" in conds:
+            base = max(base, 13 + dex)
+    if "shield of faith" in conds:
+        misc += 2
+    if "haste" in conds or "hasted" in conds:
+        misc += 2
+
+    total = base + shield + misc
+    if "barkskin" in conds:                        # AC can't be less than 16
+        total = max(total, 16)
+    return total
 
 
 def _consumable_heal(name: str) -> Optional[str]:
@@ -6932,6 +6953,58 @@ def _consumable_heal(name: str) -> Optional[str]:
     if "greater" in n:
         return "4d4+4"
     return "2d4+2"
+
+
+def _consumable_effect(name: str) -> Optional[dict]:
+    """Mechanical effect for a known consumable, or None (narrate + decrement).
+    ``heal`` is a dice expr applied to HP; ``conditions`` are persistent-condition
+    ops applied via _apply_condition_op (buffs are tracked as conditions since the
+    sheet has no temp-HP field); ``remove_conditions`` clears afflictions;
+    ``narration`` is a verb phrase completing '{name} drinks the X and {phrase}'."""
+    heal = _consumable_heal(name)
+    if heal:
+        return {"heal": heal}
+    n = (name or "").lower()
+
+    def cond(cname: str, duration: str, note: Optional[str] = None) -> dict:
+        op = {"action": "add", "name": cname, "source": name, "duration": duration}
+        if note:
+            op["note"] = note
+        return op
+
+    if "heroism" in n:
+        return {"conditions": [cond("Heroism", "1 hour", "immune to being frightened; 10 temporary hit points")],
+                "narration": "surges with fearless vigor"}
+    if "potion of growth" in n:
+        return {"conditions": [cond("Enlarged", "1 minute", "advantage on Strength checks/saves, +1d4 weapon damage")],
+                "narration": "swells to twice their size"}
+    if "potion of diminution" in n:
+        return {"conditions": [cond("Reduced", "1 minute", "disadvantage on Strength checks/saves, -1d4 weapon damage")],
+                "narration": "shrinks to half their size"}
+    if "invisibility" in n:
+        return {"conditions": [cond("Invisible", "1 hour")], "narration": "fades from sight"}
+    if "potion of speed" in n:
+        return {"conditions": [cond("Hasted", "1 minute", "+2 AC, doubled speed, an extra action")],
+                "narration": "blurs with sudden speed"}
+    if "potion of flying" in n:
+        return {"conditions": [cond("Flying", "1 hour", "a flying speed equal to their walking speed")],
+                "narration": "rises weightless into the air"}
+    if "water breathing" in n:
+        return {"conditions": [cond("Water Breathing", "1 hour")], "narration": "can now breathe water"}
+    if "potion of climbing" in n:
+        return {"conditions": [cond("Climbing", "1 hour", "a climbing speed equal to their walking speed")],
+                "narration": "finds every surface easy to climb"}
+    if "mind reading" in n:
+        return {"conditions": [cond("Detect Thoughts", "1 hour")], "narration": "hears the murmur of nearby thoughts"}
+    if "potion of resistance" in n:
+        return {"conditions": [cond("Damage Resistance", "1 hour", "resistance to one damage type")],
+                "narration": "feels their flesh turn resilient"}
+    if "antitoxin" in n:
+        return {"conditions": [cond("Antitoxin", "1 hour", "advantage on saving throws against poison")],
+                "narration": "steels their blood against poison"}
+    if "elixir of health" in n or "potion of vitality" in n:
+        return {"remove_conditions": True, "narration": "is restored to full vigor as every ill washes away"}
+    return None
 
 
 def _activity_inventory(char: Character) -> list[dict]:
@@ -7732,19 +7805,29 @@ async def activity_ws(ws: WebSocket, channel: str):
                             item["charges_current"] = cmax
                     elif action == "use":
                         qty = int(item.get("quantity", 1) or 1)
-                        heal_expr = _consumable_heal(name)
-                        if heal_expr:
+                        eff = _consumable_effect(name)
+                        low = name.lower()
+                        verb = (f"{ch.name} drinks the {name}"
+                                if any(w in low for w in ("potion", "elixir", "antitoxin"))
+                                else f"{ch.name} uses the {name}")
+                        if eff and eff.get("heal"):
                             from dice.roller import roll as _dice_roll
-                            r = _dice_roll(heal_expr)
+                            r = _dice_roll(eff["heal"])
                             before = ch.current_hp
                             ch.current_hp = min(ch.max_hp, ch.current_hp + r.total)
                             gained = ch.current_hp - before
-                            use_narration = (f"{ch.name} drinks the {name} and regains "
-                                             f"{gained} hit point{'s' if gained != 1 else ''}.")
-                            use_roll = {"expr": heal_expr, "label": name,
+                            use_narration = (f"{verb} and regains {gained} "
+                                             f"hit point{'s' if gained != 1 else ''}.")
+                            use_roll = {"expr": eff["heal"], "label": name,
                                         "total": r.total, "detail": r.detail}
+                        elif eff:
+                            for op in eff.get("conditions", []):
+                                _apply_condition_op(ch, op)
+                            if eff.get("remove_conditions"):
+                                _apply_condition_op(ch, {"action": "clear"})
+                            use_narration = f"{verb} and {eff.get('narration', 'feels its magic take hold')}."
                         else:
-                            use_narration = f"{ch.name} uses the {name}."
+                            use_narration = f"{verb}."
                         if qty <= 1:
                             inv.pop(idx)
                             gone = True
