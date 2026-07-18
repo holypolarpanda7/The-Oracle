@@ -1,25 +1,47 @@
-/* The Candle-lit Instrument — design tokens.
-   Two diegetic surfaces: dark "table" chrome + "parchment" documents.
-   ONE interactive accent (brass). Ghost teal is the Oracle's voice only. */
+/* The Oracle — visual v1 (Hades/BG3 arcane underworld).
+   Ported from docs/design/oracle-composed.html. The legacy token names
+   (--ground, --panel, --brass, --oxblood, --moss…) are kept but re-pointed to
+   the v1 palette so existing landing / character-creation / level-up styles
+   adopt the new look without a rewrite. New v1 tokens are added below them. */
 :root {
-  --ground: #171310;
-  --panel: #221c15;
-  --panel-edge: #2e2519;
-  --parchment: #e9dfc8;
+  /* ---- v1 palette ---- */
+  --abyss: #090c15;
+  --panel: #131a2e;
+  --edge: #29344f;
+  --teal: #24e0b8;         /* Oracle's voice / success */
+  --amethyst: #9a6bff;     /* arcane */
+  --ember: #f59a3c;        /* fire / danger */
+  --crimson: #d23843;      /* combat */
+  --gold: #e6bc64;         /* frame trim / interactive accent */
+  --gold-2: #f6d695;
+  --gold-dim: #8a6d33;
+  --parchment: #ece1c4;    /* narration only */
+  --ink: #2b2416;
+  --hp: #e0457b;
+
+  --text: #dbe7e8;
+  --text-dim: #8091a6;
+  --text-faint: #55627a;
+
+  /* ---- legacy aliases (map old names -> v1) ---- */
+  --ground: var(--abyss);
+  --panel-edge: var(--edge);
   --parchment-dim: #cfc3a6;
-  --ink: #2a2118;
+  --brass: var(--gold);
+  --brass-bright: var(--gold-2);
+  --oxblood: var(--crimson);
+  --moss: #5fae5f;
 
-  --brass: #d9a441;
-  --brass-bright: #f0c866;
-  --teal: #6fc7b2;
-  --oxblood: #9c3b32;
-  --moss: #7d9c4a;
-
-  --text: #d8cdb4;
-  --text-dim: #9a8f78;
-
+  /* ---- type ---- */
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   --mono: "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+
+  /* ---- generated art assets (served from public/) ---- */
+  --asset-band-h: url("/assets/frames/band-h.webp");
+  --asset-band-v: url("/assets/frames/band-v.webp");
+  --asset-corner: url("/assets/frames/corner.webp");
+  --asset-scroll: url("/assets/scrolls/parchment.webp");
+  --asset-bg-play: url("/assets/backgrounds/play-cavern.jpg");
 
   --frame-w: 3px;
   --radius: 4px;

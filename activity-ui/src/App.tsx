@@ -4,12 +4,12 @@ import type {
   Ally, CCPayload, CharacterSummary, LevelUpData, LexEntry, ServerEvent,
   SheetData,
 } from "./lib/types";
-import { Block, makeOracleBlock, NarrationPane } from "./components/Narration";
+import { Block, makeOracleBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
 import { PortraitStep } from "./components/PortraitStep";
 import { Landing } from "./components/Landing";
 import { LevelUpOverlay } from "./components/LevelUp";
-import { PartyStrip, Rail } from "./components/Rail";
+import { PlaySurface } from "./components/PlaySurface";
 import { levelChime, rollThunk } from "./lib/sound";
 import type { Session } from "./lib/session";
 
@@ -142,7 +142,7 @@ export default function App({ session }: { session: Session }) {
 
   return (
     <div className="table">
-      <div className="frame">
+      <div className={`frame${screen === "play" ? " playing" : ""}`}>
         <Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" />
 
         {screen === "landing" && (
@@ -227,21 +227,20 @@ export default function App({ session }: { session: Session }) {
                   connRef.current?.send({ t: "levelup_apply", subclass })}
               />
             )}
-            <NarrationPane blocks={blocks} onBlockDone={markDone} onSkip={skipAll} />
-            <Rail sheet={sheet} sceneUrl={sceneUrl} />
-            <PartyStrip members={party} />
-            <div className="input-bar">
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submit()}
-                placeholder={rateWait > 0
-                  ? `the table needs a breath — ${rateWait}s…`
-                  : busy ? "the Oracle is weaving…" : "What do you do?"}
-                disabled={busy || rateWait > 0}
-              />
-              <button onClick={submit} disabled={busy || !input.trim()}>Act</button>
-            </div>
+            <PlaySurface
+              blocks={blocks}
+              sheet={sheet}
+              sceneUrl={sceneUrl}
+              party={party}
+              input={input}
+              setInput={setInput}
+              submit={submit}
+              busy={busy}
+              rateWait={rateWait}
+              onSkip={skipAll}
+              onBlockDone={markDone}
+              onMainMenu={() => setScreen("landing")}
+            />
           </>
         )}
       </div>

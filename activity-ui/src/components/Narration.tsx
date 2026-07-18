@@ -17,7 +17,7 @@ const TICK_MS = 16;
 const CHARS_PER_TICK = 1.6;
 const PUNCT_PAUSE: Record<string, number> = { ".": 9, "!": 9, "?": 9, ",": 4, ";": 5, "—": 6 };
 
-function RevealedSpans({ spans, done, onDone }: {
+export function RevealedSpans({ spans, done, onDone }: {
   spans: Span[];
   done: boolean;
   onDone: () => void;

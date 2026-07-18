@@ -15,6 +15,14 @@ export interface RollResult {
   success?: boolean; // undefined when no DC (plain damage roll)
 }
 
+export interface SpellSlotRow { level: number; total: number; used: number; }
+export interface ResourceRow { name: string; total: number; used: number; die?: string; }
+export interface SheetFeature {
+  name: string;
+  note?: string;
+  kind?: "fire" | "arcane" | "martial" | "other";
+}
+
 export interface SheetData {
   name: string;
   subtitle: string; // "Level 3 Ranger (Gloom Stalker) · Custom Lineage"
@@ -25,6 +33,15 @@ export interface SheetData {
   skills: string[];
   inventory: string[];
   gold?: number;
+  // ---- v1 additions (all optional; the UI degrades gracefully when absent) ----
+  race?: string | null;
+  char_class?: string | null;
+  subclass?: string | null;
+  portrait?: string | null;      // data URL or /path to the stored PC portrait
+  background?: string | null;    // origin / background name for the Origin tab
+  spell_slots?: SpellSlotRow[];
+  resources?: ResourceRow[];     // class resources (Bardic Inspiration, Ki, …)
+  features?: SheetFeature[];
 }
 
 export interface Ally {
