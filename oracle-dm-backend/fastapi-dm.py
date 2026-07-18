@@ -6874,6 +6874,66 @@ def _item_caps(row, name: str, inv_item: Optional[dict], char: Character,
     return caps
 
 
+def _compute_ac(char: Character) -> int:
+    """Armor Class from equipped armor/shield + attuned protection items.
+
+    Unarmored is 10 + Dex; equipped armor uses its base + a Dex bonus capped by
+    the armor (0 for heavy). A ``+N`` in an item's name adds its bonus; an
+    attuned Ring/Cloak of Protection adds its bonus (default +1). Best effort —
+    not every exotic AC-setter is modelled, but it beats the old flat 10."""
+    dex = ability_modifier(_ability_score(char, "dexterity"))
+    base = 10 + dex
+    shield = 0
+    misc = 0
+    for it in _inventory_items(char):
+        name = it.get("name") or ""
+        low = name.lower()
+        equipped = bool(it.get("equipped"))
+        attuned = bool(it.get("attuned"))
+        if not (equipped or attuned):
+            continue
+        m = re.search(r"\+(\d)", name)
+        plus = int(m.group(1)) if m else 0
+        if attuned and "protection" in low:      # Ring/Cloak of Protection
+            misc += plus or 1
+            continue
+        if not equipped:
+            continue
+        try:
+            row = rules_lib.get_item(name)
+        except Exception:
+            row = None
+        it_type = (getattr(row, "item_type", "") or "").lower() if row else ""
+        if "shield" in low or "shield" in it_type:
+            shield = max(shield, 2 + plus)
+            continue
+        acb = getattr(row, "armor_class_base", None) if row else None
+        if acb is not None or "armor" in it_type or "armor" in low:
+            acb = acb if acb is not None else 11
+            if getattr(row, "armor_dex_bonus", None) is False:
+                dex_part = 0                       # heavy armor
+            elif getattr(row, "armor_max_dex_bonus", None) is not None:
+                dex_part = min(dex, int(row.armor_max_dex_bonus))
+            else:
+                dex_part = dex
+            base = acb + dex_part + plus
+    return base + shield + misc
+
+
+def _consumable_heal(name: str) -> Optional[str]:
+    """Healing dice for a Potion of Healing (by tier), else None."""
+    n = (name or "").lower()
+    if "potion of healing" not in n and "healing potion" not in n:
+        return None
+    if "supreme" in n:
+        return "10d4+20"
+    if "superior" in n:
+        return "8d4+8"
+    if "greater" in n:
+        return "4d4+4"
+    return "2d4+2"
+
+
 def _activity_inventory(char: Character) -> list[dict]:
     """Inventory as inspectable item objects: name, qty, and (when the catalog
     knows the item) type/rarity/brief + an ``interactive`` flag for special
@@ -7035,18 +7095,18 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         background = char.background
         portrait = _activity_portrait_url(char.name)
         inventory = _activity_inventory(char)
+        ac_val = _compute_ac(char)
     bits = [f"Level {sheet['level']} {sheet['char_class'] or '?'}"]
     if sheet.get("subclass"):
         bits[0] += f" ({sheet['subclass']})"
     if sheet.get("race"):
         bits.append(sheet["race"])
-    phys = sheet.get("physical") or {}
     return {
         "name": sheet["name"],
         "subtitle": " · ".join(bits),
         "hp": sheet["combat"]["current_hp"],
         "hp_max": sheet["combat"]["max_hp"],
-        "ac": phys.get("armor_class") or phys.get("ac") or 10,
+        "ac": ac_val,
         "stats": {a[:3].upper(): v["score"] for a, v in sheet["abilities"].items()},
         "skills": [c for c in (sheet.get("conditions") or [])] or
                   [s for s in (sheet.get("spells") or [])][:6],
@@ -7616,6 +7676,8 @@ async def activity_ws(ws: WebSocket, channel: str):
                 if not name or not action or not cid:
                     continue
                 gone = False
+                use_roll = None
+                use_narration = None
                 with Session(engine) as s:
                     ch = s.get(Character, cid)
                     if not ch:
@@ -7663,6 +7725,19 @@ async def activity_ws(ws: WebSocket, channel: str):
                             item["charges_current"] = cmax
                     elif action == "use":
                         qty = int(item.get("quantity", 1) or 1)
+                        heal_expr = _consumable_heal(name)
+                        if heal_expr:
+                            from dice.roller import roll as _dice_roll
+                            r = _dice_roll(heal_expr)
+                            before = ch.current_hp
+                            ch.current_hp = min(ch.max_hp, ch.current_hp + r.total)
+                            gained = ch.current_hp - before
+                            use_narration = (f"{ch.name} drinks the {name} and regains "
+                                             f"{gained} hit point{'s' if gained != 1 else ''}.")
+                            use_roll = {"expr": heal_expr, "label": name,
+                                        "total": r.total, "detail": r.detail}
+                        else:
+                            use_narration = f"{ch.name} uses the {name}."
                         if qty <= 1:
                             inv.pop(idx)
                             gone = True
@@ -7678,6 +7753,12 @@ async def activity_ws(ws: WebSocket, channel: str):
                     ch.inventory = inv
                     s.add(ch); s.commit(); s.refresh(ch)
                     detail = None if gone else _activity_item_detail(ch, name)
+                if use_roll:
+                    await _activity_broadcast(session_id, {"t": "roll", "roll": use_roll},
+                                              fallback=ws)
+                if use_narration:
+                    await _activity_broadcast(session_id, {"t": "narration",
+                                                           "text": use_narration}, fallback=ws)
                 if gone:
                     await ws.send_json({"t": "item_gone", "name": name})
                 else:
