@@ -248,6 +248,7 @@ async def lifespan(app: FastAPI):
                     ("lifestyle", "TEXT DEFAULT 'modest'"),
                     ("max_hp", "INTEGER DEFAULT 0"),
                     ("current_hp", "INTEGER DEFAULT 0"),
+                    ("temp_hp", "INTEGER DEFAULT 0"),
                     ("hit_die", "TEXT DEFAULT 'd8'"),
                     ("hit_dice_total", "INTEGER DEFAULT 1"),
                     ("hit_dice_remaining", "INTEGER DEFAULT 1"),
@@ -784,6 +785,7 @@ class Character(SQLModel, table=True):
     # Survival state: HP pool, Hit Dice, death saves, exhaustion, provisions.
     max_hp: int = Field(default=0)
     current_hp: int = Field(default=0)
+    temp_hp: int = Field(default=0)     # temporary hit points (buffer over current_hp)
     hit_die: str = Field(default="d8", sa_column=Column(String))
     hit_dice_total: int = Field(default=1)
     hit_dice_remaining: int = Field(default=1)
@@ -2956,6 +2958,7 @@ def _build_character_sheet(char: Character) -> Dict[str, Any]:
         "combat": {
             "current_hp": char.current_hp,
             "max_hp": char.max_hp,
+            "temp_hp": getattr(char, "temp_hp", 0) or 0,
             "hit_die": char.hit_die,
             "hit_dice_remaining": char.hit_dice_remaining,
             "hit_dice_total": char.hit_dice_total,
@@ -5851,7 +5854,15 @@ async def survival_hp(req: DamageHealRequest):
             raise HTTPException(status_code=404, detail="Character not found.")
         note = ""
         if req.amount >= 0:
-            char.current_hp -= req.amount
+            dmg = req.amount
+            th = int(getattr(char, "temp_hp", 0) or 0)
+            if th > 0 and dmg > 0:                 # temp HP absorbs damage first
+                absorbed = min(th, dmg)
+                char.temp_hp = th - absorbed
+                dmg -= absorbed
+                if absorbed:
+                    note = f"{absorbed} absorbed by temporary hit points. "
+            char.current_hp -= dmg
             if char.current_hp <= 0:
                 char.current_hp = 0
                 char.stable = False
@@ -5871,7 +5882,7 @@ async def survival_hp(req: DamageHealRequest):
         session.commit()
         session.refresh(char)
         return {"status": "ok", "current_hp": char.current_hp, "max_hp": char.max_hp,
-                "stable": char.stable, "note": note}
+                "temp_hp": char.temp_hp, "stable": char.stable, "note": note}
 
 
 class DeathSaveRequest(BaseModel):
@@ -6973,8 +6984,9 @@ def _consumable_effect(name: str) -> Optional[dict]:
         return op
 
     if "heroism" in n:
-        return {"conditions": [cond("Heroism", "1 hour", "immune to being frightened; 10 temporary hit points")],
-                "narration": "surges with fearless vigor"}
+        return {"temp_hp": 10,
+                "conditions": [cond("Heroism", "1 hour", "immune to being frightened")],
+                "narration": "surges with fearless vigor, wreathed in 10 temporary hit points"}
     if "potion of growth" in n:
         return {"conditions": [cond("Enlarged", "1 minute", "advantage on Strength checks/saves, +1d4 weapon damage")],
                 "narration": "swells to twice their size"}
@@ -7186,6 +7198,7 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "subtitle": " · ".join(bits),
         "hp": sheet["combat"]["current_hp"],
         "hp_max": sheet["combat"]["max_hp"],
+        "temp_hp": sheet["combat"].get("temp_hp", 0),
         "ac": ac_val,
         "stats": {a[:3].upper(): v["score"] for a, v in sheet["abilities"].items()},
         "skills": [c for c in (sheet.get("conditions") or [])] or
@@ -7821,6 +7834,9 @@ async def activity_ws(ws: WebSocket, channel: str):
                             use_roll = {"expr": eff["heal"], "label": name,
                                         "total": r.total, "detail": r.detail}
                         elif eff:
+                            if eff.get("temp_hp"):
+                                # Temp HP doesn't stack — keep the larger pool.
+                                ch.temp_hp = max(int(getattr(ch, "temp_hp", 0) or 0), int(eff["temp_hp"]))
                             for op in eff.get("conditions", []):
                                 _apply_condition_op(ch, op)
                             if eff.get("remove_conditions"):
