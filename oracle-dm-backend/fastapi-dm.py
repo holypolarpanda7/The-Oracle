@@ -6781,6 +6781,155 @@ def _activity_portrait_url(character_name: str) -> Optional[str]:
         return None
 
 
+_SPELLBOOK_HINTS = ("spellbook", "spell book", "book of spells", "tome of spells")
+
+
+def _item_is_spellbook(name: Optional[str], item_type: Optional[str]) -> bool:
+    n = (name or "").lower()
+    t = (item_type or "").lower()
+    return "spellbook" in t or any(h in n for h in _SPELLBOOK_HINTS)
+
+
+def _brief_of(desc: Optional[str]) -> Optional[str]:
+    """A one-line hover brief from a full item description."""
+    if not desc:
+        return None
+    first = re.split(r"(?<=[.!?])\s", desc.strip().replace("\n", " "), maxsplit=1)[0]
+    return (first[:150].rstrip() or None)
+
+
+def _activity_inventory(char: Character) -> list[dict]:
+    """Inventory as inspectable item objects: name, qty, and (when the catalog
+    knows the item) type/rarity/brief + an ``interactive`` flag for special
+    items like spellbooks. Full description + art are fetched on inspect."""
+    try:
+        from rules.query import RulesLibrary
+        lib = RulesLibrary(engine=engine)
+    except Exception:
+        lib = None
+    out: list[dict] = []
+    for it in _inventory_items(char):
+        name = it.get("name") or "Unknown item"
+        obj: dict = {"name": name, "qty": it.get("quantity", 1) or 1}
+        item_type = None
+        if lib is not None:
+            try:
+                row = lib.get_item(name)
+                if row:
+                    item_type = row.item_type or row.category
+                    if item_type:
+                        obj["type"] = item_type
+                    if row.rarity:
+                        obj["rarity"] = row.rarity
+                    brief = _brief_of(row.desc)
+                    if brief:
+                        obj["brief"] = brief
+            except Exception:
+                pass
+        if it.get("notes") and "brief" not in obj:
+            obj["brief"] = str(it["notes"])[:150]
+        if _item_is_spellbook(name, item_type):
+            obj["interactive"] = "spellbook"
+        out.append(obj)
+    return out
+
+
+def _img_data_url(res) -> str:
+    return f"data:{res.mime};base64,{res.b64()}"
+
+
+def _item_stat_lines(row) -> list[str]:
+    """A few mechanical stat lines for the inspector (weapon/armor/cost/weight)."""
+    lines: list[str] = []
+    if getattr(row, "damage_dice", None):
+        d = row.damage_dice + (f" {row.damage_type}" if row.damage_type else "")
+        lines.append(f"Damage: {d}")
+    if getattr(row, "two_handed_damage_dice", None):
+        lines.append(f"Versatile: {row.two_handed_damage_dice}")
+    if getattr(row, "armor_class_base", None) is not None:
+        lines.append(f"Base AC: {row.armor_class_base}")
+    props = getattr(row, "properties", None)
+    if isinstance(props, list) and props:
+        lines.append("Properties: " + ", ".join(str(p) for p in props))
+    if getattr(row, "cost_gp", None) is not None:
+        lines.append(f"Cost: {row.cost_gp:g} gp")
+    if getattr(row, "weight", None):
+        lines.append(f"Weight: {row.weight:g} lb")
+    return lines
+
+
+def _spellbook_spells(char: Character) -> list[dict]:
+    """The character's inscribed spells as {name, level}, sorted by level."""
+    try:
+        from rules.query import RulesLibrary
+        lib = RulesLibrary(engine=engine)
+    except Exception:
+        lib = None
+    out: list[dict] = []
+    seen: set[str] = set()
+    for s in (char.spells or []):
+        name = s if isinstance(s, str) else (s.get("name") or s.get("spell")) if isinstance(s, dict) else None
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        level = s.get("level") if isinstance(s, dict) else None
+        if level is None and lib is not None:
+            try:
+                sp = lib.get_spell(name)
+                if sp is not None:
+                    level = getattr(sp, "level", None)
+            except Exception:
+                pass
+        out.append({"name": name, "level": level})
+    out.sort(key=lambda x: (x["level"] if x["level"] is not None else 99, x["name"]))
+    return out
+
+
+def _can_inscribe(char: Character) -> bool:
+    """Who may write into a spellbook: wizards, or anyone with a feat that grants
+    a spellbook (Ritual Caster / a spellbook-granting feat)."""
+    if (char.char_class or "").strip().lower() == "wizard":
+        return True
+    feats = getattr(char, "feats", None) or []
+    return any(("spellbook" in str(f).lower() or "ritual caster" in str(f).lower()) for f in feats)
+
+
+def _activity_item_detail(char: Character, name: str) -> dict:
+    """Full inspector payload for one item: type/rarity/attunement/description
+    + mechanical stats, cached art if present, and spellbook contents when the
+    item is interactive. Art is (re)generated in the background by the caller."""
+    detail: dict = {"name": name}
+    item_type = None
+    try:
+        from rules.query import RulesLibrary
+        row = RulesLibrary(engine=engine).get_item(name)
+    except Exception:
+        row = None
+    if row:
+        item_type = row.item_type or row.category
+        if item_type:
+            detail["type"] = item_type
+        if row.rarity:
+            detail["rarity"] = row.rarity
+        detail["attunement"] = bool(getattr(row, "requires_attunement", False))
+        if row.desc:
+            detail["description"] = row.desc.strip()
+        stats = _item_stat_lines(row)
+        if stats:
+            detail["stats"] = stats
+    if "description" not in detail:
+        for it in _inventory_items(char):
+            if _normalize_item_name(it.get("name")) == _normalize_item_name(name):
+                if it.get("notes"):
+                    detail["description"] = str(it["notes"])
+                break
+    if _item_is_spellbook(name, item_type):
+        detail["interactive"] = "spellbook"
+        detail["spells"] = _spellbook_spells(char)
+        detail["can_inscribe"] = _can_inscribe(char)
+    return detail
+
+
 def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
     """Map the internal character sheet onto the Activity's compact shape."""
     char_id = _activity_char_id(session_id, user_id)
@@ -6798,6 +6947,7 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         spell_slots = _spell_slots_for(char.char_class, char.level)
         background = char.background
         portrait = _activity_portrait_url(char.name)
+        inventory = _activity_inventory(char)
     bits = [f"Level {sheet['level']} {sheet['char_class'] or '?'}"]
     if sheet.get("subclass"):
         bits[0] += f" ({sheet['subclass']})"
@@ -6813,7 +6963,7 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "stats": {a[:3].upper(): v["score"] for a, v in sheet["abilities"].items()},
         "skills": [c for c in (sheet.get("conditions") or [])] or
                   [s for s in (sheet.get("spells") or [])][:6],
-        "inventory": (sheet.get("inventory_lines") or [])[:10],
+        "inventory": inventory[:24],
         "gold": (sheet.get("purse") or {}).get("gp"),
         # ---- v1 structured / themeable fields ----
         "race": sheet.get("race"),
@@ -7297,6 +7447,78 @@ async def activity_ws(ws: WebSocket, channel: str):
                         await ws.send_json({"t": "sheet", "sheet": sheet})
                 else:
                     await send_levelup()  # subclass still required
+                continue
+
+            # ---- inspect an inventory item (focused window: detail + art) ----
+            if msg.get("t") == "inspect_item":
+                name = (msg.get("name") or "").strip()
+                cid = _activity_char_id(session_id, user_id) if session_id else None
+                if not name or not cid:
+                    continue
+                with Session(engine) as s:
+                    ch = s.get(Character, cid)
+                    detail = _activity_item_detail(ch, name) if ch else None
+                if detail is None:
+                    continue
+                await ws.send_json({"t": "item_detail", "item": detail})
+                # Generate/fetch the item's picture off the event loop and push it
+                # in when ready, so the modal opens instantly and the art fills in.
+                if get_config().imagery.enabled:
+                    async def _gen_item_art(nm=name):
+                        try:
+                            loop = asyncio.get_event_loop()
+                            res = await loop.run_in_executor(
+                                None, lambda: image_store.ensure_image(
+                                    "item", nm, context="inspect"))
+                            if res and not getattr(res, "offline", False):
+                                await ws.send_json({"t": "item_image", "name": nm,
+                                                    "url": _img_data_url(res)})
+                        except Exception as e:
+                            print(f"[activity] item art gen: {e}")
+                    asyncio.create_task(_gen_item_art())
+                continue
+
+            # ---- inscribe a spell into a spellbook (wizard etc.) ----
+            if msg.get("t") == "inscribe_spell":
+                spell = (msg.get("spell") or "").strip()
+                book = (msg.get("book") or "Spellbook").strip()
+                cid = _activity_char_id(session_id, user_id) if session_id else None
+                if not spell or not cid:
+                    continue
+                with Session(engine) as s:
+                    ch = s.get(Character, cid)
+                    if not ch:
+                        continue
+                    if not _can_inscribe(ch):
+                        await ws.send_json({"t": "item_error",
+                            "detail": "Only a wizard — or one trained to keep a "
+                                      "spellbook — can inscribe spells."})
+                        continue
+                    valid = None
+                    try:
+                        valid = rules_lib.get_spell(spell)
+                    except Exception:
+                        pass
+                    if valid is None:
+                        await ws.send_json({"t": "item_error",
+                            "detail": f"No spell named “{spell}” found in the tomes."})
+                        continue
+                    spell_name = getattr(valid, "name", spell)
+                    spells = list(ch.spells or [])
+                    have = {(x if isinstance(x, str) else (x.get("name") or "")).lower()
+                            for x in spells}
+                    if spell_name.lower() in have:
+                        await ws.send_json({"t": "item_error",
+                            "detail": f"{spell_name} is already inscribed here."})
+                        continue
+                    spells.append(spell_name)
+                    ch.spells = spells
+                    s.add(ch); s.commit(); s.refresh(ch)
+                    detail = _activity_item_detail(ch, book)
+                await ws.send_json({"t": "item_detail", "item": detail})
+                refreshed = _activity_sheet(session_id, user_id)
+                if refreshed:
+                    await ws.send_json({"t": "sheet", "sheet": refreshed})
                 continue
 
             if msg.get("t") != "action" or not (msg.get("text") or "").strip():
