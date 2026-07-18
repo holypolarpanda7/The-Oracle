@@ -6798,6 +6798,82 @@ def _brief_of(desc: Optional[str]) -> Optional[str]:
     return (first[:150].rstrip() or None)
 
 
+def _detect_charges(desc: Optional[str]) -> Optional[int]:
+    """Max charges parsed from an item's description text, if any."""
+    if not desc:
+        return None
+    m = re.search(r"(\d+)\s+charges", desc.lower())
+    return int(m.group(1)) if m else None
+
+
+def _attuned_count(char: Character) -> int:
+    return sum(1 for it in _inventory_items(char) if it.get("attuned"))
+
+
+_WEARABLE_TYPES = {"ring", "martial", "simple", "light armor", "medium", "heavy",
+                   "shield", "wondrous item", "wondrous items"}
+
+
+def _item_family(row, name: str) -> Optional[str]:
+    """Coarse interactive family for an item: spellbook / consumable / charged /
+    container / wearable, or None for a plain item."""
+    n = (name or "").lower()
+    it = (getattr(row, "item_type", "") or "").lower() if row else ""
+    cat = (getattr(row, "category", "") or "").lower() if row else ""
+    desc = getattr(row, "desc", "") if row else ""
+    if "spellbook" in it or "spellbook" in n:
+        return "spellbook"
+    if "potion" in it or "scroll" in it or "ammunition" in it or "ration" in n:
+        return "consumable"
+    if any(k in it for k in ("wand", "staff", "rod")) or _detect_charges(desc):
+        return "charged"
+    if any(k in n for k in ("bag of holding", "haversack", "portable hole", "bag of tricks")):
+        return "container"
+    if cat in ("armor", "weapon") or it in _WEARABLE_TYPES or "armor" in it or "weapon" in it:
+        return "wearable"
+    return None
+
+
+def _item_caps(row, name: str, inv_item: Optional[dict], char: Character,
+               family: Optional[str]) -> dict:
+    """Context-aware actions + live state (charges/equipped/attuned) for the
+    inspector. Actions are the quick buttons; state renders as pips/badges."""
+    caps: dict = {}
+    actions: list[dict] = []
+    inv_item = inv_item or {}
+    desc = getattr(row, "desc", "") if row else ""
+    needs_attune = bool(getattr(row, "requires_attunement", False)) if row else False
+    equipped = bool(inv_item.get("equipped"))
+    attuned = bool(inv_item.get("attuned"))
+
+    charges_max = _detect_charges(desc)
+    if charges_max:
+        cur = inv_item.get("charges_current")
+        cur = charges_max if cur is None else int(cur)
+        caps["charges"] = {"current": max(0, min(cur, charges_max)), "max": charges_max}
+        if cur > 0:
+            actions.append({"id": "expend", "label": "Expend a charge"})
+        actions.append({"id": "recharge", "label": "Recharge"})
+
+    if family == "consumable":
+        it = (getattr(row, "item_type", "") or "").lower() if row else ""
+        label = "Drink" if "potion" in it else "Read the Scroll" if "scroll" in it else "Use"
+        actions.append({"id": "use", "label": label})
+
+    if needs_attune:
+        caps["attuned"] = attuned
+        actions.append({"id": "unattune" if attuned else "attune",
+                        "label": "Break Attunement" if attuned else "Attune"})
+    elif family == "wearable":
+        caps["equipped"] = equipped
+        actions.append({"id": "unequip" if equipped else "equip",
+                        "label": "Unequip" if equipped else "Equip"})
+
+    if actions:
+        caps["actions"] = actions
+    return caps
+
+
 def _activity_inventory(char: Character) -> list[dict]:
     """Inventory as inspectable item objects: name, qty, and (when the catalog
     knows the item) type/rarity/brief + an ``interactive`` flag for special
@@ -6811,25 +6887,30 @@ def _activity_inventory(char: Character) -> list[dict]:
     for it in _inventory_items(char):
         name = it.get("name") or "Unknown item"
         obj: dict = {"name": name, "qty": it.get("quantity", 1) or 1}
-        item_type = None
+        row = None
         if lib is not None:
             try:
                 row = lib.get_item(name)
                 if row:
-                    item_type = row.item_type or row.category
-                    if item_type:
-                        obj["type"] = item_type
+                    if row.item_type or row.category:
+                        obj["type"] = row.item_type or row.category
                     if row.rarity:
                         obj["rarity"] = row.rarity
                     brief = _brief_of(row.desc)
                     if brief:
                         obj["brief"] = brief
             except Exception:
-                pass
+                row = None
         if it.get("notes") and "brief" not in obj:
             obj["brief"] = str(it["notes"])[:150]
-        if _item_is_spellbook(name, item_type):
-            obj["interactive"] = "spellbook"
+        # Interactive badge: spellbook/charged/consumable/container get their own
+        # badge; attunement items are flagged too; plain wearables don't badge
+        # (they still expose equip actions on click).
+        fam = _item_family(row, name)
+        if row is not None and getattr(row, "requires_attunement", False) and fam in (None, "wearable"):
+            obj["interactive"] = "attunement"
+        elif fam and fam != "wearable":
+            obj["interactive"] = fam
         out.append(obj)
     return out
 
@@ -6917,16 +6998,22 @@ def _activity_item_detail(char: Character, name: str) -> dict:
         stats = _item_stat_lines(row)
         if stats:
             detail["stats"] = stats
-    if "description" not in detail:
-        for it in _inventory_items(char):
-            if _normalize_item_name(it.get("name")) == _normalize_item_name(name):
-                if it.get("notes"):
-                    detail["description"] = str(it["notes"])
-                break
-    if _item_is_spellbook(name, item_type):
+    inv_item = None
+    for it in _inventory_items(char):
+        if _normalize_item_name(it.get("name")) == _normalize_item_name(name):
+            inv_item = it
+            break
+    if "description" not in detail and inv_item and inv_item.get("notes"):
+        detail["description"] = str(inv_item["notes"])
+    family = _item_family(row, name)
+    if family == "spellbook":
         detail["interactive"] = "spellbook"
         detail["spells"] = _spellbook_spells(char)
         detail["can_inscribe"] = _can_inscribe(char)
+    else:
+        if family == "container":
+            detail["interactive"] = "container"
+        detail.update(_item_caps(row, name, inv_item, char, family))
     return detail
 
 
@@ -7516,6 +7603,85 @@ async def activity_ws(ws: WebSocket, channel: str):
                     s.add(ch); s.commit(); s.refresh(ch)
                     detail = _activity_item_detail(ch, book)
                 await ws.send_json({"t": "item_detail", "item": detail})
+                refreshed = _activity_sheet(session_id, user_id)
+                if refreshed:
+                    await ws.send_json({"t": "sheet", "sheet": refreshed})
+                continue
+
+            # ---- act on an item: equip/attune/expend/use (interactive items) ----
+            if msg.get("t") == "item_action":
+                name = (msg.get("name") or "").strip()
+                action = (msg.get("action") or "").strip()
+                cid = _activity_char_id(session_id, user_id) if session_id else None
+                if not name or not action or not cid:
+                    continue
+                gone = False
+                with Session(engine) as s:
+                    ch = s.get(Character, cid)
+                    if not ch:
+                        continue
+                    inv = list(ch.inventory or [])
+                    idx = None
+                    for i, raw in enumerate(inv):
+                        rn = raw if isinstance(raw, str) else (raw.get("name") or raw.get("item"))
+                        if _normalize_item_name(rn) == _normalize_item_name(name):
+                            idx = i
+                            break
+                    if idx is None:
+                        await ws.send_json({"t": "item_error",
+                                            "detail": "That item isn't in your pack."})
+                        continue
+                    raw = inv[idx]
+                    item = {"name": name, "quantity": 1} if isinstance(raw, str) else dict(raw)
+                    try:
+                        row = rules_lib.get_item(name)
+                    except Exception:
+                        row = None
+                    desc = getattr(row, "desc", "") if row else ""
+                    err = None
+                    if action == "equip":
+                        item["equipped"] = True
+                    elif action == "unequip":
+                        item["equipped"] = False
+                    elif action == "attune":
+                        if not item.get("attuned") and _attuned_count(ch) >= 3:
+                            err = "You can be attuned to only three items at once."
+                        else:
+                            item["attuned"] = True
+                    elif action == "unattune":
+                        item["attuned"] = False
+                    elif action == "expend":
+                        cmax = _detect_charges(desc) or 0
+                        cur = int(item.get("charges_current", cmax))
+                        if cur <= 0:
+                            err = "No charges remain."
+                        else:
+                            item["charges_current"] = cur - 1
+                    elif action == "recharge":
+                        cmax = _detect_charges(desc)
+                        if cmax:
+                            item["charges_current"] = cmax
+                    elif action == "use":
+                        qty = int(item.get("quantity", 1) or 1)
+                        if qty <= 1:
+                            inv.pop(idx)
+                            gone = True
+                        else:
+                            item["quantity"] = qty - 1
+                    else:
+                        err = "That item can't do that."
+                    if err:
+                        await ws.send_json({"t": "item_error", "detail": err})
+                        continue
+                    if not gone:
+                        inv[idx] = item
+                    ch.inventory = inv
+                    s.add(ch); s.commit(); s.refresh(ch)
+                    detail = None if gone else _activity_item_detail(ch, name)
+                if gone:
+                    await ws.send_json({"t": "item_gone", "name": name})
+                else:
+                    await ws.send_json({"t": "item_detail", "item": detail})
                 refreshed = _activity_sheet(session_id, user_id)
                 if refreshed:
                     await ws.send_json({"t": "sheet", "sheet": refreshed})
