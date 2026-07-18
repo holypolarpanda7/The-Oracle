@@ -6,10 +6,35 @@
  * to the maps below — no other code changes needed. */
 
 const CRESTS: Record<string, string> = {
+  barbarian: "/assets/crests/barbarian.webp",
   bard: "/assets/crests/bard.webp",
+  cleric: "/assets/crests/cleric.webp",
+  druid: "/assets/crests/druid.webp",
+  fighter: "/assets/crests/fighter.webp",
+  monk: "/assets/crests/monk.webp",
+  paladin: "/assets/crests/paladin.webp",
+  ranger: "/assets/crests/ranger.webp",
+  rogue: "/assets/crests/rogue.webp",
+  sorcerer: "/assets/crests/sorcerer.webp",
+  warlock: "/assets/crests/warlock.webp",
+  wizard: "/assets/crests/wizard.webp",
+  artificer: "/assets/crests/artificer.webp",
+  "blood hunter": "/assets/crests/blood-hunter.webp",
+  illrigger: "/assets/crests/illrigger.webp",
+  gunslinger: "/assets/crests/gunslinger.webp",
 };
 
 const RACE_BG: Record<string, string> = {
+  human: "/assets/backgrounds/race-human.jpg",
+  elf: "/assets/backgrounds/race-elf.jpg",
+  "half-elf": "/assets/backgrounds/race-half-elf.jpg",
+  dwarf: "/assets/backgrounds/race-dwarf.jpg",
+  halfling: "/assets/backgrounds/race-halfling.jpg",
+  tiefling: "/assets/backgrounds/race-tiefling.jpg",
+  "half-orc": "/assets/backgrounds/race-half-orc.jpg",
+  gnome: "/assets/backgrounds/race-gnome.jpg",
+  aasimar: "/assets/backgrounds/race-aasimar.jpg",
+  goliath: "/assets/backgrounds/race-goliath.jpg",
   dragonborn: "/assets/backgrounds/race-dragonborn.jpg",
 };
 
