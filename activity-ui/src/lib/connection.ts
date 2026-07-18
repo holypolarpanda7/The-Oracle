@@ -50,7 +50,41 @@ function runDemo(onEvent: (ev: ServerEvent) => void) {
   setTimeout(() => onEvent(demoScript.hello), 150);
 }
 
+const demoSpells = [
+  { name: "Mage Hand", level: 0 }, { name: "Detect Magic", level: 1 },
+  { name: "Shield", level: 1 }, { name: "Misty Step", level: 2 },
+];
+const DEMO_BOOK_DESC =
+  "A leather-bound tome of 100 vellum pages. Its inscribed spells can be cast, " +
+  "and a trained hand may write more into the blank leaves.";
+
 function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
+  if (ev.t === "inspect_item") {
+    if (/spellbook/i.test(ev.name)) {
+      onEvent({ t: "item_detail", item: {
+        name: ev.name, type: "Wondrous Item", description: DEMO_BOOK_DESC,
+        interactive: "spellbook", spells: [...demoSpells], can_inscribe: true,
+      } });
+    } else {
+      onEvent({ t: "item_detail", item: {
+        name: ev.name, type: "Wondrous Item", rarity: "Common",
+        description: `${ev.name} — a fine example of its kind, worn smooth by the road. ` +
+          "In a real session the Oracle fills this from the rules library and conjures its likeness.",
+        stats: ["Weight: 1 lb"],
+      } });
+    }
+    return;
+  }
+  if (ev.t === "inscribe_spell") {
+    if (!demoSpells.some((s) => s.name.toLowerCase() === ev.spell.toLowerCase())) {
+      demoSpells.push({ name: ev.spell, level: 1 });
+    }
+    onEvent({ t: "item_detail", item: {
+      name: ev.book || "Spellbook", type: "Wondrous Item", description: DEMO_BOOK_DESC,
+      interactive: "spellbook", spells: [...demoSpells], can_inscribe: true,
+    } });
+    return;
+  }
   if (ev.t === "levelup_apply") {
     onEvent({ t: "levelup", data: null });
     onEvent({

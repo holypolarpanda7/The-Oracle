@@ -2,7 +2,15 @@ import { useState } from "react";
 import { Frame, CORNER, type PanelHandle } from "./Frame";
 import { ABILITY_ICON, Icon } from "./icons";
 import { crestFor, raceBgFor, parseSubtitle } from "../lib/assets";
-import type { SheetData } from "../lib/types";
+import type { InventoryItem, SheetData } from "../lib/types";
+
+const RARITY_COLOR: Record<string, string> = {
+  common: "#9fb0bd", uncommon: "#5fae5f", rare: "#4aa3ff",
+  "very rare": "#9a6bff", legendary: "#f59a3c", artifact: "#e0457b",
+};
+function gemColor(rarity?: string): string {
+  return RARITY_COLOR[(rarity || "").toLowerCase()] || "var(--gold)";
+}
 
 function mod(v: number): string {
   const m = Math.floor((v - 10) / 2);
@@ -19,7 +27,11 @@ function featIcon(kind?: string): string {
 
 type Tab = "stats" | "inv" | "origin" | "feat";
 
-export function CharacterSheet({ sheet, panel }: { sheet: SheetData | null; panel: PanelHandle }) {
+export function CharacterSheet({ sheet, panel, onInspect }: {
+  sheet: SheetData | null;
+  panel: PanelHandle;
+  onInspect: (name: string) => void;
+}) {
   const [tab, setTab] = useState<Tab>("stats");
 
   if (!sheet) {
@@ -120,13 +132,27 @@ export function CharacterSheet({ sheet, panel }: { sheet: SheetData | null; pane
         <div className={`tabpane ${tab === "inv" ? "on" : ""}`}>
           <div className="inv">
             {sheet.inventory.length
-              ? sheet.inventory.map((it, i) => (
-                  <div className="item" key={i}><span className="gem" />{it}</div>
-                ))
+              ? sheet.inventory.map((raw, i) => {
+                  const it: InventoryItem = typeof raw === "string" ? { name: raw } : raw;
+                  return (
+                    <button
+                      className={`item ${it.interactive ? "interactive" : ""}`}
+                      key={i}
+                      title={it.brief || it.type || "Inspect"}
+                      onClick={() => onInspect(it.name)}
+                    >
+                      <span className="gem" style={{ color: gemColor(it.rarity) }} />
+                      <span className="iname">{it.name}</span>
+                      {it.interactive === "spellbook" && <span className="ibadge">📖</span>}
+                      {it.qty && it.qty > 1 ? <span className="q">×{it.qty}</span> : null}
+                    </button>
+                  );
+                })
               : <p className="lore">Your pack is empty.</p>}
             {sheet.gold !== undefined && (
-              <div className="item">
-                <span className="gem" style={{ color: "var(--gold)" }} />Gold
+              <div className="item static">
+                <span className="gem" style={{ color: "var(--gold)" }} />
+                <span className="iname">Gold</span>
                 <span className="q">{sheet.gold} gp</span>
               </div>
             )}

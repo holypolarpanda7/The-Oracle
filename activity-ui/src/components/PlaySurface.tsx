@@ -54,6 +54,7 @@ export interface PlayProps {
   onSkip: () => void;
   onBlockDone: (i: number) => void;
   onMainMenu: () => void;
+  onInspect: (name: string) => void;
 }
 
 export function PlaySurface(p: PlayProps) {
@@ -119,7 +120,7 @@ export function PlaySurface(p: PlayProps) {
         </div>
 
         <aside>
-          <CharacterSheet sheet={p.sheet} panel={sheetR} />
+          <CharacterSheet sheet={p.sheet} panel={sheetR} onInspect={p.onInspect} />
           <div className="menu">
             <button className="mbtn" onClick={resetAllPanels}>⟲ Reset Layout</button>
             <button className="mbtn" onClick={p.onMainMenu}>☰ Main Menu</button>

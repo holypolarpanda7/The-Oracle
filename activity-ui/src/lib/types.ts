@@ -23,6 +23,30 @@ export interface SheetFeature {
   kind?: "fire" | "arcane" | "martial" | "other";
 }
 
+export interface InventoryItem {
+  name: string;
+  qty?: number;
+  type?: string;
+  rarity?: string;
+  brief?: string;              // hover tooltip
+  interactive?: "spellbook";   // special inspector widget
+}
+
+export interface SpellEntry { name: string; level?: number | null; }
+
+export interface ItemDetail {
+  name: string;
+  type?: string;
+  rarity?: string;
+  attunement?: boolean;
+  description?: string;
+  stats?: string[];
+  image?: string | null;
+  interactive?: "spellbook";
+  spells?: SpellEntry[];
+  can_inscribe?: boolean;
+}
+
 export interface SheetData {
   name: string;
   subtitle: string; // "Level 3 Ranger (Gloom Stalker) · Custom Lineage"
@@ -31,7 +55,7 @@ export interface SheetData {
   ac: number;
   stats: Record<string, number>; // STR..CHA
   skills: string[];
-  inventory: string[];
+  inventory: (string | InventoryItem)[]; // strings (legacy) or rich item objects
   gold?: number;
   // ---- v1 additions (all optional; the UI degrades gracefully when absent) ----
   race?: string | null;
@@ -100,6 +124,9 @@ export type ServerEvent =
   | { t: "sheet"; sheet: SheetData }
   | { t: "party"; members: Ally[] }
   | { t: "scene"; url: string }
+  | { t: "item_detail"; item: ItemDetail }
+  | { t: "item_image"; name: string; url: string }
+  | { t: "item_error"; detail: string }
   | { t: "levelup"; data: LevelUpData | null }
   | { t: "entered"; resumed: boolean }
   | { t: "cc_done"; name: string; detail?: unknown }
@@ -113,7 +140,9 @@ export type ClientEvent =
   | { t: "action"; text: string }
   | { t: "levelup_apply"; subclass?: string }
   | { t: "enter"; character_name?: string; solo?: boolean }
-  | { t: "cc_register"; payload: CCPayload };
+  | { t: "cc_register"; payload: CCPayload }
+  | { t: "inspect_item"; name: string }
+  | { t: "inscribe_spell"; spell: string; book?: string };
 
 export interface CCPayload {
   name: string;

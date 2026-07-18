@@ -216,10 +216,17 @@
 .play .stat .m { font-family: var(--mono); font-size: 0.58rem; color: var(--teal); }
 
 .play .inv { display: flex; flex-direction: column; gap: 5px; }
-.play .item { display: flex; align-items: center; gap: 9px; padding: 6px 9px; font-size: 0.86rem;
-  background: rgba(10, 15, 26, 0.72); border: 1px solid var(--edge); border-radius: 4px; }
+.play .item { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 7px 9px; font-family: var(--serif); font-size: 0.86rem; color: var(--text);
+  background: rgba(10, 15, 26, 0.72); border: 1px solid var(--edge); border-radius: 4px;
+  cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+.play .item:not(.static):hover { border-color: var(--gold); background: rgba(20, 28, 48, 0.85); }
+.play .item.static { cursor: default; }
+.play .item.interactive { border-color: color-mix(in srgb, var(--amethyst) 45%, var(--edge)); }
+.play .item .iname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.play .item .ibadge { font-size: 0.8rem; filter: drop-shadow(0 0 4px rgba(154, 107, 255, 0.6)); }
 .play .item .q { margin-left: auto; font-family: var(--mono); font-size: 0.66rem; color: var(--text-dim); }
-.play .item .gem { width: 8px; height: 8px; border-radius: 2px; transform: rotate(45deg); box-shadow: 0 0 7px currentColor; color: var(--gold); }
+.play .item .gem { flex: none; width: 8px; height: 8px; border-radius: 2px; transform: rotate(45deg); box-shadow: 0 0 7px currentColor; color: var(--gold); }
 
 .play .lore { font-size: 0.9rem; color: #dfe8ea; line-height: 1.55; text-shadow: 0 1px 3px #000; }
 .play .lore b { color: var(--gold-2); }
@@ -257,3 +264,61 @@
   background: repeating-linear-gradient(135deg, transparent 0 2px, var(--gold-2) 2px 3px); }
 .play .grip:hover { opacity: 0.95; }
 body.rez-active { user-select: none; cursor: nwse-resize; }
+
+/* ---------- item inspector (focused window) ---------- */
+.item-veil { position: absolute; inset: 0; z-index: 30; display: grid; place-items: center;
+  padding: 24px; background: rgba(4, 6, 12, 0.72); backdrop-filter: blur(3px);
+  animation: veil-fade 0.2s ease-out; }
+@keyframes veil-fade { from { opacity: 0; } }
+.item-modal { position: relative; display: grid; grid-template-columns: 208px 1fr; gap: 18px;
+  width: min(620px, 94%); max-height: 88%; overflow: auto; padding: 20px;
+  font-family: var(--serif); color: var(--text);
+  background: linear-gradient(180deg, rgba(19, 26, 46, 0.98), rgba(9, 12, 22, 0.98));
+  border: 1px solid var(--gold-dim); border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(230, 188, 100, 0.16), inset 0 0 40px rgba(0, 0, 0, 0.6), 0 22px 60px rgba(0, 0, 0, 0.6);
+  animation: item-rise 0.22s ease-out; }
+@keyframes item-rise { from { transform: translateY(8px); opacity: 0; } }
+@media (max-width: 540px) { .item-modal { grid-template-columns: 1fr; } }
+.item-close { position: absolute; top: 8px; right: 10px; z-index: 2; border: none; background: none;
+  color: var(--text-dim); font-size: 1.1rem; cursor: pointer; line-height: 1; }
+.item-close:hover { color: var(--teal); }
+.item-art { aspect-ratio: 1; border: 1px solid var(--gold-dim); border-radius: 6px; overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(230, 188, 100, 0.18), inset 0 0 26px rgba(0, 0, 0, 0.7); }
+.item-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.item-art-ph { width: 100%; height: 100%; display: grid; place-items: center; font-size: 1.6rem;
+  color: var(--gold-2); font-style: italic; text-align: center; font-family: var(--mono); font-size: 0.72rem;
+  background: radial-gradient(120% 90% at 50% 0%, #1d2540, #0a0e1c 75%); }
+.item-body { min-width: 0; }
+.item-name { font-size: 1.28rem; color: #f5efde; letter-spacing: 0.02em; text-shadow: 0 2px 6px #000; }
+.item-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.item-tag { font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-dim); background: rgba(8, 11, 20, 0.7); border: 1px solid var(--edge);
+  padding: 3px 8px; border-radius: 3px; }
+.item-tag.rarity { color: var(--gold-2); border-color: color-mix(in srgb, var(--gold) 45%, var(--edge)); }
+.item-tag.rarity.uncommon { color: #7fce7f; } .item-tag.rarity.rare { color: #6ab6ff; }
+.item-tag.rarity.very-rare { color: #b79bff; } .item-tag.rarity.legendary { color: var(--ember); }
+.item-tag.rarity.artifact { color: var(--hp); }
+.item-tag.attune { color: var(--amethyst); border-color: color-mix(in srgb, var(--amethyst) 45%, var(--edge)); }
+.item-desc { font-size: 0.92rem; line-height: 1.55; color: #dfe8ea; margin: 0 0 12px; }
+.item-dim { color: var(--text-dim); font-style: italic; font-size: 0.85rem; }
+.item-err { color: var(--crimson); font-size: 0.85rem; margin: 0 0 8px; }
+.item-stats { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.item-stats li { font-family: var(--mono); font-size: 0.74rem; color: #c7d2d8;
+  padding: 4px 8px; background: rgba(8, 11, 20, 0.55); border-left: 2px solid var(--gold-dim); border-radius: 2px; }
+.spellbook { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--edge); }
+.sb-title { font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--amethyst); margin-bottom: 8px; text-shadow: 0 0 8px rgba(154, 107, 255, 0.4); }
+.sb-list { list-style: none; margin: 0 0 10px; padding: 0; display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px; }
+.sb-list li { font-size: 0.84rem; color: #e7dcff; display: flex; align-items: baseline; gap: 7px;
+  padding: 4px 8px; background: rgba(20, 14, 34, 0.6); border: 1px solid color-mix(in srgb, var(--amethyst) 30%, var(--edge)); border-radius: 4px; }
+.sb-lvl { font-family: var(--mono); font-size: 0.58rem; color: var(--amethyst); min-width: 30px; }
+.sb-inscribe { display: flex; gap: 8px; }
+.sb-inscribe input { flex: 1; min-width: 0; background: rgba(8, 11, 20, 0.8); border: 1px solid var(--edge);
+  border-radius: 5px; color: var(--text); font-family: var(--serif); font-size: 0.88rem; padding: 8px 11px; outline: none; }
+.sb-inscribe input:focus { border-color: var(--amethyst); }
+.sb-inscribe button { font-family: var(--serif); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.72rem;
+  font-weight: 700; color: #1a1030; cursor: pointer; padding: 0 16px; border: none; border-radius: 5px;
+  background: radial-gradient(circle at 35% 30%, #c3a4ff, var(--amethyst)); box-shadow: 0 0 12px rgba(154, 107, 255, 0.4); }
+.sb-inscribe button:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+.sb-note { margin-top: 8px; }

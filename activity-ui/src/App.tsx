@@ -10,6 +10,7 @@ import { PortraitStep } from "./components/PortraitStep";
 import { Landing } from "./components/Landing";
 import { LevelUpOverlay } from "./components/LevelUp";
 import { PlaySurface } from "./components/PlaySurface";
+import { ItemInspector, type ItemView } from "./components/ItemInspector";
 import { levelChime, rollThunk } from "./lib/sound";
 import type { Session } from "./lib/session";
 
@@ -43,6 +44,7 @@ export default function App({ session }: { session: Session }) {
   const [rateWait, setRateWait] = useState(0);
   const [newChar, setNewChar] = useState<{ name: string; id: number | null } | null>(null);
   const [input, setInput] = useState("");
+  const [itemView, setItemView] = useState<ItemView | null>(null);
   const lastEnterRef = useRef<string>("");
   const lexRef = useRef<LexEntry[]>([]);
   const connRef = useRef<Connection | null>(null);
@@ -114,6 +116,25 @@ export default function App({ session }: { session: Session }) {
         case "scene":
           setSceneUrl(ev.url);
           break;
+        case "item_detail":
+          setItemView((v) => {
+            const prevImg = v?.detail?.image;
+            return {
+              name: ev.item.name,
+              detail: { ...ev.item, image: ev.item.image ?? prevImg ?? null },
+              loading: false,
+            };
+          });
+          break;
+        case "item_image":
+          setItemView((v) =>
+            v && v.name === ev.name
+              ? { ...v, detail: { ...(v.detail ?? { name: ev.name }), image: ev.url } }
+              : v);
+          break;
+        case "item_error":
+          setItemView((v) => (v ? { ...v, loading: false, error: ev.detail } : v));
+          break;
         case "levelup":
           if (ev.data) levelChime();
           setLevelUp(ev.data);
@@ -132,6 +153,15 @@ export default function App({ session }: { session: Session }) {
     if (!text || busy) return;
     setInput("");
     connRef.current?.send({ t: "action", text });
+  };
+
+  const inspectItem = (name: string) => {
+    setItemView({ name, loading: true });
+    connRef.current?.send({ t: "inspect_item", name });
+  };
+  const inscribeSpell = (book: string, spell: string) => {
+    setItemView((v) => (v ? { ...v, loading: true, error: undefined } : v));
+    connRef.current?.send({ t: "inscribe_spell", spell, book });
   };
 
   const skipAll = () =>
@@ -240,6 +270,12 @@ export default function App({ session }: { session: Session }) {
               onSkip={skipAll}
               onBlockDone={markDone}
               onMainMenu={() => setScreen("landing")}
+              onInspect={inspectItem}
+            />
+            <ItemInspector
+              view={itemView}
+              onClose={() => setItemView(null)}
+              onInscribe={inscribeSpell}
             />
           </>
         )}
