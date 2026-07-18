@@ -53,6 +53,8 @@ export interface ItemDetail {
   // spellbook widget
   spells?: SpellEntry[];
   can_inscribe?: boolean;
+  // container widget
+  contents?: { name: string; qty?: number }[];
 }
 
 export interface SheetData {
@@ -152,7 +154,7 @@ export type ClientEvent =
   | { t: "cc_register"; payload: CCPayload }
   | { t: "inspect_item"; name: string }
   | { t: "inscribe_spell"; spell: string; book?: string }
-  | { t: "item_action"; name: string; action: string };
+  | { t: "item_action"; name: string; action: string; target?: string };
 
 export interface CCPayload {
   name: string;

@@ -166,9 +166,9 @@ export default function App({ session }: { session: Session }) {
     setItemView((v) => (v ? { ...v, loading: true, error: undefined } : v));
     connRef.current?.send({ t: "inscribe_spell", spell, book });
   };
-  const itemAction = (name: string, action: string) => {
+  const itemAction = (name: string, action: string, target?: string) => {
     setItemView((v) => (v ? { ...v, loading: true, error: undefined } : v));
-    connRef.current?.send({ t: "item_action", name, action });
+    connRef.current?.send({ t: "item_action", name, action, target });
   };
 
   const skipAll = () =>
@@ -284,6 +284,7 @@ export default function App({ session }: { session: Session }) {
               onClose={() => setItemView(null)}
               onInscribe={inscribeSpell}
               onAction={itemAction}
+              inventory={sheet?.inventory.map((it) => (typeof it === "string" ? it : it.name))}
             />
           </>
         )}

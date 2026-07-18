@@ -59,6 +59,7 @@ const DEMO_BOOK_DESC =
   "and a trained hand may write more into the blank leaves.";
 
 const demoState = { wandCharges: 7, potions: 2, ringAttuned: false, armorEquipped: false };
+const demoBag: { name: string; qty: number }[] = [{ name: "Torch", qty: 3 }, { name: "Grappling Hook", qty: 1 }];
 
 function demoItemDetail(name: string): ItemDetail {
   const n = name.toLowerCase();
@@ -89,6 +90,12 @@ function demoItemDetail(name: string): ItemDetail {
       actions: [{ id: demoState.ringAttuned ? "unattune" : "attune",
                   label: demoState.ringAttuned ? "Break Attunement" : "Attune" }] };
   }
+  if (/bag of holding/.test(n)) {
+    return { name, type: "Wondrous Item", rarity: "Uncommon",
+      description: "This bag has an interior space considerably larger than its outside " +
+        "dimensions — roughly 2 feet in diameter and 4 feet deep, holding up to 500 pounds.",
+      interactive: "container", contents: demoBag.map((c) => ({ ...c })) };
+  }
   if (/leather armor/.test(n)) {
     return { name, type: "Light Armor", equipped: demoState.armorEquipped,
       description: "Supple boiled leather. Base AC 11 + your Dexterity modifier.",
@@ -115,6 +122,14 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
     else if (ev.action === "unattune") demoState.ringAttuned = false;
     else if (ev.action === "equip") demoState.armorEquipped = true;
     else if (ev.action === "unequip") demoState.armorEquipped = false;
+    else if (ev.action === "take_out" && ev.target) {
+      const ci = demoBag.findIndex((c) => c.name.toLowerCase() === ev.target!.toLowerCase());
+      if (ci >= 0) { demoBag[ci].qty -= 1; if (demoBag[ci].qty <= 0) demoBag.splice(ci, 1); }
+    }
+    else if (ev.action === "store" && ev.target) {
+      const ex = demoBag.find((c) => c.name.toLowerCase() === ev.target!.toLowerCase());
+      if (ex) ex.qty += 1; else demoBag.push({ name: ev.target, qty: 1 });
+    }
     else if (ev.action === "use" && /potion of healing/.test(n)) {
       onEvent({ t: "roll", roll: { expr: "2d4+2", label: ev.name, total: 7, detail: "2d4+2 → 3  2 +2 = 7" } });
       onEvent({ t: "narration", text: "Kara drinks the Potion of Healing and regains 7 hit points." });

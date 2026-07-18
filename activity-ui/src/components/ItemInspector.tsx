@@ -14,16 +14,20 @@ function spellLevel(l?: number | null): string {
   return LEVELS[l] ?? `L${l}`;
 }
 
-export function ItemInspector({ view, onClose, onInscribe, onAction }: {
+export function ItemInspector({ view, onClose, onInscribe, onAction, inventory }: {
   view: ItemView | null;
   onClose: () => void;
   onInscribe: (book: string, spell: string) => void;
-  onAction: (name: string, action: string) => void;
+  onAction: (name: string, action: string, target?: string) => void;
+  inventory?: string[];
 }) {
   const [spellInput, setSpellInput] = useState("");
+  const [storeSel, setStoreSel] = useState("");
   if (!view) return null;
   const d = view.detail;
   const isBook = d?.interactive === "spellbook";
+  const isContainer = d?.interactive === "container";
+  const storable = (inventory ?? []).filter((n) => n !== view.name);
 
   const submit = () => {
     const s = spellInput.trim();
@@ -124,6 +128,39 @@ export function ItemInspector({ view, onClose, onInscribe, onAction }: {
                 <p className="item-dim sb-note">
                   Only a wizard — or one trained to keep a spellbook — may inscribe here.
                 </p>
+              )}
+            </div>
+          )}
+
+          {isContainer && (
+            <div className="container-w">
+              <div className="sb-title">Contents</div>
+              {d!.contents?.length ? (
+                <ul className="cw-list">
+                  {d!.contents!.map((cs, i) => (
+                    <li key={i}>
+                      <span className="cw-name">
+                        {cs.name}{cs.qty && cs.qty > 1 ? ` ×${cs.qty}` : ""}
+                      </span>
+                      <button className="cw-take" disabled={view.loading}
+                        onClick={() => onAction(view.name, "take_out", cs.name)}>
+                        Take out
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="item-dim">Empty.</p>}
+              {storable.length > 0 && (
+                <div className="cw-store">
+                  <select value={storeSel} onChange={(e) => setStoreSel(e.target.value)}>
+                    <option value="">Store an item…</option>
+                    {storable.map((nm) => <option key={nm} value={nm}>{nm}</option>)}
+                  </select>
+                  <button disabled={!storeSel || view.loading}
+                    onClick={() => { if (storeSel) { onAction(view.name, "store", storeSel); setStoreSel(""); } }}>
+                    Store
+                  </button>
+                </div>
               )}
             </div>
           )}

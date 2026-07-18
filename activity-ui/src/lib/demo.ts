@@ -37,6 +37,8 @@ const sheet: ServerEvent = {
         brief: "Regain 2d4 + 2 hit points when drunk." },
       { name: "Ring of Protection", qty: 1, type: "Ring", rarity: "Rare", interactive: "attunement",
         brief: "+1 to AC and saving throws while attuned." },
+      { name: "Bag of Holding", qty: 1, type: "Wondrous", rarity: "Uncommon", interactive: "container",
+        brief: "An extradimensional storage space." },
       { name: "Cloak of Billowing", qty: 1, type: "Wondrous", rarity: "Common",
         brief: "Billows dramatically as a bonus action." },
       { name: "Lute", qty: 1, type: "Instrument", brief: "A bard's most trusted companion." },
