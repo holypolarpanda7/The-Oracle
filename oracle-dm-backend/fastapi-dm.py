@@ -7073,6 +7073,13 @@ def _activity_item_detail(char: Character, name: str) -> dict:
     else:
         if family == "container":
             detail["interactive"] = "container"
+            contents: list[dict] = []
+            for sub in ((inv_item or {}).get("contents") or []):
+                if isinstance(sub, str):
+                    contents.append({"name": sub, "qty": 1})
+                elif isinstance(sub, dict):
+                    contents.append({"name": sub.get("name", "?"), "qty": sub.get("qty", 1) or 1})
+            detail["contents"] = contents
         detail.update(_item_caps(row, name, inv_item, char, family))
     return detail
 
@@ -7743,6 +7750,69 @@ async def activity_ws(ws: WebSocket, channel: str):
                             gone = True
                         else:
                             item["quantity"] = qty - 1
+                    elif action in ("store", "take_out"):
+                        target = (msg.get("target") or "").strip()
+                        contents = list(item.get("contents") or [])
+                        if not target:
+                            err = "Choose an item."
+                        elif action == "store":
+                            tidx = None
+                            for j, r2 in enumerate(inv):
+                                if j == idx:
+                                    continue
+                                rn2 = r2 if isinstance(r2, str) else (r2.get("name") or r2.get("item"))
+                                if _normalize_item_name(rn2) == _normalize_item_name(target):
+                                    tidx = j
+                                    break
+                            if tidx is None:
+                                err = f"You aren't carrying {target}."
+                            else:
+                                tr = inv[tidx]
+                                titem = {"name": target, "quantity": 1} if isinstance(tr, str) else dict(tr)
+                                tq = int(titem.get("quantity", 1) or 1)
+                                merged = False
+                                for cs in contents:
+                                    if isinstance(cs, dict) and _normalize_item_name(cs.get("name")) == _normalize_item_name(target):
+                                        cs["qty"] = int(cs.get("qty", 1) or 1) + 1
+                                        merged = True
+                                        break
+                                if not merged:
+                                    contents.append({"name": titem.get("name", target), "qty": 1})
+                                item["contents"] = contents
+                                if tq <= 1:
+                                    inv.pop(tidx)
+                                    if tidx < idx:
+                                        idx -= 1
+                                else:
+                                    titem["quantity"] = tq - 1
+                                    inv[tidx] = titem
+                                inv[idx] = item
+                        else:  # take_out
+                            cidx = None
+                            for k, cs in enumerate(contents):
+                                csn = cs if isinstance(cs, str) else cs.get("name")
+                                if _normalize_item_name(csn) == _normalize_item_name(target):
+                                    cidx = k
+                                    break
+                            if cidx is None:
+                                err = f"{target} isn't in this container."
+                            else:
+                                cs = contents[cidx]
+                                cq = 1 if isinstance(cs, str) else int(cs.get("qty", 1) or 1)
+                                if cq <= 1:
+                                    contents.pop(cidx)
+                                else:
+                                    cs["qty"] = cq - 1
+                                item["contents"] = contents
+                                mfound = False
+                                for r2 in inv:
+                                    if isinstance(r2, dict) and _normalize_item_name(r2.get("name")) == _normalize_item_name(target):
+                                        r2["quantity"] = int(r2.get("quantity", 1) or 1) + 1
+                                        mfound = True
+                                        break
+                                if not mfound:
+                                    inv.append({"name": target, "quantity": 1})
+                                inv[idx] = item
                     else:
                         err = "That item can't do that."
                     if err:
