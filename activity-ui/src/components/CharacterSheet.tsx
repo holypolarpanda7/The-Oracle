@@ -80,10 +80,23 @@ export function CharacterSheet({ sheet, panel, onInspect }: {
         <div className="cname">{sheet.name}</div>
         <div className="csub">{sheet.subtitle}</div>
 
-        <div className={`bar ${hpMood(sheet.hp, sheet.hp_max)}`}>
-          <span style={{ width: `${(100 * sheet.hp) / Math.max(1, sheet.hp_max)}%` }} />
-          <div className="t">HP {sheet.hp} / {sheet.hp_max} · AC {sheet.ac}</div>
-        </div>
+        {(() => {
+          const max = Math.max(1, sheet.hp_max);
+          const hpPct = Math.min(100, (100 * sheet.hp) / max);
+          const temp = sheet.temp_hp ?? 0;
+          const tempPct = (100 * temp) / max;
+          return (
+            <div className={`bar ${hpMood(sheet.hp, sheet.hp_max)} ${temp > 0 ? "has-temp" : ""}`}>
+              <span className="hp-fill" style={{ width: `${hpPct}%` }} />
+              {temp > 0 && (
+                <span className="hp-temp" style={{ left: `${hpPct}%`, width: `${tempPct}%` }} />
+              )}
+              <div className="t">
+                HP {sheet.hp}{temp > 0 ? ` +${temp}` : ""} / {sheet.hp_max} · AC {sheet.ac}
+              </div>
+            </div>
+          );
+        })()}
 
         {(sheet.spell_slots?.length || sheet.resources?.length) ? (
           <div className="res">

@@ -62,6 +62,7 @@ export interface SheetData {
   subtitle: string; // "Level 3 Ranger (Gloom Stalker) · Custom Lineage"
   hp: number;
   hp_max: number;
+  temp_hp?: number;   // temporary hit points — shown as a white overhang on the HP bar
   ac: number;
   stats: Record<string, number>; // STR..CHA
   skills: string[];

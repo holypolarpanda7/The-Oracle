@@ -84,6 +84,12 @@ function demoItemDetail(name: string): ItemDetail {
         "Its red liquid glimmers when agitated.",
       actions: [{ id: "use", label: "Drink" }] };
   }
+  if (/potion of heroism/.test(n)) {
+    return { name, type: "Potion", rarity: "Rare",
+      description: "For 1 hour you gain 10 temporary hit points and are immune to being " +
+        "frightened. Golden light wells up within you as you drink.",
+      actions: [{ id: "use", label: "Drink" }] };
+  }
   if (/ring of protection/.test(n)) {
     return { name, type: "Ring", rarity: "Rare", attunement: true, attuned: demoState.ringAttuned,
       description: "You gain a +1 bonus to AC and saving throws while wearing this ring.",
