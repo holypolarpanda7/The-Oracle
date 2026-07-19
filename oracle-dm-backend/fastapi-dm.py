@@ -249,6 +249,7 @@ async def lifespan(app: FastAPI):
                     ("max_hp", "INTEGER DEFAULT 0"),
                     ("current_hp", "INTEGER DEFAULT 0"),
                     ("temp_hp", "INTEGER DEFAULT 0"),
+                    ("spell_slots_used", "JSON"),
                     ("hit_die", "TEXT DEFAULT 'd8'"),
                     ("hit_dice_total", "INTEGER DEFAULT 1"),
                     ("hit_dice_remaining", "INTEGER DEFAULT 1"),
@@ -827,6 +828,9 @@ class Character(SQLModel, table=True):
     stats: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     spells: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     inventory: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Expended spell slots since the last rest: {"1": 2, "3": 1} (slot level ->
+    # used count). Cleared on a long rest; warlock pact slots clear on short.
+    spell_slots_used: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
     # Persistent conditions/status effects that carry BETWEEN encounters (e.g.
     # poisoned until a save, frightened, a lingering curse). Exhaustion is tracked
@@ -1757,11 +1761,14 @@ def _combat_pc_profile(char: Character) -> PCProfile:
                                             "sorcerer", "bard", "warlock")):
         spell_atk = pb + mods[cast_key]
         spell_dc = 8 + pb + mods[cast_key]
+    # Remaining spell slots (total minus expended since the last rest).
+    slots = {row["level"]: max(0, row["total"] - row["used"])
+             for row in _spell_slots_for(cls, lvl, char.spell_slots_used)}
     return PCProfile(
         character_id=char.id, name=char.name, level=lvl, ability_mods=mods,
         prof=pb, skills=skills, weapons=weapons, attacks_per_action=attacks,
         features=features, spell_attack_bonus=spell_atk, spell_dc=spell_dc,
-        spell_mod=cast_key)
+        spell_mod=cast_key, slots=slots)
 
 
 # ---- deterministic pre-parser: the common phrasings never need an LLM ----
@@ -1833,7 +1840,7 @@ _COMBAT_INTENT_SYSTEM = (
     "[[INTENT: dash]]  [[INTENT: disengage]]  [[INTENT: dodge]]  [[INTENT: hide]]\n"
     "[[INTENT: help | <ally>]]  [[INTENT: grapple | <target>]]  "
     "[[INTENT: shove | <target> | prone or push]]\n"
-    "[[INTENT: use | <item>]]  [[INTENT: cast | <spell> | <target>]]\n"
+    "[[INTENT: use | <item>]]  [[INTENT: cast | <spell> | <target> | <slot level, only when upcast>]]\n"
     "[[INTENT: feature | action surge]]  (also: second wind, rage)\n"
     "[[INTENT: improvise | <what they attempt> | <STR/DEX/CON/INT/WIS/CHA vs DC n, if a check fits>]]\n"
     "[[INTENT: end_turn]]\n"
@@ -1875,10 +1882,11 @@ INTENT_PATTERN = re.compile(r"\[\[INTENT:(.+?)\]\]", re.IGNORECASE)
 
 # verb -> mapping of positional hook fields onto engine intent keys
 _INTENT_FIELDS: Dict[str, tuple] = {
-    "attack": ("target", "arg"), "move": ("arg",), "dash": (), "disengage": (),
-    "dodge": (), "hide": (), "help": ("target",), "grapple": ("target",),
-    "shove": ("target", "arg"), "use": ("arg",), "cast": ("arg", "target"),
-    "feature": ("arg",), "improvise": ("arg", "target"), "end_turn": (),
+    "attack": ("target", "arg", "rider"), "move": ("arg",), "dash": (),
+    "disengage": (), "dodge": (), "hide": (), "help": ("target",),
+    "grapple": ("target",), "shove": ("target", "arg"), "use": ("arg",),
+    "cast": ("arg", "target", "slot"), "feature": ("arg",),
+    "improvise": ("arg", "target"), "end_turn": (),
 }
 
 
@@ -2043,6 +2051,19 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             if txt.strip():
                 blocks.append(txt)
             rolls_out.extend(rep.rolls())
+            # Persist any spell-slot spends onto the character sheet.
+            spends = [e["slot_spent"] for e in rep.events if e.get("slot_spent")]
+            if spends:
+                with Session(engine) as s:
+                    ch = s.get(Character, char_id)
+                    if ch:
+                        used = {int(k): int(v) for k, v in
+                                (ch.spell_slots_used or {}).items()}
+                        for lv in spends:
+                            used[lv] = used.get(lv, 0) + 1
+                        ch.spell_slots_used = {str(k): v for k, v in used.items()}
+                        s.add(ch)
+                        s.commit()
             over = _combat_fight_over(enc.id)
             if over:
                 blocks.append(over)
@@ -6505,6 +6526,10 @@ async def survival_short_rest_endpoint(req: RestRequest):
         )
         char.current_hp = result["current_hp"]
         char.hit_dice_remaining = result["hit_dice_remaining"]
+        # Pact Magic: a warlock's slots come back on a short rest.
+        if (char.char_class or "").strip().lower() == "warlock":
+            char.spell_slots_used = None
+            result["pact_slots_restored"] = True
         session.add(char)
         session.commit()
         return {"status": "ok", "result": result}
@@ -6534,6 +6559,7 @@ async def survival_long_rest_endpoint(req: RestRequest):
         char.death_save_successes = 0
         char.death_save_failures = 0
         char.stable = True
+        char.spell_slots_used = None  # all spell slots return on a long rest
         # Conditions flagged to end on a long rest (e.g. a poison "until long rest").
         cleared = _clear_long_rest_conditions(char)
         # Level-up gate: after a long rest, check if they've earned a level.
@@ -7427,19 +7453,22 @@ _FULL_CASTERS = {"bard", "cleric", "druid", "sorcerer", "wizard"}
 _HALF_CASTERS = {"paladin", "ranger", "artificer"}
 
 
-def _spell_slots_for(char_class: Optional[str], level: int) -> list[dict]:
+def _spell_slots_for(char_class: Optional[str], level: int,
+                     used: Optional[dict] = None) -> list[dict]:
     cls = (char_class or "").strip().lower()
     lvl = max(1, min(20, int(level or 1)))
+    used_map = {int(k): int(v) for k, v in (used or {}).items()}
     if cls in _FULL_CASTERS:
         counts = _FULL_CASTER_SLOTS.get(lvl, [])
     elif cls in _HALF_CASTERS:
         counts = _HALF_CASTER_SLOTS.get(lvl, [])
     elif cls == "warlock":
         slvl, n = _PACT_SLOTS.get(lvl, (1, 1))
-        return [{"level": slvl, "total": n, "used": 0}]
+        return [{"level": slvl, "total": n,
+                 "used": min(n, used_map.get(slvl, 0))}]
     else:
         return []
-    return [{"level": i, "total": c, "used": 0}
+    return [{"level": i, "total": c, "used": min(c, used_map.get(i, 0))}
             for i, c in enumerate(counts, start=1) if c > 0]
 
 
@@ -7906,7 +7935,8 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         # the client; computed while the character row is live).
         features = _sheet_features(session, char)
         resources = _class_resources_for(char)
-        spell_slots = _spell_slots_for(char.char_class, char.level)
+        spell_slots = _spell_slots_for(char.char_class, char.level,
+                                       char.spell_slots_used)
         background = char.background
         portrait = _activity_portrait_url(char.name)
         inventory = _activity_inventory(char)

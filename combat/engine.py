@@ -66,6 +66,9 @@ class PCProfile:
     spell_attack_bonus: Optional[int] = None
     spell_dc: Optional[int] = None
     spell_mod: Optional[str] = None                             # casting ability key
+    # Remaining spell slots {slot level: count}. The engine decrements this
+    # in-memory as it resolves; the backend persists spends from the report.
+    slots: dict[int, int] = field(default_factory=dict)
     # Action-economy features:
     attacks_per_action: int = 1          # Extra Attack: 2 at fighter 5, etc.
     features: set[str] = field(default_factory=set)
@@ -830,6 +833,40 @@ class CombatEngine:
             sp = s.exec(select(Spell).where(
                 Spell.name.ilike(spell_name))).first() if spell_name else None
         prof = profiles.get(actor.character_id) if actor.character_id else None
+
+        # Leveled spells consume a real slot; cantrips are free. Rejection
+        # happens BEFORE any economy is spent so the turn stays intact.
+        slot_spent: Optional[int] = None
+        if sp is not None and (sp.level or 0) >= 1 and prof is not None:
+            want = None
+            m = re.search(r"\d+", intent.get("slot") or "")
+            if m:
+                want = int(m.group())
+            avail = {lv: n for lv, n in (prof.slots or {}).items()
+                     if n > 0 and lv >= sp.level}
+            if not avail:
+                have = ", ".join(f"L{lv}×{n}" for lv, n in
+                                 sorted((prof.slots or {}).items()) if n > 0)
+                rep.rejections.append({
+                    "intent": intent,
+                    "reason": f"{actor.name} has no spell slot for {sp.name} "
+                              f"(needs level {sp.level}+; remaining: "
+                              f"{have or 'none'}). A cantrip is always free."})
+                return
+            if want is not None:
+                if avail.get(want):
+                    slot_spent = want
+                else:
+                    rep.rejections.append({
+                        "intent": intent,
+                        "reason": f"{actor.name} has no level-{want} slot left "
+                                  f"for {sp.name} — available: "
+                                  + ", ".join(f"L{lv}×{n}" for lv, n in sorted(avail.items()))
+                                  + "."})
+                    return
+            else:
+                slot_spent = min(avail)
+
         bonus_cast = bool(sp and "bonus" in (sp.casting_time or "").lower())
         fresh = self.tracker.get_combatant(actor.id)
         if bonus_cast:
@@ -845,7 +882,13 @@ class CombatEngine:
                 return
         ev = {"kind": "cast", "actor": actor.name, "spell": spell_name or "a spell",
               "target": target.name if target else None, "rolls": [], "notes": []}
-        dmg_expr = self._spell_damage(sp, prof)
+        if slot_spent is not None:
+            prof.slots[slot_spent] = max(0, prof.slots.get(slot_spent, 0) - 1)
+            ev["slot_spent"] = slot_spent
+            up = f" (upcast at level {slot_spent})" if slot_spent > sp.level else ""
+            ev["notes"].append(f"level-{slot_spent} slot spent{up}; "
+                               f"{prof.slots[slot_spent]} left")
+        dmg_expr = self._spell_damage(sp, prof, slot=slot_spent)
         if sp and sp.attack_type and target is not None:
             bonus = (prof.spell_attack_bonus if prof and
                      prof.spell_attack_bonus is not None
@@ -904,15 +947,22 @@ class CombatEngine:
             ev["notes"].append(f"concentrating on {sp.name}")
         rep.events.append(ev)
 
-    def _spell_damage(self, sp: Optional[Spell],
-                      prof: Optional[PCProfile]) -> Optional[str]:
+    def _spell_damage(self, sp: Optional[Spell], prof: Optional[PCProfile],
+                      slot: Optional[int] = None) -> Optional[str]:
         if sp is None or not isinstance(sp.damage, dict):
             return None
         lvl = prof.level if prof else 1
         slots = sp.damage.get("damage_at_slot_level") or {}
         chars = sp.damage.get("damage_at_character_level") or {}
         if slots:
-            key = min(slots.keys(), key=lambda k: int(k))
+            # Upcasting: use the spent slot's row (best row at or below it);
+            # no known slot -> the base row.
+            if slot is None:
+                key = min(slots.keys(), key=lambda k: int(k))
+            else:
+                eligible = [int(k) for k in slots.keys() if int(k) <= slot]
+                key = str(max(eligible)) if eligible \
+                    else min(slots.keys(), key=lambda k: int(k))
             return slots[key]
         if chars:
             eligible = [int(k) for k in chars.keys() if int(k) <= max(1, lvl)]
