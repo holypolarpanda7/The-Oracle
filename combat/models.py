@@ -99,6 +99,10 @@ class Combatant(SQLModel, table=True):
     # three-quarters (+5) | total (can't be targeted).
     cover: str = Field(default="none", sa_column=Column(String))
 
+    # Theater-of-the-mind spacing band, kept true by the DM's move hooks:
+    # "melee with <name>" | "near" (within one move) | "far" (needs Dash/ranged).
+    position: Optional[str] = Field(default=None, sa_column=Column(String))
+
     conditions: Optional[Any] = Field(default=None, sa_column=Column(JSON))     # list[str]
     concentration: Optional[str] = Field(default=None, sa_column=Column(String))  # what they concentrate on
     defeated: bool = Field(default=False, sa_column=Column(Boolean))

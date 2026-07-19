@@ -354,6 +354,18 @@ class CombatTracker:
             s.refresh(c)
             return _combatant_dict(c)
 
+    def set_position(self, combatant_id: int, position: Optional[str]) -> dict:
+        """Record a spacing band: 'melee with <name>' | 'near' | 'far' (None clears)."""
+        with Session(self.engine) as s:
+            c = s.get(Combatant, combatant_id)
+            if not c:
+                raise ValueError("Unknown combatant")
+            c.position = (position or "").strip() or None
+            s.add(c)
+            s.commit()
+            s.refresh(c)
+            return _combatant_dict(c)
+
     _COVER_AC_BONUS = {"none": 0, "half": 2, "three-quarters": 5, "total": 0}
 
     def set_cover(self, combatant_id: int, cover: str) -> dict:
@@ -416,6 +428,8 @@ class CombatTracker:
             ac = f", AC {c.armor_class}" if c.armor_class is not None else ""
             status = ""
             extras = list(c.conditions or [])
+            if c.position:
+                extras.append(f"@ {c.position}")
             if c.concentration:
                 extras.append(f"concentrating: {c.concentration}")
             if c.cover and c.cover != "none":
@@ -443,6 +457,7 @@ def _combatant_dict(c: Combatant) -> dict:
         "temp_hp": c.temp_hp,
         "armor_class": c.armor_class,
         "cover": c.cover,
+        "position": c.position,
         "conditions": list(c.conditions or []),
         "concentration": c.concentration,
         "defeated": c.defeated,

@@ -286,6 +286,18 @@ async def lifespan(app: FastAPI):
                 conn.exec_driver_sql(
                     'CREATE INDEX IF NOT EXISTS ix_character_approved ON "character" (approved)')
 
+                # Combat tracker columns added after the table first shipped
+                # (pre-existing DBs): cover and the spacing band.
+                cb_existing = {row[1] for row in conn.exec_driver_sql(
+                    'PRAGMA table_info("combat_combatant")')}
+                if cb_existing:
+                    for col, ddl in [("cover", "VARCHAR DEFAULT 'none'"),
+                                     ("position", "VARCHAR")]:
+                        if col not in cb_existing:
+                            conn.exec_driver_sql(
+                                f"ALTER TABLE combat_combatant ADD COLUMN {col} {ddl}")
+                            print(f"[Startup] Migrated combat_combatant: added {col}")
+
                 # Ratchet-clock + entropy + calendar columns on world_meta
                 # (pre-existing DBs). Calendar defaults mirror WorldMeta.
                 wm_existing = {row[1] for row in
@@ -1418,7 +1430,11 @@ def apply_trust_hooks(character_id: Optional[int], ops: list[dict]) -> list[str]
 COMBAT_HOOK_PATTERN = re.compile(r"\[\[COMBAT:(.+?)\]\]", re.IGNORECASE)
 
 _COMBAT_HOOK_ACTIONS = {"start", "add", "damage", "heal", "temp", "condition",
-                        "uncondition", "next", "end"}
+                        "uncondition", "cover", "move", "next", "end"}
+
+_COVER_LEVELS = {"none": "none", "half": "half", "three-quarters": "three-quarters",
+                 "3/4": "three-quarters", "three quarters": "three-quarters",
+                 "threequarters": "three-quarters", "total": "total", "full": "total"}
 
 # Always-on nudge so the DM knows how to OPEN a fight (kept short, like
 # _CONDITIONS_SHORT); the full verb list only ships while a fight is live.
@@ -1437,12 +1453,33 @@ _COMBAT_HOOKS_ACTIVE = (
     "    [[COMBAT: heal | target | 5]]        healing received\n"
     "    [[COMBAT: temp | target | 10]]       temporary hit points granted\n"
     "    [[COMBAT: condition | target | poisoned]] / [[COMBAT: uncondition | target | poisoned]]\n"
+    "    [[COMBAT: move | target | melee with Kara]]   spacing band: 'melee with <name>' | 'near' | 'far'\n"
+    "    [[COMBAT: cover | target | half]]    cover: none | half | three-quarters | total\n"
     "    [[COMBAT: add | wolf | x1]]          reinforcements arrive\n"
     "    [[COMBAT: next]]                     the current creature's turn is resolved\n"
     "    [[COMBAT: end]]                      the fight is over (victory, flight, or surrender)\n"
     "Follow the board's initiative order: on a monster's or NPC's turn, run it in narration and\n"
     "record its outcome with damage/condition hooks, then emit [[COMBAT: next]]. Use [[ROLL: ...]]\n"
     "for attacks and saves as normal — COMBAT hooks record the OUTCOME on the tracker.\n"
+    "\n"
+    "Action economy — enforce strictly, every turn, PCs and monsters alike:\n"
+    "- One ACTION (Attack, Dash, Disengage, Dodge, Help, Hide, Ready, cast a spell, use an\n"
+    "  item). Multiattack is ONE action — follow the stat block's routine exactly.\n"
+    "- At most one BONUS ACTION, and only when a feature explicitly grants one. A creature\n"
+    "  that casts a leveled spell as a bonus action can only cast a cantrip with its action.\n"
+    "- MOVEMENT up to Speed, split freely around its action; difficult terrain costs double;\n"
+    "  standing from prone costs half.\n"
+    "- One REACTION per round (e.g. an opportunity attack when a foe leaves melee reach\n"
+    "  without Disengaging); it refreshes at the start of the creature's own turn.\n"
+    "Never grant a second action, an extra attack beyond the stat block, or two leveled\n"
+    "spells in one turn — however dramatic the moment.\n"
+    "\n"
+    "Spacing (theater of the mind, tracked in bands): the board shows each creature's band\n"
+    "after '@'. Keep it true with move hooks whenever someone closes, retreats, or is pushed.\n"
+    "'melee with <name>' = adjacent, in reach; 'near' = one normal move away (~30 ft);\n"
+    "'far' = needs a Dash or a ranged attack to matter this turn. Consequences to honor:\n"
+    "ranged attacks while in melee have disadvantage; leaving melee without Disengage\n"
+    "provokes an opportunity attack; melee attacks require being in melee with the target.\n"
 )
 
 
@@ -1598,6 +1635,22 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                     combat.add_condition(c.id, args[1].lower())
                 else:
                     combat.remove_condition(c.id, args[1].lower())
+            elif action == "cover":
+                if len(args) < 2:
+                    continue
+                c = _combat_find(enc.id, args[0])
+                level = _COVER_LEVELS.get((args[1] or "").strip().lower())
+                if c and level:
+                    combat.set_cover(c.id, level)
+            elif action == "move":
+                if not args:
+                    continue
+                c = _combat_find(enc.id, args[0])
+                if c:
+                    # Second field is the band; empty/'none' clears it.
+                    band = (args[1] if len(args) > 1 else "").strip()
+                    combat.set_position(
+                        c.id, None if band.lower() in ("", "none") else band)
             elif action == "next":
                 combat.next_turn(enc.id)
             elif action == "end":
@@ -6467,6 +6520,20 @@ async def combat_set_cover(req: CoverRequest):
         "combatant": combatant,
         "effective_ac": combat.effective_ac(req.combatant_id),
     }
+
+
+class PositionRequest(BaseModel):
+    combatant_id: int
+    position: Optional[str] = None  # "melee with <name>" | "near" | "far" | None clears
+
+
+@app.post("/combat/position")
+async def combat_set_position(req: PositionRequest):
+    try:
+        combatant = combat.set_position(req.combatant_id, req.position)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "ok", "combatant": combatant}
 
 
 # ===================== Bestiary: owned monsters & scaling ==================
