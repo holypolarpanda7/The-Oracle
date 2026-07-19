@@ -19,10 +19,15 @@ function monogram(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
+const COVER_LABEL: Record<string, string> = {
+  half: "½ cover", "three-quarters": "¾ cover", total: "total cover",
+};
+
 function Card({ c, active }: { c: CombatantView; active: boolean }) {
   const max = Math.max(1, c.max_hp);
   const hpPct = Math.min(100, (100 * c.current_hp) / max);
   const tempPct = (100 * (c.temp_hp || 0)) / max;
+  const cover = COVER_LABEL[c.cover ?? "none"];
   const conds = [
     ...(c.conditions || []),
     ...(c.concentration ? [`⟟ ${c.concentration}`] : []),
@@ -43,14 +48,16 @@ function Card({ c, active }: { c: CombatantView; active: boolean }) {
         <span className="cs-mono">{c.defeated ? "☠" : monogram(c.name)}</span>
       </div>
       <div className="cs-nm">{c.name}</div>
+      {c.position && <div className="cs-pos" title={c.position}>{c.position}</div>}
       <div className={`cs-bar ${hpMood(c.current_hp, c.max_hp)} ${c.temp_hp > 0 ? "has-temp" : ""}`}>
         <span className="hp-fill" style={{ width: `${hpPct}%` }} />
         {c.temp_hp > 0 && (
           <span className="hp-temp" style={{ left: `${hpPct}%`, width: `${tempPct}%` }} />
         )}
       </div>
-      {conds.length > 0 && (
+      {(conds.length > 0 || cover) && (
         <div className="cs-conds">
+          {cover && <span className="cs-cond cs-cover" key="cover">🛡 {cover}</span>}
           {conds.map((x) => <span className="cs-cond" key={x}>{x}</span>)}
         </div>
       )}

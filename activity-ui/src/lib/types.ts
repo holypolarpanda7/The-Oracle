@@ -97,6 +97,8 @@ export interface CombatantView {
   current_hp: number;
   temp_hp: number;
   armor_class?: number | null;
+  cover?: string;            // none | half | three-quarters | total
+  position?: string | null;  // spacing band: "melee with <name>" | "near" | "far"
   conditions: string[];
   concentration?: string | null;
   defeated: boolean;
