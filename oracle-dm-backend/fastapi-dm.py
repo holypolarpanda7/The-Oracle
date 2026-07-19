@@ -61,7 +61,7 @@ from rules import (
     monster_to_dict,
 )
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
-from combat import CombatTracker, Condition
+from combat import CombatTracker, CombatEngine, PCProfile, PCWeapon, Condition
 from dice import ability_check, ability_modifier, roll as dice_roll, proficiency_bonus_for_level
 from game_config import get_config
 from economy import (
@@ -573,6 +573,9 @@ world = WorldGraph(engine=engine)
 rules_lib = RulesLibrary(engine=engine)
 # Initiative-ordered combat state tracker (PCs, NPCs, monsters).
 combat = CombatTracker(engine=engine)
+# Deterministic turn engine on top of it: validates intents, rolls real dice,
+# enforces action economy and spacing; the LLM only proposes and narrates.
+combat_engine = CombatEngine(combat)
 # Self-hosted scene imagery (diffusion-backed, offline-tolerant). World-day aware
 # so stored pictures are tagged with the in-world day they were made.
 image_store = ImageStore(engine=engine, world_day_fn=world.current_day)
@@ -1540,6 +1543,20 @@ def _combat_mirror_pc(combatant_id: int) -> None:
         s.commit()
 
 
+def _combat_seat_pc(encounter_id: int, char: "Character"):
+    """Seat one PC at the encounter with their real current HP / temp HP / AC."""
+    dex = ability_modifier(_ability_score(char, "dexterity"))
+    c = combat.add_pc(
+        encounter_id, name=char.name, max_hp=char.max_hp,
+        armor_class=_compute_ac(char), dex_mod=dex, character_id=char.id)
+    if char.current_hp < char.max_hp:
+        combat.apply_damage(c.id, char.max_hp - char.current_hp)
+    temp = int(getattr(char, "temp_hp", 0) or 0)
+    if temp:
+        combat.set_temp_hp(c.id, temp)
+    return c
+
+
 def _combat_enroll_pcs(encounter_id: int, session_id: str) -> None:
     """Seat every member PC of the session at the encounter, carrying their
     real current HP / temp HP / AC in from the character sheet."""
@@ -1554,15 +1571,7 @@ def _combat_enroll_pcs(encounter_id: int, session_id: str) -> None:
             char = s.get(Character, cid)
             if not char or char.current_hp <= 0:
                 continue
-            dex = ability_modifier(_ability_score(char, "dexterity"))
-            c = combat.add_pc(
-                encounter_id, name=char.name, max_hp=char.max_hp,
-                armor_class=_compute_ac(char), dex_mod=dex, character_id=cid)
-            if char.current_hp < char.max_hp:
-                combat.apply_damage(c.id, char.max_hp - char.current_hp)
-            temp = int(getattr(char, "temp_hp", 0) or 0)
-            if temp:
-                combat.set_temp_hp(c.id, temp)
+            _combat_seat_pc(encounter_id, char)
 
 
 def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
@@ -1676,6 +1685,305 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
             line = ", ".join(f"{c.name} {c.initiative}" for c in order)
             notes.append(f"⚔ Initiative — {line}")
     return notes
+
+
+# ======================================================================
+# Deterministic combat turns: the LLM proposes INTENTS, combat/engine.py
+# validates + resolves them with real dice, and the narration call renders
+# the certified log. Illegal requests bounce back to the player with the
+# reason; a PC's turn stays open across messages until they declare it done
+# (or the engine proves their economy exhausted).
+# ======================================================================
+
+_MARTIAL_EXTRA_ATTACK = {"fighter", "barbarian", "paladin", "ranger", "monk",
+                         "blood hunter", "gunslinger", "illrigger"}
+_CASTING_ABILITY = {"bard": "cha", "sorcerer": "cha", "warlock": "cha",
+                    "paladin": "cha", "cleric": "wis", "druid": "wis",
+                    "ranger": "wis", "wizard": "int", "artificer": "int",
+                    "illrigger": "cha"}
+
+
+def _combat_pc_profile(char: Character) -> PCProfile:
+    """Build the engine's acting numbers for a PC from the character sheet."""
+    mods = {short: ability_modifier(_ability_score(char, full))
+            for short, full in (("str", "strength"), ("dex", "dexterity"),
+                                ("con", "constitution"), ("int", "intelligence"),
+                                ("wis", "wisdom"), ("cha", "charisma"))}
+    pb = proficiency_bonus_for_level(char.level)
+    skills = {t.split(":", 1)[1].strip().lower() for t in (char.tags or [])
+              if isinstance(t, str) and t.lower().startswith("skill:")}
+    weapons: list[PCWeapon] = []
+    for it in _inventory_items(char):
+        name = it.get("name") or ""
+        try:
+            row = rules_lib.get_item(name)
+        except Exception:
+            row = None
+        if row is None or not getattr(row, "damage_dice", None):
+            continue
+        # SRD melee weapons still carry range.normal = 5, so "has a range" is
+        # not "is ranged" — trust the type label, else a range beyond reach.
+        itype = (getattr(row, "item_type", None) or "").lower()
+        ranged = "ranged" in itype or (getattr(row, "range_normal", None) or 0) > 10
+        props = " ".join(str(p) for p in (row.properties or [])).lower()
+        finesse = "finesse" in props
+        mod = mods["dex"] if (ranged or (finesse and mods["dex"] > mods["str"])) \
+            else mods["str"]
+        dmg = row.damage_dice + (f"{mod:+d}" if mod else "")
+        weapons.append(PCWeapon(name=row.name, attack_bonus=pb + mod,
+                                damage=dmg, ranged=ranged))
+    cls = (char.char_class or "").strip().lower()
+    lvl = char.level
+    if cls == "fighter":
+        attacks = 4 if lvl >= 20 else 3 if lvl >= 11 else 2 if lvl >= 5 else 1
+    elif cls in _MARTIAL_EXTRA_ATTACK and lvl >= 5:
+        attacks = 2
+    else:
+        attacks = 1
+    features: set[str] = set()
+    if cls == "fighter":
+        features.add("second wind")
+        if lvl >= 2:
+            features.add("action surge")
+    if cls == "rogue" and lvl >= 2:
+        features.add("cunning action")
+    if cls == "barbarian":
+        features.add("rage")
+    if cls == "monk":
+        features.add("bonus attack")
+    cast_key = _CASTING_ABILITY.get(cls)
+    spell_atk = spell_dc = None
+    if cast_key and (char.spells or cls in ("cleric", "druid", "wizard",
+                                            "sorcerer", "bard", "warlock")):
+        spell_atk = pb + mods[cast_key]
+        spell_dc = 8 + pb + mods[cast_key]
+    return PCProfile(
+        character_id=char.id, name=char.name, level=lvl, ability_mods=mods,
+        prof=pb, skills=skills, weapons=weapons, attacks_per_action=attacks,
+        features=features, spell_attack_bonus=spell_atk, spell_dc=spell_dc,
+        spell_mod=cast_key)
+
+
+_COMBAT_INTENT_SYSTEM = (
+    "You translate ONE player's combat declaration into structured intents for a "
+    "rules engine. Output ONLY intent lines, one act per line, in the order "
+    "declared — no prose, no commentary:\n"
+    "[[INTENT: attack | <target> | <weapon>]]\n"
+    "[[INTENT: move | melee with <name>]]  or  [[INTENT: move | near]] / [[INTENT: move | far]]\n"
+    "[[INTENT: dash]]  [[INTENT: disengage]]  [[INTENT: dodge]]  [[INTENT: hide]]\n"
+    "[[INTENT: help | <ally>]]  [[INTENT: grapple | <target>]]  "
+    "[[INTENT: shove | <target> | prone or push]]\n"
+    "[[INTENT: use | <item>]]  [[INTENT: cast | <spell> | <target>]]\n"
+    "[[INTENT: feature | action surge]]  (also: second wind, rage)\n"
+    "[[INTENT: improvise | <what they attempt> | <STR/DEX/CON/INT/WIS/CHA vs DC n, if a check fits>]]\n"
+    "[[INTENT: end_turn]]\n"
+    "Rules:\n"
+    "- Propose exactly what the player declared — nothing more. The engine refuses "
+    "illegal acts itself; do not pre-judge legality.\n"
+    "- If the player clearly finishes ('that's my turn', 'I'm done', 'I wait', "
+    "'I brace'), append [[INTENT: end_turn]].\n"
+    "- If the message is NOT a combat act at all (a question, table talk, looking "
+    "around), output exactly [[INTENT: none]].\n"
+)
+
+INTENT_PATTERN = re.compile(r"\[\[INTENT:(.+?)\]\]", re.IGNORECASE)
+
+# verb -> mapping of positional hook fields onto engine intent keys
+_INTENT_FIELDS: Dict[str, tuple] = {
+    "attack": ("target", "arg"), "move": ("arg",), "dash": (), "disengage": (),
+    "dodge": (), "hide": (), "help": ("target",), "grapple": ("target",),
+    "shove": ("target", "arg"), "use": ("arg",), "cast": ("arg", "target"),
+    "feature": ("arg",), "improvise": ("arg", "target"), "end_turn": (),
+}
+
+
+def _parse_intents(text: str, actor_name: str) -> Optional[list[dict]]:
+    """Parse [[INTENT: ...]] lines. Returns None when the message wasn't a
+    combat act (explicit 'none' or nothing parseable)."""
+    intents: list[dict] = []
+    for m in INTENT_PATTERN.finditer(text or ""):
+        parts = _split_hook(m.group(1))
+        verb = (parts[0] or "").strip().lower().replace(" ", "_")
+        if verb == "none":
+            return None
+        fields = _INTENT_FIELDS.get(verb)
+        if fields is None:
+            continue
+        intent: dict = {"verb": verb, "actor": actor_name}
+        for key, val in zip(fields, parts[1:]):
+            if val:
+                intent[key] = val.strip()
+        if verb == "improvise" and intent.get("target"):
+            # check spec rides in arg for the engine ("... STR vs 15")
+            intent["arg"] = f"{intent.get('arg', '')} {intent.pop('target')}".strip()
+        intents.append(intent)
+    return intents or None
+
+
+def _combat_extract_intents(my_name: str, remaining: dict, board: str,
+                            profile: Optional[PCProfile],
+                            message: str) -> Optional[list[dict]]:
+    gear = ""
+    if profile:
+        w = ", ".join(f"{x.name} ({'ranged' if x.ranged else 'melee'})"
+                      for x in profile.weapons) or "unarmed"
+        feats = ", ".join(sorted(profile.features)) or "none"
+        gear = f"Weapons: {w}\nFeatures: {feats}\n"
+    rem = (f"Remaining this turn — action: {'yes' if remaining.get('action') else 'no'}, "
+           f"bonus: {'yes' if remaining.get('bonus') else 'no'}, "
+           f"move steps: {remaining.get('move_steps', 0)}\n") if remaining else ""
+    user = (f"{board}\n\nActing player character: {my_name}\n{rem}{gear}"
+            f"\nPlayer says: {message}\n\nIntents:")
+    try:
+        out = _call_extractor_llm([
+            {"role": "system", "content": _COMBAT_INTENT_SYSTEM},
+            {"role": "user", "content": user}])
+    except Exception as e:
+        print(f"[combat-engine] intent extraction failed: {e}")
+        return None
+    return _parse_intents(out, my_name)
+
+
+def _combat_fight_over(encounter_id: int) -> Optional[str]:
+    """If one side is wiped, close the encounter and say so."""
+    order = combat.order(encounter_id)
+    foes = [c for c in order if c.kind != "pc"]
+    pcs = [c for c in order if c.kind == "pc"]
+    if foes and all(c.defeated for c in foes):
+        combat.end_encounter(encounter_id)
+        return "ALL FOES DOWN — the fight is over (encounter closed)."
+    if pcs and all(c.defeated for c in pcs):
+        combat.end_encounter(encounter_id)
+        return ("THE PARTY IS DOWN — the fight is over (encounter closed); "
+                "resolve the aftermath in narration.")
+    return None
+
+
+def _combat_engine_turn(session_id: str, user_id: Optional[str],
+                        message: str) -> Optional[str]:
+    """Run one deterministic combat exchange for this player message.
+
+    Returns the certified-resolution block for the narration prompt, or None
+    when the message wasn't a combat act (caller falls back to normal flow)."""
+    enc = combat.get_active(session_id)
+    if enc is None:
+        return None
+    state = _load_session_state(session_id)
+    member = _acting_member(state.get("meta", {}) or {}, user_id)
+    char_id = (member or {}).get("character_id") or \
+        _resolve_session_character(session_id, user_id)
+    if not char_id:
+        return None
+    _combat_enroll_pcs(enc.id, session_id)  # seat late joiners
+    my = next((c for c in combat.order(enc.id) if c.character_id == char_id), None)
+    if my is None:
+        # Session meta didn't list this player (legacy session shapes) — seat
+        # their PC directly and roll it into the running order.
+        with Session(engine) as s:
+            ch = s.get(Character, char_id)
+            if not ch or ch.current_hp <= 0:
+                return None
+            _combat_seat_pc(enc.id, ch)
+        combat.roll_initiative(enc.id, reset_turn=False)
+        my = next((c for c in combat.order(enc.id)
+                   if c.character_id == char_id), None)
+        if my is None:
+            return None
+
+    profiles: dict[int, PCProfile] = {}
+    with Session(engine) as s:
+        for c in combat.order(enc.id):
+            if c.character_id:
+                ch = s.get(Character, c.character_id)
+                if ch:
+                    try:
+                        profiles[c.character_id] = _combat_pc_profile(ch)
+                    except Exception as e:
+                        print(f"[combat-engine] profile for {ch.name} failed: {e}")
+
+    cur = combat.current_combatant(enc.id)
+    remaining = {}
+    if cur is not None and cur.id == my.id:
+        fresh = combat.get_combatant(my.id)
+        remaining = {"action": not fresh.action_used,
+                     "bonus": not fresh.bonus_used,
+                     "move_steps": max(0, fresh.move_left)}
+    intents = _combat_extract_intents(
+        my.name, remaining, combat.render(enc.id),
+        profiles.get(char_id), message)
+    if intents is None:
+        return None  # not a combat act — normal narration flow handles it
+
+    blocks: list[str] = []
+    rolls_out: list[dict] = []
+
+    def run_monsters(limit: int = 12) -> None:
+        nonlocal blocks, rolls_out
+        for _ in range(limit):
+            if combat.get_active(session_id) is None:
+                return
+            c = combat.current_combatant(enc.id)
+            if c is None or c.kind == "pc":
+                return
+            rep = combat_engine.run_monster_turn(enc.id, profiles=profiles)
+            txt = CombatEngine.render_report(rep)
+            if txt.strip():
+                blocks.append(txt)
+            rolls_out.extend(rep.rolls())
+            over = _combat_fight_over(enc.id)
+            if over:
+                blocks.append(over)
+                return
+
+    # Monsters with earlier initiative act first (fight may have just begun).
+    run_monsters()
+
+    if combat.get_active(session_id) is not None:
+        cur = combat.current_combatant(enc.id)
+        if cur is not None and cur.id == my.id:
+            rep = combat_engine.resolve(enc.id, intents, profiles)
+            txt = CombatEngine.render_report(rep)
+            if txt.strip():
+                blocks.append(txt)
+            rolls_out.extend(rep.rolls())
+            over = _combat_fight_over(enc.id)
+            if over:
+                blocks.append(over)
+            elif rep.turn_over:
+                run_monsters()
+        elif cur is not None and cur.kind == "pc":
+            blocks.append(f"REFUSED: It is {cur.name}'s turn — "
+                          f"{my.name} must wait for it to come around.")
+
+    if combat.get_active(session_id) is not None:
+        nxt = combat.current_combatant(enc.id)
+        if nxt is not None:
+            blocks.append(f"NOW: {nxt.name}'s turn.")
+
+    collector = _ACTIVITY_ROLLS.get()
+    if collector is not None:
+        collector.extend(rolls_out)
+    return ("# Combat resolution (certified — already applied to the tracker)\n"
+            + "\n".join(blocks))
+
+
+_COMBAT_NARRATE_CONTRACT = (
+    "# Narration contract (deterministic combat engine)\n"
+    "A rules engine has ALREADY resolved this exchange — the 'Combat resolution' "
+    "block above is certified fact, applied to the tracker. Your narration must:\n"
+    "- Describe exactly those results, vividly and in order. You may state the "
+    "numbers (damage, HP) but never change them. Do not invent attacks, damage, "
+    "deaths, conditions, or movement the log doesn't show.\n"
+    "- REFUSED lines: that act did NOT happen. In the DM's voice, tell the player "
+    "plainly why and ask what they do instead.\n"
+    "- 'TURN STILL OPEN — remaining: ...': close by telling the player what they "
+    "still have and ask for the rest of their turn (or a declaration they're done).\n"
+    "- 'NOW: <name>'s turn': end by setting up that creature's moment.\n"
+    "- Do not emit [[ROLL: ...]] hooks or COMBAT damage/heal/temp/move hooks — the "
+    "dice are already rolled. [[COMBAT: add | ...]] (reinforcements) and "
+    "[[COMBAT: end]] (the fight resolves narratively) remain available, and "
+    "story-driven lasting conditions still use [[CONDITION]] hooks.\n"
+)
 
 
 # ----- OpenRouter LLM call -----
@@ -3461,6 +3769,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
 
     # DM reply
     ctx_obj = None
+    _engine_block: Optional[str] = None
     try:
         # Single-GPU time-share: free the diffusion model from VRAM before the
         # LLM call so a self-hosted 70B/32B has room to load.
@@ -3470,10 +3779,21 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         ctx_obj, ctx_texts = assemble_context(req.session_id, req.message, user_id=req.user_id)
         active_enc = combat.get_active(req.session_id)
         if active_enc:
+            # Deterministic path: resolve the player's declared acts through
+            # the engine FIRST; the board below then reflects the new state.
+            try:
+                _engine_block = _combat_engine_turn(
+                    req.session_id, req.user_id, req.message)
+            except Exception as e:
+                print(f"[combat-engine] turn failed, hook fallback: {e}")
             board = combat.render(active_enc.id)
             if board.strip():
                 ctx_texts.append(board)
-            ctx_texts.append(_COMBAT_HOOKS_ACTIVE)
+            if _engine_block is not None:
+                ctx_texts.append(_engine_block)
+                ctx_texts.append(_COMBAT_NARRATE_CONTRACT)
+            else:
+                ctx_texts.append(_COMBAT_HOOKS_ACTIVE)
         else:
             ctx_texts.append(_COMBAT_HOOKS_IDLE)
         dm_text = generate_dm_reply(
@@ -3555,7 +3875,11 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
 
     # Keep the initiative tracker true to the narration: start fights, seat
     # combatants, record damage/healing, advance turns, end the battle.
+    # When the deterministic engine resolved this exchange, the DM may only
+    # add reinforcements or end the fight — everything else is engine-owned.
     dm_text, combat_ops = extract_combat_hooks(dm_text)
+    if combat_ops and _engine_block is not None:
+        combat_ops = [op for op in combat_ops if op["action"] in ("add", "end")]
     if combat_ops:
         try:
             combat_notes = apply_combat_hooks(req.session_id, combat_ops)
