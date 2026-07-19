@@ -287,12 +287,20 @@ async def lifespan(app: FastAPI):
                     'CREATE INDEX IF NOT EXISTS ix_character_approved ON "character" (approved)')
 
                 # Combat tracker columns added after the table first shipped
-                # (pre-existing DBs): cover and the spacing band.
+                # (pre-existing DBs): cover, spacing band, per-turn economy.
                 cb_existing = {row[1] for row in conn.exec_driver_sql(
                     'PRAGMA table_info("combat_combatant")')}
                 if cb_existing:
                     for col, ddl in [("cover", "VARCHAR DEFAULT 'none'"),
-                                     ("position", "VARCHAR")]:
+                                     ("position", "VARCHAR"),
+                                     ("action_used", "BOOLEAN DEFAULT 0"),
+                                     ("bonus_used", "BOOLEAN DEFAULT 0"),
+                                     ("reaction_used", "BOOLEAN DEFAULT 0"),
+                                     ("move_left", "INTEGER DEFAULT 1"),
+                                     ("dodging", "BOOLEAN DEFAULT 0"),
+                                     ("disengaging", "BOOLEAN DEFAULT 0"),
+                                     ("attacks_made", "INTEGER DEFAULT 0"),
+                                     ("used_features", "JSON")]:
                         if col not in cb_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE combat_combatant ADD COLUMN {col} {ddl}")

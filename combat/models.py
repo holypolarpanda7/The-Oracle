@@ -103,6 +103,22 @@ class Combatant(SQLModel, table=True):
     # "melee with <name>" | "near" (within one move) | "far" (needs Dash/ranged).
     position: Optional[str] = Field(default=None, sa_column=Column(String))
 
+    # ---- per-turn action economy (reset at the start of this creature's turn;
+    # persisted so a PC's turn can span several player messages) ----
+    action_used: bool = Field(default=False, sa_column=Column(Boolean))
+    bonus_used: bool = Field(default=False, sa_column=Column(Boolean))
+    reaction_used: bool = Field(default=False, sa_column=Column(Boolean))
+    # Band-steps of movement left (1 = a normal move; Dash adds one more).
+    move_left: int = Field(default=1, sa_column=Column(Integer))
+    dodging: bool = Field(default=False, sa_column=Column(Boolean))
+    disengaging: bool = Field(default=False, sa_column=Column(Boolean))
+    # Attacks taken from the current Attack action (Extra Attack / Multiattack
+    # allow several per action). Turn-scoped.
+    attacks_made: int = Field(default=0, sa_column=Column(Integer))
+    # Encounter-scoped feature uses ("action surge", "second wind", ...) so
+    # once-per-fight resources can't be double-spent. list[str].
+    used_features: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
     conditions: Optional[Any] = Field(default=None, sa_column=Column(JSON))     # list[str]
     concentration: Optional[str] = Field(default=None, sa_column=Column(String))  # what they concentrate on
     defeated: bool = Field(default=False, sa_column=Column(Boolean))

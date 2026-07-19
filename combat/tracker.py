@@ -227,7 +227,47 @@ class CombatTracker:
                 enc.round = 1
                 s.add(enc)
             s.commit()
-        return self.order(encounter_id)
+        order = self.order(encounter_id)
+        if reset_turn and order and order[0].id is not None:
+            self.begin_turn(order[0].id)
+            order = self.order(encounter_id)
+        return order
+
+    def begin_turn(self, combatant_id: int) -> Optional[Combatant]:
+        """Reset a creature's per-turn economy at the start of its turn."""
+        with Session(self.engine) as s:
+            c = s.get(Combatant, combatant_id)
+            if not c:
+                return None
+            c.action_used = False
+            c.bonus_used = False
+            c.reaction_used = False
+            c.move_left = 1
+            c.dodging = False
+            c.disengaging = False
+            c.attacks_made = 0
+            s.add(c)
+            s.commit()
+            s.refresh(c)
+            return c
+
+    def update_economy(self, combatant_id: int, **fields) -> Combatant:
+        """Set economy fields (action_used, bonus_used, reaction_used,
+        move_left, dodging, disengaging) on a combatant."""
+        allowed = {"action_used", "bonus_used", "reaction_used",
+                   "move_left", "dodging", "disengaging", "attacks_made",
+                   "used_features"}
+        with Session(self.engine) as s:
+            c = s.get(Combatant, combatant_id)
+            if not c:
+                raise ValueError("Unknown combatant")
+            for k, v in fields.items():
+                if k in allowed:
+                    setattr(c, k, v)
+            s.add(c)
+            s.commit()
+            s.refresh(c)
+            return c
 
     def current_combatant(self, encounter_id: int) -> Optional[Combatant]:
         enc = self.get_encounter(encounter_id)
@@ -263,7 +303,11 @@ class CombatTracker:
             s.add(enc)
             s.commit()
             s.refresh(enc)
-        return enc, self.current_combatant(encounter_id)
+        cur = self.current_combatant(encounter_id)
+        if cur and cur.id is not None:
+            self.begin_turn(cur.id)
+            cur = self.get_combatant(cur.id)
+        return enc, cur
 
     # ----- damage / healing / status -----
 
@@ -458,6 +502,14 @@ def _combatant_dict(c: Combatant) -> dict:
         "armor_class": c.armor_class,
         "cover": c.cover,
         "position": c.position,
+        "action_used": c.action_used,
+        "bonus_used": c.bonus_used,
+        "reaction_used": c.reaction_used,
+        "move_left": c.move_left,
+        "dodging": c.dodging,
+        "disengaging": c.disengaging,
+        "attacks_made": c.attacks_made,
+        "used_features": list(c.used_features or []),
         "conditions": list(c.conditions or []),
         "concentration": c.concentration,
         "defeated": c.defeated,

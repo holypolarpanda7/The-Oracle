@@ -1,0 +1,1071 @@
+"""
+CombatEngine — deterministic turn resolution over the CombatTracker.
+
+The LLM proposes structured INTENTS; this engine is the referee and the dice:
+it validates every intent against turn order, action economy, spacing bands,
+and reach, resolves the legal ones with real dice (attack rolls vs effective
+AC, contests, saves), applies results to the tracker, and returns a certified
+turn report. Illegal intents are NOT applied — they come back as rejections
+with player-facing reasons so the narrator can kick the problem back to the
+player and leave their turn open.
+
+Turn semantics:
+- A creature's per-turn economy (action / bonus action / band-steps of
+  movement / reaction) lives on the Combatant row, so a PC's turn can span
+  several player messages. The turn ends only when the player declares it
+  (an ``end_turn`` intent) or the engine proves the economy exhausted.
+- Monster/NPC turns are resolved in one call each; if the proposed intents
+  are missing or all illegal, a small default AI acts (attack in reach, else
+  close and attack, else dash toward the fight).
+
+Spacing model (gridless bands, no maps):
+- position is "far" (rank 2), "near" (rank 1), or "melee with <Name>"
+  (rank 0, a pairwise engagement; symmetric — either side's tag counts).
+- steps between two creatures: 0 if engaged, else max(1, |rank_a - rank_b|).
+- one band-step = a normal move; Dash buys one more step this turn.
+"""
+from __future__ import annotations
+
+import random
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+
+from sqlmodel import Session, select
+
+from dice import ability_modifier
+from dice.mechanics import ability_check, attack_roll, damage_roll, saving_throw
+from rules.models import Monster, Spell
+
+from .models import Combatant
+from .tracker import CombatTracker
+
+
+# --------------------------------------------------------------------------
+# Profiles — what a creature can do, built outside the engine.
+
+@dataclass
+class PCWeapon:
+    name: str
+    attack_bonus: int
+    damage: str                  # e.g. "1d8+3"
+    ranged: bool = False
+
+
+@dataclass
+class PCProfile:
+    """The acting numbers for a player character (built by the backend from
+    the Character row + rules items; the engine never touches the char DB)."""
+    character_id: int
+    name: str
+    level: int = 1
+    ability_mods: dict[str, int] = field(default_factory=dict)  # str/dex/con/int/wis/cha
+    prof: int = 2
+    skills: set[str] = field(default_factory=set)               # lowercase skill names
+    weapons: list[PCWeapon] = field(default_factory=list)
+    spell_attack_bonus: Optional[int] = None
+    spell_dc: Optional[int] = None
+    spell_mod: Optional[str] = None                             # casting ability key
+    # Action-economy features:
+    attacks_per_action: int = 1          # Extra Attack: 2 at fighter 5, etc.
+    features: set[str] = field(default_factory=set)
+    # recognized: "action surge", "second wind", "rage", "cunning action",
+    # "bonus attack" (two-weapon fighting / Martial Arts style off-hand swing)
+
+
+# Class features the engine resolves mechanically. "per_encounter": how many
+# uses per fight (None = unlimited).
+_FEATURES: dict[str, dict] = {
+    "action surge": {"cost": "free", "per_encounter": 1},
+    "second wind": {"cost": "bonus", "per_encounter": 1, "heal": "1d10+{level}"},
+    "rage": {"cost": "bonus", "per_encounter": None, "condition": "raging"},
+}
+
+# Common consumables the engine can resolve without the item DB.
+_CONSUMABLE_HEALS = {
+    "potion of healing": "2d4+2",
+    "potion of greater healing": "4d4+4",
+    "potion of superior healing": "8d4+8",
+    "potion of supreme healing": "10d4+20",
+}
+_CONSUMABLE_TEMPS = {"potion of heroism": 10}
+
+# Conditions that shape the attack advantage matrix.
+_ATTACKER_DISADV = {"poisoned", "prone", "restrained", "blinded", "frightened",
+                    "exhaustion"}
+_TARGET_GIVES_ADV = {"restrained", "stunned", "paralyzed", "unconscious",
+                     "petrified", "blinded"}
+_CANNOT_ACT = {"incapacitated", "stunned", "paralyzed", "unconscious", "petrified"}
+
+_BAND_RANK = {"near": 1, "far": 2}
+
+
+def _mod_key(name: str) -> str:
+    return (name or "")[:3].lower()
+
+
+@dataclass
+class TurnReport:
+    """What actually happened (events), what was refused and why (rejections),
+    and whether the current creature's turn is now over."""
+    events: list[dict] = field(default_factory=list)
+    rejections: list[dict] = field(default_factory=list)
+    turn_over: bool = False
+    turn_over_reason: Optional[str] = None
+    remaining: dict = field(default_factory=dict)
+
+    def rolls(self) -> list[dict]:
+        """Dice results in the activity UI's RollResult shape."""
+        out = []
+        for e in self.events:
+            for r in e.get("rolls") or []:
+                out.append(r)
+        return out
+
+
+class CombatEngine:
+    def __init__(self, tracker: CombatTracker, rng: Optional[random.Random] = None):
+        self.tracker = tracker
+        self.rng = rng or random.Random()
+
+    # ---------------- band / spacing model ----------------
+
+    def _engaged_with(self, a: Combatant, b: Combatant) -> bool:
+        pa = (a.position or "").lower()
+        pb = (b.position or "").lower()
+        return (pa == f"melee with {b.name.lower()}"
+                or pb == f"melee with {a.name.lower()}")
+
+    def _rank(self, c: Combatant) -> int:
+        p = (c.position or "near").lower()
+        if p.startswith("melee"):
+            return 0
+        return _BAND_RANK.get(p, 1)
+
+    def _steps_between(self, a: Combatant, b: Combatant) -> int:
+        if self._engaged_with(a, b):
+            return 0
+        return max(1, abs(self._rank(a) - self._rank(b)))
+
+    @staticmethod
+    def _side(c: Combatant) -> str:
+        """PCs are one side; monsters/NPCs the other (v1 — allied NPCs later)."""
+        return "party" if c.kind == "pc" else "foe"
+
+    def _engaged_enemies(self, encounter_id: int, c: Combatant) -> list[Combatant]:
+        out = []
+        for other in self.tracker.order(encounter_id):
+            if other.id == c.id or other.defeated:
+                continue
+            if self._side(other) == self._side(c):
+                continue
+            if self._engaged_with(c, other):
+                out.append(other)
+        return out
+
+    # ---------------- creature capability lookup ----------------
+
+    def _monster(self, c: Combatant) -> Optional[Monster]:
+        if not c.monster_slug:
+            return None
+        with Session(self.tracker.engine) as s:
+            return s.exec(select(Monster).where(
+                Monster.index_slug == c.monster_slug)).first()
+
+    def _monster_attacks(self, c: Combatant) -> list[dict]:
+        m = self._monster(c)
+        out: list[dict] = []
+        for a in (m.actions if m else []) or []:
+            if a.get("attack_bonus") is None:
+                continue
+            dmg = ""
+            for d in a.get("damage") or []:
+                if d.get("damage_dice"):
+                    dmg = d["damage_dice"]
+                    break
+            if not dmg:
+                continue
+            desc = (a.get("desc") or "").lower()
+            out.append({"name": a.get("name") or "attack",
+                        "attack_bonus": int(a["attack_bonus"]),
+                        "damage": dmg,
+                        "ranged": desc.startswith("ranged")
+                                  or "ranged weapon attack" in desc})
+        return out
+
+    def _multiattack_count(self, c: Combatant) -> int:
+        m = self._monster(c)
+        for a in (m.actions if m else []) or []:
+            if (a.get("name") or "").lower() == "multiattack":
+                d = (a.get("desc") or "").lower()
+                for word, n in (("two", 2), ("three", 3), ("four", 4), ("five", 5)):
+                    if f"makes {word}" in d or f"{word} attacks" in d:
+                        return n
+        return 1
+
+    def _ability_mod(self, c: Combatant, ability: str,
+                     profiles: dict[int, PCProfile]) -> int:
+        key = _mod_key(ability)
+        if c.character_id and c.character_id in profiles:
+            return profiles[c.character_id].ability_mods.get(key, 0)
+        m = self._monster(c)
+        if m:
+            score = {"str": m.strength, "dex": m.dexterity, "con": m.constitution,
+                     "int": m.intelligence, "wis": m.wisdom,
+                     "cha": m.charisma}.get(key)
+            return ability_modifier(score) if score is not None else 0
+        return c.dex_mod if key == "dex" else 0
+
+    def _attack_profile(self, c: Combatant, weapon: str,
+                        profiles: dict[int, PCProfile]) -> Optional[dict]:
+        """Resolve what this creature swings: named weapon, else its best."""
+        w = (weapon or "").strip().lower()
+        if c.character_id and c.character_id in profiles:
+            p = profiles[c.character_id]
+            pool = p.weapons or []
+            for cand in pool:
+                if w and w in cand.name.lower():
+                    return {"name": cand.name, "attack_bonus": cand.attack_bonus,
+                            "damage": cand.damage, "ranged": cand.ranged}
+            if w in ("unarmed", "fist", "punch", "") and not pool:
+                stray = p.ability_mods.get("str", 0)
+                return {"name": "Unarmed strike",
+                        "attack_bonus": p.prof + stray,
+                        "damage": f"1+{stray}" if stray > 0 else "1",
+                        "ranged": False}
+            if pool:
+                return {"name": pool[0].name, "attack_bonus": pool[0].attack_bonus,
+                        "damage": pool[0].damage, "ranged": pool[0].ranged}
+            stray = p.ability_mods.get("str", 0)
+            return {"name": "Unarmed strike", "attack_bonus": p.prof + stray,
+                    "damage": f"1+{stray}" if stray > 0 else "1", "ranged": False}
+        pool = self._monster_attacks(c)
+        if not pool:
+            return None
+        for cand in pool:
+            if w and w in cand["name"].lower():
+                return cand
+        return pool[0]
+
+    def _melee_profile(self, c: Combatant,
+                       profiles: dict[int, PCProfile]) -> Optional[dict]:
+        if c.character_id and c.character_id in profiles:
+            for cand in profiles[c.character_id].weapons:
+                if not cand.ranged:
+                    return {"name": cand.name, "attack_bonus": cand.attack_bonus,
+                            "damage": cand.damage, "ranged": False}
+            return self._attack_profile(c, "unarmed", profiles)
+        for cand in self._monster_attacks(c):
+            if not cand["ranged"]:
+                return cand
+        return None
+
+    # ---------------- helpers ----------------
+
+    def _find(self, encounter_id: int, ref: str) -> Optional[Combatant]:
+        ref_l = (ref or "").strip().lower()
+        if not ref_l:
+            return None
+        order = self.tracker.order(encounter_id)
+        for c in order:
+            if c.name.lower() == ref_l:
+                return c
+        for c in order:
+            if c.name.lower().startswith(ref_l):
+                return c
+        for c in order:
+            if ref_l in c.name.lower():
+                return c
+        return None
+
+    def _conds(self, c: Combatant) -> set[str]:
+        return {x.lower() for x in (c.conditions or [])}
+
+    def _remaining(self, c: Combatant,
+                   prof: Optional[PCProfile] = None) -> dict:
+        c = self.tracker.get_combatant(c.id) or c
+        return {"action": not c.action_used, "bonus": not c.bonus_used,
+                "move_steps": max(0, c.move_left),
+                "reaction": not c.reaction_used,
+                "options": self._leftover_options(c, prof)}
+
+    @staticmethod
+    def _roll_dict(label: str, detail: str, total: int,
+                   dc: Optional[int] = None, success: Optional[bool] = None,
+                   expr: str = "") -> dict:
+        out = {"expr": expr or "d20", "label": label, "total": total,
+               "detail": detail}
+        if dc is not None:
+            out["dc"] = dc
+        if success is not None:
+            out["success"] = success
+        return out
+
+    def _attack_advantage(self, atk: Combatant, tgt: Combatant,
+                          ranged: bool, encounter_id: int) -> tuple[bool, bool, list[str]]:
+        adv, dis, notes = False, False, []
+        ac_conds, tc_conds = self._conds(atk), self._conds(tgt)
+        if ranged and self._engaged_enemies(encounter_id, atk):
+            dis = True
+            notes.append("ranged attack while in melee: disadvantage")
+        if ac_conds & _ATTACKER_DISADV:
+            dis = True
+            notes.append(f"attacker {', '.join(sorted(ac_conds & _ATTACKER_DISADV))}: disadvantage")
+        if "invisible" in ac_conds or "hidden" in ac_conds:
+            adv = True
+            notes.append("unseen attacker: advantage")
+        if "helped" in ac_conds:
+            adv = True
+            notes.append("helped: advantage")
+        if tgt.dodging:
+            dis = True
+            notes.append(f"{tgt.name} is Dodging: disadvantage")
+        if tc_conds & _TARGET_GIVES_ADV:
+            adv = True
+            notes.append(f"target {', '.join(sorted(tc_conds & _TARGET_GIVES_ADV))}: advantage")
+        if "prone" in tc_conds:
+            if ranged:
+                dis = True
+                notes.append("target prone vs ranged: disadvantage")
+            else:
+                adv = True
+                notes.append("target prone in melee: advantage")
+        if adv and dis:
+            notes.append("advantage and disadvantage cancel")
+            adv = dis = False
+        return adv, dis, notes
+
+    # ---------------- intent resolution ----------------
+
+    def resolve(self, encounter_id: int, intents: list[dict],
+                profiles: Optional[dict[int, PCProfile]] = None) -> TurnReport:
+        """Resolve intents for the CURRENT creature's turn. Illegal intents
+        are rejected with reasons; nothing about them is applied."""
+        profiles = profiles or {}
+        rep = TurnReport()
+        cur = self.tracker.current_combatant(encounter_id)
+        if cur is None:
+            rep.rejections.append({"reason": "No one is in the fight."})
+            return rep
+
+        for intent in intents:
+            cur = self.tracker.current_combatant(encounter_id)
+            if cur is None or rep.turn_over:
+                rep.rejections.append({
+                    "intent": intent,
+                    "reason": "The turn already ended — further acts wait for the next turn."})
+                continue
+            verb = (intent.get("verb") or "").lower()
+            actor_ref = intent.get("actor") or ""
+            actor = self._find(encounter_id, actor_ref) if actor_ref else cur
+            if actor is None:
+                rep.rejections.append({"intent": intent,
+                                       "reason": f"No combatant named '{actor_ref}'."})
+                continue
+            if actor.id != cur.id:
+                rep.rejections.append({
+                    "intent": intent,
+                    "reason": f"It is {cur.name}'s turn, not {actor.name}'s."})
+                continue
+            if self._conds(actor) & _CANNOT_ACT:
+                rep.rejections.append({
+                    "intent": intent,
+                    "reason": f"{actor.name} is {', '.join(sorted(self._conds(actor) & _CANNOT_ACT))} and cannot act."})
+                continue
+
+            handler = getattr(self, f"_do_{verb}", None)
+            if handler is None:
+                rep.rejections.append({"intent": intent,
+                                       "reason": f"Unknown act '{verb}'."})
+                continue
+            handler(encounter_id, actor, intent, profiles, rep)
+
+        # Auto-end only when the economy is PROVABLY exhausted — an unspent
+        # Action Surge or bonus-action feature keeps the turn open for the
+        # player to claim it.
+        cur = self.tracker.current_combatant(encounter_id)
+        if cur is not None and not rep.turn_over:
+            fresh = self.tracker.get_combatant(cur.id)
+            prof = profiles.get(fresh.character_id) if fresh.character_id else None
+            if fresh and fresh.action_used and fresh.move_left <= 0 \
+                    and not self._leftover_options(fresh, prof):
+                rep.turn_over = True
+                rep.turn_over_reason = "action and movement spent"
+        if cur is not None:
+            fresh = self.tracker.get_combatant(cur.id)
+            prof = profiles.get(fresh.character_id) if fresh.character_id else None
+            rep.remaining = self._remaining(fresh, prof)
+        if rep.turn_over:
+            self.tracker.next_turn(encounter_id)
+        return rep
+
+    def _leftover_options(self, c: Combatant,
+                          prof: Optional[PCProfile]) -> list[str]:
+        """Engine-modeled options this creature could still take this turn."""
+        opts: list[str] = []
+        if prof is None:
+            return opts
+        used = [u.lower() for u in (c.used_features or [])]
+        if "action surge" in prof.features and "action surge" not in used:
+            opts.append("Action Surge")
+        if not c.bonus_used:
+            for f in ("second wind", "rage"):
+                spec = _FEATURES.get(f)
+                if f in prof.features and spec and (
+                        spec["per_encounter"] is None
+                        or used.count(f) < spec["per_encounter"]):
+                    opts.append(f.title())
+            if "bonus attack" in prof.features and c.action_used:
+                opts.append("bonus-action attack")
+            if "cunning action" in prof.features:
+                opts.append("Cunning Action (Dash/Disengage/Hide)")
+        return opts
+
+    # ----- verbs -----
+
+    def _spend_action(self, actor: Combatant, rep: TurnReport,
+                      intent: dict, what: str) -> bool:
+        fresh = self.tracker.get_combatant(actor.id)
+        if fresh.action_used:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{actor.name} has already used their action this turn "
+                          f"(wanted: {what}). Movement or a bonus action may remain — "
+                          "or end the turn."})
+            return False
+        self.tracker.update_economy(actor.id, action_used=True)
+        return True
+
+    def _do_attack(self, encounter_id, actor, intent, profiles, rep):
+        target = self._find(encounter_id, intent.get("target") or "")
+        if target is None or target.defeated:
+            rep.rejections.append({"intent": intent,
+                                   "reason": "No living target by that name."})
+            return
+        prof = self._attack_profile(actor, intent.get("arg") or "", profiles)
+        if prof is None:
+            rep.rejections.append({"intent": intent,
+                                   "reason": f"{actor.name} has no attack to make."})
+            return
+        steps = self._steps_between(actor, target)
+        if not prof["ranged"] and steps > 0:
+            hint = ("move into melee first — a move can close the gap"
+                    if steps <= max(0, self.tracker.get_combatant(actor.id).move_left)
+                    else "they are too far to reach this turn (move, Dash, or use a ranged attack)")
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{target.name} is not in melee reach for "
+                          f"{prof['name']} — {hint}."})
+            return
+        if (target.cover or "none") == "total":
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{target.name} has total cover — no line of attack."})
+            return
+        # Attack budget: monsters get their Multiattack routine per action; PCs
+        # get attacks_per_action (Extra Attack). A "bonus attack" feature
+        # (two-weapon fighting / Martial Arts) buys one more with the bonus.
+        fresh = self.tracker.get_combatant(actor.id)
+        pc_prof = profiles.get(actor.character_id) if actor.character_id else None
+        allowed = (self._multiattack_count(actor) if actor.monster_slug
+                   else (pc_prof.attacks_per_action if pc_prof else 1))
+        bonus_note = None
+        if not fresh.action_used:
+            self.tracker.update_economy(actor.id, action_used=True,
+                                        attacks_made=1)
+        elif fresh.attacks_made < allowed:
+            self.tracker.update_economy(actor.id,
+                                        attacks_made=fresh.attacks_made + 1)
+        elif (pc_prof and "bonus attack" in pc_prof.features
+              and not fresh.bonus_used):
+            self.tracker.update_economy(actor.id, bonus_used=True)
+            bonus_note = "off-hand / bonus-action attack"
+        else:
+            left = []
+            if not fresh.bonus_used:
+                left.append("a bonus action")
+            if fresh.move_left > 0:
+                left.append("movement")
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{actor.name} has no attacks left this turn"
+                          + (f" — still available: {', '.join(left)}" if left
+                             else " — declare the end of the turn")
+                          + "."})
+            return
+
+        adv, dis, notes = self._attack_advantage(actor, target, prof["ranged"], encounter_id)
+        if bonus_note:
+            notes = [bonus_note, *notes]
+        eff_ac = self.tracker.effective_ac(target.id)
+        atk = attack_roll(prof["attack_bonus"], eff_ac, advantage=adv,
+                          disadvantage=dis, label=f"{prof['name']} ({actor.name})",
+                          rng=self.rng)
+        rolls = [self._roll_dict(f"{prof['name']} — {actor.name}", atk.detail,
+                                 atk.total, dc=eff_ac, success=bool(atk.hit))]
+        ev = {"kind": "attack", "actor": actor.name, "target": target.name,
+              "weapon": prof["name"], "hit": bool(atk.hit), "crit": atk.is_crit,
+              "notes": notes, "rolls": rolls}
+        if "hidden" in self._conds(actor):
+            self.tracker.remove_condition(actor.id, "hidden")
+        if "helped" in self._conds(actor):
+            self.tracker.remove_condition(actor.id, "helped")
+        if atk.hit:
+            dmg = damage_roll(prof["damage"], crit=atk.is_crit, rng=self.rng)
+            out = self.tracker.apply_damage(target.id, dmg.total)
+            rolls.append(self._roll_dict(f"{prof['name']} damage", dmg.detail,
+                                         dmg.total, expr=prof["damage"]))
+            ev["damage"] = dmg.total
+            ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+            if out.get("defeated"):
+                ev["defeated"] = True
+            if out.get("concentration_check"):
+                ev["concentration_dc"] = out.get("concentration_dc")
+        rep.events.append(ev)
+
+    def _do_move(self, encounter_id, actor, intent, profiles, rep):
+        band_raw = (intent.get("arg") or intent.get("target") or "").strip()
+        band = band_raw.lower()
+        fresh = self.tracker.get_combatant(actor.id)
+        target_c: Optional[Combatant] = None
+        if band.startswith("melee"):
+            tname = re.sub(r"^melee( with)?", "", band).strip(" |")
+            target_c = self._find(encounter_id, tname) if tname else None
+            if target_c is None:
+                rep.rejections.append({"intent": intent,
+                                       "reason": "Move into melee with whom?"})
+                return
+            cost = self._steps_between(fresh, target_c)
+            if cost == 0:
+                rep.rejections.append({"intent": intent,
+                                       "reason": f"{actor.name} is already in melee with {target_c.name}."})
+                return
+        elif band in ("near", "far"):
+            cost = abs(self._rank(fresh) - _BAND_RANK[band])
+            if cost == 0:
+                rep.rejections.append({"intent": intent,
+                                       "reason": f"{actor.name} is already {band}."})
+                return
+        else:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"Unknown position '{band_raw}' — use 'melee with <name>', 'near', or 'far'."})
+            return
+        if cost > fresh.move_left:
+            need_dash = (not fresh.action_used
+                         and cost <= fresh.move_left + 1)
+            hint = ("Dash (using the action) would get them there"
+                    if need_dash else "not reachable this turn")
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{actor.name} has {fresh.move_left} move left but needs "
+                          f"{cost} — {hint}."})
+            return
+
+        ev = {"kind": "move", "actor": actor.name, "to": band_raw, "rolls": [],
+              "notes": []}
+        # Leaving melee provokes opportunity attacks unless Disengaging.
+        leaving = self._engaged_enemies(encounter_id, fresh)
+        if leaving and not fresh.disengaging:
+            for enemy in leaving:
+                if enemy.reaction_used or (self._conds(enemy) & _CANNOT_ACT):
+                    continue
+                mprof = self._melee_profile(enemy, profiles)
+                if not mprof:
+                    continue
+                self.tracker.update_economy(enemy.id, reaction_used=True)
+                adv, dis, notes = self._attack_advantage(enemy, fresh, False, encounter_id)
+                eff_ac = self.tracker.effective_ac(fresh.id)
+                atk = attack_roll(mprof["attack_bonus"], eff_ac, advantage=adv,
+                                  disadvantage=dis,
+                                  label=f"Opportunity attack ({enemy.name})",
+                                  rng=self.rng)
+                oa_rolls = [self._roll_dict(
+                    f"Opportunity attack — {enemy.name}", atk.detail, atk.total,
+                    dc=eff_ac, success=bool(atk.hit))]
+                oa = {"kind": "opportunity_attack", "actor": enemy.name,
+                      "target": actor.name, "weapon": mprof["name"],
+                      "hit": bool(atk.hit), "rolls": oa_rolls, "notes": notes}
+                if atk.hit:
+                    dmg = damage_roll(mprof["damage"], crit=atk.is_crit, rng=self.rng)
+                    out = self.tracker.apply_damage(fresh.id, dmg.total)
+                    oa_rolls.append(self._roll_dict(
+                        f"{mprof['name']} damage", dmg.detail, dmg.total,
+                        expr=mprof["damage"]))
+                    oa["damage"] = dmg.total
+                    oa["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+                    if out.get("defeated"):
+                        oa["defeated"] = True
+                rep.events.append(oa)
+                if (self.tracker.get_combatant(fresh.id) or fresh).defeated:
+                    rep.turn_over = True
+                    rep.turn_over_reason = f"{actor.name} went down mid-move"
+                    return
+        elif leaving and fresh.disengaging:
+            ev["notes"].append("Disengaged — no opportunity attacks")
+
+        new_pos = f"melee with {target_c.name}" if target_c else band
+        self.tracker.set_position(actor.id, new_pos)
+        self.tracker.update_economy(actor.id, move_left=fresh.move_left - cost)
+        ev["steps"] = cost
+        rep.events.append(ev)
+
+    def _spend_action_or_cunning(self, actor: Combatant, rep: TurnReport,
+                                 intent: dict, profiles: dict, what: str) -> Optional[str]:
+        """Spend the action; a rogue's Cunning Action can pay with the bonus
+        action instead. Returns 'action', 'bonus', or None (rejected)."""
+        fresh = self.tracker.get_combatant(actor.id)
+        if not fresh.action_used:
+            self.tracker.update_economy(actor.id, action_used=True)
+            return "action"
+        p = profiles.get(actor.character_id) if actor.character_id else None
+        if p and "cunning action" in p.features and not fresh.bonus_used \
+                and what in ("Dash", "Disengage", "Hide"):
+            self.tracker.update_economy(actor.id, bonus_used=True)
+            return "bonus"
+        rep.rejections.append({
+            "intent": intent,
+            "reason": f"{actor.name} has already used their action this turn "
+                      f"(wanted: {what})."})
+        return None
+
+    def _do_dash(self, encounter_id, actor, intent, profiles, rep):
+        paid = self._spend_action_or_cunning(actor, rep, intent, profiles, "Dash")
+        if not paid:
+            return
+        fresh = self.tracker.get_combatant(actor.id)
+        self.tracker.update_economy(actor.id, move_left=fresh.move_left + 1)
+        rep.events.append({"kind": "dash", "actor": actor.name, "rolls": [],
+                           "notes": ["Cunning Action"] if paid == "bonus" else []})
+
+    def _do_disengage(self, encounter_id, actor, intent, profiles, rep):
+        paid = self._spend_action_or_cunning(actor, rep, intent, profiles, "Disengage")
+        if not paid:
+            return
+        self.tracker.update_economy(actor.id, disengaging=True)
+        rep.events.append({"kind": "disengage", "actor": actor.name, "rolls": [],
+                           "notes": ["Cunning Action"] if paid == "bonus" else []})
+
+    def _do_dodge(self, encounter_id, actor, intent, profiles, rep):
+        if not self._spend_action(actor, rep, intent, "Dodge"):
+            return
+        self.tracker.update_economy(actor.id, dodging=True)
+        rep.events.append({"kind": "dodge", "actor": actor.name, "rolls": []})
+
+    def _do_feature(self, encounter_id, actor, intent, profiles, rep):
+        """Activate a class feature the engine models mechanically:
+        Action Surge (regain the action), Second Wind (bonus, 1d10+level HP),
+        Rage (bonus, 'raging' condition)."""
+        name = (intent.get("arg") or intent.get("target") or "").strip().lower()
+        spec = _FEATURES.get(name)
+        p = profiles.get(actor.character_id) if actor.character_id else None
+        if spec is None:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"'{name or 'that feature'}' isn't a feature the engine "
+                          "resolves — describe it as an improvised act instead."})
+            return
+        if p is None or name not in p.features:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{actor.name} doesn't have {name.title()}."})
+            return
+        fresh = self.tracker.get_combatant(actor.id)
+        used = [u.lower() for u in (fresh.used_features or [])]
+        if spec["per_encounter"] is not None \
+                and used.count(name) >= spec["per_encounter"]:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{actor.name} has already used {name.title()} this fight."})
+            return
+        if spec["cost"] == "bonus":
+            if fresh.bonus_used:
+                rep.rejections.append({
+                    "intent": intent,
+                    "reason": f"{actor.name}'s bonus action is already spent."})
+                return
+            self.tracker.update_economy(actor.id, bonus_used=True)
+        ev = {"kind": "feature", "actor": actor.name, "feature": name.title(),
+              "rolls": [], "notes": []}
+        if name == "action surge":
+            self.tracker.update_economy(actor.id, action_used=False,
+                                        attacks_made=0)
+            ev["notes"].append("regains their action")
+        if spec.get("heal"):
+            expr = spec["heal"].format(level=p.level)
+            r = damage_roll(expr, rng=self.rng)
+            out = self.tracker.heal(actor.id, r.total)
+            ev["rolls"].append(self._roll_dict(name.title(), r.detail, r.total,
+                                               expr=expr))
+            ev["notes"].append(f"regains {r.total} HP "
+                               f"({out['current_hp']}/{out['max_hp']})")
+        if spec.get("condition"):
+            self.tracker.add_condition(actor.id, spec["condition"])
+            ev["notes"].append(spec["condition"])
+        self.tracker.update_economy(actor.id, used_features=[*used, name])
+        rep.events.append(ev)
+
+    def _do_help(self, encounter_id, actor, intent, profiles, rep):
+        ally = self._find(encounter_id, intent.get("target") or "")
+        if ally is None or ally.defeated:
+            rep.rejections.append({"intent": intent, "reason": "Help whom?"})
+            return
+        if not self._spend_action(actor, rep, intent, "Help"):
+            return
+        self.tracker.add_condition(ally.id, "helped")
+        rep.events.append({"kind": "help", "actor": actor.name,
+                           "target": ally.name, "rolls": [],
+                           "notes": [f"{ally.name}'s next attack has advantage"]})
+
+    def _do_hide(self, encounter_id, actor, intent, profiles, rep):
+        if not self._spend_action(actor, rep, intent, "Hide"):
+            return
+        mod = self._ability_mod(actor, "dex", profiles)
+        if actor.character_id and actor.character_id in profiles \
+                and "stealth" in profiles[actor.character_id].skills:
+            mod += profiles[actor.character_id].prof
+        # Contested by the sharpest enemy's passive Perception.
+        best_pp = 10
+        for other in self.tracker.order(encounter_id):
+            if other.defeated or other.id == actor.id \
+                    or self._side(other) == self._side(actor):
+                continue
+            best_pp = max(best_pp, 10 + self._ability_mod(other, "wis", profiles))
+        chk = ability_check(mod, dc=best_pp, label=f"Stealth ({actor.name})",
+                            rng=self.rng)
+        rolls = [self._roll_dict(f"Stealth — {actor.name}", chk.detail,
+                                 chk.total, dc=best_pp, success=bool(chk.success))]
+        ev = {"kind": "hide", "actor": actor.name, "success": bool(chk.success),
+              "rolls": rolls, "notes": []}
+        if chk.success:
+            self.tracker.add_condition(actor.id, "hidden")
+            ev["notes"].append("hidden — next attack has advantage")
+        rep.events.append(ev)
+
+    def _contest(self, encounter_id, actor, target, profiles,
+                 label) -> tuple[bool, list[dict]]:
+        a_mod = self._ability_mod(actor, "str", profiles)
+        if actor.character_id and actor.character_id in profiles \
+                and "athletics" in profiles[actor.character_id].skills:
+            a_mod += profiles[actor.character_id].prof
+        t_mod = max(self._ability_mod(target, "str", profiles),
+                    self._ability_mod(target, "dex", profiles))
+        a = ability_check(a_mod, label=f"{label} ({actor.name})", rng=self.rng)
+        t = ability_check(t_mod, label=f"contest ({target.name})", rng=self.rng)
+        rolls = [self._roll_dict(f"{label} — {actor.name}", a.detail, a.total),
+                 self._roll_dict(f"Contest — {target.name}", t.detail, t.total)]
+        return a.total > t.total, rolls
+
+    def _do_grapple(self, encounter_id, actor, intent, profiles, rep):
+        target = self._find(encounter_id, intent.get("target") or "")
+        if target is None or target.defeated:
+            rep.rejections.append({"intent": intent, "reason": "Grapple whom?"})
+            return
+        if self._steps_between(actor, target) > 0:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{target.name} is out of reach — move into melee first."})
+            return
+        if not self._spend_action(actor, rep, intent, "Grapple"):
+            return
+        won, rolls = self._contest(encounter_id, actor, target, profiles, "Grapple")
+        ev = {"kind": "grapple", "actor": actor.name, "target": target.name,
+              "success": won, "rolls": rolls, "notes": []}
+        if won:
+            self.tracker.add_condition(target.id, "grappled")
+        rep.events.append(ev)
+
+    def _do_shove(self, encounter_id, actor, intent, profiles, rep):
+        target = self._find(encounter_id, intent.get("target") or "")
+        if target is None or target.defeated:
+            rep.rejections.append({"intent": intent, "reason": "Shove whom?"})
+            return
+        if self._steps_between(actor, target) > 0:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{target.name} is out of reach — move into melee first."})
+            return
+        if not self._spend_action(actor, rep, intent, "Shove"):
+            return
+        won, rolls = self._contest(encounter_id, actor, target, profiles, "Shove")
+        ev = {"kind": "shove", "actor": actor.name, "target": target.name,
+              "success": won, "rolls": rolls, "notes": []}
+        if won:
+            mode = (intent.get("arg") or "prone").lower()
+            if "push" in mode or "back" in mode:
+                self.tracker.set_position(target.id, "near")
+                ev["notes"].append(f"{target.name} shoved back out of melee")
+            else:
+                self.tracker.add_condition(target.id, "prone")
+                ev["notes"].append(f"{target.name} knocked prone")
+        rep.events.append(ev)
+
+    def _do_use(self, encounter_id, actor, intent, profiles, rep):
+        item = (intent.get("arg") or intent.get("target") or "").strip()
+        low = item.lower()
+        if not self._spend_action(actor, rep, intent, f"use {item or 'an item'}"):
+            return
+        ev = {"kind": "use", "actor": actor.name, "item": item, "rolls": [],
+              "notes": []}
+        healed = next((expr for k, expr in _CONSUMABLE_HEALS.items() if k in low), None)
+        temp = next((n for k, n in _CONSUMABLE_TEMPS.items() if k in low), None)
+        if healed:
+            r = damage_roll(healed, rng=self.rng)
+            out = self.tracker.heal(actor.id, r.total)
+            ev["rolls"].append(self._roll_dict(item, r.detail, r.total, expr=healed))
+            ev["notes"].append(f"regains {r.total} HP "
+                               f"({out['current_hp']}/{out['max_hp']})")
+        elif temp:
+            self.tracker.set_temp_hp(actor.id, temp)
+            ev["notes"].append(f"gains {temp} temporary hit points")
+        else:
+            ev["notes"].append("effect adjudicated in narration")
+        rep.events.append(ev)
+
+    def _do_cast(self, encounter_id, actor, intent, profiles, rep):
+        spell_name = (intent.get("arg") or "").strip()
+        target = self._find(encounter_id, intent.get("target") or "") \
+            if intent.get("target") else None
+        with Session(self.tracker.engine) as s:
+            sp = s.exec(select(Spell).where(
+                Spell.name.ilike(spell_name))).first() if spell_name else None
+        prof = profiles.get(actor.character_id) if actor.character_id else None
+        bonus_cast = bool(sp and "bonus" in (sp.casting_time or "").lower())
+        fresh = self.tracker.get_combatant(actor.id)
+        if bonus_cast:
+            if fresh.bonus_used:
+                rep.rejections.append({
+                    "intent": intent,
+                    "reason": f"{actor.name} has already used their bonus action."})
+                return
+            self.tracker.update_economy(actor.id, bonus_used=True)
+        else:
+            if not self._spend_action(actor, rep, intent,
+                                      f"cast {spell_name or 'a spell'}"):
+                return
+        ev = {"kind": "cast", "actor": actor.name, "spell": spell_name or "a spell",
+              "target": target.name if target else None, "rolls": [], "notes": []}
+        dmg_expr = self._spell_damage(sp, prof)
+        if sp and sp.attack_type and target is not None:
+            bonus = (prof.spell_attack_bonus if prof and
+                     prof.spell_attack_bonus is not None
+                     else 2 + self._ability_mod(actor, "cha", profiles))
+            adv, dis, notes = self._attack_advantage(
+                actor, target, sp.attack_type != "melee", encounter_id)
+            eff_ac = self.tracker.effective_ac(target.id)
+            atk = attack_roll(bonus, eff_ac, advantage=adv, disadvantage=dis,
+                              label=f"{sp.name} ({actor.name})", rng=self.rng)
+            ev["rolls"].append(self._roll_dict(
+                f"{sp.name} — {actor.name}", atk.detail, atk.total,
+                dc=eff_ac, success=bool(atk.hit)))
+            ev["notes"].extend(notes)
+            ev["hit"] = bool(atk.hit)
+            if atk.hit and dmg_expr:
+                dmg = damage_roll(dmg_expr, crit=atk.is_crit, rng=self.rng)
+                out = self.tracker.apply_damage(target.id, dmg.total)
+                ev["rolls"].append(self._roll_dict(
+                    f"{sp.name} damage", dmg.detail, dmg.total, expr=dmg_expr))
+                ev["damage"] = dmg.total
+                ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+                if out.get("defeated"):
+                    ev["defeated"] = True
+        elif sp and sp.dc_type and target is not None:
+            dc = (prof.spell_dc if prof and prof.spell_dc is not None
+                  else 10 + self._ability_mod(actor, "cha", profiles))
+            t_mod = self._ability_mod(target, sp.dc_type, profiles)
+            save = saving_throw(t_mod, dc=dc,
+                                label=f"{sp.dc_type.upper()} save ({target.name})",
+                                rng=self.rng)
+            ev["rolls"].append(self._roll_dict(
+                f"{sp.dc_type.upper()} save — {target.name}", save.detail,
+                save.total, dc=dc, success=bool(save.success)))
+            ev["saved"] = bool(save.success)
+            if dmg_expr:
+                dmg = damage_roll(dmg_expr, rng=self.rng)
+                total = dmg.total
+                if save.success and (sp.dc_success or "").lower() == "half":
+                    total = dmg.total // 2
+                    ev["notes"].append("save: half damage")
+                elif save.success:
+                    total = 0
+                    ev["notes"].append("save: no effect")
+                if total > 0:
+                    out = self.tracker.apply_damage(target.id, total)
+                    ev["rolls"].append(self._roll_dict(
+                        f"{sp.name} damage", dmg.detail, total, expr=dmg_expr))
+                    ev["damage"] = total
+                    ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+                    if out.get("defeated"):
+                        ev["defeated"] = True
+        else:
+            ev["notes"].append("effect adjudicated in narration")
+        if sp and sp.concentration:
+            self.tracker.set_concentration(actor.id, sp.name)
+            ev["notes"].append(f"concentrating on {sp.name}")
+        rep.events.append(ev)
+
+    def _spell_damage(self, sp: Optional[Spell],
+                      prof: Optional[PCProfile]) -> Optional[str]:
+        if sp is None or not isinstance(sp.damage, dict):
+            return None
+        lvl = prof.level if prof else 1
+        slots = sp.damage.get("damage_at_slot_level") or {}
+        chars = sp.damage.get("damage_at_character_level") or {}
+        if slots:
+            key = min(slots.keys(), key=lambda k: int(k))
+            return slots[key]
+        if chars:
+            eligible = [int(k) for k in chars.keys() if int(k) <= max(1, lvl)]
+            key = str(max(eligible)) if eligible else min(chars.keys(), key=lambda k: int(k))
+            return chars[key]
+        return None
+
+    def _do_improvise(self, encounter_id, actor, intent, profiles, rep):
+        desc = (intent.get("arg") or "").strip()
+        ev = {"kind": "improvise", "actor": actor.name, "desc": desc,
+              "rolls": [], "notes": ["adjudicated in narration"]}
+        m = re.search(r"(str|dex|con|int|wis|cha)[a-z]*\s+(?:check\s+)?"
+                      r"(?:vs|dc)\s*(\d+)", desc.lower())
+        if m:
+            mod = self._ability_mod(actor, m.group(1), profiles)
+            chk = ability_check(mod, dc=int(m.group(2)),
+                                label=f"{m.group(1).upper()} check ({actor.name})",
+                                rng=self.rng)
+            ev["rolls"].append(self._roll_dict(
+                f"{m.group(1).upper()} check — {actor.name}", chk.detail,
+                chk.total, dc=int(m.group(2)), success=bool(chk.success)))
+            ev["success"] = bool(chk.success)
+        rep.events.append(ev)
+
+    def _do_end_turn(self, encounter_id, actor, intent, profiles, rep):
+        rep.turn_over = True
+        rep.turn_over_reason = f"{actor.name} ends their turn"
+
+    # ---------------- monster autopilot ----------------
+
+    def run_monster_turn(self, encounter_id: int,
+                         intents: Optional[list[dict]] = None,
+                         profiles: Optional[dict[int, PCProfile]] = None) -> TurnReport:
+        """Resolve the current (non-PC) creature's whole turn: proposed intents
+        first; if none land, a default AI acts. Always advances the turn."""
+        profiles = profiles or {}
+        cur = self.tracker.current_combatant(encounter_id)
+        rep = TurnReport()
+        if cur is None or cur.kind == "pc":
+            rep.rejections.append({"reason": "Not a monster's turn."})
+            return rep
+        if cur.defeated or (self._conds(cur) & _CANNOT_ACT):
+            rep.events.append({"kind": "skip", "actor": cur.name, "rolls": [],
+                               "notes": ["cannot act"]})
+            self.tracker.next_turn(encounter_id)
+            rep.turn_over = True
+            return rep
+
+        if intents:
+            rep = self.resolve(encounter_id, intents, profiles)
+        if not rep.events and not rep.turn_over:
+            # Default AI: hit whoever is in reach, else close and swing.
+            pcs = [c for c in self.tracker.order(encounter_id)
+                   if c.kind == "pc" and not c.defeated]
+            if pcs:
+                tgt = min(pcs, key=lambda p: (self._steps_between(cur, p),
+                                              p.current_hp))
+                steps = self._steps_between(cur, tgt)
+                seq: list[dict] = []
+                has_ranged = any(a["ranged"] for a in self._monster_attacks(cur))
+                if steps == 0:
+                    seq = [{"verb": "attack", "actor": cur.name, "target": tgt.name}]
+                elif steps <= 1:
+                    seq = [{"verb": "move", "actor": cur.name,
+                            "arg": f"melee with {tgt.name}"},
+                           {"verb": "attack", "actor": cur.name, "target": tgt.name}]
+                elif has_ranged:
+                    seq = [{"verb": "attack", "actor": cur.name, "target": tgt.name,
+                            "arg": "ranged"}]
+                else:
+                    seq = [{"verb": "dash", "actor": cur.name},
+                           {"verb": "move", "actor": cur.name, "arg": "near"}]
+                rep = self.resolve(encounter_id, seq, profiles)
+        if not rep.turn_over:
+            self.tracker.next_turn(encounter_id)
+            rep.turn_over = True
+        return rep
+
+    # ---------------- report rendering ----------------
+
+    @staticmethod
+    def render_report(rep: TurnReport) -> str:
+        """Certified-results text for the narration prompt."""
+        lines: list[str] = []
+        for e in rep.events:
+            k = e["kind"]
+            if k in ("attack", "opportunity_attack", "cast"):
+                what = e.get("weapon") or e.get("spell") or "attack"
+                head = ("OPPORTUNITY ATTACK" if k == "opportunity_attack"
+                        else "CAST" if k == "cast" else "ATTACK")
+                if "hit" in e:
+                    res = "HIT" if e["hit"] else "MISS"
+                    if e.get("crit"):
+                        res = "CRITICAL HIT"
+                    line = (f"{head}: {e['actor']} — {what} vs "
+                            f"{e.get('target') or '—'}: {res}")
+                elif "saved" in e:
+                    line = (f"{head}: {e['actor']} — {what} vs {e.get('target')}: "
+                            f"{'SAVED' if e['saved'] else 'FAILED SAVE'}")
+                else:
+                    line = f"{head}: {e['actor']} — {what}"
+                if e.get("damage") is not None:
+                    line += f", {e['damage']} damage ({e.get('target_hp', '?')} HP)"
+                if e.get("defeated"):
+                    line += f" — {e['target']} goes DOWN"
+                if e.get("concentration_dc"):
+                    line += (f" [concentration check DC "
+                             f"{e['concentration_dc']} pending]")
+                if e.get("notes"):
+                    line += f" [{'; '.join(e['notes'])}]"
+                lines.append(line)
+            elif k == "move":
+                n = f" ({'; '.join(e['notes'])})" if e.get("notes") else ""
+                lines.append(f"MOVE: {e['actor']} -> {e['to']}{n}")
+            elif k in ("dash", "dodge", "disengage"):
+                lines.append(f"{k.upper()}: {e['actor']}")
+            elif k in ("grapple", "shove", "hide"):
+                res = "succeeds" if e.get("success") else "fails"
+                n = f" ({'; '.join(e['notes'])})" if e.get("notes") else ""
+                lines.append(f"{k.upper()}: {e['actor']}"
+                             + (f" vs {e['target']}" if e.get("target") else "")
+                             + f" — {res}{n}")
+            elif k == "feature":
+                n = f" — {'; '.join(e['notes'])}" if e.get("notes") else ""
+                lines.append(f"FEATURE: {e['actor']} uses {e['feature']}{n}")
+            elif k == "help":
+                lines.append(f"HELP: {e['actor']} aids {e['target']} "
+                             f"({'; '.join(e.get('notes') or [])})")
+            elif k == "use":
+                n = f" — {'; '.join(e['notes'])}" if e.get("notes") else ""
+                lines.append(f"USE: {e['actor']} uses {e.get('item')}{n}")
+            elif k == "improvise":
+                res = ("" if e.get("success") is None
+                       else f" — {'succeeds' if e['success'] else 'fails'}")
+                lines.append(f"IMPROVISED: {e['actor']}: {e.get('desc')}{res}")
+            elif k == "skip":
+                lines.append(f"SKIP: {e['actor']} ({'; '.join(e.get('notes') or [])})")
+        for r in rep.rejections:
+            lines.append(f"REFUSED: {r['reason']}")
+        if rep.turn_over:
+            lines.append(f"TURN OVER ({rep.turn_over_reason or 'ended'})")
+        elif rep.remaining:
+            rem = rep.remaining
+            bits = []
+            if rem.get("action"):
+                bits.append("action")
+            if rem.get("bonus"):
+                bits.append("bonus action")
+            if rem.get("move_steps"):
+                bits.append(f"movement ({rem['move_steps']} step"
+                            f"{'s' if rem['move_steps'] != 1 else ''})")
+            for opt in rem.get("options") or []:
+                bits.append(opt)
+            lines.append("TURN STILL OPEN — remaining: "
+                         + (", ".join(bits) if bits else "nothing (declare end of turn)"))
+        return "\n".join(lines)
