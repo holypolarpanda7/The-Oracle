@@ -1764,6 +1764,66 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         spell_mod=cast_key)
 
 
+# ---- deterministic pre-parser: the common phrasings never need an LLM ----
+# Conservative by design: a pattern only fires when the WHOLE message is one
+# simple declaration; anything compound or fuzzy goes to the intent model.
+
+_PRE_END = re.compile(
+    r"^\W*((i\s+)?(end|finish)\s+(my\s+)?turn|(i'?m\s+)?done( for now)?|"
+    r"that'?s\s+(my|the)\s+turn|i\s+(wait|hold|brace)(\s.*)?)\W*$", re.IGNORECASE)
+_PRE_SIMPLE = {
+    "dodge": re.compile(r"^\W*(i\s+)?(take\s+the\s+)?dodge(\s+action)?\W*$", re.IGNORECASE),
+    "dash": re.compile(r"^\W*(i\s+)?dash\W*$", re.IGNORECASE),
+    "disengage": re.compile(r"^\W*(i\s+)?disengage\W*$", re.IGNORECASE),
+    "hide": re.compile(r"^\W*(i\s+)?(hide|take\s+the\s+hide\s+action)\W*$", re.IGNORECASE),
+}
+_PRE_ATTACK = re.compile(
+    r"^\W*(i\s+)?(attack|strike|stab|swing\s+at|slash(\s+at)?|shoot(\s+at)?|hit|"
+    r"loose\s+an?\s+\w+\s+at|fire\s+at)\s+(the\s+)?(?P<target>[\w\s'\-]+?)"
+    r"(\s+with\s+(my\s+)?(?P<weapon>[\w\s'\-]+?))?\W*$", re.IGNORECASE)
+_PRE_CHARGE = re.compile(
+    r"^\W*(i\s+)?(charge|close\s+with|move\s+(in)?to\s+melee\s+with|engage)\s+"
+    r"(the\s+)?(?P<target>[\w\s'\-]+?)\W*$", re.IGNORECASE)
+_PRE_RETREAT = re.compile(
+    r"^\W*(i\s+)?(retreat|fall\s+back|back\s+away|back\s+off)\W*$", re.IGNORECASE)
+
+_COMBAT_INTENT_STATS = {"preparsed": 0, "llm": 0, "none": 0, "parse_fail": 0}
+
+
+def _combat_preparse(message: str, my_name: str,
+                     encounter_id: int) -> Optional[list[dict]]:
+    """Translate an unambiguous single-act message into intents without an LLM
+    call. Returns None whenever there is any doubt — the model handles those."""
+    msg = (message or "").strip()
+    if _PRE_END.match(msg):
+        return [{"verb": "end_turn", "actor": my_name}]
+    for verb, pat in _PRE_SIMPLE.items():
+        if pat.match(msg):
+            return [{"verb": verb, "actor": my_name}]
+    m = _PRE_ATTACK.match(msg)
+    if m:
+        target = _combat_find(encounter_id, m.group("target"))
+        if target is not None and not target.defeated:
+            intent = {"verb": "attack", "actor": my_name, "target": target.name}
+            if m.group("weapon"):
+                intent["arg"] = m.group("weapon").strip()
+            return [intent]
+        return None  # named someone we can't resolve — let the model try
+    m = _PRE_CHARGE.match(msg)
+    if m:
+        target = _combat_find(encounter_id, m.group("target"))
+        if target is not None and not target.defeated:
+            return [{"verb": "move", "actor": my_name,
+                     "arg": f"melee with {target.name}"}]
+        return None
+    if _PRE_RETREAT.match(msg):
+        me = _combat_find(encounter_id, my_name)
+        band = "near" if me is not None and \
+            (me.position or "").lower().startswith("melee") else "far"
+        return [{"verb": "move", "actor": my_name, "arg": band}]
+    return None
+
+
 _COMBAT_INTENT_SYSTEM = (
     "You translate ONE player's combat declaration into structured intents for a "
     "rules engine. Output ONLY intent lines, one act per line, in the order "
@@ -1784,6 +1844,31 @@ _COMBAT_INTENT_SYSTEM = (
     "'I brace'), append [[INTENT: end_turn]].\n"
     "- If the message is NOT a combat act at all (a question, table talk, looking "
     "around), output exactly [[INTENT: none]].\n"
+    "\n"
+    "Examples:\n"
+    "Player says: I rush the bandit leader and hit him with everything, then duck "
+    "behind the cart\n"
+    "Intents:\n"
+    "[[INTENT: move | melee with Bandit Leader]]\n"
+    "[[INTENT: attack | Bandit Leader]]\n"
+    "[[INTENT: move | near]]\n"
+    "\n"
+    "Player says: I drink my healing potion and back off — that's my turn\n"
+    "Intents:\n"
+    "[[INTENT: use | Potion of Healing]]\n"
+    "[[INTENT: move | near]]\n"
+    "[[INTENT: end_turn]]\n"
+    "\n"
+    "Player says: I cast hold person on the cultist and use action surge to "
+    "attack him too\n"
+    "Intents:\n"
+    "[[INTENT: cast | Hold Person | Cultist]]\n"
+    "[[INTENT: feature | action surge]]\n"
+    "[[INTENT: attack | Cultist]]\n"
+    "\n"
+    "Player says: wait, how many goblins are left?\n"
+    "Intents:\n"
+    "[[INTENT: none]]\n"
 )
 
 INTENT_PATTERN = re.compile(r"\[\[INTENT:(.+?)\]\]", re.IGNORECASE)
@@ -1841,7 +1926,11 @@ def _combat_extract_intents(my_name: str, remaining: dict, board: str,
     except Exception as e:
         print(f"[combat-engine] intent extraction failed: {e}")
         return None
-    return _parse_intents(out, my_name)
+    parsed = _parse_intents(out, my_name)
+    if parsed is None and "[[INTENT" in (out or "") \
+            and "none" not in (out or "").lower():
+        _COMBAT_INTENT_STATS["parse_fail"] += 1
+    return parsed
 
 
 def _combat_fight_over(encounter_id: int) -> Optional[str]:
@@ -1908,9 +1997,17 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
         remaining = {"action": not fresh.action_used,
                      "bonus": not fresh.bonus_used,
                      "move_steps": max(0, fresh.move_left)}
-    intents = _combat_extract_intents(
-        my.name, remaining, combat.render(enc.id),
-        profiles.get(char_id), message)
+    # Cheap deterministic path first: simple declarations never need the model.
+    intents = _combat_preparse(message, my.name, enc.id)
+    if intents is not None:
+        _COMBAT_INTENT_STATS["preparsed"] += 1
+    else:
+        intents = _combat_extract_intents(
+            my.name, remaining, combat.render(enc.id),
+            profiles.get(char_id), message)
+        _COMBAT_INTENT_STATS["llm" if intents else "none"] += 1
+    print(f"[combat-intents] {_COMBAT_INTENT_STATS} :: "
+          f"{[i['verb'] for i in intents] if intents else 'no-act'}")
     if intents is None:
         return None  # not a combat act — normal narration flow handles it
 
