@@ -246,6 +246,7 @@ class CombatTracker:
             c.dodging = False
             c.disengaging = False
             c.attacks_made = 0
+            c.sneak_used = False
             s.add(c)
             s.commit()
             s.refresh(c)
@@ -256,7 +257,7 @@ class CombatTracker:
         move_left, dodging, disengaging) on a combatant."""
         allowed = {"action_used", "bonus_used", "reaction_used",
                    "move_left", "dodging", "disengaging", "attacks_made",
-                   "used_features"}
+                   "sneak_used", "used_features"}
         with Session(self.engine) as s:
             c = s.get(Combatant, combatant_id)
             if not c:

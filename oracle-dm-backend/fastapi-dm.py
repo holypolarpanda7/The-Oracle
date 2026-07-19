@@ -301,6 +301,7 @@ async def lifespan(app: FastAPI):
                                      ("dodging", "BOOLEAN DEFAULT 0"),
                                      ("disengaging", "BOOLEAN DEFAULT 0"),
                                      ("attacks_made", "INTEGER DEFAULT 0"),
+                                     ("sneak_used", "BOOLEAN DEFAULT 0"),
                                      ("used_features", "JSON")]:
                         if col not in cb_existing:
                             conn.exec_driver_sql(
@@ -1735,7 +1736,7 @@ def _combat_pc_profile(char: Character) -> PCProfile:
             else mods["str"]
         dmg = row.damage_dice + (f"{mod:+d}" if mod else "")
         weapons.append(PCWeapon(name=row.name, attack_bonus=pb + mod,
-                                damage=dmg, ranged=ranged))
+                                damage=dmg, ranged=ranged, finesse=finesse))
     cls = (char.char_class or "").strip().lower()
     lvl = char.level
     if cls == "fighter":
@@ -1749,10 +1750,14 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         features.add("second wind")
         if lvl >= 2:
             features.add("action surge")
-    if cls == "rogue" and lvl >= 2:
-        features.add("cunning action")
+    if cls == "rogue":
+        features.add("sneak attack")
+        if lvl >= 2:
+            features.add("cunning action")
     if cls == "barbarian":
         features.add("rage")
+    if cls == "paladin" and lvl >= 2:
+        features.add("divine smite")
     if cls == "monk":
         features.add("bonus attack")
     cast_key = _CASTING_ABILITY.get(cls)
@@ -1835,7 +1840,8 @@ _COMBAT_INTENT_SYSTEM = (
     "You translate ONE player's combat declaration into structured intents for a "
     "rules engine. Output ONLY intent lines, one act per line, in the order "
     "declared — no prose, no commentary:\n"
-    "[[INTENT: attack | <target> | <weapon>]]\n"
+    "[[INTENT: attack | <target> | <weapon> | <rider: 'smite' or 'smite 2' when a "
+    "paladin declares Divine Smite>]]\n"
     "[[INTENT: move | melee with <name>]]  or  [[INTENT: move | near]] / [[INTENT: move | far]]\n"
     "[[INTENT: dash]]  [[INTENT: disengage]]  [[INTENT: dodge]]  [[INTENT: hide]]\n"
     "[[INTENT: help | <ally>]]  [[INTENT: grapple | <target>]]  "

@@ -50,6 +50,7 @@ class PCWeapon:
     attack_bonus: int
     damage: str                  # e.g. "1d8+3"
     ranged: bool = False
+    finesse: bool = False        # Sneak Attack qualifies on finesse or ranged
 
 
 @dataclass
@@ -166,6 +167,21 @@ class CombatEngine:
                 out.append(other)
         return out
 
+    def _ally_engaged_with(self, encounter_id: int, attacker: Combatant,
+                           target: Combatant) -> bool:
+        """An able ally of the attacker is within 5 ft of the target (the
+        Sneak Attack ally condition)."""
+        for other in self.tracker.order(encounter_id):
+            if other.id in (attacker.id, target.id) or other.defeated:
+                continue
+            if self._side(other) != self._side(attacker):
+                continue
+            if self._conds(other) & _CANNOT_ACT:
+                continue
+            if self._engaged_with(other, target):
+                return True
+        return False
+
     # ---------------- creature capability lookup ----------------
 
     def _monster(self, c: Combatant) -> Optional[Monster]:
@@ -226,22 +242,21 @@ class CombatEngine:
         if c.character_id and c.character_id in profiles:
             p = profiles[c.character_id]
             pool = p.weapons or []
+
+            def as_dict(cand: PCWeapon) -> dict:
+                return {"name": cand.name, "attack_bonus": cand.attack_bonus,
+                        "damage": cand.damage, "ranged": cand.ranged,
+                        "finesse": cand.finesse}
+
             for cand in pool:
                 if w and w in cand.name.lower():
-                    return {"name": cand.name, "attack_bonus": cand.attack_bonus,
-                            "damage": cand.damage, "ranged": cand.ranged}
-            if w in ("unarmed", "fist", "punch", "") and not pool:
-                stray = p.ability_mods.get("str", 0)
-                return {"name": "Unarmed strike",
-                        "attack_bonus": p.prof + stray,
-                        "damage": f"1+{stray}" if stray > 0 else "1",
-                        "ranged": False}
-            if pool:
-                return {"name": pool[0].name, "attack_bonus": pool[0].attack_bonus,
-                        "damage": pool[0].damage, "ranged": pool[0].ranged}
+                    return as_dict(cand)
+            if pool and w not in ("unarmed", "fist", "punch"):
+                return as_dict(pool[0])
             stray = p.ability_mods.get("str", 0)
             return {"name": "Unarmed strike", "attack_bonus": p.prof + stray,
-                    "damage": f"1+{stray}" if stray > 0 else "1", "ranged": False}
+                    "damage": f"1+{stray}" if stray > 0 else "1",
+                    "ranged": False, "finesse": False}
         pool = self._monster_attacks(c)
         if not pool:
             return None
@@ -256,7 +271,8 @@ class CombatEngine:
             for cand in profiles[c.character_id].weapons:
                 if not cand.ranged:
                     return {"name": cand.name, "attack_bonus": cand.attack_bonus,
-                            "damage": cand.damage, "ranged": False}
+                            "damage": cand.damage, "ranged": False,
+                            "finesse": cand.finesse}
             return self._attack_profile(c, "unarmed", profiles)
         for cand in self._monster_attacks(c):
             if not cand["ranged"]:
@@ -515,10 +531,59 @@ class CombatEngine:
             self.tracker.remove_condition(actor.id, "helped")
         if atk.hit:
             dmg = damage_roll(prof["damage"], crit=atk.is_crit, rng=self.rng)
-            out = self.tracker.apply_damage(target.id, dmg.total)
+            total = dmg.total
             rolls.append(self._roll_dict(f"{prof['name']} damage", dmg.detail,
                                          dmg.total, expr=prof["damage"]))
-            ev["damage"] = dmg.total
+
+            # Sneak Attack — auto-applied once per turn when the rogue
+            # qualifies: finesse/ranged weapon, and either advantage or an
+            # able ally engaged with the target (and no disadvantage).
+            fresh2 = self.tracker.get_combatant(actor.id)
+            if (pc_prof and "sneak attack" in pc_prof.features
+                    and not fresh2.sneak_used
+                    and (prof.get("finesse") or prof.get("ranged"))
+                    and not dis
+                    and (adv or self._ally_engaged_with(encounter_id, actor, target))):
+                ndice = (pc_prof.level + 1) // 2
+                sneak = damage_roll(f"{ndice}d6", crit=atk.is_crit, rng=self.rng)
+                total += sneak.total
+                rolls.append(self._roll_dict("Sneak Attack", sneak.detail,
+                                             sneak.total, expr=f"{ndice}d6"))
+                notes.append(f"Sneak Attack +{sneak.total}")
+                self.tracker.update_economy(actor.id, sneak_used=True)
+
+            # Divine Smite — a declared rider on a melee hit, fueled by a slot.
+            rider = (intent.get("rider") or "").lower()
+            if (pc_prof and "divine smite" in pc_prof.features
+                    and "smite" in rider and not prof.get("ranged")):
+                avail = {lv: n for lv, n in (pc_prof.slots or {}).items() if n > 0}
+                m = re.search(r"\d+", rider)
+                want = int(m.group()) if m else None
+                lv = want if (want and avail.get(want)) else \
+                    (min(avail) if avail else None)
+                if lv is None:
+                    notes.append("wanted to Smite but has no spell slot left")
+                else:
+                    pc_prof.slots[lv] = max(0, pc_prof.slots[lv] - 1)
+                    ndice = min(5, 1 + lv)  # 2d8 at 1st, +1d8/slot level, cap 5d8
+                    sm = damage_roll(f"{ndice}d8", crit=atk.is_crit, rng=self.rng)
+                    total += sm.total
+                    ev["slot_spent"] = lv
+                    rolls.append(self._roll_dict(f"Divine Smite (L{lv})",
+                                                 sm.detail, sm.total,
+                                                 expr=f"{ndice}d8"))
+                    notes.append(f"Divine Smite +{sm.total} (level-{lv} slot)")
+
+            # Rage — flat bonus on melee damage while raging.
+            if (pc_prof and "rage" in pc_prof.features
+                    and not prof.get("ranged")
+                    and "raging" in self._conds(actor)):
+                rb = 2 if pc_prof.level < 9 else 3 if pc_prof.level < 16 else 4
+                total += rb
+                notes.append(f"Rage +{rb}")
+
+            out = self.tracker.apply_damage(target.id, total)
+            ev["damage"] = total
             ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
             if out.get("defeated"):
                 ev["defeated"] = True

@@ -115,6 +115,8 @@ class Combatant(SQLModel, table=True):
     # Attacks taken from the current Attack action (Extra Attack / Multiattack
     # allow several per action). Turn-scoped.
     attacks_made: int = Field(default=0, sa_column=Column(Integer))
+    # Sneak Attack lands once per turn. Turn-scoped.
+    sneak_used: bool = Field(default=False, sa_column=Column(Boolean))
     # Encounter-scoped feature uses ("action surge", "second wind", ...) so
     # once-per-fight resources can't be double-spent. list[str].
     used_features: Optional[Any] = Field(default=None, sa_column=Column(JSON))
