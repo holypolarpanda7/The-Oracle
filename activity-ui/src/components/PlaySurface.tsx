@@ -4,7 +4,8 @@ import { CharacterSheet } from "./CharacterSheet";
 import { IconDefs } from "./icons";
 import { RevealedSpans, type Block } from "./Narration";
 import { useResizable, resetAllPanels } from "../lib/useResizable";
-import type { Ally, SheetData } from "../lib/types";
+import { InitiativeCarousel } from "./InitiativeCarousel";
+import type { Ally, CombatState, SheetData } from "../lib/types";
 
 const SCROLL = "/assets/scrolls/parchment.webp";
 
@@ -46,6 +47,7 @@ export interface PlayProps {
   sheet: SheetData | null;
   sceneUrl: string | null;
   party: Ally[];
+  combat: CombatState | null;
   input: string;
   setInput: (v: string) => void;
   submit: () => void;
@@ -71,6 +73,7 @@ export function PlaySurface(p: PlayProps) {
   return (
     <div className="play">
       <IconDefs />
+      {p.combat && <InitiativeCarousel combat={p.combat} />}
       <div className="play-surface">
         <div className="stage">
           <Frame className="scene" panel={scene}>

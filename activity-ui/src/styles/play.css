@@ -22,6 +22,94 @@
 .play .stage { display: flex; flex-direction: column; gap: 22px; }
 .play aside { display: flex; flex-direction: column; align-self: stretch; }
 
+/* ---------- initiative carousel (BG3-style, appears while a fight is live) --- */
+.play .combat-strip {
+  /* pinned to the top of the scrolling play surface while the fight lasts */
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  max-width: 1180px;
+  margin: 0 auto 22px;
+  padding: 10px 14px 12px;
+  border: 1px solid color-mix(in srgb, var(--crimson) 45%, var(--gold-dim));
+  border-radius: 6px;
+  background:
+    radial-gradient(140% 120% at 50% -20%, rgba(210, 56, 67, 0.16), transparent 55%),
+    linear-gradient(180deg, rgba(19, 26, 46, 0.92), rgba(9, 12, 21, 0.94));
+  box-shadow: inset 0 0 26px rgba(0, 0, 0, 0.5), 0 10px 26px rgba(0, 0, 0, 0.5);
+  animation: cs-slide 0.35s ease-out;
+}
+@keyframes cs-slide {
+  from { opacity: 0; transform: translateY(-14px); }
+  to { opacity: 1; transform: none; }
+}
+.play .cs-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 9px; }
+.play .cs-round {
+  font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--crimson);
+  text-shadow: 0 0 8px rgba(210, 56, 67, 0.55);
+}
+.play .cs-title { font-family: var(--serif); font-size: 0.92rem; color: var(--gold-2);
+  font-style: italic; text-shadow: 0 1px 4px #000; }
+.play .cs-cards { display: flex; gap: 8px; overflow-x: auto; padding: 6px 2px 4px;
+  scrollbar-width: thin; }
+.play .cs-card {
+  position: relative; flex: none; width: 96px; padding: 14px 8px 8px;
+  border: 1px solid var(--edge); border-radius: 5px; text-align: center;
+  background: radial-gradient(120% 90% at 50% 0%, rgba(23, 33, 66, 0.9), rgba(8, 12, 22, 0.92));
+  transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+.play .cs-card.kind-monster { border-color: color-mix(in srgb, var(--crimson) 40%, var(--edge)); }
+.play .cs-card.kind-npc { border-color: color-mix(in srgb, var(--amethyst) 40%, var(--edge)); }
+.play .cs-card.kind-pc { border-color: color-mix(in srgb, var(--teal) 35%, var(--edge)); }
+.play .cs-card.active {
+  transform: translateY(-4px) scale(1.06);
+  border-color: var(--gold);
+  box-shadow: 0 0 16px rgba(230, 188, 100, 0.45), 0 8px 18px rgba(0, 0, 0, 0.55);
+  z-index: 1;
+}
+.play .cs-card.down { filter: grayscale(1); opacity: 0.45; }
+.play .cs-init {
+  position: absolute; top: -8px; left: -6px; min-width: 20px; height: 20px;
+  display: grid; place-items: center; padding: 0 4px; border-radius: 50%;
+  font-family: var(--mono); font-size: 0.62rem; color: #fff;
+  background: radial-gradient(circle at 35% 30%, #e46a73, var(--crimson));
+  border: 1px solid var(--gold-dim); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+.play .cs-card.kind-pc .cs-init { background: radial-gradient(circle at 35% 30%, #6bf0d3, #14907a); }
+.play .cs-face {
+  width: 44px; height: 44px; margin: 0 auto 5px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: radial-gradient(circle at 38% 30%, #232f52, #0a0e1c 75%);
+  border: 1px solid var(--gold-dim);
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.7);
+}
+.play .cs-mono { font-family: var(--serif); font-size: 1.02rem; color: var(--gold-2);
+  text-shadow: 0 0 8px rgba(230, 188, 100, 0.4); }
+.play .cs-card.down .cs-mono { font-size: 1.2rem; }
+.play .cs-nm {
+  font-family: var(--serif); font-size: 0.7rem; color: #e8eef0; margin-bottom: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 3px #000;
+}
+.play .cs-bar { position: relative; height: 7px; border-radius: 4px;
+  background: rgba(8, 11, 20, 0.85); border: 1px solid var(--edge); }
+.play .cs-bar .hp-fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; z-index: 1;
+  background: linear-gradient(90deg, #a8214d, var(--hp)); transition: width 0.5s ease; }
+.play .cs-bar.hurt .hp-fill { background: linear-gradient(90deg, #a86a14, var(--ember)); }
+.play .cs-bar.dire .hp-fill { background: linear-gradient(90deg, #7a1a20, var(--crimson)); }
+.play .cs-bar.has-temp .hp-fill { border-radius: 4px 0 0 4px; }
+.play .cs-bar .hp-temp { position: absolute; top: -1px; bottom: -1px; z-index: 1;
+  border-radius: 0 4px 4px 0; background: linear-gradient(90deg, #dbe7f5, #fff);
+  box-shadow: 0 0 7px rgba(255, 255, 255, 0.6); transition: left 0.5s ease, width 0.5s ease; }
+.play .cs-conds { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; margin-top: 6px; }
+.play .cs-cond {
+  font-family: var(--mono); font-size: 0.5rem; letter-spacing: 0.06em; text-transform: uppercase;
+  color: #d9b8ff; background: rgba(154, 107, 255, 0.14);
+  border: 1px solid color-mix(in srgb, var(--amethyst) 45%, var(--edge));
+  border-radius: 3px; padding: 1px 4px; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* ---------- ornate frame (shared by scene + sheet) ---------- */
 .play .cframe {
   position: relative;

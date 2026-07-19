@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { connect, type Connection } from "./lib/connection";
 import type {
-  Ally, CCPayload, CharacterSummary, LevelUpData, LexEntry, ServerEvent,
-  SheetData,
+  Ally, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry,
+  ServerEvent, SheetData,
 } from "./lib/types";
 import { Block, makeOracleBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
@@ -33,6 +33,7 @@ export default function App({ session }: { session: Session }) {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [sheet, setSheet] = useState<SheetData | null>(null);
   const [party, setParty] = useState<Ally[]>([]);
+  const [combat, setCombat] = useState<CombatState | null>(null);
   const [sceneUrl, setSceneUrl] = useState<string | null>(null);
   const [levelUp, setLevelUp] = useState<LevelUpData | null>(null);
   const [busy, setBusy] = useState(false);
@@ -112,6 +113,9 @@ export default function App({ session }: { session: Session }) {
           break;
         case "party":
           setParty(ev.members);
+          break;
+        case "combat":
+          setCombat(ev.encounter);
           break;
         case "scene":
           setSceneUrl(ev.url);
@@ -269,6 +273,7 @@ export default function App({ session }: { session: Session }) {
               sheet={sheet}
               sceneUrl={sceneUrl}
               party={party}
+              combat={combat}
               input={input}
               setInput={setInput}
               submit={submit}

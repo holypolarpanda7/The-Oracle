@@ -86,6 +86,31 @@ export interface Ally {
   condition?: string;
 }
 
+/** One creature on the initiative tracker (mirrors combat.state()). */
+export interface CombatantView {
+  id: number;
+  name: string;
+  kind: string; // "pc" | "npc" | "monster"
+  character_id?: number | null;
+  initiative: number;
+  max_hp: number;
+  current_hp: number;
+  temp_hp: number;
+  armor_class?: number | null;
+  conditions: string[];
+  concentration?: string | null;
+  defeated: boolean;
+}
+
+/** Live encounter state for the initiative carousel (null = no fight). */
+export interface CombatState {
+  id: number;
+  name: string;
+  round: number;
+  current_combatant_id: number | null;
+  combatants: CombatantView[];
+}
+
 export interface SubclassFeature {
   level: number;
   name: string;
@@ -134,6 +159,7 @@ export type ServerEvent =
   | { t: "roll"; roll: RollResult }
   | { t: "sheet"; sheet: SheetData }
   | { t: "party"; members: Ally[] }
+  | { t: "combat"; encounter: CombatState | null }
   | { t: "scene"; url: string }
   | { t: "item_detail"; item: ItemDetail }
   | { t: "item_image"; name: string; url: string }

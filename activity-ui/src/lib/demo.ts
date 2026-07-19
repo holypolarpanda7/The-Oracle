@@ -1,4 +1,4 @@
-import type { ServerEvent } from "./types";
+import type { CombatState, ServerEvent } from "./types";
 
 /** Standalone demo feed — lets the whole UI run with no backend, and doubles
     as living documentation of the event protocol. */
@@ -75,6 +75,37 @@ const party: ServerEvent = {
     { name: "Pip", hp: 9, hp_max: 18, condition: "poisoned" },
   ],
 };
+
+/* Demo initiative carousel: first attack opens the fight, the next one downs
+   a goblin, the third ends it. Mirrors the backend's {t:"combat"} events. */
+let demoCombatStage = 0;
+
+function demoEncounter(stage: number): CombatState {
+  const warriorDown = stage >= 2;
+  return {
+    id: 1,
+    name: "Skirmish at the Wispering Mill",
+    round: stage >= 2 ? 2 : 1,
+    current_combatant_id: stage >= 2 ? 2 : 3,
+    combatants: [
+      { id: 3, name: "Goblin Warrior", kind: "monster", initiative: 17,
+        max_hp: 7, current_hp: warriorDown ? 0 : 7, temp_hp: 0, armor_class: 15,
+        conditions: [], defeated: warriorDown },
+      { id: 2, name: "Kara", kind: "pc", initiative: 14, character_id: 1,
+        max_hp: 28, current_hp: stage >= 1 ? 17 : 21, temp_hp: 12, armor_class: 14,
+        conditions: [], defeated: false },
+      { id: 4, name: "Brother Aldous", kind: "pc", initiative: 11,
+        max_hp: 24, current_hp: 17, temp_hp: 0, armor_class: 16,
+        conditions: [], concentration: "Bless", defeated: false },
+      { id: 5, name: "Goblin Skulker", kind: "monster", initiative: 8,
+        max_hp: 7, current_hp: 7, temp_hp: 0, armor_class: 13,
+        conditions: stage >= 2 ? ["frightened"] : [], defeated: false },
+      { id: 6, name: "Pip", kind: "pc", initiative: 6,
+        max_hp: 18, current_hp: 9, temp_hp: 0, armor_class: 12,
+        conditions: ["poisoned"], defeated: false },
+    ],
+  };
+}
 
 export const demoScript = {
   hello: {
@@ -172,32 +203,68 @@ export const demoScript = {
         },
       ];
     }
-    if (/shoot|attack|fire|loose/i.test(action)) {
-      return [
-        {
-          t: "roll",
-          roll: {
-            expr: "1d20+7", label: "Longbow attack", dc: 15,
-            total: 9, detail: "d20:2 +7", success: false,
+    if (/shoot|attack|fire|loose|stab|strike|swing|kill/i.test(action)) {
+      if (demoCombatStage === 0) {
+        demoCombatStage = 1;
+        return [
+          {
+            t: "roll",
+            roll: {
+              expr: "1d20+7", label: "Longbow attack", dc: 15,
+              total: 9, detail: "d20:2 +7", success: false,
+            },
           },
-        },
+          {
+            t: "narration",
+            text:
+              "The arrow skips off the doorframe with a crack like a snapped branch. " +
+              "Both goblins spin. The nearer one snarls something ugly and hurls a " +
+              "rusted hatchet — Kara takes 4 damage as it grazes her shoulder before " +
+              "burying itself in the alder behind her.\n\n" +
+              "⚔ Initiative — Goblin Warrior 17, Kara 14, Brother Aldous 11, " +
+              "Goblin Skulker 8, Pip 6",
+          },
+          { t: "combat", encounter: demoEncounter(1) },
+          { t: "sheet", sheet: { ...(sheet as any).sheet, hp: 17 } },
+          {
+            t: "party",
+            members: [
+              { name: "Kara", hp: 17, hp_max: 28 },
+              { name: "Brother Aldous", hp: 17, hp_max: 24 },
+              { name: "Pip", hp: 9, hp_max: 18, condition: "poisoned" },
+            ],
+          },
+        ];
+      }
+      if (demoCombatStage === 1) {
+        demoCombatStage = 2;
+        return [
+          {
+            t: "roll",
+            roll: {
+              expr: "1d20+7", label: "Rapier attack", dc: 15,
+              total: 22, detail: "d20:15 +7", success: true,
+            },
+          },
+          {
+            t: "narration",
+            text:
+              "Kara's rapier finds the gap under the warrior's chin and it drops " +
+              "where it stands. The skulker's eyes go wide — it backs toward the " +
+              "millstone, blade shaking.",
+          },
+          { t: "combat", encounter: demoEncounter(2) },
+        ];
+      }
+      demoCombatStage = 0;
+      return [
         {
           t: "narration",
           text:
-            "The arrow skips off the doorframe with a crack like a snapped branch. " +
-            "Both goblins spin. The nearer one snarls something ugly and hurls a " +
-            "rusted hatchet — Kara takes 4 damage as it grazes her shoulder before " +
-            "burying itself in the alder behind her.",
+            "The skulker bolts through a gap in the mill's boards and is gone " +
+            "into the dark. The wheel creaks on, indifferent.\n\n⚔ The fight is over.",
         },
-        { t: "sheet", sheet: { ...(sheet as any).sheet, hp: 17 } },
-        {
-          t: "party",
-          members: [
-            { name: "Kara", hp: 17, hp_max: 28 },
-            { name: "Brother Aldous", hp: 17, hp_max: 24 },
-            { name: "Pip", hp: 9, hp_max: 18, condition: "poisoned" },
-          ],
-        },
+        { t: "combat", encounter: null },
       ];
     }
     return [
