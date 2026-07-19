@@ -208,8 +208,12 @@ class CombatTracker:
         *,
         reroll: bool = False,
         rng: Optional[random.Random] = None,
+        reset_turn: bool = True,
     ) -> list[Combatant]:
-        """Roll d20 + DEX mod for combatants (only those unset unless ``reroll``)."""
+        """Roll d20 + DEX mod for combatants (only those unset unless ``reroll``).
+
+        ``reset_turn=False`` keeps the current round/turn — for rolling in
+        mid-fight reinforcements without restarting the fight."""
         rng = rng or random
         with Session(self.engine) as s:
             combatants = self._combatants(s, encounter_id)
@@ -218,7 +222,7 @@ class CombatTracker:
                     c.initiative = rng.randint(1, 20) + c.dex_mod
                     s.add(c)
             enc = s.get(Encounter, encounter_id)
-            if enc:
+            if enc and reset_turn:
                 enc.turn_index = 0
                 enc.round = 1
                 s.add(enc)

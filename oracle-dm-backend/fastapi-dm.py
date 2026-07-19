@@ -1404,6 +1404,219 @@ def apply_trust_hooks(character_id: Optional[int], ops: list[dict]) -> list[str]
     return notes
 
 
+# The DM runs fights through the initiative tracker (combat/) with COMBAT hooks.
+# ``start`` auto-seats the table's PCs; initiative is rolled once the reply's
+# adds are in. PC damage/healing on the tracker is mirrored onto the character
+# sheet, so the Activity HP bar stays truthful.
+#   [[COMBAT: start | Ambush at the mill]]
+#   [[COMBAT: add | goblin | x2]]                      (SRD monster by name)
+#   [[COMBAT: add | Bandit Captain | hp 65 | ac 15]]   (custom foe)
+#   [[COMBAT: damage | Goblin 2 | 5]]   [[COMBAT: heal | Kara | 7]]
+#   [[COMBAT: temp | Kara | 10]]
+#   [[COMBAT: condition | Goblin 1 | poisoned]]  [[COMBAT: uncondition | Goblin 1 | poisoned]]
+#   [[COMBAT: next]]   [[COMBAT: end]]
+COMBAT_HOOK_PATTERN = re.compile(r"\[\[COMBAT:(.+?)\]\]", re.IGNORECASE)
+
+_COMBAT_HOOK_ACTIONS = {"start", "add", "damage", "heal", "temp", "condition",
+                        "uncondition", "next", "end"}
+
+# Always-on nudge so the DM knows how to OPEN a fight (kept short, like
+# _CONDITIONS_SHORT); the full verb list only ships while a fight is live.
+_COMBAT_HOOKS_IDLE = (
+    "# Combat hooks\n"
+    "When a real fight breaks out (not a mere threat), open the initiative tracker:\n"
+    "    [[COMBAT: start | short encounter name]]\n"
+    "    [[COMBAT: add | goblin | x2]]   (SRD monster; or add | Name | hp 20 | ac 13 for a custom foe)\n"
+    "The party is seated automatically and initiative is rolled for everyone. Narrate as usual.\n"
+)
+
+_COMBAT_HOOKS_ACTIVE = (
+    "# Combat hooks (a fight is underway — keep the tracker true)\n"
+    "Emit these alongside your narration; they are applied and hidden from players:\n"
+    "    [[COMBAT: damage | target | 7]]      damage dealt (temp HP absorbs first)\n"
+    "    [[COMBAT: heal | target | 5]]        healing received\n"
+    "    [[COMBAT: temp | target | 10]]       temporary hit points granted\n"
+    "    [[COMBAT: condition | target | poisoned]] / [[COMBAT: uncondition | target | poisoned]]\n"
+    "    [[COMBAT: add | wolf | x1]]          reinforcements arrive\n"
+    "    [[COMBAT: next]]                     the current creature's turn is resolved\n"
+    "    [[COMBAT: end]]                      the fight is over (victory, flight, or surrender)\n"
+    "Follow the board's initiative order: on a monster's or NPC's turn, run it in narration and\n"
+    "record its outcome with damage/condition hooks, then emit [[COMBAT: next]]. Use [[ROLL: ...]]\n"
+    "for attacks and saves as normal — COMBAT hooks record the OUTCOME on the tracker.\n"
+)
+
+
+def extract_combat_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull combat-tracker hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in COMBAT_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").lower()
+        if action not in _COMBAT_HOOK_ACTIONS:
+            continue
+        ops.append({"action": action, "args": parts[1:]})
+    clean = COMBAT_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def _combat_find(encounter_id: int, ref: str):
+    """Resolve a combatant by name: exact, then prefix, then substring."""
+    ref_l = (ref or "").strip().lower()
+    if not ref_l:
+        return None
+    order = combat.order(encounter_id)
+    for c in order:
+        if c.name.lower() == ref_l:
+            return c
+    for c in order:
+        if c.name.lower().startswith(ref_l):
+            return c
+    for c in order:
+        if ref_l in c.name.lower():
+            return c
+    return None
+
+
+def _combat_mirror_pc(combatant_id: int) -> None:
+    """Copy a PC combatant's HP pools back onto the character sheet."""
+    c = combat.get_combatant(combatant_id)
+    if not c or not c.character_id:
+        return
+    with Session(engine) as s:
+        char = s.get(Character, c.character_id)
+        if not char:
+            return
+        char.current_hp = c.current_hp
+        char.temp_hp = c.temp_hp
+        s.add(char)
+        s.commit()
+
+
+def _combat_enroll_pcs(encounter_id: int, session_id: str) -> None:
+    """Seat every member PC of the session at the encounter, carrying their
+    real current HP / temp HP / AC in from the character sheet."""
+    state = _load_session_state(session_id)
+    members = _session_members(state.get("meta", {}) or {})
+    existing = {c.character_id for c in combat.order(encounter_id) if c.character_id}
+    with Session(engine) as s:
+        for m in members.values():
+            cid = m.get("character_id")
+            if not cid or cid in existing:
+                continue
+            char = s.get(Character, cid)
+            if not char or char.current_hp <= 0:
+                continue
+            dex = ability_modifier(_ability_score(char, "dexterity"))
+            c = combat.add_pc(
+                encounter_id, name=char.name, max_hp=char.max_hp,
+                armor_class=_compute_ac(char), dex_mod=dex, character_id=cid)
+            if char.current_hp < char.max_hp:
+                combat.apply_damage(c.id, char.max_hp - char.current_hp)
+            temp = int(getattr(char, "temp_hp", 0) or 0)
+            if temp:
+                combat.set_temp_hp(c.id, temp)
+
+
+def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
+    """Apply COMBAT hooks to the session's encounter. Returns short notes
+    appended to the narration (initiative line, downed foes, fight over)."""
+    if not ops:
+        return []
+    notes: list[str] = []
+    enc = combat.get_active(session_id)
+    roster_changed = False
+    started_now = False
+    for op in ops:
+        action = op["action"]
+        args = op.get("args") or []
+        try:
+            if action == "start":
+                if enc is None:
+                    name = (args[0] if args and args[0] else "Encounter")
+                    enc = combat.start_encounter(session_id, name)
+                    _combat_enroll_pcs(enc.id, session_id)
+                    roster_changed = True
+                    started_now = True
+                continue
+            if enc is None:
+                continue  # every other verb needs a live encounter
+            if action == "add":
+                if not args or not args[0]:
+                    continue
+                name, count, hp, ac = args[0], 1, None, None
+                for extra in args[1:]:
+                    e = (extra or "").strip().lower()
+                    if m := re.fullmatch(r"x\s*(\d+)", e):
+                        count = max(1, min(20, int(m.group(1))))
+                    elif m := re.fullmatch(r"hp\s*(\d+)", e):
+                        hp = int(m.group(1))
+                    elif m := re.fullmatch(r"ac\s*(\d+)", e):
+                        ac = int(m.group(1))
+                mon = None
+                try:
+                    mon = rules_lib.get_monster(name)
+                except Exception:
+                    pass
+                if mon and hp is None:
+                    combat.add_from_monster(enc.id, mon.index_slug, count=count)
+                else:
+                    for i in range(count):
+                        label = name if count == 1 else f"{name} {i + 1}"
+                        combat.add_combatant(enc.id, label, max_hp=hp or 10,
+                                             armor_class=ac)
+                roster_changed = True
+            elif action in ("damage", "heal", "temp"):
+                if len(args) < 2:
+                    continue
+                c = _combat_find(enc.id, args[0])
+                try:
+                    amount = int(re.sub(r"[^\d]", "", args[1] or "") or 0)
+                except ValueError:
+                    continue
+                if not c or amount <= 0:
+                    continue
+                if action == "damage":
+                    out = combat.apply_damage(c.id, amount)
+                    if out.get("defeated"):
+                        notes.append(f"⚔ {c.name} goes down.")
+                elif action == "heal":
+                    combat.heal(c.id, amount)
+                else:
+                    combat.set_temp_hp(c.id, amount)
+                if c.character_id:
+                    _combat_mirror_pc(c.id)
+            elif action in ("condition", "uncondition"):
+                if len(args) < 2 or not args[1]:
+                    continue
+                c = _combat_find(enc.id, args[0])
+                if not c:
+                    continue
+                if action == "condition":
+                    combat.add_condition(c.id, args[1].lower())
+                else:
+                    combat.remove_condition(c.id, args[1].lower())
+            elif action == "next":
+                combat.next_turn(enc.id)
+            elif action == "end":
+                combat.end_encounter(enc.id)
+                notes.append("⚔ The fight is over.")
+                enc = None
+        except Exception as e:
+            print(f"[combat] hook {action!r} failed: {e}")
+    if enc is not None and roster_changed:
+        # roll_initiative only fills unset rolls, so mid-fight reinforcements
+        # get theirs without rerolling everyone else's — and without resetting
+        # the round unless the fight just began.
+        order = combat.roll_initiative(enc.id, reset_turn=started_now)
+        if started_now:
+            line = ", ".join(f"{c.name} {c.initiative}" for c in order)
+            notes.append(f"⚔ Initiative — {line}")
+    return notes
+
+
 # ----- OpenRouter LLM call -----
 
 def _retry_after_seconds(resp: "requests.Response") -> Optional[float]:
@@ -3199,6 +3412,9 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             board = combat.render(active_enc.id)
             if board.strip():
                 ctx_texts.append(board)
+            ctx_texts.append(_COMBAT_HOOKS_ACTIVE)
+        else:
+            ctx_texts.append(_COMBAT_HOOKS_IDLE)
         dm_text = generate_dm_reply(
             session_id=req.session_id,
             username=req.username,
@@ -3275,6 +3491,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             apply_trust_hooks(character_id, trust_ops)
         except Exception as e:
             print(f"[trust] hook processing failed: {e}")
+
+    # Keep the initiative tracker true to the narration: start fights, seat
+    # combatants, record damage/healing, advance turns, end the battle.
+    dm_text, combat_ops = extract_combat_hooks(dm_text)
+    if combat_ops:
+        try:
+            combat_notes = apply_combat_hooks(req.session_id, combat_ops)
+            if combat_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(combat_notes)
+        except Exception as e:
+            print(f"[combat] hook processing failed: {e}")
 
     # Store DM turn
     state = _append_turn(req.session_id, Turn(role="dm", user="Oracle DM", content=dm_text))
@@ -7490,6 +7717,15 @@ async def activity_ws(ws: WebSocket, channel: str):
                                       fallback=ws)
             await ws.send_json({"t": "lexicon",
                                 "entries": [{"text": sheet["name"], "kind": "name"}]})
+        # Live initiative board for the combat carousel (null clears it).
+        try:
+            enc = combat.get_active(session_id)
+            await _activity_broadcast(session_id, {
+                "t": "combat",
+                "encounter": combat.state(enc.id) if enc else None,
+            }, fallback=ws)
+        except Exception as e:
+            print(f"[activity] combat state push failed: {e}")
         await send_levelup()
 
     sheet: Optional[dict] = None
