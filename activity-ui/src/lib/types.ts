@@ -102,6 +102,13 @@ export interface CombatantView {
   conditions: string[];
   concentration?: string | null;
   defeated: boolean;
+  // per-turn economy (meaningful on the creature whose turn it is)
+  action_used?: boolean;
+  bonus_used?: boolean;
+  reaction_used?: boolean;
+  move_left?: number;
+  dodging?: boolean;
+  disengaging?: boolean;
 }
 
 /** Live encounter state for the initiative carousel (null = no fight). */

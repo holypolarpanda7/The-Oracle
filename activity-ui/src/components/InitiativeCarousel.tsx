@@ -49,6 +49,16 @@ function Card({ c, active }: { c: CombatantView; active: boolean }) {
       </div>
       <div className="cs-nm">{c.name}</div>
       {c.position && <div className="cs-pos" title={c.position}>{c.position}</div>}
+      {active && !c.defeated && (
+        <div className="cs-econ" title="This turn: action · bonus · movement">
+          <span className={`ce a ${c.action_used ? "spent" : ""}`}
+                title={c.action_used ? "Action spent" : "Action available"}>A</span>
+          <span className={`ce b ${c.bonus_used ? "spent" : ""}`}
+                title={c.bonus_used ? "Bonus action spent" : "Bonus action available"}>B</span>
+          <span className={`ce m ${(c.move_left ?? 1) <= 0 ? "spent" : ""}`}
+                title={`Movement: ${c.move_left ?? 1} step(s) left`}>M</span>
+        </div>
+      )}
       <div className={`cs-bar ${hpMood(c.current_hp, c.max_hp)} ${c.temp_hp > 0 ? "has-temp" : ""}`}>
         <span className="hp-fill" style={{ width: `${hpPct}%` }} />
         {c.temp_hp > 0 && (

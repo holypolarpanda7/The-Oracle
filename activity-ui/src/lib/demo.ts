@@ -95,6 +95,7 @@ function demoEncounter(stage: number): CombatState {
       { id: 2, name: "Kara", kind: "pc", initiative: 14, character_id: 1,
         max_hp: 28, current_hp: stage >= 1 ? 17 : 21, temp_hp: 12, armor_class: 14,
         position: warriorDown ? "near" : "melee with Goblin Warrior",
+        action_used: stage >= 2, bonus_used: false, move_left: stage >= 2 ? 0 : 1,
         conditions: [], defeated: false },
       { id: 4, name: "Brother Aldous", kind: "pc", initiative: 11,
         max_hp: 24, current_hp: 17, temp_hp: 0, armor_class: 16, position: "near",
