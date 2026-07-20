@@ -85,6 +85,27 @@ _FEATURES: dict[str, dict] = {
     "rage": {"cost": "bonus", "per_encounter": None, "condition": "raging"},
 }
 
+# Spell effects the engine resolves mechanically (keyed by lowercase name).
+# save_condition: applied to the target on a FAILED save; repeat_save: the
+# target re-saves at the end of each of its turns. ally_condition: applied to
+# the (friendly) target, no save. heal: dice per slot level + casting mod.
+_SPELL_EFFECTS: dict[str, dict] = {
+    "hold person": {"save_condition": "paralyzed", "repeat_save": True},
+    "hold monster": {"save_condition": "paralyzed", "repeat_save": True},
+    "web": {"save_condition": "restrained", "repeat_save": True},
+    "entangle": {"save_condition": "restrained", "repeat_save": True},
+    "tasha's hideous laughter": {"save_condition": "incapacitated", "repeat_save": True},
+    "hideous laughter": {"save_condition": "incapacitated", "repeat_save": True},
+    "blindness/deafness": {"save_condition": "blinded", "repeat_save": True},
+    "bane": {"save_condition": "baned"},
+    "faerie fire": {"save_condition": "faerie fire"},
+    "bless": {"ally_condition": "blessed"},
+    "magic missile": {"missiles": True},
+    "misty step": {"teleport": True},
+    "cure wounds": {"heal": "d8"},
+    "healing word": {"heal": "d4"},
+}
+
 # Common consumables the engine can resolve without the item DB.
 _CONSUMABLE_HEALS = {
     "potion of healing": "2d4+2",
@@ -98,7 +119,7 @@ _CONSUMABLE_TEMPS = {"potion of heroism": 10}
 _ATTACKER_DISADV = {"poisoned", "prone", "restrained", "blinded", "frightened",
                     "exhaustion"}
 _TARGET_GIVES_ADV = {"restrained", "stunned", "paralyzed", "unconscious",
-                     "petrified", "blinded"}
+                     "petrified", "blinded", "faerie fire"}
 _CANNOT_ACT = {"incapacitated", "stunned", "paralyzed", "unconscious", "petrified"}
 
 _BAND_RANK = {"near": 1, "far": 2}
@@ -415,8 +436,42 @@ class CombatEngine:
             prof = profiles.get(fresh.character_id) if fresh.character_id else None
             rep.remaining = self._remaining(fresh, prof)
         if rep.turn_over:
+            if cur is not None:
+                self._end_of_turn_saves(encounter_id, cur, profiles, rep)
             self.tracker.next_turn(encounter_id)
         return rep
+
+    def _end_of_turn_saves(self, encounter_id: int, c: Combatant,
+                           profiles: dict[int, PCProfile],
+                           rep: TurnReport) -> None:
+        """Roll the repeat saves owed at the end of this creature's turn
+        (Hold Person, Web, ...). Success ends the condition."""
+        fresh = self.tracker.get_combatant(c.id)
+        saves = list((fresh.pending_saves if fresh else None) or [])
+        if not saves:
+            return
+        keep: list[dict] = []
+        for sv in saves:
+            mod = self._ability_mod(fresh, sv.get("ability") or "con", profiles)
+            res = saving_throw(mod, dc=int(sv.get("dc") or 10),
+                               label=f"{(sv.get('ability') or '?').upper()} save "
+                                     f"({fresh.name})", rng=self.rng)
+            ev = {"kind": "save", "actor": fresh.name,
+                  "condition": sv.get("condition"),
+                  "success": bool(res.success),
+                  "rolls": [self._roll_dict(
+                      f"{(sv.get('ability') or '?').upper()} save — {fresh.name} "
+                      f"vs {sv.get('condition')}",
+                      res.detail, res.total, dc=int(sv.get("dc") or 10),
+                      success=bool(res.success))],
+                  "notes": []}
+            if res.success:
+                self.tracker.remove_condition(fresh.id, sv.get("condition") or "")
+                ev["notes"].append(f"shakes off {sv.get('condition')}")
+            else:
+                keep.append(sv)
+            rep.events.append(ev)
+        self.tracker.set_pending_saves(fresh.id, keep)
 
     def _leftover_options(self, c: Combatant,
                           prof: Optional[PCProfile]) -> list[str]:
@@ -516,8 +571,19 @@ class CombatEngine:
         adv, dis, notes = self._attack_advantage(actor, target, prof["ranged"], encounter_id)
         if bonus_note:
             notes = [bonus_note, *notes]
+        # Bless / Bane ride the attack roll as a d4 swing.
+        atk_bonus = prof["attack_bonus"]
+        a_conds = self._conds(actor)
+        if "blessed" in a_conds:
+            d4 = damage_roll("1d4", rng=self.rng).total
+            atk_bonus += d4
+            notes.append(f"Bless +{d4}")
+        if "baned" in a_conds:
+            d4 = damage_roll("1d4", rng=self.rng).total
+            atk_bonus -= d4
+            notes.append(f"Bane -{d4}")
         eff_ac = self.tracker.effective_ac(target.id)
-        atk = attack_roll(prof["attack_bonus"], eff_ac, advantage=adv,
+        atk = attack_roll(atk_bonus, eff_ac, advantage=adv,
                           disadvantage=dis, label=f"{prof['name']} ({actor.name})",
                           rng=self.rng)
         rolls = [self._roll_dict(f"{prof['name']} — {actor.name}", atk.detail,
@@ -954,7 +1020,38 @@ class CombatEngine:
             ev["notes"].append(f"level-{slot_spent} slot spent{up}; "
                                f"{prof.slots[slot_spent]} left")
         dmg_expr = self._spell_damage(sp, prof, slot=slot_spent)
-        if sp and sp.attack_type and target is not None:
+        name_l = (sp.name if sp else spell_name).strip().lower()
+        eff = _SPELL_EFFECTS.get(name_l)
+        base_lv = (sp.level if sp else 1) or 1
+
+        if eff and eff.get("missiles") and target is not None:
+            # Magic Missile: auto-hit darts, +1 per slot level above 1st.
+            darts = 3 + max(0, (slot_spent or base_lv) - base_lv)
+            expr = f"{darts}d4+{darts}"
+            dmg = damage_roll(expr, rng=self.rng)
+            out = self.tracker.apply_damage(target.id, dmg.total)
+            ev["rolls"].append(self._roll_dict(
+                f"{sp.name} ({darts} darts)", dmg.detail, dmg.total, expr=expr))
+            ev["damage"] = dmg.total
+            ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+            ev["notes"].append("auto-hit")
+            if out.get("defeated"):
+                ev["defeated"] = True
+        elif eff and eff.get("heal"):
+            tgt = target or actor
+            n = 1 + max(0, (slot_spent or base_lv) - base_lv)
+            mod = (prof.ability_mods.get(prof.spell_mod, 0)
+                   if prof and prof.spell_mod
+                   else self._ability_mod(actor, "wis", profiles))
+            expr = f"{n}{eff['heal']}" + (f"{mod:+d}" if mod else "")
+            r = damage_roll(expr, rng=self.rng)
+            out = self.tracker.heal(tgt.id, r.total)
+            ev["rolls"].append(self._roll_dict(
+                f"{sp.name if sp else spell_name} — healing", r.detail,
+                r.total, expr=expr))
+            ev["notes"].append(f"{tgt.name} regains {r.total} HP "
+                               f"({out['current_hp']}/{out['max_hp']})")
+        elif sp and sp.attack_type and target is not None:
             bonus = (prof.spell_attack_bonus if prof and
                      prof.spell_attack_bonus is not None
                      else 2 + self._ability_mod(actor, "cha", profiles))
@@ -988,6 +1085,17 @@ class CombatEngine:
                 f"{sp.dc_type.upper()} save — {target.name}", save.detail,
                 save.total, dc=dc, success=bool(save.success)))
             ev["saved"] = bool(save.success)
+            if not save.success and eff and eff.get("save_condition"):
+                cond = eff["save_condition"]
+                self.tracker.add_condition(target.id, cond)
+                ev["notes"].append(f"{target.name} is {cond}")
+                if eff.get("repeat_save"):
+                    fresh_t = self.tracker.get_combatant(target.id)
+                    saves = list(fresh_t.pending_saves or [])
+                    saves.append({"condition": cond,
+                                  "ability": sp.dc_type, "dc": dc})
+                    self.tracker.set_pending_saves(target.id, saves)
+                    ev["notes"].append("repeat save at the end of its turns")
             if dmg_expr:
                 dmg = damage_roll(dmg_expr, rng=self.rng)
                 total = dmg.total
@@ -1005,8 +1113,19 @@ class CombatEngine:
                     ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
                     if out.get("defeated"):
                         ev["defeated"] = True
+        elif eff and eff.get("teleport"):
+            self.tracker.set_position(actor.id, "near")
+            ev["notes"].append("teleports to safety — no opportunity attacks")
+        elif eff and eff.get("ally_condition") and target is not None:
+            self.tracker.add_condition(target.id, eff["ally_condition"])
+            ev["notes"].append(f"{target.name} is {eff['ally_condition']}")
         else:
             ev["notes"].append("effect adjudicated in narration")
+            # An unregistered concentration spell on a target still leaves a
+            # visible mark on the board so it isn't forgotten.
+            if sp and sp.concentration and target is not None:
+                self.tracker.add_condition(target.id, name_l)
+                ev["notes"].append(f"{target.name} tagged: {name_l}")
         if sp and sp.concentration:
             self.tracker.set_concentration(actor.id, sp.name)
             ev["notes"].append(f"concentrating on {sp.name}")
@@ -1072,6 +1191,8 @@ class CombatEngine:
         if cur.defeated or (self._conds(cur) & _CANNOT_ACT):
             rep.events.append({"kind": "skip", "actor": cur.name, "rolls": [],
                                "notes": ["cannot act"]})
+            # A held/stunned creature still gets its end-of-turn repeat saves.
+            self._end_of_turn_saves(encounter_id, cur, profiles, rep)
             self.tracker.next_turn(encounter_id)
             rep.turn_over = True
             return rep
@@ -1102,6 +1223,9 @@ class CombatEngine:
                            {"verb": "move", "actor": cur.name, "arg": "near"}]
                 rep = self.resolve(encounter_id, seq, profiles)
         if not rep.turn_over:
+            cur2 = self.tracker.current_combatant(encounter_id)
+            if cur2 is not None:
+                self._end_of_turn_saves(encounter_id, cur2, profiles, rep)
             self.tracker.next_turn(encounter_id)
             rep.turn_over = True
         return rep
@@ -1150,6 +1274,10 @@ class CombatEngine:
                 lines.append(f"{k.upper()}: {e['actor']}"
                              + (f" vs {e['target']}" if e.get("target") else "")
                              + f" — {res}{n}")
+            elif k == "save":
+                res = (f"shakes off {e.get('condition')}" if e.get("success")
+                       else f"still {e.get('condition')}")
+                lines.append(f"SAVE: {e['actor']} — {res}")
             elif k == "feature":
                 n = f" — {'; '.join(e['notes'])}" if e.get("notes") else ""
                 lines.append(f"FEATURE: {e['actor']} uses {e['feature']}{n}")

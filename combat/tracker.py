@@ -399,6 +399,18 @@ class CombatTracker:
             s.refresh(c)
             return _combatant_dict(c)
 
+    def set_pending_saves(self, combatant_id: int, saves: list) -> dict:
+        """Replace the repeat-save list ({condition, ability, dc} rows)."""
+        with Session(self.engine) as s:
+            c = s.get(Combatant, combatant_id)
+            if not c:
+                raise ValueError("Unknown combatant")
+            c.pending_saves = list(saves or [])
+            s.add(c)
+            s.commit()
+            s.refresh(c)
+            return _combatant_dict(c)
+
     def set_position(self, combatant_id: int, position: Optional[str]) -> dict:
         """Record a spacing band: 'melee with <name>' | 'near' | 'far' (None clears)."""
         with Session(self.engine) as s:
@@ -511,6 +523,7 @@ def _combatant_dict(c: Combatant) -> dict:
         "disengaging": c.disengaging,
         "attacks_made": c.attacks_made,
         "used_features": list(c.used_features or []),
+        "pending_saves": list(c.pending_saves or []),
         "conditions": list(c.conditions or []),
         "concentration": c.concentration,
         "defeated": c.defeated,

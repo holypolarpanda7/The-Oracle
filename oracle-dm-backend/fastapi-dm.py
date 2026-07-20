@@ -302,7 +302,8 @@ async def lifespan(app: FastAPI):
                                      ("disengaging", "BOOLEAN DEFAULT 0"),
                                      ("attacks_made", "INTEGER DEFAULT 0"),
                                      ("sneak_used", "BOOLEAN DEFAULT 0"),
-                                     ("used_features", "JSON")]:
+                                     ("used_features", "JSON"),
+                                     ("pending_saves", "JSON")]:
                         if col not in cb_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE combat_combatant ADD COLUMN {col} {ddl}")
@@ -2083,6 +2084,23 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
         nxt = combat.current_combatant(enc.id)
         if nxt is not None:
             blocks.append(f"NOW: {nxt.name}'s turn.")
+
+    # Mirror every PC's tracker HP back onto the character sheet — in engine
+    # mode the tracker is where damage/healing lands first.
+    try:
+        with Session(engine) as s:
+            for c in combat.order(enc.id):
+                if not c.character_id:
+                    continue
+                ch = s.get(Character, c.character_id)
+                if ch and (ch.current_hp != c.current_hp
+                           or (getattr(ch, "temp_hp", 0) or 0) != c.temp_hp):
+                    ch.current_hp = c.current_hp
+                    ch.temp_hp = c.temp_hp
+                    s.add(ch)
+            s.commit()
+    except Exception as e:
+        print(f"[combat-engine] PC HP mirror failed: {e}")
 
     collector = _ACTIVITY_ROLLS.get()
     if collector is not None:

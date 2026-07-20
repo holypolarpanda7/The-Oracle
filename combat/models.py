@@ -120,6 +120,9 @@ class Combatant(SQLModel, table=True):
     # Encounter-scoped feature uses ("action surge", "second wind", ...) so
     # once-per-fight resources can't be double-spent. list[str].
     used_features: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Repeat saves owed at the end of this creature's turns, e.g. Hold Person:
+    # [{"condition": "paralyzed", "ability": "wis", "dc": 13}].
+    pending_saves: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
     conditions: Optional[Any] = Field(default=None, sa_column=Column(JSON))     # list[str]
     concentration: Optional[str] = Field(default=None, sa_column=Column(String))  # what they concentrate on
