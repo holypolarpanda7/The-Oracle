@@ -70,6 +70,10 @@ class Encounter(SQLModel, table=True):
     turn_index: int = Field(default=0, sa_column=Column(Integer))
     active: bool = Field(default=True, sa_column=Column(Boolean, index=True))
 
+    # A frozen attack awaiting a player's reaction decision (Shield, Uncanny
+    # Dodge). The fight pauses here until the owner answers or declines.
+    pending_reaction: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

@@ -308,6 +308,12 @@ async def lifespan(app: FastAPI):
                             conn.exec_driver_sql(
                                 f"ALTER TABLE combat_combatant ADD COLUMN {col} {ddl}")
                             print(f"[Startup] Migrated combat_combatant: added {col}")
+                ce_existing = {row[1] for row in conn.exec_driver_sql(
+                    'PRAGMA table_info("combat_encounter")')}
+                if ce_existing and "pending_reaction" not in ce_existing:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE combat_encounter ADD COLUMN pending_reaction JSON")
+                    print("[Startup] Migrated combat_encounter: added pending_reaction")
 
                 # Ratchet-clock + entropy + calendar columns on world_meta
                 # (pre-existing DBs). Calendar defaults mirror WorldMeta.
@@ -1808,6 +1814,23 @@ _PRE_RETREAT = re.compile(
 
 _COMBAT_INTENT_STATS = {"preparsed": 0, "llm": 0, "none": 0, "parse_fail": 0}
 
+# Answers to a frozen reaction question ("Shield or take the hit?").
+_PRE_REACT_USE = re.compile(
+    r"^\W*((i\s+)?(cast|use)\s+)?(shield|uncanny(\s+dodge)?)\W*$"
+    r"|^\W*(yes|yeah|do it|use it|use my reaction)\W*$", re.IGNORECASE)
+_PRE_REACT_NO = re.compile(
+    r"^\W*(no|nah|nope|decline|pass|take\s+(it|the\s+hit)|hold(\s+it)?|"
+    r"save\s+(it|my\s+reaction))\W*$", re.IGNORECASE)
+
+
+def _preparse_reaction_answer(message: str) -> Optional[bool]:
+    msg = (message or "").strip()
+    if _PRE_REACT_USE.match(msg):
+        return True
+    if _PRE_REACT_NO.match(msg):
+        return False
+    return None
+
 
 def _combat_preparse(message: str, my_name: str,
                      encounter_id: int) -> Optional[list[dict]]:
@@ -1901,7 +1924,7 @@ _INTENT_FIELDS: Dict[str, tuple] = {
     "disengage": (), "dodge": (), "hide": (), "help": ("target",),
     "grapple": ("target",), "shove": ("target", "arg"), "use": ("arg",),
     "cast": ("arg", "target", "slot"), "feature": ("arg",),
-    "improvise": ("arg", "target"), "end_turn": (),
+    "improvise": ("arg", "target"), "react": ("arg",), "end_turn": (),
 }
 
 
@@ -2013,33 +2036,18 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
                     except Exception as e:
                         print(f"[combat-engine] profile for {ch.name} failed: {e}")
 
-    cur = combat.current_combatant(enc.id)
-    remaining = {}
-    if cur is not None and cur.id == my.id:
-        fresh = combat.get_combatant(my.id)
-        remaining = {"action": not fresh.action_used,
-                     "bonus": not fresh.bonus_used,
-                     "move_steps": max(0, fresh.move_left)}
-    # Cheap deterministic path first: simple declarations never need the model.
-    intents = _combat_preparse(message, my.name, enc.id)
-    if intents is not None:
-        _COMBAT_INTENT_STATS["preparsed"] += 1
-    else:
-        intents = _combat_extract_intents(
-            my.name, remaining, combat.render(enc.id),
-            profiles.get(char_id), message)
-        _COMBAT_INTENT_STATS["llm" if intents else "none"] += 1
-    print(f"[combat-intents] {_COMBAT_INTENT_STATS} :: "
-          f"{[i['verb'] for i in intents] if intents else 'no-act'}")
-    if intents is None:
-        return None  # not a combat act — normal narration flow handles it
-
     blocks: list[str] = []
     rolls_out: list[dict] = []
     all_events: list[dict] = []
 
+    def take(rep) -> None:
+        txt = CombatEngine.render_report(rep)
+        if txt.strip():
+            blocks.append(txt)
+        rolls_out.extend(rep.rolls())
+        all_events.extend(rep.events)
+
     def run_monsters(limit: int = 12) -> None:
-        nonlocal blocks, rolls_out
         for _ in range(limit):
             if combat.get_active(session_id) is None:
                 return
@@ -2047,38 +2055,97 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             if c is None or c.kind == "pc":
                 return
             rep = combat_engine.run_monster_turn(enc.id, profiles=profiles)
-            txt = CombatEngine.render_report(rep)
-            if txt.strip():
-                blocks.append(txt)
-            rolls_out.extend(rep.rolls())
-            all_events.extend(rep.events)
+            take(rep)
+            if rep.paused:
+                return  # frozen on a player's reaction decision
             over = _combat_fight_over(enc.id)
             if over:
                 blocks.append(over)
                 return
 
-    # Monsters with earlier initiative act first (fight may have just begun).
-    run_monsters()
-
-    if combat.get_active(session_id) is not None:
-        cur = combat.current_combatant(enc.id)
-        if cur is not None and cur.id == my.id:
-            rep = combat_engine.resolve(enc.id, intents, profiles)
-            txt = CombatEngine.render_report(rep)
-            if txt.strip():
-                blocks.append(txt)
-            rolls_out.extend(rep.rolls())
-            all_events.extend(rep.events)
+    # ---- a frozen reaction question owns the table until answered ----
+    pending = combat.get_pending_reaction(enc.id)
+    intents: Optional[list[dict]] = None
+    if pending:
+        owner = pending.get("target_char_id")
+        if owner and owner != char_id:
+            return ("# Combat resolution (certified — already applied to the tracker)\n"
+                    f"WAITING: the fight is frozen on {pending.get('target')}'s "
+                    f"reaction — only they can answer.\n"
+                    f"({pending.get('question')})")
+        decision = _preparse_reaction_answer(message)
+        if decision is None:
+            got = _combat_extract_intents(
+                my.name, {},
+                combat.render(enc.id)
+                + f"\nPENDING REACTION for {my.name}: {pending.get('question')} "
+                  "If the player answers it, output [[INTENT: react | use]] or "
+                  "[[INTENT: react | decline]] FIRST.",
+                profiles.get(char_id), message)
+            if got:
+                lead = next((i for i in got if i.get("verb") == "react"), None)
+                if lead is not None:
+                    a = (lead.get("arg") or "").lower()
+                    decision = not any(w in a for w in
+                                       ("decline", "no", "pass", "hold", "save"))
+                    intents = [i for i in got if i is not lead] or None
+                else:
+                    intents = got
+        if decision is None:
+            decision = False
+            blocks.append(f"NOTE: no clear answer — {my.name} lets the "
+                          "reaction pass (declined).")
+        rrep = combat_engine.resume_reaction(enc.id, use=bool(decision),
+                                             profiles=profiles)
+        take(rrep)
+        if not rrep.paused:
             over = _combat_fight_over(enc.id)
             if over:
                 blocks.append(over)
-            elif rep.turn_over:
+    else:
+        cur = combat.current_combatant(enc.id)
+        remaining = {}
+        if cur is not None and cur.id == my.id:
+            fresh = combat.get_combatant(my.id)
+            remaining = {"action": not fresh.action_used,
+                         "bonus": not fresh.bonus_used,
+                         "move_steps": max(0, fresh.move_left)}
+        # Cheap deterministic path first: simple declarations skip the model.
+        intents = _combat_preparse(message, my.name, enc.id)
+        if intents is not None:
+            _COMBAT_INTENT_STATS["preparsed"] += 1
+        else:
+            intents = _combat_extract_intents(
+                my.name, remaining, combat.render(enc.id),
+                profiles.get(char_id), message)
+            _COMBAT_INTENT_STATS["llm" if intents else "none"] += 1
+        print(f"[combat-intents] {_COMBAT_INTENT_STATS} :: "
+              f"{[i['verb'] for i in intents] if intents else 'no-act'}")
+        if intents is None:
+            return None  # not a combat act — normal narration flow handles it
+
+    def halted() -> bool:
+        return combat.get_pending_reaction(enc.id) is not None
+
+    # Monsters with earlier initiative act first (fight may have just begun).
+    if not halted():
+        run_monsters()
+
+    if not halted() and combat.get_active(session_id) is not None and intents:
+        cur = combat.current_combatant(enc.id)
+        if cur is not None and cur.id == my.id:
+            rep = combat_engine.resolve(enc.id, intents, profiles)
+            take(rep)
+            over = _combat_fight_over(enc.id)
+            if over:
+                blocks.append(over)
+            elif rep.turn_over and not rep.paused:
                 run_monsters()
         elif cur is not None and cur.kind == "pc":
             blocks.append(f"REFUSED: It is {cur.name}'s turn — "
                           f"{my.name} must wait for it to come around.")
 
-    if combat.get_active(session_id) is not None:
+    if not halted() and combat.get_active(session_id) is not None:
         nxt = combat.current_combatant(enc.id)
         if nxt is not None:
             blocks.append(f"NOW: {nxt.name}'s turn.")
@@ -2143,6 +2210,9 @@ _COMBAT_NARRATE_CONTRACT = (
     "- 'TURN STILL OPEN — remaining: ...': close by telling the player what they "
     "still have and ask for the rest of their turn (or a declaration they're done).\n"
     "- 'NOW: <name>'s turn': end by setting up that creature's moment.\n"
+    "- 'REACTION?' + 'FIGHT PAUSED': the fight is frozen mid-attack awaiting that\n"
+    "  player's reaction decision. Put the question to them vividly, list the\n"
+    "  options, and STOP — do not narrate past the frozen moment or decide for them.\n"
     "- Do not emit [[ROLL: ...]] hooks or COMBAT damage/heal/temp/move hooks — the "
     "dice are already rolled. [[COMBAT: add | ...]] (reinforcements) and "
     "[[COMBAT: end]] (the fight resolves narratively) remain available, and "

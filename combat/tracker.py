@@ -78,6 +78,20 @@ class CombatTracker:
         with Session(self.engine) as s:
             return s.get(Encounter, encounter_id)
 
+    def set_pending_reaction(self, encounter_id: int,
+                             payload: Optional[dict]) -> None:
+        """Store (or clear, with None) the frozen-attack reaction prompt."""
+        with Session(self.engine) as s:
+            enc = s.get(Encounter, encounter_id)
+            if enc:
+                enc.pending_reaction = payload
+                s.add(enc)
+                s.commit()
+
+    def get_pending_reaction(self, encounter_id: int) -> Optional[dict]:
+        enc = self.get_encounter(encounter_id)
+        return dict(enc.pending_reaction) if enc and enc.pending_reaction else None
+
     def end_encounter(self, encounter_id: int) -> Optional[Encounter]:
         with Session(self.engine) as s:
             enc = s.get(Encounter, encounter_id)

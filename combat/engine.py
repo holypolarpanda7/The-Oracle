@@ -139,6 +139,15 @@ def _mod_key(name: str) -> str:
     return (name or "")[:3].lower()
 
 
+class _ReactionPause(Exception):
+    """Raised mid-resolution when a player must decide a reaction. The fight
+    freezes at this exact point until the owner answers."""
+
+    def __init__(self, payload: dict):
+        super().__init__(payload.get("question", "reaction pending"))
+        self.payload = payload
+
+
 @dataclass
 class TurnReport:
     """What actually happened (events), what was refused and why (rejections),
@@ -148,6 +157,8 @@ class TurnReport:
     turn_over: bool = False
     turn_over_reason: Optional[str] = None
     remaining: dict = field(default_factory=dict)
+    # A reaction prompt froze the fight — nothing advances until it's answered.
+    paused: bool = False
 
     def rolls(self) -> list[dict]:
         """Dice results in the activity UI's RollResult shape."""
@@ -414,53 +425,245 @@ class CombatEngine:
             adv = dis = False
         return adv, dis, notes
 
-    # ---------------- auto-reactions (single-pass interrupts) ----------------
+    # ------------- reactions: the PLAYER decides, the fight freezes -------------
 
-    def _shield_check(self, attacker: Combatant, target: Combatant, atk,
-                      eff_ac: Optional[int], profiles: dict,
-                      rep: TurnReport) -> bool:
-        """Auto-cast Shield when — and only when — it flips this hit into a
-        miss. Costs the target's reaction + its lowest slot; +5 AC persists
-        until the start of its next turn. Returns the final hit state."""
+    def _reaction_ready(self, target: Combatant) -> bool:
+        fresh = self.tracker.get_combatant(target.id)
+        return not fresh.reaction_used and not (self._conds(fresh) & _CANNOT_ACT)
+
+    def _maybe_prompt_shield(self, attacker: Combatant, target: Combatant,
+                             atk, eff_ac: Optional[int], profiles: dict,
+                             weapon: dict, notes: list[str],
+                             after: Optional[dict]) -> None:
+        """Freeze the fight and ask when Shield would flip this hit into a
+        miss. Never asks when Shield couldn't help (crit, big hit, no slot)."""
         if not atk.hit or atk.is_crit:
-            return bool(atk.hit)
+            return
         p = profiles.get(target.character_id) if target.character_id else None
         if p is None or "shield" not in p.reaction_spells:
-            return True
-        fresh = self.tracker.get_combatant(target.id)
-        if fresh.reaction_used or (self._conds(fresh) & _CANNOT_ACT):
-            return True
+            return
+        if not self._reaction_ready(target):
+            return
         if eff_ac is None or atk.total >= eff_ac + 5:
-            return True  # Shield wouldn't save them — don't burn it
+            return
         avail = {lv: n for lv, n in (p.slots or {}).items() if n > 0}
         if not avail:
-            return True
+            return
         lv = min(avail)
-        p.slots[lv] -= 1
-        self.tracker.update_economy(target.id, reaction_used=True)
-        self.tracker.add_condition(target.id, "shielded")
-        rep.events.append({
-            "kind": "reaction", "actor": target.name, "spell": "Shield",
-            "slot_spent": lv, "slot_char_id": target.character_id, "rolls": [],
-            "notes": [f"+5 AC until its next turn — "
-                      f"{attacker.name}'s attack misses"]})
-        return False
+        raise _ReactionPause({
+            "type": "shield",
+            "attacker_id": attacker.id, "attacker": attacker.name,
+            "target_id": target.id, "target": target.name,
+            "target_char_id": target.character_id,
+            "weapon": dict(weapon), "atk_total": atk.total,
+            "crit": bool(atk.is_crit), "eff_ac": eff_ac, "slot": lv,
+            "notes": list(notes), "after": after,
+            "question": (f"{attacker.name}'s {weapon.get('name', 'attack')} is about "
+                         f"to hit {target.name} ({atk.total} vs AC {eff_ac}). "
+                         f"Shield would turn it aside (+5 AC until their next "
+                         f"turn, level-{lv} slot, reaction)."),
+            "options": ["cast Shield", "take the hit"],
+        })
 
-    def _uncanny_dodge(self, target: Combatant, total: int, profiles: dict,
-                       rep: TurnReport) -> int:
-        """A rogue's reaction halves one attack's damage (auto-triggered)."""
+    def _maybe_prompt_uncanny(self, attacker_name: str, target: Combatant,
+                              total: int, profiles: dict, ev_ctx: dict,
+                              after: Optional[dict]) -> int:
+        """Freeze and ask when Uncanny Dodge could halve this damage."""
         p = profiles.get(target.character_id) if target.character_id else None
         if p is None or "uncanny dodge" not in p.features or total <= 1:
             return total
-        fresh = self.tracker.get_combatant(target.id)
-        if fresh.reaction_used or (self._conds(fresh) & _CANNOT_ACT):
+        if not self._reaction_ready(target):
             return total
-        self.tracker.update_economy(target.id, reaction_used=True)
-        halved = total // 2
-        rep.events.append({"kind": "reaction", "actor": target.name,
-                           "spell": "Uncanny Dodge", "rolls": [],
-                           "notes": [f"halves the blow ({total} → {halved})"]})
-        return halved
+        raise _ReactionPause({
+            "type": "uncanny",
+            "attacker": attacker_name,
+            "target_id": target.id, "target": target.name,
+            "target_char_id": target.character_id,
+            "damage_total": total, "ev_ctx": dict(ev_ctx), "after": after,
+            "question": (f"{attacker_name}'s blow lands on {target.name} for "
+                         f"{total} damage. Uncanny Dodge would halve it "
+                         f"(reaction)."),
+            "options": ["Uncanny Dodge", "take it"],
+        })
+
+    def _pc_holds_oa(self, enemy: Combatant, profiles: dict) -> bool:
+        """A PC with other reaction options holds its reaction instead of
+        auto-swinging an opportunity attack (the player's budget, not ours)."""
+        p = profiles.get(enemy.character_id) if enemy.character_id else None
+        if p is None:
+            return False
+        has_shield = "shield" in p.reaction_spells \
+            and any(n > 0 for n in (p.slots or {}).values())
+        return has_shield or "uncanny dodge" in p.features
+
+    @staticmethod
+    def _prompt_event(payload: dict) -> dict:
+        return {"kind": "reaction_prompt", "actor": payload.get("target"),
+                "rolls": [], "options": list(payload.get("options") or []),
+                "notes": [payload.get("question", "")]}
+
+    def resume_reaction(self, encounter_id: int, use: bool,
+                        profiles: Optional[dict[int, PCProfile]] = None) -> TurnReport:
+        """Answer the frozen reaction and finish the interrupted attack.
+        May pause again (a declined Shield can chain into an Uncanny ask)."""
+        profiles = profiles or {}
+        rep = TurnReport()
+        payload = self.tracker.get_pending_reaction(encounter_id)
+        if not payload:
+            rep.rejections.append({"reason": "No reaction is pending."})
+            return rep
+        self.tracker.set_pending_reaction(encounter_id, None)
+        try:
+            if payload.get("type") == "shield":
+                self._resume_shield(encounter_id, payload, use, profiles, rep)
+            else:
+                self._resume_uncanny(encounter_id, payload, use, profiles, rep)
+        except _ReactionPause as p:
+            self.tracker.set_pending_reaction(encounter_id, p.payload)
+            rep.events.append(self._prompt_event(p.payload))
+            rep.paused = True
+        return rep
+
+    def _resume_shield(self, encounter_id: int, payload: dict, use: bool,
+                       profiles: dict, rep: TurnReport) -> None:
+        target = self.tracker.get_combatant(payload["target_id"])
+        if target is None:
+            return
+        weapon = payload.get("weapon") or {}
+        ev = {"kind": "attack", "actor": payload.get("attacker"),
+              "target": target.name, "weapon": weapon.get("name"),
+              "crit": bool(payload.get("crit")),
+              "notes": list(payload.get("notes") or []), "rolls": []}
+        if use and self._reaction_ready(target):
+            p = profiles.get(target.character_id) if target.character_id else None
+            lv = int(payload.get("slot") or 1)
+            if p is not None:
+                p.slots[lv] = max(0, p.slots.get(lv, 0) - 1)
+            self.tracker.update_economy(target.id, reaction_used=True)
+            self.tracker.add_condition(target.id, "shielded")
+            rep.events.append({
+                "kind": "reaction", "actor": target.name, "spell": "Shield",
+                "slot_spent": lv, "slot_char_id": target.character_id,
+                "rolls": [], "notes": [
+                    f"+5 AC until their next turn — "
+                    f"{payload.get('attacker')}'s attack misses"]})
+            ev["hit"] = False
+            ev["notes"].append("turned aside by Shield")
+            rep.events.append(ev)
+        else:
+            ev["hit"] = True
+            dmg = damage_roll(weapon.get("damage", "1"),
+                              crit=bool(payload.get("crit")), rng=self.rng)
+            ev["rolls"].append(self._roll_dict(
+                f"{weapon.get('name', 'attack')} damage", dmg.detail,
+                dmg.total, expr=weapon.get("damage", "")))
+            total = self._maybe_prompt_uncanny(
+                payload.get("attacker", "the attacker"), target, dmg.total,
+                profiles, ev_ctx=ev, after=payload.get("after"))
+            out = self.tracker.apply_damage(target.id, total)
+            ev["damage"] = total
+            ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+            if out.get("defeated"):
+                ev["defeated"] = True
+            rep.events.append(ev)
+        self._finish_after(encounter_id, payload.get("after"), profiles, rep)
+
+    def _resume_uncanny(self, encounter_id: int, payload: dict, use: bool,
+                        profiles: dict, rep: TurnReport) -> None:
+        target = self.tracker.get_combatant(payload["target_id"])
+        if target is None:
+            return
+        total = int(payload.get("damage_total") or 0)
+        ev = dict(payload.get("ev_ctx") or {})
+        ev.setdefault("kind", "attack")
+        ev.setdefault("rolls", [])
+        ev.setdefault("notes", [])
+        ev["hit"] = True
+        if use and self._reaction_ready(target):
+            self.tracker.update_economy(target.id, reaction_used=True)
+            halved = total // 2
+            rep.events.append({"kind": "reaction", "actor": target.name,
+                               "spell": "Uncanny Dodge", "rolls": [],
+                               "notes": [f"halves the blow ({total} → {halved})"]})
+            total = halved
+        out = self.tracker.apply_damage(target.id, total)
+        ev["damage"] = total
+        ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+        if out.get("defeated"):
+            ev["defeated"] = True
+        rep.events.append(ev)
+        self._finish_after(encounter_id, payload.get("after"), profiles, rep)
+
+    def _finish_after(self, encounter_id: int, after: Optional[dict],
+                      profiles: dict, rep: TurnReport) -> None:
+        """Complete a move that was interrupted by a reaction mid-OA: run the
+        remaining opportunity attacks, then land the mover on its new band."""
+        if not after or after.get("kind") != "move":
+            return
+        mover = self.tracker.get_combatant(after["actor_id"])
+        if mover is None or mover.defeated:
+            return
+        for eid in after.get("enemy_ids") or []:
+            enemy = self.tracker.get_combatant(eid)
+            if enemy is None or enemy.defeated or enemy.reaction_used \
+                    or (self._conds(enemy) & _CANNOT_ACT):
+                continue
+            remaining = [x for x in (after.get("enemy_ids") or []) if x != eid]
+            self._roll_opportunity_attack(
+                encounter_id, enemy, mover, profiles, rep,
+                after={**after, "enemy_ids": remaining})
+            mover = self.tracker.get_combatant(after["actor_id"])
+            if mover is None or mover.defeated:
+                return
+        self.tracker.set_position(mover.id, after["new_pos"])
+        fresh = self.tracker.get_combatant(mover.id)
+        self.tracker.update_economy(
+            mover.id, move_left=max(0, fresh.move_left - int(after.get("cost") or 1)))
+        rep.events.append({"kind": "move", "actor": mover.name,
+                           "to": after["new_pos"], "steps": after.get("cost"),
+                           "rolls": [], "notes": ["completes the move"]})
+
+    def _roll_opportunity_attack(self, encounter_id: int, enemy: Combatant,
+                                 mover: Combatant, profiles: dict,
+                                 rep: TurnReport,
+                                 after: Optional[dict]) -> None:
+        """One opportunity attack against a mover (may pause for a reaction)."""
+        mprof = self._melee_profile(enemy, profiles)
+        if not mprof:
+            return
+        if enemy.kind == "pc" and self._pc_holds_oa(enemy, profiles):
+            rep.events.append({"kind": "note", "actor": enemy.name, "rolls": [],
+                               "notes": [f"{enemy.name} holds their reaction as "
+                                         f"{mover.name} slips away"]})
+            return
+        self.tracker.update_economy(enemy.id, reaction_used=True)
+        adv, dis, notes = self._attack_advantage(enemy, mover, False, encounter_id)
+        eff_ac = self._eff_ac(mover)
+        atk = attack_roll(mprof["attack_bonus"], eff_ac, advantage=adv,
+                          disadvantage=dis,
+                          label=f"Opportunity attack ({enemy.name})",
+                          rng=self.rng)
+        self._maybe_prompt_shield(enemy, mover, atk, eff_ac, profiles,
+                                  mprof, notes, after)
+        oa_rolls = [self._roll_dict(
+            f"Opportunity attack — {enemy.name}", atk.detail, atk.total,
+            dc=eff_ac, success=bool(atk.hit))]
+        oa = {"kind": "opportunity_attack", "actor": enemy.name,
+              "target": mover.name, "weapon": mprof["name"],
+              "hit": bool(atk.hit), "rolls": oa_rolls, "notes": notes}
+        if atk.hit:
+            dmg = damage_roll(mprof["damage"], crit=atk.is_crit, rng=self.rng)
+            total = self._maybe_prompt_uncanny(enemy.name, mover, dmg.total,
+                                               profiles, ev_ctx=oa, after=after)
+            out = self.tracker.apply_damage(mover.id, total)
+            oa_rolls.append(self._roll_dict(
+                f"{mprof['name']} damage", dmg.detail, total,
+                expr=mprof["damage"]))
+            oa["damage"] = total
+            oa["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+            if out.get("defeated"):
+                oa["defeated"] = True
+        rep.events.append(oa)
 
     # ---------------- intent resolution ----------------
 
@@ -470,6 +673,12 @@ class CombatEngine:
         are rejected with reasons; nothing about them is applied."""
         profiles = profiles or {}
         rep = TurnReport()
+        if self.tracker.get_pending_reaction(encounter_id):
+            rep.rejections.append({
+                "reason": "A reaction decision is pending — it must be "
+                          "answered (or declined) before anything else happens."})
+            rep.paused = True
+            return rep
         cur = self.tracker.current_combatant(encounter_id)
         if cur is None:
             rep.rejections.append({"reason": "No one is in the fight."})
@@ -505,11 +714,19 @@ class CombatEngine:
                 rep.rejections.append({"intent": intent,
                                        "reason": f"Unknown act '{verb}'."})
                 continue
-            handler(encounter_id, actor, intent, profiles, rep)
+            try:
+                handler(encounter_id, actor, intent, profiles, rep)
+            except _ReactionPause as p:
+                self.tracker.set_pending_reaction(encounter_id, p.payload)
+                rep.events.append(self._prompt_event(p.payload))
+                rep.paused = True
+                break
 
         # Auto-end only when the economy is PROVABLY exhausted — an unspent
         # Action Surge or bonus-action feature keeps the turn open for the
-        # player to claim it.
+        # player to claim it. A paused fight never advances.
+        if rep.paused:
+            return rep
         cur = self.tracker.current_combatant(encounter_id)
         if cur is not None and not rep.turn_over:
             fresh = self.tracker.get_combatant(cur.id)
@@ -673,14 +890,15 @@ class CombatEngine:
         atk = attack_roll(atk_bonus, eff_ac, advantage=adv,
                           disadvantage=dis, label=f"{prof['name']} ({actor.name})",
                           rng=self.rng)
-        hit = self._shield_check(actor, target, atk, eff_ac, profiles, rep)
+        # May freeze the fight to ask the target's player (Shield).
+        self._maybe_prompt_shield(actor, target, atk, eff_ac, profiles,
+                                  prof, notes, after=None)
+        hit = bool(atk.hit)
         rolls = [self._roll_dict(f"{prof['name']} — {actor.name}", atk.detail,
                                  atk.total, dc=eff_ac, success=hit)]
         ev = {"kind": "attack", "actor": actor.name, "target": target.name,
               "weapon": prof["name"], "hit": hit, "crit": atk.is_crit,
               "notes": notes, "rolls": rolls}
-        if not hit and atk.hit:
-            notes.append("turned aside by Shield")
         if "hidden" in self._conds(actor):
             self.tracker.remove_condition(actor.id, "hidden")
         if "helped" in self._conds(actor):
@@ -738,7 +956,8 @@ class CombatEngine:
                 total += rb
                 notes.append(f"Rage +{rb}")
 
-            total = self._uncanny_dodge(target, total, profiles, rep)
+            total = self._maybe_prompt_uncanny(actor.name, target, total,
+                                               profiles, ev_ctx=ev, after=None)
             out = self.tracker.apply_damage(target.id, total)
             ev["damage"] = total
             ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
@@ -789,42 +1008,20 @@ class CombatEngine:
 
         ev = {"kind": "move", "actor": actor.name, "to": band_raw, "rolls": [],
               "notes": []}
-        # Leaving melee provokes opportunity attacks unless Disengaging.
+        new_pos = f"melee with {target_c.name}" if target_c else band
+        # Leaving melee provokes opportunity attacks unless Disengaging. Each
+        # OA can freeze the fight for a reaction decision; the frozen payload
+        # carries the rest of the move so it completes on resume.
         leaving = self._engaged_enemies(encounter_id, fresh)
         if leaving and not fresh.disengaging:
-            for enemy in leaving:
+            for i, enemy in enumerate(leaving):
                 if enemy.reaction_used or (self._conds(enemy) & _CANNOT_ACT):
                     continue
-                mprof = self._melee_profile(enemy, profiles)
-                if not mprof:
-                    continue
-                self.tracker.update_economy(enemy.id, reaction_used=True)
-                adv, dis, notes = self._attack_advantage(enemy, fresh, False, encounter_id)
-                eff_ac = self._eff_ac(fresh)
-                atk = attack_roll(mprof["attack_bonus"], eff_ac, advantage=adv,
-                                  disadvantage=dis,
-                                  label=f"Opportunity attack ({enemy.name})",
-                                  rng=self.rng)
-                oa_hit = self._shield_check(enemy, fresh, atk, eff_ac,
-                                            profiles, rep)
-                oa_rolls = [self._roll_dict(
-                    f"Opportunity attack — {enemy.name}", atk.detail, atk.total,
-                    dc=eff_ac, success=oa_hit)]
-                oa = {"kind": "opportunity_attack", "actor": enemy.name,
-                      "target": actor.name, "weapon": mprof["name"],
-                      "hit": oa_hit, "rolls": oa_rolls, "notes": notes}
-                if oa_hit:
-                    dmg = damage_roll(mprof["damage"], crit=atk.is_crit, rng=self.rng)
-                    total = self._uncanny_dodge(fresh, dmg.total, profiles, rep)
-                    out = self.tracker.apply_damage(fresh.id, total)
-                    oa_rolls.append(self._roll_dict(
-                        f"{mprof['name']} damage", dmg.detail, total,
-                        expr=mprof["damage"]))
-                    oa["damage"] = total
-                    oa["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
-                    if out.get("defeated"):
-                        oa["defeated"] = True
-                rep.events.append(oa)
+                after = {"kind": "move", "actor_id": actor.id,
+                         "new_pos": new_pos, "cost": cost,
+                         "enemy_ids": [e.id for e in leaving[i + 1:]]}
+                self._roll_opportunity_attack(encounter_id, enemy, fresh,
+                                              profiles, rep, after=after)
                 if (self.tracker.get_combatant(fresh.id) or fresh).defeated:
                     rep.turn_over = True
                     rep.turn_over_reason = f"{actor.name} went down mid-move"
@@ -832,7 +1029,6 @@ class CombatEngine:
         elif leaving and fresh.disengaging:
             ev["notes"].append("Disengaged — no opportunity attacks")
 
-        new_pos = f"melee with {target_c.name}" if target_c else band
         self.tracker.set_position(actor.id, new_pos)
         self.tracker.update_economy(actor.id, move_left=fresh.move_left - cost)
         ev["steps"] = cost
@@ -1155,8 +1351,10 @@ class CombatEngine:
             eff_ac = self._eff_ac(target)
             atk = attack_roll(bonus, eff_ac, advantage=adv, disadvantage=dis,
                               label=f"{sp.name} ({actor.name})", rng=self.rng)
-            s_hit = self._shield_check(actor, target, atk, eff_ac,
-                                       profiles, rep)
+            self._maybe_prompt_shield(actor, target, atk, eff_ac, profiles,
+                                      {"name": sp.name, "damage": dmg_expr or "1"},
+                                      notes, after=None)
+            s_hit = bool(atk.hit)
             ev["rolls"].append(self._roll_dict(
                 f"{sp.name} — {actor.name}", atk.detail, atk.total,
                 dc=eff_ac, success=s_hit))
@@ -1336,6 +1534,8 @@ class CombatEngine:
 
         if intents:
             rep = self.resolve(encounter_id, intents, profiles)
+            if rep.paused:
+                return rep
         if not rep.events and not rep.turn_over:
             # Default AI: hit whoever is in reach, else close and swing.
             pcs = [c for c in self.tracker.order(encounter_id)
@@ -1359,6 +1559,8 @@ class CombatEngine:
                     seq = [{"verb": "dash", "actor": cur.name},
                            {"verb": "move", "actor": cur.name, "arg": "near"}]
                 rep = self.resolve(encounter_id, seq, profiles)
+        if rep.paused:
+            return rep
         if not rep.turn_over:
             cur2 = self.tracker.current_combatant(encounter_id)
             if cur2 is not None:
@@ -1414,6 +1616,12 @@ class CombatEngine:
             elif k == "reaction":
                 lines.append(f"REACTION: {e['actor']} — {e.get('spell')}"
                              f" ({'; '.join(e.get('notes') or [])})")
+            elif k == "reaction_prompt":
+                q = "; ".join(e.get("notes") or [])
+                opts = " / ".join(e.get("options") or [])
+                lines.append(f"REACTION? {q} Options: {opts}.")
+            elif k == "note":
+                lines.append(f"NOTE: {'; '.join(e.get('notes') or [])}")
             elif k == "move":
                 n = f" ({'; '.join(e['notes'])})" if e.get("notes") else ""
                 lines.append(f"MOVE: {e['actor']} -> {e['to']}{n}")
@@ -1446,6 +1654,10 @@ class CombatEngine:
                 lines.append(f"SKIP: {e['actor']} ({'; '.join(e.get('notes') or [])})")
         for r in rep.rejections:
             lines.append(f"REFUSED: {r['reason']}")
+        if rep.paused:
+            lines.append("FIGHT PAUSED — nothing else resolves until the "
+                         "reaction question above is answered (or declined).")
+            return "\n".join(lines)
         if rep.turn_over:
             lines.append(f"TURN OVER ({rep.turn_over_reason or 'ended'})")
         elif rep.remaining:
