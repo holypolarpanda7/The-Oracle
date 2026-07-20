@@ -2471,6 +2471,69 @@ def ingest_backgrounds(workspace: Path = WORKSPACE) -> dict:
     return {"backgrounds_parsed": len(parsed), "path": str(out)}
 
 
+def ingest_species_overrides(engine=None, database_url=None,
+                             workspace: Path = WORKSPACE) -> dict:
+    """Apply curated species overrides with TOP precedence.
+
+    For exotic species whose owned-book text won't parse cleanly (Eberron,
+    Volo's, Van Richten's — OCR/format issues), a hand-curated
+    ``owned_books/species_overrides.json`` (gitignored, book DATA stays local)
+    supplies the correct traits/lineages. This loader is authoritative: it
+    always overwrites the listed fields, so the fragile parser can never
+    clobber verified data. Each entry:
+      {slug, name?, size?, speed?, darkvision?, languages?, traits[],
+       lineages?, lineage_label?, feat_choice?}
+    """
+    import json
+    from .models import Race
+    path = workspace / "species_overrides.json"
+    if not path.is_file():
+        return {"overrides_applied": 0, "overrides_new": 0, "path": str(path)}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"error": f"parse failed: {e}", "path": str(path)}
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    result = {"overrides_applied": 0, "overrides_new": 0}
+    src_default = "Curated override (local, book-derived) — never committed"
+    with Session(engine) as s:
+        for r in data:
+            slug = r.get("slug")
+            if not slug:
+                continue
+            row = s.exec(select(Race).where(Race.index_slug == slug)).first()
+            if row is None:
+                row = Race(index_slug=slug, name=r.get("name", slug.title()))
+                result["overrides_new"] += 1
+            else:
+                result["overrides_applied"] += 1
+            if r.get("name"):
+                row.name = r["name"]
+            row.ability_bonuses = {}          # 2024: no racial ASI
+            row.choose_bonus = []
+            if r.get("size"):
+                row.size = r["size"]
+            if r.get("speed"):
+                row.speed = int(r["speed"])
+            if "darkvision" in r:
+                row.darkvision = bool(r["darkvision"])
+            if r.get("languages"):
+                row.languages = r["languages"]
+            if r.get("traits"):
+                row.traits = r["traits"]
+            if "lineages" in r:
+                row.lineages = r["lineages"] or None
+            if r.get("lineage_label"):
+                row.lineage_label = r["lineage_label"]
+            if r.get("feat_choice"):
+                row.feat_choice = r["feat_choice"]
+            row.source = r.get("source", src_default)
+            s.add(row)
+        s.commit()
+    return result
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -2502,6 +2565,7 @@ def main(argv: list[str]) -> None:
             "Owned (Van Richten's Guide to Ravenloft) — local ingest"))
         print("[owned] magic items:", ingest_owned_items())
         print("[owned] species:", ingest_species())
+        print("[owned] species overrides:", ingest_species_overrides())
         print("[owned] backgrounds:", ingest_backgrounds())
 
 
