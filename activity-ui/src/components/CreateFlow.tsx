@@ -25,6 +25,7 @@ const NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
 
 interface Draft {
   race?: string;
+  lineage?: string;   // chosen sub-species/ancestry slug (races that have them)
   cls?: string;
   background?: string;
   // 2024 ability boosts come from the background: +2/+1 to two of its abilities,
@@ -37,7 +38,8 @@ interface Draft {
   assigned: Partial<Record<Ability, number>>;
   pointBuy: Record<Ability, number>;
   skills: string[];
-  feat?: string;
+  featBg?: string;    // the background's Origin feat
+  featRace?: string;  // a species-granted feat (Human origin, Custom Lineage any)
   gearMode: "kit" | "buy";
   cart: Record<string, number>;   // buyable item name -> quantity
   wondrous?: string;              // rules_item slug
@@ -49,6 +51,39 @@ const freshDraft = (): Draft => ({
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
   skills: [], gearMode: "kit", cart: {}, name: "",
 });
+
+const CASTER_CLASSES = new Set([
+  "bard", "cleric", "druid", "paladin", "ranger", "sorcerer", "warlock",
+  "wizard", "artificer",
+]);
+
+/** Client-side mirror of the backend feat-prerequisite check (level minimum,
+    ability minimums, spellcasting). Returns null when met, else the reason. */
+function featBlockReason(
+  feat: CCOptions["feats"][number],
+  finalStats: Partial<Record<Ability, number>>,
+  clsSlug?: string,
+): string | null {
+  if ((feat.min_level ?? 1) > 1) return `level ${feat.min_level}+`;
+  const pre = (feat.prerequisite ?? "").trim();
+  if (!pre) return null;
+  for (const clause of pre.split(/[;,]| and /)) {
+    const c = clause.trim().toLowerCase();
+    if (!c) continue;
+    const m = c.match(/(str|dex|con|int|wis|cha)[a-z]*\D*(\d+)/);
+    if (m) {
+      const code = m[1].slice(0, 3).toUpperCase() as Ability;
+      if ((finalStats[code] ?? 0) < Number(m[2]))
+        return `needs ${m[1].slice(0, 3).toUpperCase()} ${m[2]}+`;
+      continue;
+    }
+    if (c.includes("spellcast") || c.includes("cast a spell")) {
+      if (!CASTER_CLASSES.has((clsSlug ?? "").toLowerCase()))
+        return "needs a spellcasting class";
+    }
+  }
+  return null;
+}
 
 export function CreateFlow({ onDone, onCancel, ccError }: {
   onDone: (payload: CCPayload) => void;
@@ -68,9 +103,19 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   const race = opts?.races.find((r) => r.slug === d.race);
   const cls = opts?.classes.find((c) => c.slug === d.cls);
   const bg = opts?.backgrounds.find((b) => b.slug === d.background);
-  // 2024 rules: every character's background grants an Origin feat, so everyone
-  // picks one (not just Custom Lineage-style races) whenever feats are ingested.
-  const needsFeat = (opts?.feats.length ?? 0) > 0;
+
+  // 2024 feats: the background grants an Origin feat (everyone picks one), and
+  // some species grant a second feat — Human an Origin feat, Custom Lineage
+  // any feat you qualify for.
+  const originFeats = useMemo(
+    () => (opts?.feats ?? []).filter((f) => (f.category ?? "origin") === "origin"),
+    [opts]);
+  const needsBgFeat = (opts?.feats.length ?? 0) > 0;
+  const raceFeat = race?.feat_choice ?? null;   // "origin" | "any" | null
+  const raceFeatPool = useMemo(() => {
+    if (!raceFeat || !opts) return [];
+    return raceFeat === "any" ? opts.feats : originFeats;
+  }, [raceFeat, opts, originFeats]);
 
   // 2024 ability boosts come from the background's listed abilities (3 of them;
   // a legacy background with none falls back to "any ability"). +1/+1/+1 is only
@@ -105,6 +150,13 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   const finalScore = (a: Ability) =>
     (baseScores[a] ?? 0) + (bonuses[a] ?? 0) || undefined;
 
+  // Final ability scores for feat-prerequisite gating.
+  const finalStats = useMemo((): Partial<Record<Ability, number>> => {
+    const out: Partial<Record<Ability, number>> = {};
+    for (const a of ABILITIES) out[a] = (baseScores[a] ?? 0) + (bonuses[a] ?? 0);
+    return out;
+  }, [baseScores, bonuses]);
+
   // ----- stage gating -----
   const abilitiesBase = d.method === "point_buy"
     ? pointBuySpent(d.pointBuy, opts) <= (opts?.ability_methods.point_buy.budget ?? 27)
@@ -122,11 +174,13 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   }, 0), [d.cart, opts]);
 
   const stageDone: Record<Stage, boolean> = {
-    race: !!d.race,
+    race: !!d.race && (!(race?.lineages?.length) || !!d.lineage),
     class: !!d.cls,
     background: !!d.background,
     abilities: abilitiesDone,
-    skills: d.skills.length === skillsNeeded && (!needsFeat || !!d.feat),
+    skills: d.skills.length === skillsNeeded
+      && (!needsBgFeat || !!d.featBg)
+      && (!raceFeat || !!d.featRace),
     gear: d.gearMode === "kit" || cartCost <= budget,  // buy is fine even empty
     wondrous: true,                                     // optional — always ok
     review: d.name.trim().length >= 2,
@@ -139,10 +193,13 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     if (stage === "review") {
       const stats: Record<string, number> = {};
       for (const a of ABILITIES) stats[ABILITY_FULL[a]] = finalScore(a) ?? 10;
+      const feats = [d.featBg, d.featRace].filter(Boolean) as string[];
+      const lineageName = race?.lineages?.find((l) => l.slug === d.lineage)?.name;
       onDone({
         name: d.name.trim(),
-        race: race!.name, char_class: cls!.name, background: bg!.slug,
-        stats, skills: d.skills, feats: d.feat ? [d.feat] : undefined,
+        race: lineageName ? `${race!.name} (${lineageName})` : race!.name,
+        char_class: cls!.name, background: bg!.slug,
+        stats, skills: d.skills, feats: feats.length ? feats : undefined,
         gear_mode: d.gearMode,
         bought_items: d.gearMode === "buy"
           ? Object.entries(d.cart).map(([name, quantity]) => ({ name, quantity }))
@@ -187,15 +244,46 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 <button
                   key={r.slug}
                   className={`cf-card ${d.race === r.slug ? "picked" : ""}`}
-                  onClick={() => { uiTick(); setD({ ...d, race: r.slug }); setDetail(r.slug); }}
+                  onClick={() => {
+                    uiTick();
+                    // changing species clears its lineage + any race feat
+                    setD({ ...d, race: r.slug, lineage: undefined, featRace: undefined });
+                    setDetail(r.slug);
+                  }}
                 >
                   <div className="cf-card-name">{r.name}</div>
                   <div className="cf-card-sub">
                     {r.size} · {r.speed} ft{r.darkvision ? " · darkvision" : ""}
+                    {r.lineages?.length ? ` · ${r.lineages.length} lineages` : ""}
+                    {r.feat_choice ? " · feat" : ""}
                   </div>
                 </button>
               ))}
             </div>
+
+            {race?.lineages?.length ? (
+              <>
+                <div className="cf-sub-label" style={{ marginTop: 18 }}>
+                  {race.lineage_label ?? "Lineage"} — pick your{" "}
+                  {race.name.toLowerCase()} heritage
+                </div>
+                <div className="cf-grid">
+                  {race.lineages.map((l) => (
+                    <button
+                      key={l.slug}
+                      className={`cf-card ${d.lineage === l.slug ? "picked" : ""}`}
+                      onClick={() => { uiTick(); setD({ ...d, lineage: l.slug }); }}
+                    >
+                      <div className="cf-card-name">{l.name}</div>
+                      <div className="cf-card-sub">
+                        {(l.traits[0] ?? "").slice(0, 60)}
+                        {(l.traits[0]?.length ?? 0) > 60 ? "…" : ""}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </>
         )}
 
@@ -266,24 +354,22 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 );
               })}
             </div>
-            {needsFeat && (
-              <>
-                <div className="cf-sub-label" style={{ marginTop: 18 }}>
-                  Your background grants an Origin feat
-                </div>
-                <div className="cf-grid">
-                  {opts.feats.map((f) => (
-                    <button
-                      key={f.slug}
-                      className={`cf-card ${d.feat === f.slug ? "picked" : ""}`}
-                      onClick={() => { uiTick(); setD({ ...d, feat: f.slug }); }}
-                    >
-                      <div className="cf-card-name">{f.name}</div>
-                      <div className="cf-card-sub">{f.brief}…</div>
-                    </button>
-                  ))}
-                </div>
-              </>
+            {needsBgFeat && (
+              <FeatPicker
+                title={`Your ${bg?.name ?? "background"} grantS an Origin feat`
+                  .replace("grantS", "grants")}
+                feats={originFeats} finalStats={finalStats} clsSlug={d.cls}
+                chosen={d.featBg}
+                onPick={(slug) => setD({ ...d, featBg: slug })} />
+            )}
+            {raceFeat && (
+              <FeatPicker
+                title={raceFeat === "any"
+                  ? `${race?.name}: choose ANY feat you qualify for`
+                  : `${race?.name} grants an Origin feat`}
+                feats={raceFeatPool} finalStats={finalStats} clsSlug={d.cls}
+                chosen={d.featRace}
+                onPick={(slug) => setD({ ...d, featRace: slug })} />
             )}
           </>
         )}
@@ -341,8 +427,11 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 ))}
               </div>
               <p className="inv-line"><b>Skills</b> · {[...(bg?.skills ?? []), ...d.skills].join(", ")}</p>
-              {d.feat && (
-                <p className="inv-line"><b>Feat</b> · {opts.feats.find((f) => f.slug === d.feat)?.name}</p>
+              {(d.featBg || d.featRace) && (
+                <p className="inv-line"><b>Feats</b> · {
+                  [d.featBg, d.featRace].filter(Boolean)
+                    .map((s) => opts.feats.find((f) => f.slug === s)?.name)
+                    .join(", ")}</p>
               )}
               <p className="inv-line"><b>Gear</b> · {d.gearMode === "buy"
                 ? `bought ${Object.keys(d.cart).length} item(s), ${(budget - cartCost).toFixed(0)} gp left`
@@ -359,7 +448,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
 
       <aside className="cf-detail">
         <DetailPanel opts={opts} stage={stage} raceSlug={d.race} clsSlug={d.cls}
-                     hovered={detail} />
+                     lineageSlug={d.lineage} hovered={detail} />
       </aside>
 
       <footer className="cf-foot">
@@ -372,6 +461,44 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         </button>
       </footer>
     </div>
+  );
+}
+
+/** A pool of feat cards, prerequisites enforced: feats you don't qualify for
+    are greyed out, non-selectable, and show the reason. */
+function FeatPicker({ title, feats, finalStats, clsSlug, chosen, onPick }: {
+  title: string;
+  feats: CCOptions["feats"];
+  finalStats: Partial<Record<Ability, number>>;
+  clsSlug?: string;
+  chosen?: string;
+  onPick: (slug: string) => void;
+}) {
+  return (
+    <>
+      <div className="cf-sub-label" style={{ marginTop: 18 }}>{title}</div>
+      <div className="cf-grid">
+        {feats.map((f) => {
+          const blocked = featBlockReason(f, finalStats, clsSlug);
+          return (
+            <button
+              key={f.slug}
+              className={`cf-card ${chosen === f.slug ? "picked" : ""} ${blocked ? "locked" : ""}`}
+              disabled={!!blocked}
+              title={blocked ? `Locked — ${blocked}` : undefined}
+              onClick={() => { if (!blocked) { uiTick(); onPick(f.slug); } }}
+            >
+              <div className="cf-card-name">
+                {f.name}{blocked ? " 🔒" : ""}
+              </div>
+              <div className="cf-card-sub">
+                {blocked ? blocked : `${f.brief}…`}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </>
   );
 }
 
@@ -538,7 +665,7 @@ function AbilityStage({ opts, d, setD, bonuses, bg, boostPool, canSpread }: {
       </div>
       <p className="cf-hint">
         {d.method === "point_buy"
-          ? "Spend the budget; racial bonuses apply on top."
+          ? "Spend the budget; your background's boosts apply on top."
           : "Pick a value, then place it in an ability. Click a filled slot to clear it."}
       </p>
     </div>
@@ -615,21 +742,38 @@ function GearStage({ opts, d, setD, budget, spent }: {
   );
 }
 
-function DetailPanel({ opts, stage, raceSlug, clsSlug, hovered }: {
+function DetailPanel({ opts, stage, raceSlug, clsSlug, lineageSlug, hovered }: {
   opts: CCOptions; stage: Stage;
-  raceSlug?: string; clsSlug?: string; hovered: string | null;
+  raceSlug?: string; clsSlug?: string; lineageSlug?: string;
+  hovered: string | null;
 }) {
   if (stage === "race" || hovered) {
     const r = opts.races.find((x) => x.slug === (hovered ?? raceSlug));
     if (r && stage === "race") {
+      // Show the picked lineage's traits (only when viewing the selected race).
+      const lin = (hovered ?? raceSlug) === raceSlug
+        ? r.lineages?.find((l) => l.slug === lineageSlug)
+        : undefined;
       return (
         <div className="cf-detail-body">
-          <h3>{r.name}</h3>
+          <h3>{r.name}{lin ? ` · ${lin.name}` : ""}</h3>
           <p className="cf-detail-meta">
-            {r.size} · {r.speed} ft speed{r.darkvision ? " · darkvision" : ""}
+            {r.size} · {(lin?.speed ?? r.speed)} ft speed
+            {(lin?.darkvision ?? r.darkvision) ? " · darkvision" : ""}
           </p>
           {r.languages && <p className="cf-detail-meta">{r.languages}</p>}
           <ul>{r.traits.map((t, i) => <li key={i}>{t}</li>)}</ul>
+          {lin && (
+            <>
+              <p className="cf-detail-meta"><b>{r.lineage_label ?? "Lineage"}: {lin.name}</b></p>
+              <ul>{lin.traits.map((t, i) => <li key={`l${i}`}>{t}</li>)}</ul>
+            </>
+          )}
+          {r.lineages?.length && !lin ? (
+            <p className="cf-detail-meta" style={{ opacity: 0.7 }}>
+              Pick a {(r.lineage_label ?? "lineage").toLowerCase()} below.
+            </p>
+          ) : null}
         </div>
       );
     }

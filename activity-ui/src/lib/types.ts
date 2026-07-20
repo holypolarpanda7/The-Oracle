@@ -213,6 +213,11 @@ export interface CCOptions {
     choose_bonus: number[];
     speed: number; size: string; darkvision: boolean;
     languages?: string | null; traits: string[];
+    // 2024: flavor sub-species (no ASI) and any species-granted feat choice.
+    lineages?: { slug: string; name: string; traits: string[];
+                 darkvision?: boolean; speed?: number }[];
+    lineage_label?: string | null;
+    feat_choice?: "origin" | "any" | null;
   }[];
   classes: {
     slug: string; name: string; hit_die?: number | null;
@@ -221,10 +226,12 @@ export interface CCOptions {
     saving_throws: string[];
     skill_choices_n: number; skill_options: string[];
   }[];
-  feats: { slug: string; name: string; prerequisite?: string | null; brief: string }[];
+  feats: { slug: string; name: string; category?: string;
+           prerequisite?: string | null; min_level?: number; brief: string }[];
   backgrounds: {
     slug: string; name: string; skills: string[];
     feature?: string | null; abilities?: string[];
+    origin_feat?: string | null;
   }[];
   ability_methods: {
     standard_array: number[];

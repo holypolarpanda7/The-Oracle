@@ -190,6 +190,9 @@ body {
 }
 .cf-card:hover { border-color: color-mix(in srgb, var(--brass) 50%, transparent); }
 .cf-card.picked { border-color: var(--brass); box-shadow: 0 0 0 1px var(--brass); }
+.cf-card.locked { opacity: 0.42; cursor: not-allowed; filter: grayscale(0.6); }
+.cf-card.locked:hover { border-color: var(--panel-edge); }
+.cf-card.locked .cf-card-sub { color: var(--oxblood); font-style: italic; }
 .cf-card-name { font-size: 15px; color: var(--parchment); }
 .cf-card-sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; line-height: 1.45; }
 .cf-subpanel { margin-top: 14px; }
