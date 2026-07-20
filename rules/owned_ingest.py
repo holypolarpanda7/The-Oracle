@@ -2326,7 +2326,10 @@ def ingest_species(engine=None, database_url=None,
                 speed=r["speed"], size=r["size"], darkvision=r["darkvision"],
                 languages=(prior.languages if prior and prior.languages
                            else "Common plus one more of your choice"),
-                traits=r["traits"], source=r["source"],
+                # Never let an empty parse (OCR-damaged books yield 0 traits)
+                # wipe traits the repo seed already authored.
+                traits=(r["traits"] or (prior.traits if prior else []) or []),
+                source=r["source"],
                 lineages=(prior.lineages if prior else None),
                 lineage_label=(prior.lineage_label if prior else None),
                 feat_choice=(prior.feat_choice if prior else None),
