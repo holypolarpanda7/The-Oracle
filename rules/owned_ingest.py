@@ -2313,14 +2313,23 @@ def ingest_species(engine=None, database_url=None,
     result = {"species_parsed": len(parsed), "species_new": 0, "features": 0}
     with Session(engine) as s:
         for r in parsed.values():
+            # Preserve lineage/feat-choice data the repo seed already authored
+            # (the book text lists lineage sub-options in separate tables the
+            # trait parser doesn't capture, so never NULL them out here).
+            prior = s.exec(select(Race).where(
+                Race.index_slug == r["slug"])).first()
             mapped = Race(
                 index_slug=r["slug"], name=r["name"],
                 # 2024: species grant NO ability bonuses — those come from the
                 # background (see the CC ability stage). Empty on both.
                 ability_bonuses={}, choose_bonus=[],
                 speed=r["speed"], size=r["size"], darkvision=r["darkvision"],
-                languages="Common plus one more of your choice",
+                languages=(prior.languages if prior and prior.languages
+                           else "Common plus one more of your choice"),
                 traits=r["traits"], source=r["source"],
+                lineages=(prior.lineages if prior else None),
+                lineage_label=(prior.lineage_label if prior else None),
+                feat_choice=(prior.feat_choice if prior else None),
             )
             if _upsert(s, Race, r["slug"], mapped):
                 result["species_new"] += 1
@@ -2408,7 +2417,10 @@ def parse_backgrounds(text: str) -> list[dict]:
         m = re.match(r"\s*Ability Scores:\s*(.+)", l)
         if not m:
             continue
-        codes = {c for c in (_abil_code(t) for t in re.split(r"[,/]", m.group(1))) if c}
+        # Ordered ability codes (the +2/+1 display cares about order), plus the
+        # unordered set used to key the canonical background name.
+        ordered = [c for c in (_abil_code(t) for t in re.split(r"[,/]", m.group(1))) if c]
+        codes = set(ordered)
         name = _BG_BY_TRIPLE.get(frozenset(codes))
         if not name:
             continue
@@ -2422,9 +2434,15 @@ def parse_backgrounds(text: str) -> list[dict]:
         # Keep only real skills (drop OCR fragments that don't match canonical).
         skills = [s for s in skills if s in _SKILLS]
         slug = _slugify(name)
+        feat_name = _repair_feat(fm.group(1)) if fm else None
         row = {
             "slug": slug, "name": name,
-            "feat": _repair_feat(fm.group(1)) if fm else None,
+            # The 2024 background grants the ability spread (its triple) + an
+            # Origin feat. Emit both the ordered codes and the feat as a slug so
+            # the CC ability stage + feat picker light up.
+            "abilities": ordered or sorted(codes),
+            "feat": feat_name,
+            "origin_feat": _slugify(feat_name) if feat_name else None,
             "skills": skills,
             "tool": re.sub(r"\s+", " ", tm.group(1)).strip() if tm else None,
         }

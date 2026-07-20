@@ -4496,6 +4496,13 @@ _BACKGROUND_KITS: Dict[str, Dict[str, Any]] = {
 _LOCAL_BG_LOADED = False
 
 
+def _slugify_bg_feat(name: Optional[str]) -> Optional[str]:
+    """Feat name -> slug ('Magic Initiate' -> 'magic-initiate')."""
+    if not name:
+        return None
+    return re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-") or None
+
+
 def _ensure_local_backgrounds() -> None:
     """Merge locally-ingested 2024 backgrounds (owned_books/backgrounds.json,
     gitignored) into _BACKGROUND_KITS once. 2024 versions overwrite the 2014
@@ -4519,11 +4526,17 @@ def _ensure_local_backgrounds() -> None:
         if not name or not b.get("skills"):
             continue
         key = name.lower()
+        prev = _BACKGROUND_KITS.get(key, {})
+        # The parsed feat is the Origin feat (slug); keep the descriptive
+        # background feature name from the repo default when we have one.
+        origin_feat = b.get("origin_feat") or (
+            _slugify_bg_feat(b.get("feat")) if b.get("feat") else None)
         _BACKGROUND_KITS[key] = {
-            "skills": b.get("skills") or [],
-            "items": _BACKGROUND_KITS.get(key, {}).get("items", []),
-            "feature": b.get("feat") or _BACKGROUND_KITS.get(key, {}).get("feature"),
-            "abilities": b.get("abilities") or [],
+            "skills": b.get("skills") or prev.get("skills") or [],
+            "items": prev.get("items", []),
+            "feature": prev.get("feature") or b.get("feat"),
+            "abilities": b.get("abilities") or prev.get("abilities") or [],
+            "origin_feat": origin_feat or prev.get("origin_feat"),
         }
         n += 1
     print(f"[cc] merged {n} local (2024) backgrounds")
