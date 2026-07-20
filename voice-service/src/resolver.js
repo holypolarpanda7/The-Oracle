@@ -10,6 +10,24 @@ import { pipeline, PassThrough } from 'node:stream';
 
 const require = createRequire(import.meta.url);
 const ffmpegPath = require('ffmpeg-static');
+
+// Opus encoder settings. The defaults are deliberately LIGHT: this service
+// shares a machine with the local LLM + diffusion, so a CPU-hungry encoder
+// (compression_level 10) can fall behind real-time and starve the 20 ms frame
+// pump — heard as choppy/stuttering playback. Level 5 is near-identical in
+// quality at a fraction of the CPU; 128 kbps suits Discord's channel bitrate
+// (224k was well above it). Both are env-overridable if you have CPU to spare.
+const OPUS_BITRATE = process.env.VOICE_OPUS_BITRATE || '128k';
+const OPUS_COMPLEXITY = process.env.VOICE_OPUS_COMPLEXITY || '5';
+// Shared Opus/output args for both pipelines (keeps them in lockstep).
+const opusArgs = (amplFactor) => [
+  '-af', `volume=${amplFactor}`,
+  '-c:a', 'libopus',
+  '-b:a', OPUS_BITRATE, '-vbr', 'on', '-compression_level', OPUS_COMPLEXITY,
+  '-ar', '48000', '-ac', '2',
+  '-frame_duration', '20', '-application', 'audio',
+  '-f', 'ogg', 'pipe:1',
+];
 const pkgRoot = dirname(require.resolve('youtube-dl-exec/package.json'));
 export const YT_DLP_BIN = join(
   pkgRoot,
@@ -121,12 +139,7 @@ function createDirectPipeline(query, volume) {
       '-hide_banner', '-loglevel', 'error',
       '-i', src,
       '-vn', '-map', '0:a:0',
-      '-af', `volume=${amplFactor}`,
-      '-c:a', 'libopus',
-      '-b:a', '224k', '-vbr', 'on', '-compression_level', '10',
-      '-ar', '48000', '-ac', '2',
-      '-frame_duration', '20', '-application', 'audio',
-      '-f', 'ogg', 'pipe:1',
+      ...opusArgs(amplFactor),
     ],
     { stdio: ['ignore', 'pipe', 'pipe'] }
   );
@@ -183,12 +196,7 @@ function createYtdlpPipeline(query, volume) {
       '-thread_queue_size', '4096',
       '-i', 'pipe:0',
       '-vn', '-map', '0:a:0',
-      '-af', `volume=${amplFactor}`,
-      '-c:a', 'libopus',
-      '-b:a', '224k', '-vbr', 'on', '-compression_level', '10',
-      '-ar', '48000', '-ac', '2',
-      '-frame_duration', '20', '-application', 'audio',
-      '-f', 'ogg', 'pipe:1',
+      ...opusArgs(amplFactor),
     ],
     { stdio: ['pipe', 'pipe', 'pipe'] }
   );
