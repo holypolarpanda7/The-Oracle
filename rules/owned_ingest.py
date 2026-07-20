@@ -2534,6 +2534,55 @@ def ingest_species_overrides(engine=None, database_url=None,
     return result
 
 
+def ingest_feats_overrides(engine=None, database_url=None,
+                           workspace: Path = WORKSPACE) -> dict:
+    """Apply curated feat overrides with TOP precedence.
+
+    For owned-book feats the PHB parser can't reach (e.g. Eberron Dragonmark
+    feats), a hand-curated ``owned_books/feats_overrides.json`` (gitignored,
+    book DATA stays local) supplies them. Loader is committed; data is not.
+    Each entry: {slug, name, category?, prerequisite?, min_level?,
+    repeatable?, benefit?}.
+    """
+    import json
+    from .models import Feat
+    path = workspace / "feats_overrides.json"
+    if not path.is_file():
+        return {"feat_overrides_applied": 0, "feat_overrides_new": 0,
+                "path": str(path)}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"error": f"parse failed: {e}", "path": str(path)}
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    result = {"feat_overrides_applied": 0, "feat_overrides_new": 0}
+    src_default = "Curated override (local, book-derived) — never committed"
+    with Session(engine) as s:
+        for r in data:
+            slug = r.get("slug")
+            if not slug:
+                continue
+            row = s.exec(select(Feat).where(Feat.index_slug == slug)).first()
+            if row is None:
+                row = Feat(index_slug=slug, name=r.get("name", slug.title()))
+                result["feat_overrides_new"] += 1
+            else:
+                result["feat_overrides_applied"] += 1
+            if r.get("name"):
+                row.name = r["name"]
+            row.category = r.get("category", "general")
+            row.prerequisite = r.get("prerequisite") or None
+            row.min_level = int(r.get("min_level", 1))
+            row.repeatable = bool(r.get("repeatable"))
+            if r.get("benefit"):
+                row.benefit = r["benefit"]
+            row.source = r.get("source", src_default)
+            s.add(row)
+        s.commit()
+    return result
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -2566,6 +2615,7 @@ def main(argv: list[str]) -> None:
         print("[owned] magic items:", ingest_owned_items())
         print("[owned] species:", ingest_species())
         print("[owned] species overrides:", ingest_species_overrides())
+        print("[owned] feat overrides:", ingest_feats_overrides())
         print("[owned] backgrounds:", ingest_backgrounds())
 
 

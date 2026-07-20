@@ -429,12 +429,16 @@ async def lifespan(app: FastAPI):
         # Apply curated exotic-species overrides if the local (gitignored)
         # file is present — surfaces book species the parser can't read.
         try:
-            from rules.owned_ingest import ingest_species_overrides
+            from rules.owned_ingest import (ingest_species_overrides,
+                                             ingest_feats_overrides)
             ov = ingest_species_overrides(engine=engine)
             if ov.get("overrides_applied") or ov.get("overrides_new"):
                 print(f"[Startup] Species overrides: {ov}")
+            fo = ingest_feats_overrides(engine=engine)
+            if fo.get("feat_overrides_applied") or fo.get("feat_overrides_new"):
+                print(f"[Startup] Feat overrides: {fo}")
         except Exception as e:
-            print(f"[Startup] Species overrides skipped: {e}")
+            print(f"[Startup] Overrides skipped: {e}")
     except Exception as e:
         print(f"[Startup] CC data seed skipped: {e}")
 
