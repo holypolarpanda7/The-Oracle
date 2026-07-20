@@ -1814,12 +1814,16 @@ _PRE_RETREAT = re.compile(
 
 _COMBAT_INTENT_STATS = {"preparsed": 0, "llm": 0, "none": 0, "parse_fail": 0}
 
-# Answers to a frozen reaction question ("Shield or take the hit?").
+# Answers to a frozen reaction question ("Shield or take the hit?" /
+# "take the opportunity attack?").
 _PRE_REACT_USE = re.compile(
     r"^\W*((i\s+)?(cast|use)\s+)?(shield|uncanny(\s+dodge)?)\W*$"
+    r"|^\W*(i\s+)?(take\s+the\s+)?(swing|opportunity(\s+attack)?)\W*$"
+    r"|^\W*(i\s+)?(swing|attack|hit)(\s+(him|her|it|them))?\W*$"
     r"|^\W*(yes|yeah|do it|use it|use my reaction)\W*$", re.IGNORECASE)
 _PRE_REACT_NO = re.compile(
-    r"^\W*(no|nah|nope|decline|pass|take\s+(it|the\s+hit)|hold(\s+it)?|"
+    r"^\W*(no|nah|nope|decline|pass|take\s+(it|the\s+hit)|"
+    r"hold(\s+(it|back|the\s+reaction))?|let\s+(him|her|it|them)\s+go|"
     r"save\s+(it|my\s+reaction))\W*$", re.IGNORECASE)
 
 

@@ -486,15 +486,23 @@ class CombatEngine:
             "options": ["Uncanny Dodge", "take it"],
         })
 
-    def _pc_holds_oa(self, enemy: Combatant, profiles: dict) -> bool:
-        """A PC with other reaction options holds its reaction instead of
-        auto-swinging an opportunity attack (the player's budget, not ours)."""
-        p = profiles.get(enemy.character_id) if enemy.character_id else None
-        if p is None:
-            return False
-        has_shield = "shield" in p.reaction_spells \
-            and any(n > 0 for n in (p.slots or {}).values())
-        return has_shield or "uncanny dodge" in p.features
+    def _maybe_offer_oa(self, enemy: Combatant, mover: Combatant,
+                        weapon: dict, after: Optional[dict]) -> None:
+        """A PC's opportunity attack is a choice, not a reflex — freeze and
+        ask before rolling anything."""
+        raise _ReactionPause({
+            "type": "oa_offer",
+            "reactor_id": enemy.id,
+            "mover_id": mover.id,
+            "target": enemy.name, "target_id": enemy.id,
+            "target_char_id": enemy.character_id,
+            "after": after,
+            "question": (f"{mover.name} slips out of {enemy.name}'s reach — "
+                         f"an opportunity attack with "
+                         f"{weapon.get('name', 'their weapon')} is there for "
+                         f"the taking (reaction)."),
+            "options": ["take the swing", "hold the reaction"],
+        })
 
     @staticmethod
     def _prompt_event(payload: dict) -> dict:
@@ -516,6 +524,8 @@ class CombatEngine:
         try:
             if payload.get("type") == "shield":
                 self._resume_shield(encounter_id, payload, use, profiles, rep)
+            elif payload.get("type") == "oa_offer":
+                self._resume_oa(encounter_id, payload, use, profiles, rep)
             else:
                 self._resume_uncanny(encounter_id, payload, use, profiles, rep)
         except _ReactionPause as p:
@@ -594,6 +604,24 @@ class CombatEngine:
         rep.events.append(ev)
         self._finish_after(encounter_id, payload.get("after"), profiles, rep)
 
+    def _resume_oa(self, encounter_id: int, payload: dict, use: bool,
+                   profiles: dict, rep: TurnReport) -> None:
+        """The player answered an opportunity-attack offer: swing or hold,
+        then let the interrupted move finish."""
+        enemy = self.tracker.get_combatant(payload["reactor_id"])
+        mover = self.tracker.get_combatant(payload["mover_id"])
+        if enemy is not None and mover is not None and not mover.defeated:
+            if use and self._reaction_ready(enemy):
+                self._roll_opportunity_attack(
+                    encounter_id, enemy, mover, profiles, rep,
+                    after=payload.get("after"), offered=True)
+            else:
+                rep.events.append({
+                    "kind": "note", "actor": enemy.name, "rolls": [],
+                    "notes": [f"{enemy.name} holds their reaction as "
+                              f"{mover.name} slips away"]})
+        self._finish_after(encounter_id, payload.get("after"), profiles, rep)
+
     def _finish_after(self, encounter_id: int, after: Optional[dict],
                       profiles: dict, rep: TurnReport) -> None:
         """Complete a move that was interrupted by a reaction mid-OA: run the
@@ -625,17 +653,16 @@ class CombatEngine:
 
     def _roll_opportunity_attack(self, encounter_id: int, enemy: Combatant,
                                  mover: Combatant, profiles: dict,
-                                 rep: TurnReport,
-                                 after: Optional[dict]) -> None:
-        """One opportunity attack against a mover (may pause for a reaction)."""
+                                 rep: TurnReport, after: Optional[dict],
+                                 offered: bool = False) -> None:
+        """One opportunity attack against a mover (may pause for a reaction).
+        A PC's OA is offered to the player first unless ``offered`` (the
+        resume path, where the player already said yes)."""
         mprof = self._melee_profile(enemy, profiles)
         if not mprof:
             return
-        if enemy.kind == "pc" and self._pc_holds_oa(enemy, profiles):
-            rep.events.append({"kind": "note", "actor": enemy.name, "rolls": [],
-                               "notes": [f"{enemy.name} holds their reaction as "
-                                         f"{mover.name} slips away"]})
-            return
+        if enemy.kind == "pc" and not offered:
+            self._maybe_offer_oa(enemy, mover, mprof, after)  # raises
         self.tracker.update_economy(enemy.id, reaction_used=True)
         adv, dis, notes = self._attack_advantage(enemy, mover, False, encounter_id)
         eff_ac = self._eff_ac(mover)
