@@ -135,3 +135,42 @@ class Combatant(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class CombatLog(SQLModel, table=True):
+    """Append-only telemetry for the deterministic combat engine.
+
+    One row per player combat message the engine handled — enough to REPLAY a
+    fight (reproduce a "that felt wrong" report) and to TUNE the intent
+    extractor (every parse and every miss keeps the raw model output). Written
+    best-effort by the backend; never on the hot path's critical section.
+    """
+    __tablename__ = "combat_log"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+    session_id: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+    encounter_id: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
+    round: Optional[int] = Field(default=None, sa_column=Column(Integer))
+
+    # Who acted, and the raw thing they typed.
+    character: Optional[str] = Field(default=None, sa_column=Column(String))
+    user_id: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+    player_message: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    # Row shape: "turn" (a resolved exchange), "reaction" (answered a frozen
+    # prompt), or "parse_miss" (extractor produced nothing usable).
+    kind: str = Field(default="turn", sa_column=Column(String, index=True))
+
+    # How the intents were obtained, for extractor telemetry.
+    #   preparse | llm | none | parse_fail | reaction
+    parse_source: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+    # The extractor's raw output — the exact data you tune the prompt against.
+    raw_llm: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    intents: Optional[Any] = Field(default=None, sa_column=Column(JSON))     # parsed intents
+    events: Optional[Any] = Field(default=None, sa_column=Column(JSON))      # certified engine events
+    report: Optional[str] = Field(default=None, sa_column=Column(String))    # rendered block (human-readable)
+    # Quick-filter derived tags: parse_fail | paused | rejected | fight_over | error
+    flags: Optional[Any] = Field(default=None, sa_column=Column(JSON))

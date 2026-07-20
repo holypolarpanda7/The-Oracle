@@ -62,6 +62,7 @@ from rules import (
 )
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import CombatTracker, CombatEngine, PCProfile, PCWeapon, Condition
+from combat.models import CombatLog
 from dice import ability_check, ability_modifier, roll as dice_roll, proficiency_bonus_for_level
 from game_config import get_config
 from economy import (
@@ -1955,6 +1956,13 @@ def _parse_intents(text: str, actor_name: str) -> Optional[list[dict]]:
     return intents or None
 
 
+# The extractor stashes its most recent raw output here so the turn logger can
+# capture exactly what the model produced (per-request; read immediately after
+# the call in the same thread).
+_LAST_EXTRACT_RAW: _contextvars.ContextVar = _contextvars.ContextVar(
+    "last_extract_raw", default=None)
+
+
 def _combat_extract_intents(my_name: str, remaining: dict, board: str,
                             profile: Optional[PCProfile],
                             message: str) -> Optional[list[dict]]:
@@ -1969,18 +1977,45 @@ def _combat_extract_intents(my_name: str, remaining: dict, board: str,
            f"move steps: {remaining.get('move_steps', 0)}\n") if remaining else ""
     user = (f"{board}\n\nActing player character: {my_name}\n{rem}{gear}"
             f"\nPlayer says: {message}\n\nIntents:")
+    _LAST_EXTRACT_RAW.set(None)
     try:
         out = _call_extractor_llm([
             {"role": "system", "content": _COMBAT_INTENT_SYSTEM},
             {"role": "user", "content": user}])
     except Exception as e:
         print(f"[combat-engine] intent extraction failed: {e}")
+        _LAST_EXTRACT_RAW.set(f"<extractor error: {e}>")
         return None
+    _LAST_EXTRACT_RAW.set(out)
     parsed = _parse_intents(out, my_name)
     if parsed is None and "[[INTENT" in (out or "") \
             and "none" not in (out or "").lower():
         _COMBAT_INTENT_STATS["parse_fail"] += 1
     return parsed
+
+
+def _combat_log(*, session_id: Optional[str], encounter_id: Optional[int],
+                round: Optional[int], character: Optional[str],
+                user_id: Optional[str], message: Optional[str], kind: str,
+                parse_source: Optional[str], raw_llm: Optional[str] = None,
+                intents: Optional[list] = None, events: Optional[list] = None,
+                report: Optional[str] = None,
+                flags: Optional[list] = None) -> None:
+    """Append one telemetry row. Best-effort — never raises into the turn."""
+    try:
+        with Session(engine) as s:
+            s.add(CombatLog(
+                session_id=session_id, encounter_id=encounter_id, round=round,
+                character=character, user_id=user_id,
+                player_message=(message or "")[:2000], kind=kind,
+                parse_source=parse_source,
+                raw_llm=(raw_llm[:4000] if raw_llm else None),
+                intents=intents, events=events,
+                report=(report[:8000] if report else None),
+                flags=flags or []))
+            s.commit()
+    except Exception as e:
+        print(f"[combat-log] write failed: {e}")
 
 
 def _combat_fight_over(encounter_id: int) -> Optional[str]:
@@ -2067,17 +2102,28 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
                 blocks.append(over)
                 return
 
+    _round = enc.round
+    parse_source: Optional[str] = None
+    raw_llm: Optional[str] = None
+    kind = "turn"
+
     # ---- a frozen reaction question owns the table until answered ----
     pending = combat.get_pending_reaction(enc.id)
     intents: Optional[list[dict]] = None
     if pending:
+        kind = "reaction"
         owner = pending.get("target_char_id")
         if owner and owner != char_id:
+            _combat_log(session_id=session_id, encounter_id=enc.id, round=_round,
+                        character=my.name, user_id=str(user_id), message=message,
+                        kind="waiting", parse_source="waiting",
+                        flags=["paused"])
             return ("# Combat resolution (certified — already applied to the tracker)\n"
                     f"WAITING: the fight is frozen on {pending.get('target')}'s "
                     f"reaction — only they can answer.\n"
                     f"({pending.get('question')})")
         decision = _preparse_reaction_answer(message)
+        parse_source = "reaction-preparse" if decision is not None else "reaction-llm"
         if decision is None:
             got = _combat_extract_intents(
                 my.name, {},
@@ -2086,6 +2132,7 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
                   "If the player answers it, output [[INTENT: react | use]] or "
                   "[[INTENT: react | decline]] FIRST.",
                 profiles.get(char_id), message)
+            raw_llm = _LAST_EXTRACT_RAW.get()
             if got:
                 lead = next((i for i in got if i.get("verb") == "react"), None)
                 if lead is not None:
@@ -2118,14 +2165,26 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
         intents = _combat_preparse(message, my.name, enc.id)
         if intents is not None:
             _COMBAT_INTENT_STATS["preparsed"] += 1
+            parse_source = "preparse"
         else:
             intents = _combat_extract_intents(
                 my.name, remaining, combat.render(enc.id),
                 profiles.get(char_id), message)
+            raw_llm = _LAST_EXTRACT_RAW.get()
             _COMBAT_INTENT_STATS["llm" if intents else "none"] += 1
+            parse_source = "llm" if intents else "none"
         print(f"[combat-intents] {_COMBAT_INTENT_STATS} :: "
               f"{[i['verb'] for i in intents] if intents else 'no-act'}")
         if intents is None:
+            # A miss the extractor couldn't turn into acts — capture the raw
+            # output; this row IS the data you tune the intent prompt against.
+            _fail = bool(raw_llm and "[[INTENT" in raw_llm
+                         and "none" not in raw_llm.lower())
+            _combat_log(session_id=session_id, encounter_id=enc.id, round=_round,
+                        character=my.name, user_id=str(user_id), message=message,
+                        kind="parse_miss", parse_source=parse_source,
+                        raw_llm=raw_llm,
+                        flags=(["parse_fail"] if _fail else ["none"]))
             return None  # not a combat act — normal narration flow handles it
 
     def halted() -> bool:
@@ -2198,8 +2257,25 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
     collector = _ACTIVITY_ROLLS.get()
     if collector is not None:
         collector.extend(rolls_out)
+
+    report = "\n".join(blocks)
+    # Telemetry: one durable, replayable row for this exchange.
+    _flags: list[str] = []
+    if combat.get_pending_reaction(enc.id):
+        _flags.append("paused")
+    if any(e.get("kind") == "reaction_prompt" for e in all_events):
+        _flags.append("reaction_prompt")
+    if "REFUSED:" in report:
+        _flags.append("rejected")
+    if "the fight is over" in report or "DOWN" in report:
+        _flags.append("fight_over")
+    _combat_log(session_id=session_id, encounter_id=enc.id,
+                round=combat.get_encounter(enc.id).round if combat.get_encounter(enc.id) else _round,
+                character=my.name, user_id=str(user_id), message=message,
+                kind=kind, parse_source=parse_source, raw_llm=raw_llm,
+                intents=intents, events=all_events, report=report, flags=_flags)
     return ("# Combat resolution (certified — already applied to the tracker)\n"
-            + "\n".join(blocks))
+            + report)
 
 
 _COMBAT_NARRATE_CONTRACT = (
@@ -7109,6 +7185,63 @@ async def combat_set_position(req: PositionRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "ok", "combatant": combatant}
+
+
+@app.get("/combat/log")
+async def combat_log_read(session_id: Optional[str] = None,
+                          flag: Optional[str] = None,
+                          parse_source: Optional[str] = None,
+                          kind: Optional[str] = None,
+                          limit: int = 50):
+    """Pull recent combat telemetry rows (newest first). Filter by session,
+    a flag ('parse_fail'/'rejected'/'paused'/'fight_over'), parse_source, or
+    kind. This is the "reproduce a bad turn / tune the extractor" endpoint."""
+    limit = max(1, min(500, int(limit)))
+    with Session(engine) as s:
+        stmt = select(CombatLog).order_by(CombatLog.id.desc())  # type: ignore[attr-defined]
+        if session_id:
+            stmt = stmt.where(CombatLog.session_id == session_id)
+        if parse_source:
+            stmt = stmt.where(CombatLog.parse_source == parse_source)
+        if kind:
+            stmt = stmt.where(CombatLog.kind == kind)
+        rows = list(s.exec(stmt.limit(limit if not flag else 500)).all())
+    if flag:
+        rows = [r for r in rows if flag in (r.flags or [])][:limit]
+    return {"count": len(rows), "rows": [{
+        "id": r.id, "at": r.created_at.isoformat() if r.created_at else None,
+        "session_id": r.session_id, "encounter_id": r.encounter_id,
+        "round": r.round, "character": r.character, "kind": r.kind,
+        "parse_source": r.parse_source, "message": r.player_message,
+        "raw_llm": r.raw_llm, "intents": r.intents, "events": r.events,
+        "report": r.report, "flags": r.flags or []} for r in rows]}
+
+
+@app.get("/combat/log/stats")
+async def combat_log_stats(session_id: Optional[str] = None):
+    """Durable extractor/telemetry rollup from the log table (survives
+    restarts, unlike the in-memory counters). Parse-source mix + flag counts."""
+    with Session(engine) as s:
+        stmt = select(CombatLog)
+        if session_id:
+            stmt = stmt.where(CombatLog.session_id == session_id)
+        rows = list(s.exec(stmt).all())
+    by_source: dict[str, int] = {}
+    by_flag: dict[str, int] = {}
+    for r in rows:
+        by_source[r.parse_source or "?"] = by_source.get(r.parse_source or "?", 0) + 1
+        for f in (r.flags or []):
+            by_flag[f] = by_flag.get(f, 0) + 1
+    llm = by_source.get("llm", 0) + by_source.get("none", 0)
+    fails = by_flag.get("parse_fail", 0)
+    return {
+        "total_rows": len(rows),
+        "by_parse_source": by_source,
+        "by_flag": by_flag,
+        "extractor_llm_calls": llm,
+        "extractor_parse_fail_rate": round(fails / llm, 3) if llm else 0.0,
+        "session_counters": dict(_COMBAT_INTENT_STATS),
+    }
 
 
 # ===================== Bestiary: owned monsters & scaling ==================
