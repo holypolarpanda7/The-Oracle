@@ -420,10 +420,12 @@ async def lifespan(app: FastAPI):
     # Seed playable races + class skill lists for deterministic character
     # creation — offline & idempotent (also self-heals rules_class columns).
     try:
-        from rules.ingest import seed_races, seed_classes_and_subclasses
+        from rules.ingest import (seed_races, seed_classes_and_subclasses,
+                                   seed_feats)
         seeded_r = seed_races(engine=engine)
         seed_classes_and_subclasses(engine=engine)
-        print(f"[Startup] Seeded CC data: {seeded_r}")
+        seeded_f = seed_feats(engine=engine)
+        print(f"[Startup] Seeded CC data: {seeded_r} | {seeded_f}")
     except Exception as e:
         print(f"[Startup] CC data seed skipped: {e}")
 
@@ -4431,32 +4433,62 @@ _CLASS_STARTING_KITS: Dict[str, List[tuple]] = {
 
 # SRD background packages: equipment + the signature feature (stored on the
 # character's tags so the DM prompt can honor it).
+# 2024 model: each background lists the 3 ability scores it can boost (the
+# player spreads +2/+1 across two of them, or +1/+1/+1 across all three) and
+# grants a specific Origin feat. Abilities are 3-letter codes; origin_feat is a
+# slug into the feat pool (rules/feats_seed). Skills/items/feature unchanged.
 _BACKGROUND_KITS: Dict[str, Dict[str, Any]] = {
-    "acolyte": {"skills": ['Insight', 'Religion'], "items": [("Holy Symbol", 1), ("Prayer Book", 1), ("Incense", 5), ("Vestments", 1)],
+    "acolyte": {"skills": ['Insight', 'Religion'], "abilities": ["wis", "int", "cha"],
+                "origin_feat": "magic-initiate",
+                "items": [("Holy Symbol", 1), ("Prayer Book", 1), ("Incense", 5), ("Vestments", 1)],
                 "feature": "Shelter of the Faithful"},
-    "charlatan": {"skills": ['Deception', 'Sleight of Hand'], "items": [("Fine Clothes", 1), ("Disguise Kit", 1), ("Weighted Dice", 1)],
+    "charlatan": {"skills": ['Deception', 'Sleight of Hand'], "abilities": ["dex", "con", "cha"],
+                  "origin_feat": "skilled",
+                  "items": [("Fine Clothes", 1), ("Disguise Kit", 1), ("Weighted Dice", 1)],
                   "feature": "False Identity"},
-    "criminal": {"skills": ['Deception', 'Stealth'], "items": [("Crowbar", 1), ("Dark Common Clothes", 1)],
+    "criminal": {"skills": ['Deception', 'Stealth'], "abilities": ["dex", "con", "int"],
+                 "origin_feat": "alert",
+                 "items": [("Crowbar", 1), ("Dark Common Clothes", 1)],
                  "feature": "Criminal Contact"},
-    "entertainer": {"skills": ['Acrobatics', 'Performance'], "items": [("Musical Instrument", 1), ("Costume", 1)],
+    "entertainer": {"skills": ['Acrobatics', 'Performance'], "abilities": ["str", "dex", "cha"],
+                    "origin_feat": "musician",
+                    "items": [("Musical Instrument", 1), ("Costume", 1)],
                     "feature": "By Popular Demand"},
-    "folk hero": {"skills": ['Animal Handling', 'Survival'], "items": [("Artisan's Tools", 1), ("Shovel", 1), ("Iron Pot", 1), ("Common Clothes", 1)],
+    "folk hero": {"skills": ['Animal Handling', 'Survival'], "abilities": ["str", "con", "wis"],
+                  "origin_feat": "tough",
+                  "items": [("Artisan's Tools", 1), ("Shovel", 1), ("Iron Pot", 1), ("Common Clothes", 1)],
                   "feature": "Rustic Hospitality"},
-    "guild artisan": {"skills": ['Insight', 'Persuasion'], "items": [("Artisan's Tools", 1), ("Letter of Introduction", 1), ("Traveler's Clothes", 1)],
+    "guild artisan": {"skills": ['Insight', 'Persuasion'], "abilities": ["str", "dex", "int"],
+                      "origin_feat": "crafter",
+                      "items": [("Artisan's Tools", 1), ("Letter of Introduction", 1), ("Traveler's Clothes", 1)],
                       "feature": "Guild Membership"},
-    "hermit": {"skills": ['Medicine', 'Religion'], "items": [("Scroll Case", 1), ("Winter Blanket", 1), ("Herbalism Kit", 1)],
+    "hermit": {"skills": ['Medicine', 'Religion'], "abilities": ["con", "wis", "cha"],
+               "origin_feat": "healer",
+               "items": [("Scroll Case", 1), ("Winter Blanket", 1), ("Herbalism Kit", 1)],
                "feature": "Discovery"},
-    "noble": {"skills": ['History', 'Persuasion'], "items": [("Fine Clothes", 1), ("Signet Ring", 1), ("Scroll of Pedigree", 1)],
+    "noble": {"skills": ['History', 'Persuasion'], "abilities": ["str", "int", "cha"],
+              "origin_feat": "skilled",
+              "items": [("Fine Clothes", 1), ("Signet Ring", 1), ("Scroll of Pedigree", 1)],
               "feature": "Position of Privilege"},
-    "outlander": {"skills": ['Athletics', 'Survival'], "items": [("Staff", 1), ("Hunting Trap", 1), ("Traveler's Clothes", 1)],
+    "outlander": {"skills": ['Athletics', 'Survival'], "abilities": ["str", "con", "wis"],
+                  "origin_feat": "tough",
+                  "items": [("Staff", 1), ("Hunting Trap", 1), ("Traveler's Clothes", 1)],
                   "feature": "Wanderer"},
-    "sage": {"skills": ['Arcana', 'History'], "items": [("Bottle of Ink", 1), ("Quill", 1), ("Small Knife", 1), ("Letter from a Dead Colleague", 1)],
+    "sage": {"skills": ['Arcana', 'History'], "abilities": ["con", "int", "wis"],
+             "origin_feat": "magic-initiate",
+             "items": [("Bottle of Ink", 1), ("Quill", 1), ("Small Knife", 1), ("Letter from a Dead Colleague", 1)],
              "feature": "Researcher"},
-    "sailor": {"skills": ['Athletics', 'Perception'], "items": [("Belaying Pin", 1), ("Silk Rope (50 ft)", 1), ("Lucky Charm", 1)],
+    "sailor": {"skills": ['Athletics', 'Perception'], "abilities": ["str", "dex", "wis"],
+               "origin_feat": "tavern-brawler",
+               "items": [("Belaying Pin", 1), ("Silk Rope (50 ft)", 1), ("Lucky Charm", 1)],
                "feature": "Ship's Passage"},
-    "soldier": {"skills": ['Athletics', 'Intimidation'], "items": [("Insignia of Rank", 1), ("Trophy from a Fallen Enemy", 1), ("Set of Bone Dice", 1)],
+    "soldier": {"skills": ['Athletics', 'Intimidation'], "abilities": ["str", "dex", "con"],
+                "origin_feat": "savage-attacker",
+                "items": [("Insignia of Rank", 1), ("Trophy from a Fallen Enemy", 1), ("Set of Bone Dice", 1)],
                 "feature": "Military Rank"},
-    "urchin": {"skills": ['Sleight of Hand', 'Stealth'], "items": [("Small Knife", 1), ("Map of Home City", 1), ("Pet Mouse", 1)],
+    "urchin": {"skills": ['Sleight of Hand', 'Stealth'], "abilities": ["dex", "con", "wis"],
+               "origin_feat": "lucky",
+               "items": [("Small Knife", 1), ("Map of Home City", 1), ("Pet Mouse", 1)],
                "feature": "City Secrets"},
 }
 
@@ -4700,6 +4732,26 @@ async def register_character(req: RegisterCharacterRequest):
             water=surv.starting_water,
         )
 
+        # Validate every chosen feat's prerequisites against the FINAL stats
+        # (base + background boosts are already applied client-side). Unmet,
+        # verifiable prerequisites are rejected — the CC can't hand out a feat
+        # the character doesn't qualify for.
+        if req.feats:
+            from rules.models import Feat as _Feat
+            fstats = req.stats or {}
+            for ft in req.feats:
+                frow = session.exec(select(_Feat).where(
+                    _Feat.index_slug == ft)).first()
+                if frow is None:
+                    continue  # unknown slug (e.g. owned-ingest feat) — allow
+                met, why = _feat_prereq_met(
+                    frow.prerequisite, frow.min_level, fstats,
+                    req.char_class, req.level)
+                if not met:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Feat '{frow.name}' — prerequisite not met ({why}).")
+
         # Skill proficiencies + feats from the CC wizard, tagged onto the sheet.
         if req.skills or req.feats:
             tags = list(char.tags or [])
@@ -4744,6 +4796,58 @@ async def register_character(req: RegisterCharacterRequest):
 
 # ----- Deterministic character creation (the CC wizard's data source) -----
 
+_ABILITY_WORDS = {
+    "strength": "str", "str": "str", "dexterity": "dex", "dex": "dex",
+    "constitution": "con", "con": "con", "intelligence": "int", "int": "int",
+    "wisdom": "wis", "wis": "wis", "charisma": "cha", "cha": "cha",
+}
+_ABILITY_FULL = {"str": "strength", "dex": "dexterity", "con": "constitution",
+                 "int": "intelligence", "wis": "wisdom", "cha": "charisma"}
+
+
+def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
+                     stats: Dict[str, int], char_class: Optional[str],
+                     level: int, existing_feats: Optional[list] = None
+                     ) -> tuple[bool, Optional[str]]:
+    """Check whether a character meets a feat's prerequisites.
+
+    Verifiable prereqs: level minimum, ability-score minimums ('Strength 13'),
+    and 'Spellcasting' (a spellcasting class). Unrecognized prereq clauses are
+    NOT blocked (best-effort — we don't silently forbid a legal pick). Returns
+    (met, reason_if_not)."""
+    if level < int(min_level or 1):
+        return False, f"requires level {min_level}"
+    if not prerequisite:
+        return True, None
+
+    def _score(code: str) -> int:
+        full = _ABILITY_FULL.get(code, code)
+        for k in (code, code.upper(), full, full.capitalize(), full.upper()):
+            if stats.get(k) is not None:
+                return int(stats[k])
+        return 0
+
+    for clause in re.split(r"[;,]| and ", prerequisite):
+        c = clause.strip().lower()
+        if not c:
+            continue
+        # ability minimum, e.g. "strength 13" / "dex 13 or higher"
+        m = re.search(r"(strength|dexterity|constitution|intelligence|wisdom|"
+                      r"charisma|str|dex|con|int|wis|cha)\D*(\d+)", c)
+        if m:
+            code = _ABILITY_WORDS.get(m.group(1))
+            need = int(m.group(2))
+            if code and _score(code) < need:
+                return False, f"needs {m.group(1).title()} {need}+"
+            continue
+        if "spellcast" in c or "cast at least one spell" in c or "cast a spell" in c:
+            if (char_class or "").strip().lower() not in _CASTING_ABILITY:
+                return False, "needs a spellcasting class"
+            continue
+        # Unparseable clause (e.g. an armor proficiency): don't block.
+    return True, None
+
+
 @app.get("/cc/options")
 def cc_options():
     """Everything the deterministic CC wizard needs: races, classes (with
@@ -4755,11 +4859,11 @@ def cc_options():
     with Session(rules_lib.engine) as s:
         races = s.exec(select(_Race)).all()
         classes = s.exec(select(_Cls)).all()
-        # Level-1-legal feats only (origin feats; locally ingested from the
-        # owned PHB when present — empty list degrades the wizard gracefully).
+        # The whole feat pool (origin + general). The UI gates by context:
+        # backgrounds/Human draw from origin feats; Custom Lineage ("any")
+        # draws from all, with prerequisites enforced client- and server-side.
         try:
-            feats = s.exec(select(_Feat).where(_Feat.min_level <= 1,
-                                               _Feat.category == "origin")).all()
+            feats = s.exec(select(_Feat).order_by(_Feat.category, _Feat.name)).all()
         except Exception:
             feats = []
         # Free common magic-item pick — ALL common items (wondrous, wands,
@@ -4800,8 +4904,8 @@ def cc_options():
         } for c in classes],
         "feats": [{
             "slug": f.index_slug, "name": f.name, "category": f.category,
-            "prerequisite": f.prerequisite,
-            "brief": (f.benefit or "")[:96],
+            "prerequisite": f.prerequisite, "min_level": f.min_level,
+            "brief": (f.benefit or "")[:160],
         } for f in feats],
         "backgrounds": [{
             "slug": bg, "name": bg.title(),
@@ -4810,6 +4914,8 @@ def cc_options():
             # 2024: the background grants the ability boosts. 3-letter codes;
             # empty list (legacy backgrounds) means "any ability".
             "abilities": [(a or "")[:3].upper() for a in (kit.get("abilities") or [])],
+            # 2024: the Origin feat this background grants (slug into the pool).
+            "origin_feat": kit.get("origin_feat"),
         } for bg, kit in _BACKGROUND_KITS.items()],
         "ability_methods": {
             "standard_array": [15, 14, 13, 12, 10, 8],

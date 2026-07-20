@@ -20,8 +20,8 @@ import requests
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from .models import (Monster, Spell, DndClass, Subclass, Item, Race, SrdEntry,
-                     SRD_SOURCE, OWNED_SOURCE)
+from .models import (Monster, Spell, DndClass, Subclass, Item, Race, Feat,
+                     SrdEntry, SRD_SOURCE, OWNED_SOURCE)
 
 RAW_BASE = "https://raw.githubusercontent.com/5e-bits/5e-database/main/src/2014/en/"
 MONSTERS_URL = RAW_BASE + "5e-SRD-Monsters.json"
@@ -647,6 +647,82 @@ def seed_races(
             )
             if _upsert(s, Race, r["slug"], mapped):
                 result["races_new"] += 1
+        s.commit()
+    return result
+
+
+# Feats — a commit-safe pool summarized in our own concise, mechanical words
+# (never book prose), so the deterministic CC has something to offer even
+# before any owned-book ingest. Origin feats (level 1, no prerequisite) power
+# 2024 backgrounds + Human; general feats (level 4+, with prerequisites) are
+# selectable by Custom Lineage's "any feat you qualify for". Prerequisite
+# strings are machine-parseable by the backend validator (ability minimums,
+# "Spellcasting"); an empty string means no prerequisite.
+_FEATS: list[dict] = [
+    # ---- Origin feats (category "origin", min_level 1, no prerequisite) ----
+    {"slug": "alert", "name": "Alert", "category": "origin",
+     "benefit": "Add your proficiency bonus to initiative; you may swap initiative with a willing ally."},
+    {"slug": "crafter", "name": "Crafter", "category": "origin",
+     "benefit": "Proficiency with three artisan's tools; 20% discount on nonmagical gear; craft faster."},
+    {"slug": "healer", "name": "Healer", "category": "origin",
+     "benefit": "Spend a use of a Healer's Kit as an action to restore 1d6 + 4 HP (+ target's hit dice)."},
+    {"slug": "lucky", "name": "Lucky", "category": "origin",
+     "benefit": "Luck points equal to your proficiency bonus per long rest: gain advantage or impose disadvantage on a d20."},
+    {"slug": "magic-initiate", "name": "Magic Initiate", "category": "origin",
+     "benefit": "Learn two cantrips and one level-1 spell from a chosen class; cast the spell free once per long rest."},
+    {"slug": "musician", "name": "Musician", "category": "origin",
+     "benefit": "Proficiency with three instruments; after a rest, grant Heroic Inspiration to allies you serenade."},
+    {"slug": "savage-attacker", "name": "Savage Attacker", "category": "origin",
+     "benefit": "Once per turn, reroll your weapon's damage dice and use either total."},
+    {"slug": "skilled", "name": "Skilled", "category": "origin",
+     "benefit": "Gain proficiency in any three skills or tools of your choice."},
+    {"slug": "tavern-brawler", "name": "Tavern Brawler", "category": "origin",
+     "benefit": "Unarmed strikes deal 1d4; reroll 1s on unarmed/improvised damage; shove on a hit; proficient with improvised weapons."},
+    {"slug": "tough", "name": "Tough", "category": "origin",
+     "benefit": "Your hit point maximum increases by 2 per character level."},
+    # ---- General feats (category "general", min_level 4, with prerequisites) ----
+    {"slug": "ability-score-improvement", "name": "Ability Score Improvement",
+     "category": "general", "min_level": 4, "repeatable": True,
+     "benefit": "Increase one ability score by 2, or two ability scores by 1 each (max 20)."},
+    {"slug": "grappler", "name": "Grappler", "category": "general", "min_level": 4,
+     "prerequisite": "Strength 13",
+     "benefit": "Advantage on attacks vs a creature you grapple; grapple as a bonus action; move a creature grappled by you."},
+    {"slug": "great-weapon-master", "name": "Great Weapon Master", "category": "general",
+     "min_level": 4, "prerequisite": "Strength 13",
+     "benefit": "On a heavy-weapon crit or kill, make a bonus-action melee attack; take -5 to hit for +10 damage."},
+    {"slug": "sharpshooter", "name": "Sharpshooter", "category": "general",
+     "min_level": 4, "prerequisite": "Dexterity 13",
+     "benefit": "Ignore long range and cover with ranged weapons; take -5 to hit for +10 damage."},
+    {"slug": "defensive-duelist", "name": "Defensive Duelist", "category": "general",
+     "min_level": 4, "prerequisite": "Dexterity 13",
+     "benefit": "Reaction: add your proficiency bonus to AC against one melee attack while wielding a finesse weapon."},
+    {"slug": "war-caster", "name": "War Caster", "category": "general", "min_level": 4,
+     "prerequisite": "Spellcasting",
+     "benefit": "Advantage on concentration saves; cast with hands full; cast a spell as an opportunity attack."},
+    {"slug": "resilient", "name": "Resilient", "category": "general", "min_level": 4,
+     "benefit": "+1 to one ability score and proficiency in that ability's saving throws."},
+]
+
+
+def seed_feats(engine: Optional[Engine] = None,
+               database_url: Optional[str] = None) -> dict:
+    """Seed the commit-safe feat pool. Offline and idempotent (upsert by slug)."""
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    result = {"feats_new": 0, "feats_total": len(_FEATS)}
+    with Session(engine) as s:
+        for f in _FEATS:
+            mapped = Feat(
+                index_slug=f["slug"], name=f["name"],
+                category=f.get("category", "general"),
+                prerequisite=f.get("prerequisite") or None,
+                min_level=int(f.get("min_level", 1)),
+                repeatable=bool(f.get("repeatable")),
+                benefit=f.get("benefit"),
+                source=f.get("source", SRD_SOURCE),
+            )
+            if _upsert(s, Feat, f["slug"], mapped):
+                result["feats_new"] += 1
         s.commit()
     return result
 
