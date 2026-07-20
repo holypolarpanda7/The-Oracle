@@ -74,7 +74,11 @@ class PCProfile:
     attacks_per_action: int = 1          # Extra Attack: 2 at fighter 5, etc.
     features: set[str] = field(default_factory=set)
     # recognized: "action surge", "second wind", "rage", "cunning action",
-    # "bonus attack" (two-weapon fighting / Martial Arts style off-hand swing)
+    # "bonus attack" (two-weapon fighting / Martial Arts style off-hand swing),
+    # "uncanny dodge" (reaction: halve an attack's damage)
+    # Reaction spells the engine may auto-cast when they change the outcome
+    # (today: "shield" — +5 AC flips a hit into a miss).
+    reaction_spells: set[str] = field(default_factory=set)
 
 
 # Class features the engine resolves mechanically. "per_encounter": how many
@@ -90,16 +94,22 @@ _FEATURES: dict[str, dict] = {
 # target re-saves at the end of each of its turns. ally_condition: applied to
 # the (friendly) target, no save. heal: dice per slot level + casting mod.
 _SPELL_EFFECTS: dict[str, dict] = {
-    "hold person": {"save_condition": "paralyzed", "repeat_save": True},
-    "hold monster": {"save_condition": "paralyzed", "repeat_save": True},
+    # targets: base target cap; upcast_targets: +1 per slot level above base.
+    "hold person": {"save_condition": "paralyzed", "repeat_save": True,
+                    "targets": 1, "upcast_targets": True},
+    "hold monster": {"save_condition": "paralyzed", "repeat_save": True,
+                     "targets": 1, "upcast_targets": True},
     "web": {"save_condition": "restrained", "repeat_save": True},
     "entangle": {"save_condition": "restrained", "repeat_save": True},
-    "tasha's hideous laughter": {"save_condition": "incapacitated", "repeat_save": True},
-    "hideous laughter": {"save_condition": "incapacitated", "repeat_save": True},
-    "blindness/deafness": {"save_condition": "blinded", "repeat_save": True},
-    "bane": {"save_condition": "baned"},
+    "tasha's hideous laughter": {"save_condition": "incapacitated", "repeat_save": True,
+                                 "targets": 1},
+    "hideous laughter": {"save_condition": "incapacitated", "repeat_save": True,
+                         "targets": 1},
+    "blindness/deafness": {"save_condition": "blinded", "repeat_save": True,
+                           "targets": 1},
+    "bane": {"save_condition": "baned", "targets": 3, "upcast_targets": True},
     "faerie fire": {"save_condition": "faerie fire"},
-    "bless": {"ally_condition": "blessed"},
+    "bless": {"ally_condition": "blessed", "targets": 3, "upcast_targets": True},
     "magic missile": {"missiles": True},
     "misty step": {"teleport": True},
     "cure wounds": {"heal": "d8"},
@@ -302,6 +312,35 @@ class CombatEngine:
 
     # ---------------- helpers ----------------
 
+    def _resolve_targets(self, encounter_id: int, actor: Combatant,
+                         raw: str) -> list[Combatant]:
+        """Resolve a cast intent's target field: one name, a comma/'and' list,
+        or the keywords 'all enemies' / 'all allies'."""
+        raw = (raw or "").strip()
+        if not raw:
+            return []
+        low = raw.lower()
+        order = [c for c in self.tracker.order(encounter_id) if not c.defeated]
+        if low in ("all enemies", "all foes", "the enemies", "every enemy",
+                   "everyone in the area"):
+            return [c for c in order if self._side(c) != self._side(actor)]
+        if low in ("all allies", "the party", "every ally"):
+            return [c for c in order if self._side(c) == self._side(actor)]
+        out: list[Combatant] = []
+        for part in re.split(r",|\s+and\s+", raw):
+            c = self._find(encounter_id, part.strip())
+            if c is not None and not c.defeated \
+                    and all(c.id != x.id for x in out):
+                out.append(c)
+        return out
+
+    def _eff_ac(self, c: Combatant) -> Optional[int]:
+        """Effective AC including cover and an active Shield reaction."""
+        base = self.tracker.effective_ac(c.id)
+        if base is not None and "shielded" in self._conds(c):
+            base += 5
+        return base
+
     def _find(self, encounter_id: int, ref: str) -> Optional[Combatant]:
         ref_l = (ref or "").strip().lower()
         if not ref_l:
@@ -374,6 +413,54 @@ class CombatEngine:
             notes.append("advantage and disadvantage cancel")
             adv = dis = False
         return adv, dis, notes
+
+    # ---------------- auto-reactions (single-pass interrupts) ----------------
+
+    def _shield_check(self, attacker: Combatant, target: Combatant, atk,
+                      eff_ac: Optional[int], profiles: dict,
+                      rep: TurnReport) -> bool:
+        """Auto-cast Shield when — and only when — it flips this hit into a
+        miss. Costs the target's reaction + its lowest slot; +5 AC persists
+        until the start of its next turn. Returns the final hit state."""
+        if not atk.hit or atk.is_crit:
+            return bool(atk.hit)
+        p = profiles.get(target.character_id) if target.character_id else None
+        if p is None or "shield" not in p.reaction_spells:
+            return True
+        fresh = self.tracker.get_combatant(target.id)
+        if fresh.reaction_used or (self._conds(fresh) & _CANNOT_ACT):
+            return True
+        if eff_ac is None or atk.total >= eff_ac + 5:
+            return True  # Shield wouldn't save them — don't burn it
+        avail = {lv: n for lv, n in (p.slots or {}).items() if n > 0}
+        if not avail:
+            return True
+        lv = min(avail)
+        p.slots[lv] -= 1
+        self.tracker.update_economy(target.id, reaction_used=True)
+        self.tracker.add_condition(target.id, "shielded")
+        rep.events.append({
+            "kind": "reaction", "actor": target.name, "spell": "Shield",
+            "slot_spent": lv, "slot_char_id": target.character_id, "rolls": [],
+            "notes": [f"+5 AC until its next turn — "
+                      f"{attacker.name}'s attack misses"]})
+        return False
+
+    def _uncanny_dodge(self, target: Combatant, total: int, profiles: dict,
+                       rep: TurnReport) -> int:
+        """A rogue's reaction halves one attack's damage (auto-triggered)."""
+        p = profiles.get(target.character_id) if target.character_id else None
+        if p is None or "uncanny dodge" not in p.features or total <= 1:
+            return total
+        fresh = self.tracker.get_combatant(target.id)
+        if fresh.reaction_used or (self._conds(fresh) & _CANNOT_ACT):
+            return total
+        self.tracker.update_economy(target.id, reaction_used=True)
+        halved = total // 2
+        rep.events.append({"kind": "reaction", "actor": target.name,
+                           "spell": "Uncanny Dodge", "rolls": [],
+                           "notes": [f"halves the blow ({total} → {halved})"]})
+        return halved
 
     # ---------------- intent resolution ----------------
 
@@ -582,20 +669,23 @@ class CombatEngine:
             d4 = damage_roll("1d4", rng=self.rng).total
             atk_bonus -= d4
             notes.append(f"Bane -{d4}")
-        eff_ac = self.tracker.effective_ac(target.id)
+        eff_ac = self._eff_ac(target)
         atk = attack_roll(atk_bonus, eff_ac, advantage=adv,
                           disadvantage=dis, label=f"{prof['name']} ({actor.name})",
                           rng=self.rng)
+        hit = self._shield_check(actor, target, atk, eff_ac, profiles, rep)
         rolls = [self._roll_dict(f"{prof['name']} — {actor.name}", atk.detail,
-                                 atk.total, dc=eff_ac, success=bool(atk.hit))]
+                                 atk.total, dc=eff_ac, success=hit)]
         ev = {"kind": "attack", "actor": actor.name, "target": target.name,
-              "weapon": prof["name"], "hit": bool(atk.hit), "crit": atk.is_crit,
+              "weapon": prof["name"], "hit": hit, "crit": atk.is_crit,
               "notes": notes, "rolls": rolls}
+        if not hit and atk.hit:
+            notes.append("turned aside by Shield")
         if "hidden" in self._conds(actor):
             self.tracker.remove_condition(actor.id, "hidden")
         if "helped" in self._conds(actor):
             self.tracker.remove_condition(actor.id, "helped")
-        if atk.hit:
+        if hit:
             dmg = damage_roll(prof["damage"], crit=atk.is_crit, rng=self.rng)
             total = dmg.total
             rolls.append(self._roll_dict(f"{prof['name']} damage", dmg.detail,
@@ -648,6 +738,7 @@ class CombatEngine:
                 total += rb
                 notes.append(f"Rage +{rb}")
 
+            total = self._uncanny_dodge(target, total, profiles, rep)
             out = self.tracker.apply_damage(target.id, total)
             ev["damage"] = total
             ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
@@ -709,24 +800,27 @@ class CombatEngine:
                     continue
                 self.tracker.update_economy(enemy.id, reaction_used=True)
                 adv, dis, notes = self._attack_advantage(enemy, fresh, False, encounter_id)
-                eff_ac = self.tracker.effective_ac(fresh.id)
+                eff_ac = self._eff_ac(fresh)
                 atk = attack_roll(mprof["attack_bonus"], eff_ac, advantage=adv,
                                   disadvantage=dis,
                                   label=f"Opportunity attack ({enemy.name})",
                                   rng=self.rng)
+                oa_hit = self._shield_check(enemy, fresh, atk, eff_ac,
+                                            profiles, rep)
                 oa_rolls = [self._roll_dict(
                     f"Opportunity attack — {enemy.name}", atk.detail, atk.total,
-                    dc=eff_ac, success=bool(atk.hit))]
+                    dc=eff_ac, success=oa_hit)]
                 oa = {"kind": "opportunity_attack", "actor": enemy.name,
                       "target": actor.name, "weapon": mprof["name"],
-                      "hit": bool(atk.hit), "rolls": oa_rolls, "notes": notes}
-                if atk.hit:
+                      "hit": oa_hit, "rolls": oa_rolls, "notes": notes}
+                if oa_hit:
                     dmg = damage_roll(mprof["damage"], crit=atk.is_crit, rng=self.rng)
-                    out = self.tracker.apply_damage(fresh.id, dmg.total)
+                    total = self._uncanny_dodge(fresh, dmg.total, profiles, rep)
+                    out = self.tracker.apply_damage(fresh.id, total)
                     oa_rolls.append(self._roll_dict(
-                        f"{mprof['name']} damage", dmg.detail, dmg.total,
+                        f"{mprof['name']} damage", dmg.detail, total,
                         expr=mprof["damage"]))
-                    oa["damage"] = dmg.total
+                    oa["damage"] = total
                     oa["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
                     if out.get("defeated"):
                         oa["defeated"] = True
@@ -958,8 +1052,9 @@ class CombatEngine:
 
     def _do_cast(self, encounter_id, actor, intent, profiles, rep):
         spell_name = (intent.get("arg") or "").strip()
-        target = self._find(encounter_id, intent.get("target") or "") \
-            if intent.get("target") else None
+        targets = self._resolve_targets(encounter_id, actor,
+                                        intent.get("target") or "")
+        target = targets[0] if targets else None
         with Session(self.tracker.engine) as s:
             sp = s.exec(select(Spell).where(
                 Spell.name.ilike(spell_name))).first() if spell_name else None
@@ -1057,15 +1152,17 @@ class CombatEngine:
                      else 2 + self._ability_mod(actor, "cha", profiles))
             adv, dis, notes = self._attack_advantage(
                 actor, target, sp.attack_type != "melee", encounter_id)
-            eff_ac = self.tracker.effective_ac(target.id)
+            eff_ac = self._eff_ac(target)
             atk = attack_roll(bonus, eff_ac, advantage=adv, disadvantage=dis,
                               label=f"{sp.name} ({actor.name})", rng=self.rng)
+            s_hit = self._shield_check(actor, target, atk, eff_ac,
+                                       profiles, rep)
             ev["rolls"].append(self._roll_dict(
                 f"{sp.name} — {actor.name}", atk.detail, atk.total,
-                dc=eff_ac, success=bool(atk.hit)))
+                dc=eff_ac, success=s_hit))
             ev["notes"].extend(notes)
-            ev["hit"] = bool(atk.hit)
-            if atk.hit and dmg_expr:
+            ev["hit"] = s_hit
+            if s_hit and dmg_expr:
                 dmg = damage_roll(dmg_expr, crit=atk.is_crit, rng=self.rng)
                 out = self.tracker.apply_damage(target.id, dmg.total)
                 ev["rolls"].append(self._roll_dict(
@@ -1074,51 +1171,91 @@ class CombatEngine:
                 ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
                 if out.get("defeated"):
                     ev["defeated"] = True
-        elif sp and sp.dc_type and target is not None:
+        elif sp and sp.dc_type and targets:
+            # Registry target cap (upcasting may widen it); AoE spells carry
+            # no cap — the narration decides who stands in the area, the
+            # engine rolls every save.
+            if eff and eff.get("targets"):
+                cap = eff["targets"] + (max(0, (slot_spent or base_lv) - base_lv)
+                                        if eff.get("upcast_targets") else 0)
+                if len(targets) > cap:
+                    ev["notes"].append(f"only {cap} target"
+                                       f"{'s' if cap != 1 else ''} — extras dropped")
+                    targets = targets[:cap]
             dc = (prof.spell_dc if prof and prof.spell_dc is not None
                   else 10 + self._ability_mod(actor, "cha", profiles))
-            t_mod = self._ability_mod(target, sp.dc_type, profiles)
-            save = saving_throw(t_mod, dc=dc,
-                                label=f"{sp.dc_type.upper()} save ({target.name})",
-                                rng=self.rng)
-            ev["rolls"].append(self._roll_dict(
-                f"{sp.dc_type.upper()} save — {target.name}", save.detail,
-                save.total, dc=dc, success=bool(save.success)))
-            ev["saved"] = bool(save.success)
-            if not save.success and eff and eff.get("save_condition"):
-                cond = eff["save_condition"]
-                self.tracker.add_condition(target.id, cond)
-                ev["notes"].append(f"{target.name} is {cond}")
-                if eff.get("repeat_save"):
-                    fresh_t = self.tracker.get_combatant(target.id)
-                    saves = list(fresh_t.pending_saves or [])
-                    saves.append({"condition": cond,
-                                  "ability": sp.dc_type, "dc": dc})
-                    self.tracker.set_pending_saves(target.id, saves)
-                    ev["notes"].append("repeat save at the end of its turns")
-            if dmg_expr:
-                dmg = damage_roll(dmg_expr, rng=self.rng)
-                total = dmg.total
-                if save.success and (sp.dc_success or "").lower() == "half":
-                    total = dmg.total // 2
-                    ev["notes"].append("save: half damage")
-                elif save.success:
-                    total = 0
+            # One damage roll shared by every creature in the effect (RAW).
+            shared = damage_roll(dmg_expr, rng=self.rng) if dmg_expr else None
+            if shared is not None:
+                ev["rolls"].append(self._roll_dict(
+                    f"{sp.name} damage", shared.detail, shared.total,
+                    expr=dmg_expr))
+            results: list[dict] = []
+            for tgt in targets:
+                t_mod = self._ability_mod(tgt, sp.dc_type, profiles)
+                save = saving_throw(t_mod, dc=dc,
+                                    label=f"{sp.dc_type.upper()} save ({tgt.name})",
+                                    rng=self.rng)
+                ev["rolls"].append(self._roll_dict(
+                    f"{sp.dc_type.upper()} save — {tgt.name}", save.detail,
+                    save.total, dc=dc, success=bool(save.success)))
+                res: dict = {"target": tgt.name, "saved": bool(save.success)}
+                if not save.success and eff and eff.get("save_condition"):
+                    cond = eff["save_condition"]
+                    self.tracker.add_condition(tgt.id, cond)
+                    res["condition"] = cond
+                    if eff.get("repeat_save"):
+                        fresh_t = self.tracker.get_combatant(tgt.id)
+                        saves = list(fresh_t.pending_saves or [])
+                        saves.append({"condition": cond,
+                                      "ability": sp.dc_type, "dc": dc})
+                        self.tracker.set_pending_saves(tgt.id, saves)
+                if shared is not None:
+                    total = shared.total
+                    if save.success and (sp.dc_success or "").lower() == "half":
+                        total //= 2
+                    elif save.success:
+                        total = 0
+                    if total > 0:
+                        out = self.tracker.apply_damage(tgt.id, total)
+                        res["damage"] = total
+                        res["hp"] = f"{out['current_hp']}/{out['max_hp']}"
+                        if out.get("defeated"):
+                            res["defeated"] = True
+                results.append(res)
+            ev["results"] = results
+            if len(results) == 1:
+                # legacy single-target shape for the renderer/narration
+                r0 = results[0]
+                ev["saved"] = r0["saved"]
+                if r0.get("damage") is not None:
+                    ev["damage"] = r0["damage"]
+                    ev["target_hp"] = r0.get("hp")
+                    if r0["saved"]:
+                        ev["notes"].append("save: half damage")
+                elif r0["saved"] and shared is not None:
                     ev["notes"].append("save: no effect")
-                if total > 0:
-                    out = self.tracker.apply_damage(target.id, total)
-                    ev["rolls"].append(self._roll_dict(
-                        f"{sp.name} damage", dmg.detail, total, expr=dmg_expr))
-                    ev["damage"] = total
-                    ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
-                    if out.get("defeated"):
-                        ev["defeated"] = True
+                if r0.get("defeated"):
+                    ev["defeated"] = True
+                if r0.get("condition"):
+                    ev["notes"].append(f"{r0['target']} is {r0['condition']}")
+                    if eff and eff.get("repeat_save"):
+                        ev["notes"].append("repeat save at the end of its turns")
         elif eff and eff.get("teleport"):
             self.tracker.set_position(actor.id, "near")
             ev["notes"].append("teleports to safety — no opportunity attacks")
-        elif eff and eff.get("ally_condition") and target is not None:
-            self.tracker.add_condition(target.id, eff["ally_condition"])
-            ev["notes"].append(f"{target.name} is {eff['ally_condition']}")
+        elif eff and eff.get("ally_condition") and targets:
+            cap = (eff.get("targets") or len(targets)) + \
+                (max(0, (slot_spent or base_lv) - base_lv)
+                 if eff.get("upcast_targets") else 0)
+            if len(targets) > cap:
+                ev["notes"].append(f"only {cap} targets — extras dropped")
+                targets = targets[:cap]
+            for tgt in targets:
+                self.tracker.add_condition(tgt.id, eff["ally_condition"])
+            names = ", ".join(t.name for t in targets)
+            verb = "are" if len(targets) > 1 else "is"
+            ev["notes"].append(f"{names} {verb} {eff['ally_condition']}")
         else:
             ev["notes"].append("effect adjudicated in narration")
             # An unregistered concentration spell on a target still leaves a
@@ -1262,7 +1399,21 @@ class CombatEngine:
                              f"{e['concentration_dc']} pending]")
                 if e.get("notes"):
                     line += f" [{'; '.join(e['notes'])}]"
+                if e.get("results") and len(e["results"]) > 1:
+                    for r in e["results"]:
+                        sub = (f"  - {r['target']}: "
+                               f"{'SAVED' if r['saved'] else 'FAILED SAVE'}")
+                        if r.get("damage") is not None:
+                            sub += f", {r['damage']} damage ({r.get('hp', '?')} HP)"
+                        if r.get("condition"):
+                            sub += f", now {r['condition']}"
+                        if r.get("defeated"):
+                            sub += " — DOWN"
+                        line += "\n" + sub
                 lines.append(line)
+            elif k == "reaction":
+                lines.append(f"REACTION: {e['actor']} — {e.get('spell')}"
+                             f" ({'; '.join(e.get('notes') or [])})")
             elif k == "move":
                 n = f" ({'; '.join(e['notes'])})" if e.get("notes") else ""
                 lines.append(f"MOVE: {e['actor']} -> {e['to']}{n}")

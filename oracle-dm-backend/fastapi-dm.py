@@ -1755,6 +1755,8 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         features.add("sneak attack")
         if lvl >= 2:
             features.add("cunning action")
+        if lvl >= 5:
+            features.add("uncanny dodge")
     if cls == "barbarian":
         features.add("rage")
     if cls == "paladin" and lvl >= 2:
@@ -1770,11 +1772,15 @@ def _combat_pc_profile(char: Character) -> PCProfile:
     # Remaining spell slots (total minus expended since the last rest).
     slots = {row["level"]: max(0, row["total"] - row["used"])
              for row in _spell_slots_for(cls, lvl, char.spell_slots_used)}
+    # Reaction spells the engine may auto-cast when they change an outcome.
+    known = {(x if isinstance(x, str) else (x.get("name") or "")).strip().lower()
+             for x in (char.spells or [])}
+    reaction_spells = {"shield"} & known if cast_key else set()
     return PCProfile(
         character_id=char.id, name=char.name, level=lvl, ability_mods=mods,
         prof=pb, skills=skills, weapons=weapons, attacks_per_action=attacks,
         features=features, spell_attack_bonus=spell_atk, spell_dc=spell_dc,
-        spell_mod=cast_key, slots=slots)
+        spell_mod=cast_key, slots=slots, reaction_spells=reaction_spells)
 
 
 # ---- deterministic pre-parser: the common phrasings never need an LLM ----
@@ -1847,7 +1853,9 @@ _COMBAT_INTENT_SYSTEM = (
     "[[INTENT: dash]]  [[INTENT: disengage]]  [[INTENT: dodge]]  [[INTENT: hide]]\n"
     "[[INTENT: help | <ally>]]  [[INTENT: grapple | <target>]]  "
     "[[INTENT: shove | <target> | prone or push]]\n"
-    "[[INTENT: use | <item>]]  [[INTENT: cast | <spell> | <target> | <slot level, only when upcast>]]\n"
+    "[[INTENT: use | <item>]]\n"
+    "[[INTENT: cast | <spell> | <targets — one name, 'A, B, C', or 'all enemies'> | "
+    "<slot level, only when upcast>]]\n"
     "[[INTENT: feature | action surge]]  (also: second wind, rage)\n"
     "[[INTENT: improvise | <what they attempt> | <STR/DEX/CON/INT/WIS/CHA vs DC n, if a check fits>]]\n"
     "[[INTENT: end_turn]]\n"
@@ -2028,6 +2036,7 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
 
     blocks: list[str] = []
     rolls_out: list[dict] = []
+    all_events: list[dict] = []
 
     def run_monsters(limit: int = 12) -> None:
         nonlocal blocks, rolls_out
@@ -2042,6 +2051,7 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             if txt.strip():
                 blocks.append(txt)
             rolls_out.extend(rep.rolls())
+            all_events.extend(rep.events)
             over = _combat_fight_over(enc.id)
             if over:
                 blocks.append(over)
@@ -2058,19 +2068,7 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             if txt.strip():
                 blocks.append(txt)
             rolls_out.extend(rep.rolls())
-            # Persist any spell-slot spends onto the character sheet.
-            spends = [e["slot_spent"] for e in rep.events if e.get("slot_spent")]
-            if spends:
-                with Session(engine) as s:
-                    ch = s.get(Character, char_id)
-                    if ch:
-                        used = {int(k): int(v) for k, v in
-                                (ch.spell_slots_used or {}).items()}
-                        for lv in spends:
-                            used[lv] = used.get(lv, 0) + 1
-                        ch.spell_slots_used = {str(k): v for k, v in used.items()}
-                        s.add(ch)
-                        s.commit()
+            all_events.extend(rep.events)
             over = _combat_fight_over(enc.id)
             if over:
                 blocks.append(over)
@@ -2084,6 +2082,30 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
         nxt = combat.current_combatant(enc.id)
         if nxt is not None:
             blocks.append(f"NOW: {nxt.name}'s turn.")
+
+    # Persist spell-slot spends onto their owners' sheets. An event's
+    # slot_char_id (e.g. a Shield reaction) wins; otherwise the acting PC.
+    spends: dict[int, list[int]] = {}
+    for e in all_events:
+        if e.get("slot_spent"):
+            spends.setdefault(e.get("slot_char_id") or char_id, []).append(
+                e["slot_spent"])
+    if spends:
+        try:
+            with Session(engine) as s:
+                for cid, levels in spends.items():
+                    ch = s.get(Character, cid)
+                    if not ch:
+                        continue
+                    used = {int(k): int(v) for k, v in
+                            (ch.spell_slots_used or {}).items()}
+                    for lv in levels:
+                        used[lv] = used.get(lv, 0) + 1
+                    ch.spell_slots_used = {str(k): v for k, v in used.items()}
+                    s.add(ch)
+                s.commit()
+        except Exception as e:
+            print(f"[combat-engine] slot persist failed: {e}")
 
     # Mirror every PC's tracker HP back onto the character sheet — in engine
     # mode the tracker is where damage/healing lands first.

@@ -247,6 +247,10 @@ class CombatTracker:
             c.disengaging = False
             c.attacks_made = 0
             c.sneak_used = False
+            # Shield's +5 AC lasts until the start of the caster's next turn.
+            if c.conditions:
+                c.conditions = [x for x in c.conditions
+                                if x.lower() != "shielded"]
             s.add(c)
             s.commit()
             s.refresh(c)
