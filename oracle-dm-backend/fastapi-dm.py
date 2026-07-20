@@ -316,6 +316,18 @@ async def lifespan(app: FastAPI):
                         "ALTER TABLE combat_encounter ADD COLUMN pending_reaction JSON")
                     print("[Startup] Migrated combat_encounter: added pending_reaction")
 
+                # 2024 species columns on pre-existing rules_race tables.
+                rr_existing = {row[1] for row in conn.exec_driver_sql(
+                    'PRAGMA table_info("rules_race")')}
+                if rr_existing:
+                    for col, ddl in [("lineages", "JSON"),
+                                     ("lineage_label", "VARCHAR"),
+                                     ("feat_choice", "VARCHAR")]:
+                        if col not in rr_existing:
+                            conn.exec_driver_sql(
+                                f"ALTER TABLE rules_race ADD COLUMN {col} {ddl}")
+                            print(f"[Startup] Migrated rules_race: added {col}")
+
                 # Ratchet-clock + entropy + calendar columns on world_meta
                 # (pre-existing DBs). Calendar defaults mirror WorldMeta.
                 wm_existing = {row[1] for row in
@@ -4772,6 +4784,11 @@ def cc_options():
             "choose_bonus": r.choose_bonus or [],
             "speed": r.speed, "size": r.size, "darkvision": bool(r.darkvision),
             "languages": r.languages, "traits": r.traits or [],
+            # 2024 additions: flavor lineages (no ASI) and any species-granted
+            # feat choice ("origin" | "any").
+            "lineages": getattr(r, "lineages", None) or [],
+            "lineage_label": getattr(r, "lineage_label", None),
+            "feat_choice": getattr(r, "feat_choice", None),
         } for r in races],
         "classes": [{
             "slug": c.index_slug, "name": c.name, "hit_die": c.hit_die,

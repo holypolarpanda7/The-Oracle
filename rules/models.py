@@ -147,6 +147,18 @@ class Race(SQLModel, table=True):
     traits: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     description: Optional[str] = Field(default=None, sa_column=Column(String))
 
+    # Flavor sub-species the player picks under this species (2024 model — no
+    # ability bonuses, only trait/darkvision/speed differences). Each entry:
+    # {"slug", "name", "traits": [str], "darkvision"?: bool, "speed"?: int,
+    #  "label"?: str}. Empty/None for species without lineages.
+    lineages: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # If this species grants a feat choice at creation, the pool to draw from:
+    # "origin" (any origin feat), "any" (any feat you qualify for), or None.
+    feat_choice: Optional[str] = Field(default=None, sa_column=Column(String))
+    # The label shown for the lineage picker ("Elven Lineage", "Gnomish
+    # Subrace", "Draconic Ancestry"). None when there are no lineages.
+    lineage_label: Optional[str] = Field(default=None, sa_column=Column(String))
+
     source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
 
     created_at: datetime = Field(default_factory=_utcnow)
