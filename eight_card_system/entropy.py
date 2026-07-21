@@ -177,7 +177,7 @@ def build_life_record(graph: WorldGraph, pc_ref) -> Optional[dict]:
 def run_if_due(graph: WorldGraph, *, interval_days: int = ENTROPY_INTERVAL_DAYS) -> dict:
     """Demographic pass, gated so it runs at most once per interval of world
     time. Cheap no-op between intervals. Returns a summary of what happened."""
-    out = {"deaths": 0, "successions": 0, "drifted": 0}
+    out = {"deaths": 0, "successions": 0, "drifted": 0, "festered": 0}
     with Session(graph.engine) as s:
         meta = s.get(WorldMeta, 1)
         if meta is None:
@@ -241,6 +241,13 @@ def run_if_due(graph: WorldGraph, *, interval_days: int = ENTROPY_INTERVAL_DAYS)
             dead = graph.get_entity(slug)  # fresh, fully-loaded instance
             if dead is not None and census.spawn_successor(graph, dead):
                 out["successions"] += 1
+
+    # Threat festering + spread (same clock cadence). Events tie to the place so
+    # they surface near a party passing through.
+    for name, slug, new_danger, cause in _fester_threats(graph, today):
+        graph.add_event(f"{name} grows more dangerous ({new_danger}) — {cause}.",
+                        location=slug)
+        out["festered"] += 1
     return out
 
 
@@ -255,6 +262,36 @@ def run_if_due(graph: WorldGraph, *, interval_days: int = ENTROPY_INTERVAL_DAYS)
 STAKES_PERIOD_DAYS = 7        # world-days of neglect between escalations
 STAKES_FAIL_LEVEL = 3         # escalations before an ignored quest slips beyond reach
 _DANGER_LADDER = ["low", "moderate", "high", "deadly"]
+
+# Threat festering: a place the party VISITED and then left unattended grows more
+# dangerous as its denizens go unchecked — up to a cap (neglect alone never breeds
+# a "deadly" tier; that's for authored/quest fallout).
+FESTER_NEGLECT_DAYS = 60
+FESTER_DANGER_CAP = "high"
+
+
+def claim_peril_npc(graph: WorldGraph, quest_name: str, npc_ref,
+                    *, session_id: Optional[str] = None) -> Optional[str]:
+    """Kill an NPC imperiled by a FAILED quest — inaction has a cost. Skips the PC
+    and any active party companion (they're never culled silently). Returns the
+    NPC's name if claimed, else None."""
+    npc = graph.get_entity(npc_ref)
+    if npc is None or npc.type != "npc" or npc.status != "active":
+        return None
+    with Session(graph.engine) as s:
+        companion = s.exec(select(Relation).where(
+            Relation.rel_type == RelationType.TRAVELS_WITH,
+            Relation.src_id == npc.id, Relation.valid_to == None)).first()  # noqa: E711
+        if companion is not None:
+            return None
+        meta = s.get(WorldMeta, 1)
+        today = meta.world_day if meta else 0
+    graph.upsert_entity(npc.name, npc.type, slug=npc.slug, status="dead",
+                        attributes={"died_day": today,
+                                    "died_of": f"inaction ({quest_name})"})
+    graph.add_event(f"{npc.name} was lost — no one came in time ({quest_name}).",
+                    involved=[npc.slug], session_id=session_id)
+    return npc.name
 
 
 def shift_place_danger(graph: WorldGraph, slug: str, step: int, reason: str,
@@ -282,15 +319,95 @@ def shift_place_danger(graph: WorldGraph, slug: str, step: int, reason: str,
     return new
 
 
+def _place_is_held(attrs: dict, today: int) -> bool:
+    """Civilization and party presence resist festering/spread — the counterweight
+    that keeps the world from devolving. A settlement (has population/scale) or a
+    recently-visited place holds the line."""
+    if attrs.get("population") or str(attrs.get("scale", "")).lower() in (
+            "town", "city", "village", "settlement"):
+        return True
+    lv = attrs.get("last_visited_day")
+    return lv is not None and today - int(lv) < FESTER_NEGLECT_DAYS
+
+
+def _fester_threats(graph: WorldGraph, today: int) -> list[tuple]:
+    """Neglected dangerous places worsen; a high threat can bleed one rung into an
+    eligible neighbor. Bounded so it converges, not explodes: capped at
+    ``FESTER_DANGER_CAP``, settlements/visited places resist, only high+ sources
+    spread, and it's probabilistic per era. Returns (name, slug, new_danger, cause)."""
+    cap_i = _DANGER_LADDER.index(FESTER_DANGER_CAP)
+    era = today // ENTROPY_INTERVAL_DAYS
+    changes: list[tuple] = []
+
+    def danger_i(p) -> int:
+        d = str((p.attributes or {}).get("danger", "")).lower()
+        return _DANGER_LADDER.index(d) if d in _DANGER_LADDER else -1
+
+    with Session(graph.engine) as s:
+        places = list(s.exec(select(Entity).where(
+            Entity.type == "place", Entity.status == "active")).all())
+        by_id = {p.id: p for p in places}
+        adj: dict[int, set] = {}
+        for r in s.exec(select(Relation).where(
+                Relation.rel_type == RelationType.ADJACENT_TO,
+                Relation.valid_to == None)).all():  # noqa: E711
+            adj.setdefault(r.src_id, set()).add(r.dst_id)
+            adj.setdefault(r.dst_id, set()).add(r.src_id)
+
+        # 1) self-festering: a VISITED-then-neglected dangerous+denizen place worsens.
+        for p in places:
+            a = p.attributes or {}
+            di = danger_i(p)
+            if di < 1 or di >= cap_i or not a.get("denizens"):
+                continue
+            lv = a.get("last_visited_day")
+            if lv is None or today - int(lv) < FESTER_NEGLECT_DAYS:
+                continue  # never seen it, or presence still holds it
+            if random.Random(f"fester:{p.slug}:{era}").random() > 0.6:
+                continue
+            attrs = dict(a); attrs["danger"] = _DANGER_LADDER[di + 1]
+            p.attributes = attrs; s.add(p)
+            changes.append((p.name, p.slug, _DANGER_LADDER[di + 1],
+                            "unchecked, its denizens grow bolder"))
+        s.commit()
+
+        # 2) spread: a high+ place bleeds one rung into an eligible neighbor.
+        for p in places:
+            if danger_i(p) < _DANGER_LADDER.index("high"):
+                continue
+            if random.Random(f"spread:{p.slug}:{era}").random() > 0.4:
+                continue
+            cands = []
+            for nid in adj.get(p.id, ()):
+                n = by_id.get(nid)
+                if n is None:
+                    continue
+                ndi = danger_i(n)
+                if 0 <= ndi < min(cap_i, danger_i(p)) and not _place_is_held(
+                        n.attributes or {}, today):
+                    cands.append(n)
+            if not cands:
+                continue
+            n = random.Random(f"spread:{p.slug}:{era}").choice(
+                sorted(cands, key=lambda x: x.slug))
+            ndi = danger_i(n)
+            attrs = dict(n.attributes or {}); attrs["danger"] = _DANGER_LADDER[ndi + 1]
+            n.attributes = attrs; s.add(n)
+            changes.append((n.name, n.slug, _DANGER_LADDER[ndi + 1],
+                            f"the trouble in {p.name} is spilling over"))
+        s.commit()
+    return changes
+
+
 def advance_quest_clocks(graph: WorldGraph, *, session_id: Optional[str] = None,
                          period_days: int = STAKES_PERIOD_DAYS,
                          fail_level: int = STAKES_FAIL_LEVEL) -> dict:
     """Escalate ACTIVE quests the party has neglected; a long-ignored quest fails
     and its fallout worsens its place. Cheap: only quests carrying `stakes` have a
     clock, and each is gated by its own neglect window."""
-    out = {"escalated": 0, "failed": 0}
+    out = {"escalated": 0, "failed": 0, "npcs_lost": 0}
     escalations: list[tuple[str, str, str, Optional[str]]] = []
-    fails: list[tuple[str, str, Optional[str]]] = []
+    fails: list[tuple[str, str, Optional[str], Optional[str]]] = []
     with Session(graph.engine) as s:
         meta = s.get(WorldMeta, 1)
         if meta is None:
@@ -319,7 +436,8 @@ def advance_quest_clocks(graph: WorldGraph, *, session_id: Optional[str] = None,
             attrs["last_touched_day"] = today
             if level >= fail_level:
                 attrs["state"] = "failed"
-                fails.append((q.name, q.slug, attrs.get("location_slug")))
+                fails.append((q.name, q.slug, attrs.get("location_slug"),
+                              attrs.get("peril_npc")))
             else:
                 escalations.append((q.name, str(stakes), q.slug,
                                     attrs.get("location_slug")))
@@ -331,11 +449,13 @@ def advance_quest_clocks(graph: WorldGraph, *, session_id: Optional[str] = None,
         graph.add_event(f"With no one acting, {name} worsens: {stakes}",
                         location=loc, involved=[slug], session_id=session_id)
         out["escalated"] += 1
-    for name, slug, loc in fails:
+    for name, slug, loc, peril in fails:
         graph.add_event(f"{name} slips beyond reach — the moment has passed.",
                         location=loc, involved=[slug], session_id=session_id)
         out["failed"] += 1
         if loc:
             shift_place_danger(graph, loc, +1, f"the fallout of {name}",
                                session_id=session_id)
+        if peril and claim_peril_npc(graph, name, peril, session_id=session_id):
+            out["npcs_lost"] += 1
     return out

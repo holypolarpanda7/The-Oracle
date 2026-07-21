@@ -1711,7 +1711,8 @@ def process_puzzle_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list
 #   [[QUEST: resolve | <name> | completed|failed | <outcome>]]
 QUEST_HOOK_PATTERN = re.compile(r"\[\[QUEST:(.+?)\]\]", re.IGNORECASE)
 _QUEST_HOOK_ACTIONS = {"open", "conflict", "stakes", "patron", "reward",
-                       "objective", "lead", "done", "advance", "branch", "resolve"}
+                       "objective", "lead", "done", "advance", "branch", "resolve",
+                       "peril"}
 _QUEST_TIERS = {"main", "side", "rumor"}
 
 # Compact, own-worded DMG-style guidance kept in view so the DM can recognize a
@@ -1731,7 +1732,9 @@ _QUEST_GUIDE = (
     "[[QUEST: stakes | name | ...]], [[QUEST: patron | name | who]], "
     "[[QUEST: reward | name | ...]], [[QUEST: done | name | objective]], "
     "[[QUEST: advance | name | progress]], [[QUEST: branch | parent | side-quest | "
-    "conflict]], [[QUEST: resolve | name | completed|failed | outcome]]."
+    "conflict]], [[QUEST: resolve | name | completed|failed | outcome]]. "
+    "When a named NPC's LIFE is the stake, mark it with [[QUEST: peril | name | "
+    "npc]] — if that quest fails from neglect, inaction claims them."
 )
 
 
@@ -1836,6 +1839,21 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
                             world.add_relation(giver, RelationType.GIVES_QUEST, q)
                         except Exception:
                             pass
+            elif action == "peril":
+                # Flag an NPC whose life is the stake — if the quest fails from
+                # neglect (or is resolved failed), inaction claims them.
+                npc = args[1] if len(args) > 1 else ""
+                if not npc:
+                    continue
+                world.upsert_entity(name, EntityType.QUEST,
+                                    attributes={"peril_npc": npc, "last_touched_day": today},
+                                    tags=["quest"])
+                q, who = world.get_entity(name), world.get_entity(npc)
+                if q is not None and who is not None:
+                    try:
+                        world.add_relation(q, RelationType.INVOLVES, who)
+                    except Exception:
+                        pass
             elif action == "objective":
                 val = args[1] if len(args) > 1 else ""
                 if not val:
@@ -1925,6 +1943,15 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
                             f"the resolution of {name}", session_id=session_id)
                     except Exception as e:
                         print(f"[quest] danger ripple failed: {e}")
+                # A failed quest can cost the life it hinged on.
+                if state == QuestState.FAILED and qa.get("peril_npc"):
+                    try:
+                        lost = world_entropy.claim_peril_npc(
+                            world, name, qa["peril_npc"], session_id=session_id)
+                        if lost:
+                            notes.append(f"📜 *{lost} was lost.*")
+                    except Exception as e:
+                        print(f"[quest] peril claim failed: {e}")
                 if state == QuestState.COMPLETED:
                     notes.append(f"📜 Quest complete — **{name}**"
                                  + (f". {reward}" if reward else ""))
@@ -1934,6 +1961,47 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
         except Exception as e:
             print(f"[quest] op {action} failed: {e}")
     return notes
+
+
+# WORLD hooks: direct, durable world mutations the DM applies from narration —
+# today, moving a place's danger when the party clears or worsens a threat
+# (closing the festering loop without needing a full quest).
+#   [[WORLD: danger | <place> | clear | how the threat was dealt with]]  (safer)
+#   [[WORLD: danger | <place> | rise | why it worsened]]                 (worse)
+WORLD_HOOK_PATTERN = re.compile(r"\[\[WORLD:(.+?)\]\]", re.IGNORECASE)
+_WORLD_DANGER_DOWN = {"clear", "cleared", "down", "safer", "lower", "quell", "quelled"}
+_WORLD_DANGER_UP = {"rise", "risen", "up", "worse", "worsen", "raise", "raised"}
+
+
+def extract_world_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull [[WORLD: ...]] mutation hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in WORLD_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if len(parts) < 3 or (parts[0] or "").strip().lower() != "danger":
+            continue
+        ops.append({"place": parts[1].strip(), "dir": (parts[2] or "").strip().lower(),
+                    "reason": parts[3].strip() if len(parts) > 3 else ""})
+    clean = WORLD_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def apply_world_hooks(ops: list[dict], session_id: Optional[str] = None) -> None:
+    """Apply world-mutation hooks. Danger shifts log their own event, so the DM's
+    narration carries the fiction — nothing is appended to the player's view."""
+    for op in ops:
+        place = op.get("place") or ""
+        d = op.get("dir") or ""
+        step = -1 if d in _WORLD_DANGER_DOWN else (+1 if d in _WORLD_DANGER_UP else 0)
+        if not place or step == 0:
+            continue
+        try:
+            world_entropy.shift_place_danger(
+                world, place, step, op.get("reason") or "the party's deeds",
+                session_id=session_id)
+        except Exception as e:
+            print(f"[world] danger hook failed: {e}")
 
 
 # The DM runs fights through the initiative tracker (combat/) with COMBAT hooks.
@@ -3833,20 +3901,29 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
                               if (ch := s.get(Character, cid))]
                 if levels:
                     char_level = min(levels)
-            danger_floor = {"low": 1, "moderate": 3, "high": 5}
+            danger_floor = {"low": 1, "moderate": 3, "high": 5, "deadly": 8}
             hot: list[str] = []
+            opps: list[str] = []
             if ctx_obj is not None:
                 spots = list(ctx_obj.entities)
                 if ctx_obj.location is not None:
                     spots.append(ctx_obj.location)
                 for e in spots:
                     a = e.attributes or {}
-                    lvl_needed = danger_floor.get(str(a.get("danger", "")).lower())
-                    if lvl_needed and lvl_needed > char_level:
-                        denizens = ", ".join(a.get("denizens") or []) or "unknown threats"
+                    danger = str(a.get("danger", "")).lower()
+                    lvl_needed = danger_floor.get(danger)
+                    if not lvl_needed:
+                        continue
+                    denizens = ", ".join(a.get("denizens") or []) or "unknown threats"
+                    if lvl_needed > char_level:
                         hot.append(f"- {e.name}: danger {a['danger']} "
                                    f"(suits level {lvl_needed}+; party is level "
                                    f"{char_level}). Known threats: {denizens}.")
+                    elif danger in ("moderate", "high", "deadly"):
+                        # Capable party + a real nearby threat = an opportunity the
+                        # world can dangle (this is how festered danger becomes a hook).
+                        opps.append(f"- {e.name} (danger {a['danger']}): {denizens} "
+                                    "trouble the area.")
             if hot:
                 texts.append(
                     "# Danger assessment\n"
@@ -3857,6 +3934,18 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
                     "Scale encounters to the encounter-building guidance when the "
                     "fight is avoidable — but if they knowingly press into danger, "
                     "play it honestly and lethally. Death is permanent here."
+                )
+            if opps:
+                texts.append(
+                    "# Local troubles the party could take on (optional hooks)\n"
+                    + "\n".join(opps) +
+                    "\nThese are within the party's reach. Let NPCs and rumors "
+                    "DANGLE them as opportunities — a worried farmer, a bounty "
+                    "notice, tavern talk — never as orders; the players choose. If "
+                    "the party clears a threat, reflect it so the area actually "
+                    "grows safer: [[WORLD: danger | <place> | clear | how it was "
+                    "dealt with]]. You may also make it a proper quest with "
+                    "[[QUEST: open | ... ]] if they commit."
                 )
         except Exception as e:
             print(f"[danger assessment error] {e}")
@@ -3882,6 +3971,13 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
                     world.upsert_entity(pc_e.name, pc_e.type, slug=pc_e.slug,
                                         status=pc_e.status,
                                         attributes={"last_active_day": today})
+            # Stamp the current location as visited today — presence here holds
+            # the line against threat festering (entropy reads last_visited_day).
+            loc_e = getattr(ctx_obj, "location", None) if ctx_obj else None
+            if loc_e is not None:
+                world.upsert_entity(loc_e.name, loc_e.type, slug=loc_e.slug,
+                                    status=loc_e.status,
+                                    attributes={"last_visited_day": today})
         except Exception as e:
             print(f"[away-time notice error] {e}")
 
@@ -4742,6 +4838,15 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(quest_notes)
         except Exception as e:
             print(f"[quest] hook processing failed: {e}")
+
+    # World mutations: the DM reflects a threat cleared/worsened so the map's
+    # danger actually moves (the fiction is already in the narration).
+    dm_text, world_ops = extract_world_hooks(dm_text)
+    if world_ops:
+        try:
+            apply_world_hooks(world_ops, session_id=req.session_id)
+        except Exception as e:
+            print(f"[world] hook processing failed: {e}")
 
     # Keep the initiative tracker true to the narration: start fights, seat
     # combatants, record damage/healing, advance turns, end the battle.
