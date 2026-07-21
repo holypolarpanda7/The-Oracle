@@ -432,6 +432,7 @@ async def lifespan(app: FastAPI):
             from rules.owned_ingest import (ingest_species_overrides,
                                              ingest_feats_overrides,
                                              ingest_subclasses_overrides,
+                                             ingest_spells_overrides,
                                              ingest_monsters_overrides,
                                              ingest_items_overrides)
             # Standard paste-and-translate import: gitignored
@@ -443,6 +444,7 @@ async def lifespan(app: FastAPI):
             if fo.get("feat_overrides_applied") or fo.get("feat_overrides_new"):
                 print(f"[Startup] Feat overrides: {fo}")
             for label, fn in (("Subclass", ingest_subclasses_overrides),
+                              ("Spell", ingest_spells_overrides),
                               ("Monster", ingest_monsters_overrides),
                               ("Item", ingest_items_overrides)):
                 res = fn(engine=engine)

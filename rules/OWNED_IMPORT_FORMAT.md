@@ -73,6 +73,22 @@ bonuses (2024 model) — the loader forces `ability_bonuses={}`.
 }
 ```
 
+## `spells_overrides.json` → `rules_spell`  (loader: `ingest_spells_overrides`)
+```json
+{
+  "slug": "spray-of-cards", "name": "Spray of Cards",
+  "level": 2, "school": "Conjuration",
+  "casting_time": "1 action", "range": "Self (15-foot cone)",
+  "duration": "Instantaneous",
+  "components": ["V", "S", "M"], "material": "a deck of cards",
+  "classes": ["bard", "sorcerer", "warlock", "wizard"],
+  "concentration": false, "ritual": false,
+  "desc": "Terse mechanical summary.",
+  "higher_level": "+1d10 force per slot level above 2nd."
+}
+```
+For book spells outside the PHB parser's reach.
+
 ## `monsters_overrides.json` → `rules_monster`  (loader: `ingest_monsters_overrides`)
 ```json
 {

@@ -2917,6 +2917,29 @@ def ingest_items_overrides(engine=None, database_url=None,
                                   engine, database_url, workspace)
 
 
+_SPELL_OVERRIDE_FIELDS = {
+    "name": "name", "level": "level", "school": "school",
+    "casting_time": "casting_time", "range": "range", "duration": "duration",
+    "material": "material", "concentration": "concentration",
+    "ritual": "ritual", "attack_type": "attack_type", "dc_type": "dc_type",
+    "dc_success": "dc_success", "components": "components",
+    "classes": "classes", "damage": "damage", "desc": "desc",
+    "higher_level": "higher_level",
+}
+
+
+def ingest_spells_overrides(engine=None, database_url=None,
+                            workspace: Path = WORKSPACE) -> dict:
+    """Apply curated spell overrides (owned_books/spells_overrides.json).
+    For book spells outside the PHB parser's reach. Entry: {slug, name, level,
+    school, casting_time?, range?, duration?, components?, classes?,
+    concentration?, ritual?, damage?, desc?, higher_level?}."""
+    from .models import Spell
+    return _apply_table_overrides(Spell, "spells_overrides.json",
+                                  _SPELL_OVERRIDE_FIELDS,
+                                  engine, database_url, workspace)
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -2953,6 +2976,7 @@ def main(argv: list[str]) -> None:
         print("[owned] species overrides:", ingest_species_overrides())
         print("[owned] feat overrides:", ingest_feats_overrides())
         print("[owned] subclass overrides:", ingest_subclasses_overrides())
+        print("[owned] spell overrides:", ingest_spells_overrides())
         print("[owned] monster overrides:", ingest_monsters_overrides())
         print("[owned] item overrides:", ingest_items_overrides())
         print("[owned] backgrounds:", ingest_backgrounds())
