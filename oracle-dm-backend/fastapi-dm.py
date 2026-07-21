@@ -2083,6 +2083,187 @@ def apply_world_hooks(ops: list[dict], session_id: Optional[str] = None) -> None
             print(f"[world] danger hook failed: {e}")
 
 
+# CHASE hooks: running away (or running something down) as a cinematic minigame.
+# Server-tracked like puzzles — the party's PROGRESS toward its goal (escape when
+# fleeing, catch when pursuing) rides a small counter; each round the backend rolls
+# a terrain complication and reminds the DM of the chase framework (Dash/exhaustion,
+# the Stealth-vs-passive-Perception escape check, cover/crowd factors). Framework is
+# own-worded from the DMG chase rules; no book text.
+#   [[CHASE: start | flee|pursue | <adversary> | <urban|wilderness|dungeon>]]
+#   [[CHASE: advance | gain|hold|lose | what happened this round]]
+#   [[CHASE: end | escaped|caught|lost|resolved]]
+CHASE_HOOK_PATTERN = re.compile(r"\[\[CHASE:(.+?)\]\]", re.IGNORECASE)
+_CHASE_HOOK_ACTIONS = {"start", "advance", "end"}
+_CHASE_GAIN = {"gain", "ahead", "close", "closer", "pull-ahead", "pullahead"}
+_CHASE_LOSE = {"lose", "behind", "fall-behind", "fallbehind", "slip", "slipping"}
+
+_CHASE_COMPLICATIONS = {
+    "urban": [
+        "a fruit-seller's cart tips across the way, spilling melons underfoot",
+        "a temple procession clogs the street, chanting and oblivious",
+        "washing lines strung between windows snag at head height",
+        "a startled ox breaks its tether and bolts across the lane",
+        "the alley narrows to a squeeze between two leaning tenements",
+        "a rooftop gap yawns — leap it or lose ground taking the stairs",
+        "a beggar lunges, clutching at cloaks for a coin",
+        "town guards round the corner ahead, halberds lowering",
+        "fish-market cobbles run slick with brine and scales",
+        "a gate is grinding shut at the end of the street",
+        "a knot of children in a game scatters, shrieking, into the path",
+        "a peddler's awning collapses in a billow of cheap silk",
+    ],
+    "wilderness": [
+        "a ravine splits the ground — jump it or scramble around",
+        "a wall of thorns bars the game-trail",
+        "a startled boar erupts from the brush, tusks flashing",
+        "a rushing stream cuts across, cold and thigh-deep",
+        "a rotten log spans a gully — it may not hold weight",
+        "a wasp nest hangs low, humming, right at face height",
+        "loose scree turns the slope into a slide",
+        "the ground softens to sucking bog without warning",
+        "a low branch sweeps past at neck height",
+        "a hunter's snare loops half-hidden in the leaf litter",
+        "a bank of fog rolls in, swallowing the way ahead",
+        "the trail ends at a cliff edge — down, or along the rim",
+    ],
+    "dungeon": [
+        "a pit yawns in the floor, its cover already tilting away",
+        "a pendulum blade sweeps the corridor on a lazy arc",
+        "flagstones drop away as a section of floor gives",
+        "a portcullis slams down ahead, chains shrieking",
+        "a roost of bats explodes into a shrieking cloud",
+        "the passage pinches to a crawl-space",
+        "a chasm splits the hall — leap it or find another way",
+        "the last torch gutters out, plunging the way into dark",
+        "a great stone sphere grinds loose and begins to roll",
+        "oil slicks the floor around a toppled brazier",
+        "a heavy iron door stands shut across the escape",
+        "a warding glyph flares, and something begins to take shape",
+    ],
+}
+
+
+def _guess_terrain(word: str) -> str:
+    w = (word or "").lower()
+    if any(k in w for k in ("city", "town", "street", "market", "alley", "urban", "village")):
+        return "urban"
+    if any(k in w for k in ("dungeon", "cave", "crypt", "vault", "tomb", "sewer", "ruin", "corridor")):
+        return "dungeon"
+    return "wilderness"
+
+
+def _format_active_chase_block(ac: dict, session_id: str = "") -> str:
+    """Live chase context: this round's rolled complication + the chase framework."""
+    terrain = ac.get("terrain", "wilderness")
+    rnd = int(ac.get("round", 1))
+    comps = _CHASE_COMPLICATIONS.get(terrain, _CHASE_COMPLICATIONS["wilderness"])
+    comp = random.Random(f"{session_id}:chase:{rnd}").choice(comps)
+    role = ac.get("role", "flee")
+    adversary = ac.get("adversary", "pursuers" if role == "flee" else "the quarry")
+    esc, caught = ac.get("escape_at", 3), ac.get("caught_at", 3)
+    prog = int(ac.get("progress", 0))
+    goal = ("escape — break line of sight and pull away" if role == "flee"
+            else f"run down {adversary}")
+    lines = [
+        f"# Chase — round {rnd} ({terrain} terrain)",
+        (f"The party is FLEEING {adversary}." if role == "flee"
+         else f"The party is CHASING {adversary}."),
+        f"Goal: {goal}. Progress {prog:+d}  (win at +{esc}, {'caught' if role == 'flee' else 'quarry lost'} at -{caught}).",
+        f"Complication this round: {comp}. Weave it in and, when apt, gate it behind a "
+        "check (DEX save, Athletics, or Acrobatics) — a clever use of terrain, an item, "
+        "or a spell can turn it to the party's advantage or foul the other side.",
+        "Run it cinematic: everyone is Dashing headlong (no Opportunity Attacks between "
+        "runners, though bystanders may still strike). Adjudicate the party's move this "
+        "round, then emit [[CHASE: advance | gain|hold|lose | what happened]] — gain when "
+        "they pull ahead / close in, lose when the gap swings against them.",
+    ]
+    if rnd >= 3:
+        lines.append(
+            "Fatigue: after this much all-out Dashing, call a DC 10 CON save at the end of "
+            "a hard-pressed runner's turn or they gain 1 Exhaustion "
+            "([[CONDITION: add | exhaustion | hard running]]).")
+    if role == "flee":
+        lines.append(
+            "Escape check: the moment the party breaks the pursuers' line of sight, call a "
+            "Dexterity (Stealth) check vs the pursuers' passive Perception — Advantage in "
+            "crowded or cover-rich terrain, Disadvantage in the open. On a success, "
+            "[[CHASE: advance | gain | slipped their sight]].")
+    return "\n".join(lines)
+
+
+def extract_chase_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull chase-control hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in CHASE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").strip().lower()
+        if action not in _CHASE_HOOK_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = CHASE_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def process_chase_hooks(session_id: str, ops: list[dict]) -> list[str]:
+    """Drive the chase minigame's state in session meta. Returns player-facing beats
+    (the chase begins, escaped/caught) — the round-by-round detail is the DM's to narrate."""
+    if not ops:
+        return []
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    notes: list[str] = []
+    changed = False
+    for op in ops:
+        action = op["action"]
+        args = op.get("args", [])
+        if action == "start":
+            role = (args[0].lower() if args else "flee")
+            role = role if role in ("flee", "pursue") else "flee"
+            adversary = (args[1] if len(args) > 1 and args[1]
+                         else ("pursuers" if role == "flee" else "the quarry"))
+            terrain = _guess_terrain(args[2]) if len(args) > 2 and args[2] else "wilderness"
+            if len(args) > 2 and args[2].lower() in _CHASE_COMPLICATIONS:
+                terrain = args[2].lower()
+            meta["active_chase"] = {
+                "role": role, "adversary": adversary, "terrain": terrain,
+                "round": 1, "progress": 0, "escape_at": 3, "caught_at": 3,
+                "status": "active"}
+            changed = True
+            notes.append(f"🏃 **The chase is on** — {'fleeing ' + adversary if role == 'flee' else 'in pursuit of ' + adversary}!")
+        elif action == "advance":
+            ac = meta.get("active_chase")
+            if not ac:
+                continue
+            d = (args[0].lower() if args else "hold")
+            step = 1 if d in _CHASE_GAIN else (-1 if d in _CHASE_LOSE else 0)
+            ac["progress"] = int(ac.get("progress", 0)) + step
+            ac["round"] = int(ac.get("round", 1)) + 1
+            changed = True
+            prog = ac["progress"]
+            role = ac.get("role", "flee")
+            if prog >= ac.get("escape_at", 3):
+                notes.append("🏃 *You break away clean — escaped!*" if role == "flee"
+                             else f"🏃 *You run {ac['adversary']} down — caught!*")
+                meta.pop("active_chase", None)
+            elif prog <= -ac.get("caught_at", 3):
+                if role == "flee":
+                    notes.append(f"🏃 *{ac['adversary']} corners you — there's no more running.*")
+                else:
+                    notes.append(f"🏃 *{ac['adversary']} slips away into the distance — lost.*")
+                meta.pop("active_chase", None)
+        elif action == "end":
+            outcome = (args[0].lower() if args else "resolved")
+            if meta.pop("active_chase", None) is not None:
+                changed = True
+                notes.append(f"🏃 *The chase ends ({outcome}).*")
+    if changed:
+        _set_session_meta(session_id, meta)
+    return notes
+
+
 # The DM runs fights through the initiative tracker (combat/) with COMBAT hooks.
 # ``start`` auto-seats the table's PCs; initiative is rolled once the reply's
 # adds are in. PC damage/healing on the tracker is mirrored onto the character
@@ -2125,6 +2306,8 @@ _COMBAT_HOOKS_ACTIVE = (
     "    [[COMBAT: add | wolf | x1]]          reinforcements arrive\n"
     "    [[COMBAT: next]]                     the current creature's turn is resolved\n"
     "    [[COMBAT: end]]                      the fight is over (victory, flight, or surrender)\n"
+    "If the party (or a foe) breaks and RUNS, end the fight and run it as a chase: "
+    "[[COMBAT: end]] then [[CHASE: start | flee|pursue | adversary | terrain]].\n"
     "Follow the board's initiative order: on a monster's or NPC's turn, run it in narration and\n"
     "record its outcome with damage/condition hooks, then emit [[COMBAT: next]]. Use [[ROLL: ...]]\n"
     "for attacks and saves as normal — COMBAT hooks record the OUTCOME on the tracker.\n"
@@ -4121,6 +4304,14 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[rest interruption error] {e}")
 
+    # Chase: if a flee/pursuit is live, drive its round with a rolled complication.
+    try:
+        ac = (meta or {}).get("active_chase")
+        if ac and ac.get("status") == "active":
+            texts.append(_format_active_chase_block(ac, session_id))
+    except Exception as e:
+        print(f"[chase context error] {e}")
+
     return ctx_obj, texts
 
 
@@ -4934,6 +5125,16 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             apply_world_hooks(world_ops, session_id=req.session_id)
         except Exception as e:
             print(f"[world] hook processing failed: {e}")
+
+    # Chase: begin/advance/end a flee-or-pursuit minigame the DM narrates.
+    dm_text, chase_ops = extract_chase_hooks(dm_text)
+    if chase_ops:
+        try:
+            chase_notes = process_chase_hooks(req.session_id, chase_ops)
+            if chase_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(chase_notes)
+        except Exception as e:
+            print(f"[chase] hook processing failed: {e}")
 
     # Keep the initiative tracker true to the narration: start fights, seat
     # combatants, record damage/healing, advance turns, end the battle.
