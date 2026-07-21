@@ -430,13 +430,24 @@ async def lifespan(app: FastAPI):
         # file is present — surfaces book species the parser can't read.
         try:
             from rules.owned_ingest import (ingest_species_overrides,
-                                             ingest_feats_overrides)
+                                             ingest_feats_overrides,
+                                             ingest_subclasses_overrides,
+                                             ingest_monsters_overrides,
+                                             ingest_items_overrides)
+            # Standard paste-and-translate import: gitignored
+            # owned_books/<type>_overrides.json applied with top precedence.
             ov = ingest_species_overrides(engine=engine)
             if ov.get("overrides_applied") or ov.get("overrides_new"):
                 print(f"[Startup] Species overrides: {ov}")
             fo = ingest_feats_overrides(engine=engine)
             if fo.get("feat_overrides_applied") or fo.get("feat_overrides_new"):
                 print(f"[Startup] Feat overrides: {fo}")
+            for label, fn in (("Subclass", ingest_subclasses_overrides),
+                              ("Monster", ingest_monsters_overrides),
+                              ("Item", ingest_items_overrides)):
+                res = fn(engine=engine)
+                if any(v for k, v in res.items() if k.endswith(("_applied", "_new"))):
+                    print(f"[Startup] {label} overrides: {res}")
         except Exception as e:
             print(f"[Startup] Overrides skipped: {e}")
     except Exception as e:
@@ -4517,46 +4528,52 @@ def _slugify_bg_feat(name: Optional[str]) -> Optional[str]:
 
 
 def _ensure_local_backgrounds() -> None:
-    """Merge locally-ingested 2024 backgrounds (owned_books/backgrounds.json,
-    gitignored) into _BACKGROUND_KITS once. 2024 versions overwrite the 2014
-    entries; new ones (Artisan, Farmer, Guard...) are added. Existing equipment
-    is preserved for overlapping names."""
+    """Merge locally-ingested 2024 backgrounds into _BACKGROUND_KITS once.
+
+    Two gitignored sources, in order (later wins on name overlap):
+      1. backgrounds.json          — bulk parser output (SRD/PHB/FR core).
+      2. backgrounds_overrides.json — curated paste-and-translate entries, the
+         standard import slot for backgrounds with no bulk parser.
+    2024 versions overwrite 2014 entries; new ones are added; repo equipment is
+    preserved for overlapping names, else parsed/curated equipment is used."""
     global _LOCAL_BG_LOADED
     if _LOCAL_BG_LOADED:
         return
     _LOCAL_BG_LOADED = True
-    path = Path(__file__).resolve().parent.parent / "owned_books" / "backgrounds.json"
-    if not path.is_file():
-        return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f"[cc] local backgrounds load failed: {e}")
-        return
+    base = Path(__file__).resolve().parent.parent / "owned_books"
     n = 0
-    for b in data:
-        name = (b.get("name") or "").strip()
-        if not name or not b.get("skills"):
+    for fname in ("backgrounds.json", "backgrounds_overrides.json"):
+        path = base / fname
+        if not path.is_file():
             continue
-        key = name.lower()
-        prev = _BACKGROUND_KITS.get(key, {})
-        # The parsed feat is the Origin feat (slug); keep the descriptive
-        # background feature name from the repo default when we have one.
-        origin_feat = b.get("origin_feat") or (
-            _slugify_bg_feat(b.get("feat")) if b.get("feat") else None)
-        # Prefer curated repo equipment; else take the parsed book equipment
-        # (FR 2025 backgrounds have no repo default). JSON items are [name, qty].
-        items = prev.get("items") or [
-            tuple(it) if isinstance(it, (list, tuple)) else (it, 1)
-            for it in b.get("items", [])]
-        _BACKGROUND_KITS[key] = {
-            "skills": b.get("skills") or prev.get("skills") or [],
-            "items": items,
-            "feature": prev.get("feature") or b.get("feat"),
-            "abilities": b.get("abilities") or prev.get("abilities") or [],
-            "origin_feat": origin_feat or prev.get("origin_feat"),
-        }
-        n += 1
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[cc] local backgrounds load failed ({fname}): {e}")
+            continue
+        for b in data:
+            name = (b.get("name") or "").strip()
+            if not name or not b.get("skills"):
+                continue
+            key = name.lower()
+            prev = _BACKGROUND_KITS.get(key, {})
+            # The parsed feat is the Origin feat (slug); keep the descriptive
+            # background feature name from the repo default when we have one.
+            origin_feat = b.get("origin_feat") or (
+                _slugify_bg_feat(b.get("feat")) if b.get("feat") else None)
+            # Prefer curated repo equipment; else the parsed/curated book
+            # equipment (JSON items are [name, qty]).
+            items = prev.get("items") or [
+                tuple(it) if isinstance(it, (list, tuple)) else (it, 1)
+                for it in b.get("items", [])]
+            _BACKGROUND_KITS[key] = {
+                "skills": b.get("skills") or prev.get("skills") or [],
+                "items": items,
+                "feature": prev.get("feature") or b.get("feat"),
+                "abilities": b.get("abilities") or prev.get("abilities") or [],
+                "origin_feat": origin_feat or prev.get("origin_feat"),
+            }
+            n += 1
     print(f"[cc] merged {n} local (2024) backgrounds")
 
 

@@ -2788,6 +2788,135 @@ def ingest_feats_overrides(engine=None, database_url=None,
     return result
 
 
+# ===========================================================================
+# Unified paste-and-translate import: generic table-override loader
+# ===========================================================================
+# The preferred pipeline for owned content is NOT a per-book parser but a
+# one-time translation: paste book text into a session, get back a JSON entry
+# in the standard import format, drop it in the matching gitignored
+# ``owned_books/<type>_overrides.json``. These loaders apply that JSON with TOP
+# precedence at startup. Loaders/format are committed; the data files never are.
+# See rules/OWNED_IMPORT_FORMAT.md for every type's schema.
+
+_OVERRIDE_SRC = "Curated override (local, book-derived) — never committed"
+
+
+def _apply_table_overrides(model, filename: str, field_map: dict,
+                           engine=None, database_url=None,
+                           workspace: Path = WORKSPACE) -> dict:
+    """Upsert ``owned_books/<filename>`` into ``model`` by slug, TOP precedence.
+
+    ``field_map`` maps JSON keys -> model attribute names; only keys PRESENT in
+    an entry are written, so partial entries (e.g. just correcting a monster's
+    AC) leave everything else intact. No-ops cleanly when the file is absent.
+    """
+    import json
+    key = filename.split("_", 1)[0]           # 'subclasses', 'monsters', ...
+    path = workspace / filename
+    result = {f"{key}_applied": 0, f"{key}_new": 0, "path": str(path)}
+    if not path.is_file():
+        return result
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"error": f"{filename}: {e}", "path": str(path)}
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        for r in data:
+            slug = r.get("slug")
+            if not slug:
+                continue
+            row = s.exec(select(model).where(model.index_slug == slug)).first()
+            if row is None:
+                row = model(index_slug=slug,
+                            name=r.get("name", slug.replace("-", " ").title()))
+                result[f"{key}_new"] += 1
+            else:
+                result[f"{key}_applied"] += 1
+            for jkey, attr in field_map.items():
+                if jkey in r:
+                    setattr(row, attr, r[jkey])
+            # Subclass convenience: derive class_slug from class when omitted.
+            if hasattr(row, "class_slug") and not getattr(row, "class_slug", None) \
+                    and getattr(row, "class_name", None):
+                row.class_slug = _slugify(row.class_name)
+            row.source = r.get("source", _OVERRIDE_SRC)
+            s.add(row)
+        s.commit()
+    return result
+
+
+# JSON key -> model attribute. Only listed keys are accepted (others ignored).
+_SUBCLASS_OVERRIDE_FIELDS = {
+    "name": "name", "class": "class_name", "class_name": "class_name",
+    "class_slug": "class_slug", "features": "features",
+    "description": "description",
+}
+_MONSTER_OVERRIDE_FIELDS = {
+    "name": "name", "size": "size", "type": "type", "subtype": "subtype",
+    "alignment": "alignment", "armor_class": "armor_class", "ac_desc": "ac_desc",
+    "hit_points": "hit_points", "hit_dice": "hit_dice",
+    "strength": "strength", "dexterity": "dexterity",
+    "constitution": "constitution", "intelligence": "intelligence",
+    "wisdom": "wisdom", "charisma": "charisma",
+    "challenge_rating": "challenge_rating", "proficiency_bonus": "proficiency_bonus",
+    "xp": "xp", "languages": "languages", "speed": "speed",
+    "proficiencies": "proficiencies", "senses": "senses",
+    "damage_vulnerabilities": "damage_vulnerabilities",
+    "damage_resistances": "damage_resistances",
+    "damage_immunities": "damage_immunities",
+    "condition_immunities": "condition_immunities",
+    "special_abilities": "special_abilities", "actions": "actions",
+    "legendary_actions": "legendary_actions",
+}
+_ITEM_OVERRIDE_FIELDS = {
+    "name": "name", "category": "category", "item_type": "item_type",
+    "cost_gp": "cost_gp", "weight": "weight",
+    "damage_dice": "damage_dice", "damage_type": "damage_type",
+    "two_handed_damage_dice": "two_handed_damage_dice",
+    "range_normal": "range_normal", "range_long": "range_long",
+    "properties": "properties", "armor_class_base": "armor_class_base",
+    "armor_dex_bonus": "armor_dex_bonus",
+    "armor_max_dex_bonus": "armor_max_dex_bonus", "str_minimum": "str_minimum",
+    "stealth_disadvantage": "stealth_disadvantage", "rarity": "rarity",
+    "requires_attunement": "requires_attunement", "desc": "desc",
+}
+
+
+def ingest_subclasses_overrides(engine=None, database_url=None,
+                                workspace: Path = WORKSPACE) -> dict:
+    """Apply curated subclass overrides (owned_books/subclasses_overrides.json).
+    Entry: {slug, name, class, class_slug?, description?,
+    features:[{level, name, summary}]}."""
+    from .models import Subclass
+    return _apply_table_overrides(Subclass, "subclasses_overrides.json",
+                                  _SUBCLASS_OVERRIDE_FIELDS,
+                                  engine, database_url, workspace)
+
+
+def ingest_monsters_overrides(engine=None, database_url=None,
+                              workspace: Path = WORKSPACE) -> dict:
+    """Apply curated monster overrides (owned_books/monsters_overrides.json).
+    Any Monster field may be set; special_abilities/actions/legendary_actions
+    are lists of {name, desc} (plus optional attack/damage keys)."""
+    from .models import Monster
+    return _apply_table_overrides(Monster, "monsters_overrides.json",
+                                  _MONSTER_OVERRIDE_FIELDS,
+                                  engine, database_url, workspace)
+
+
+def ingest_items_overrides(engine=None, database_url=None,
+                           workspace: Path = WORKSPACE) -> dict:
+    """Apply curated item/magic-item overrides (owned_books/items_overrides.json).
+    Entry: {slug, name, category, item_type?, rarity?, cost_gp?, weight?,
+    requires_attunement?, desc?, + weapon/armor number fields}."""
+    from .models import Item
+    return _apply_table_overrides(Item, "items_overrides.json",
+                                  _ITEM_OVERRIDE_FIELDS,
+                                  engine, database_url, workspace)
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -2819,8 +2948,13 @@ def main(argv: list[str]) -> None:
             "Owned (Van Richten's Guide to Ravenloft) — local ingest"))
         print("[owned] magic items:", ingest_owned_items())
         print("[owned] species:", ingest_species())
+        # Curated paste-and-translate overrides (TOP precedence) run LAST so
+        # they win over anything the bulk parsers produced.
         print("[owned] species overrides:", ingest_species_overrides())
         print("[owned] feat overrides:", ingest_feats_overrides())
+        print("[owned] subclass overrides:", ingest_subclasses_overrides())
+        print("[owned] monster overrides:", ingest_monsters_overrides())
+        print("[owned] item overrides:", ingest_items_overrides())
         print("[owned] backgrounds:", ingest_backgrounds())
 
 
