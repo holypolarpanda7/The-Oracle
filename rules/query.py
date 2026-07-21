@@ -462,7 +462,9 @@ def format_puzzle_available(puzzles: list[Puzzle]) -> str:
         "This location fits one or more ready-made puzzles. If the scene calls for "
         "it, set one up by emitting `[[PUZZLE: start | <slug>]]` — the game then "
         "presents it, holds the solution, and doles out hints on request. You are "
-        "never required to use one.",
+        "never required to use one. To make a chamber a lasting puzzle site (so "
+        "fitting puzzles keep surfacing here), emit "
+        "`[[PUZZLE: site | tag, tag]]`.",
     ]
     for p in puzzles:
         prem = " ".join((p.premise or "").split())

@@ -1492,8 +1492,10 @@ def apply_trust_hooks(character_id: Optional[int], ops: list[dict]) -> list[str]
 #   [[PUZZLE: attempt]]                 record a wrong guess
 #   [[PUZZLE: solved]]                  the players cracked it (pays out, logs event)
 #   [[PUZZLE: end]]                     drop the puzzle (left/abandoned)
+#   [[PUZZLE: site | tomb, sealed-door]] tag THIS location a puzzle site (persists
+#                                       on the world graph so fitting puzzles resurface here)
 PUZZLE_HOOK_PATTERN = re.compile(r"\[\[PUZZLE:(.+?)\]\]", re.IGNORECASE)
-_PUZZLE_HOOK_ACTIONS = {"start", "hint", "attempt", "solved", "end"}
+_PUZZLE_HOOK_ACTIONS = {"start", "hint", "attempt", "solved", "end", "site"}
 # Turns to wait before offering another ready-made puzzle after one resolves.
 _PUZZLE_COOLDOWN_TURNS = 6
 
@@ -1518,7 +1520,13 @@ _PUZZLE_TAG_SYNONYMS = {
 
 
 def _scene_puzzle_tags(ctx_obj, message: str) -> list[str]:
-    """Canonical puzzle tags for the current scene, or [] if it isn't a site."""
+    """Canonical puzzle tags for the current scene, or [] if it isn't a site.
+
+    A location the world graph has explicitly tagged (``puzzle_site`` truthy or a
+    ``puzzle_tags`` list on its attributes) is authoritative — those tags win and
+    mark the scene a site regardless of keywords. Otherwise a keyword heuristic
+    over the location name/type/attributes + the player's message stands in.
+    """
     tokens: set[str] = set()
 
     def add(s: str) -> None:
@@ -1527,6 +1535,8 @@ def _scene_puzzle_tags(ctx_obj, message: str) -> list[str]:
                 tokens.add(t)
 
     add(message)
+    explicit: list[str] = []
+    is_site = False
     loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
     if loc is not None:
         add(getattr(loc, "name", "") or "")
@@ -1534,9 +1544,21 @@ def _scene_puzzle_tags(ctx_obj, message: str) -> list[str]:
         attrs = getattr(loc, "attributes", None) or {}
         for k in ("kind", "terrain", "biome", "site", "danger"):
             add(str(attrs.get(k, "") or ""))
-    if not (tokens & _PUZZLE_SITE_KEYWORDS):
+        # World-graph puzzle-site tagging (gate #1, authoritative).
+        if attrs.get("puzzle_site"):
+            is_site = True
+        ptags = attrs.get("puzzle_tags")
+        if isinstance(ptags, (list, tuple)):
+            explicit = [str(t) for t in ptags]
+            if explicit:
+                is_site = True
+    if tokens & _PUZZLE_SITE_KEYWORDS:
+        is_site = True
+    if not is_site:
         return []
-    return list({_PUZZLE_TAG_SYNONYMS.get(t, t) for t in tokens})
+    tags = {_PUZZLE_TAG_SYNONYMS.get(t, t) for t in tokens}
+    tags.update(explicit)
+    return list(tags)
 
 
 def _format_active_puzzle_block(ap: dict) -> str:
@@ -1582,9 +1604,12 @@ def extract_puzzle_hooks(text: str) -> tuple[str, list[dict]]:
     return clean, ops
 
 
-def process_puzzle_hooks(session_id: str, ops: list[dict]) -> list[str]:
+def process_puzzle_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[str]:
     """Apply puzzle-control ops to session state. Returns player-visible notes
-    (the presented premise, dispensed hints, solve payout) — never the solution."""
+    (the presented premise, dispensed hints, solve payout) — never the solution.
+
+    ``ctx_obj`` (the turn's world slice) is used by the ``site`` action to tag the
+    current location on the world graph."""
     if not ops:
         return []
     state = _load_session_state(session_id)
@@ -1594,6 +1619,18 @@ def process_puzzle_hooks(session_id: str, ops: list[dict]) -> list[str]:
     changed = False
     for op in ops:
         action = op["action"]
+        if action == "site":
+            loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
+            if loc is None:
+                continue
+            tags = [t for t in re.split(r"[,\s]+", op.get("arg", "") or "") if t]
+            try:
+                world.upsert_entity(
+                    loc.name, loc.type, slug=loc.slug, status=loc.status,
+                    attributes={"puzzle_site": True, "puzzle_tags": tags})
+            except Exception as e:
+                print(f"[puzzle] site tag failed: {e}")
+            continue
         if action == "start":
             slug = (op.get("arg") or "").strip()
             if not slug:
@@ -4424,7 +4461,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     dm_text, puzzle_ops = extract_puzzle_hooks(dm_text)
     if puzzle_ops:
         try:
-            puzzle_notes = process_puzzle_hooks(req.session_id, puzzle_ops)
+            puzzle_notes = process_puzzle_hooks(req.session_id, puzzle_ops, ctx_obj=ctx_obj)
             if puzzle_notes:
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(puzzle_notes)
         except Exception as e:
