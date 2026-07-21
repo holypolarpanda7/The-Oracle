@@ -4544,9 +4544,14 @@ def _ensure_local_backgrounds() -> None:
         # background feature name from the repo default when we have one.
         origin_feat = b.get("origin_feat") or (
             _slugify_bg_feat(b.get("feat")) if b.get("feat") else None)
+        # Prefer curated repo equipment; else take the parsed book equipment
+        # (FR 2025 backgrounds have no repo default). JSON items are [name, qty].
+        items = prev.get("items") or [
+            tuple(it) if isinstance(it, (list, tuple)) else (it, 1)
+            for it in b.get("items", [])]
         _BACKGROUND_KITS[key] = {
             "skills": b.get("skills") or prev.get("skills") or [],
-            "items": prev.get("items", []),
+            "items": items,
             "feature": prev.get("feature") or b.get("feat"),
             "abilities": b.get("abilities") or prev.get("abilities") or [],
             "origin_feat": origin_feat or prev.get("origin_feat"),

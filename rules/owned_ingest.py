@@ -217,6 +217,135 @@ def _repair_name(raw: str) -> str:
     return " ".join(raw.title().split())
 
 
+# ---------------------------------------------------------------------------
+# Glyph-dropped display headers (D&D 5.5 books: Forgotten Realms 2025, etc.)
+# ---------------------------------------------------------------------------
+# Some 5.5 books set section/entry titles ("Cold Caster", "Chondathan
+# Freebooter") in a display font pypdf can't read: it keeps only the FIRST
+# letter of each Capitalized word and emits one NUL (\x00) per dropped glyph —
+# single-spaced within a word, double-spaced between words. The BODY text
+# (ability lines, feat category, benefit prose) extracts cleanly. Titles are
+# uncopyrightable facts, so we recover each one by FINGERPRINT: the sequence of
+# (surviving initial, word length). Lowercase connectors ('of', 'the') drop
+# their initial too but keep their glyph count, so they match on length alone.
+
+def _title_fp(name: str) -> tuple:
+    """Fingerprint a clean title: (initial|None, letter-count) per word."""
+    out = []
+    for w in name.split():
+        lett = re.sub(r"[^A-Za-z]", "", w)
+        if lett:
+            out.append((lett[0].upper() if w[:1].isupper() else None, len(lett)))
+    return tuple(out)
+
+
+def _header_fp(line: str) -> tuple:
+    """Fingerprint a glyph-dropped header the same way: word = chunk between
+    2+ spaces; length = surviving letters + NUL placeholders."""
+    out = []
+    for chunk in re.split(r" {2,}", line.strip()):
+        letters = re.findall(r"[A-Za-z]", chunk)
+        glyphs = len(letters) + chunk.count("\x00")
+        if glyphs:
+            out.append((letters[0].upper() if letters else None, glyphs))
+    return tuple(out)
+
+
+def _build_fp_index(names) -> dict:
+    """{fingerprint: title}; first title wins if two share a fingerprint."""
+    idx: dict = {}
+    for n in names:
+        idx.setdefault(_title_fp(n), n)
+    return idx
+
+
+def _recover_display_title(prev_lines: list, fp_index: dict) -> Optional[str]:
+    """Match the nearest real header line above a block against fp_index."""
+    for ln in reversed(prev_lines):
+        s = ln.strip()
+        if not s or s.startswith("ARTIST:") or s == "\x0c":
+            continue
+        if s.startswith(("These feats", "You gain")) or len(s) > 60:
+            continue
+        return fp_index.get(_header_fp(ln))
+    return None
+
+
+# Forgotten Realms: Heroes of Faerûn (2025) — title lists are facts, used ONLY
+# to recover glyph-dropped headers from the user's local extraction (no book
+# prose in the repo). Validated: 18/18 backgrounds, 34/34 feats.
+_FR_BACKGROUNDS = [
+    "Chondathan Freebooter", "Dead Magic Dweller", "Dragon Cultist",
+    "Emerald Enclave Caretaker", "Flaming Fist Mercenary", "Genie Touched",
+    "Harper", "Ice Fisher", "Knight of the Gauntlet", "Lords' Alliance Vassal",
+    "Moonwell Pilgrim", "Mulhorandi Tomb Raider", "Mythalkeeper",
+    "Purple Dragon Squire", "Rashemi Wanderer", "Shadowmasters Exile",
+    "Spellfire Initiate", "Zhentarim Mercenary",
+]
+_FR_FEATS = [
+    # Origin
+    "Cult of the Dragon Initiate", "Emerald Enclave Fledgling", "Harper Agent",
+    "Lords' Alliance Agent", "Purple Dragon Rook", "Spellfire Spark",
+    "Tyro of the Gauntlet", "Zhentarim Ruffian",
+    # General (Level 4+)
+    "Cold Caster", "Dragonscarred", "Enclave Magic", "Fairy Trickster",
+    "Genie Magic", "Harper Teamwork", "Lordly Resolve", "Mythal Touched",
+    "Order's Resilience", "Purple Dragon Commandant", "Spellfire Adept",
+    "Street Justice", "Zhentarim Tactics",
+    # Epic Boon (Level 19+)
+    "Boon of Bloodshed", "Boon of Bountiful Health", "Boon of Communication",
+    "Boon of Desperate Resilience", "Boon of Exquisite Radiance",
+    "Boon of Fluid Forms", "Boon of Fortune's Favor", "Boon of Poison Mastery",
+    "Boon of Revelry", "Boon of Terror", "Boon of the Bright Sun",
+    "Boon of the Furious Storm", "Boon of the Soul Drinker",
+]
+_FR_BACKGROUND_FP = _build_fp_index(_FR_BACKGROUNDS)
+_FR_FEAT_FP = _build_fp_index(_FR_FEATS)
+
+
+_DISPLAY_FEAT_CAT = re.compile(
+    r"^[ \t]*(Origin|General|Epic Boon) Feat\b[ \t]*(\([^)\n]*\))?", re.M)
+
+
+def parse_display_feats(text: str, fp_index: dict, source_book: str) -> list[dict]:
+    """Parse feats from a glyph-dropped 5.5 extraction (e.g. FR 2025).
+
+    Anchors on the intact category line ('Origin Feat', 'General Feat
+    (Prerequisite: ...)') and recovers the NUL-dropped name above it by
+    fingerprint. Body/benefit prose extracts cleanly, so it's kept verbatim
+    (local-only, per the owned-content policy)."""
+    out: list[dict] = []
+    cats = list(_DISPLAY_FEAT_CAT.finditer(text))
+    for i, m in enumerate(cats):
+        prev = text[max(0, m.start() - 300):m.start()].splitlines()
+        name = _recover_display_title(prev, fp_index)
+        if not name:
+            continue
+        category = m.group(1).lower().replace(" ", "-")
+        prereq = (m.group(2) or "").strip("() ") or None
+        if prereq:
+            pm = re.search(r"Prerequisite:?\s*(.+)", prereq)
+            prereq = pm.group(1).strip() if pm else prereq
+        lvl = _CATEGORY_MIN_LEVEL.get(category, 1)
+        if prereq:
+            lm = re.search(r"Level (\d+)\+", prereq)
+            if lm:
+                lvl = int(lm.group(1))
+        end = cats[i + 1].start() if i + 1 < len(cats) else m.end() + 3000
+        body = re.sub(r"\x00", "", text[m.end():end])
+        body = re.sub(r"\s+", " ", body).strip()[:2000]
+        out.append({
+            "slug": _slugify(name), "name": name, "category": category,
+            "prerequisite": prereq, "min_level": lvl, "repeatable": False,
+            "benefit": body, "source": source_book,
+        })
+    seen: dict[str, dict] = {}
+    for f in out:
+        if f["slug"] not in seen or len(f["benefit"]) > len(seen[f["slug"]]["benefit"]):
+            seen[f["slug"]] = f
+    return list(seen.values())
+
+
 def parse_phb_feats(text: str) -> list[dict]:
     """Pull every feat block out of the PHB 2024 extraction."""
     feats: list[dict] = []
@@ -256,15 +385,28 @@ def parse_phb_feats(text: str) -> list[dict]:
 def ingest_feats(engine: Optional[Engine] = None,
                  database_url: Optional[str] = None,
                  workspace: Path = WORKSPACE) -> dict:
-    """Parse feats from the extracted PHB 2024 and upsert into rules_feat."""
+    """Parse feats from every owned source and upsert into rules_feat.
+
+    PHB 2024 uses the space-injection parser; glyph-dropped 5.5 books (e.g.
+    Forgotten Realms 2025) use the fingerprint display-feat parser. Slugs don't
+    overlap across books, and ``_upsert`` keeps the newest edition on any clash.
+    """
     engine = engine or get_engine(database_url)
     SQLModel.metadata.create_all(engine)
 
+    feats: list[dict] = []
     phb = next(iter(workspace.glob("*players-handbook-2024*.txt")), None)
-    if phb is None:
-        return {"error": "PHB 2024 extraction not found — run extract_pdfs() first"}
-    text = phb.read_text(encoding="utf-8")
-    feats = parse_phb_feats(text)
+    if phb is not None:
+        for f in parse_phb_feats(phb.read_text(encoding="utf-8")):
+            f.setdefault("source", "Owned (PHB 2024) — local ingest")
+            feats.append(f)
+    fr = next(iter(workspace.glob("*forgotten-realms*.txt")), None)
+    if fr is not None:
+        feats += parse_display_feats(
+            fr.read_text(encoding="utf-8"), _FR_FEAT_FP,
+            "Owned (Forgotten Realms 2025) — local ingest")
+    if not feats:
+        return {"error": "no feat sources found — run extract_pdfs() first"}
 
     result = {"feats_parsed": len(feats), "feats_new": 0}
     with Session(engine) as s:
@@ -273,7 +415,7 @@ def ingest_feats(engine: Optional[Engine] = None,
                 index_slug=f["slug"], name=f["name"], category=f["category"],
                 prerequisite=f["prerequisite"], min_level=f["min_level"],
                 repeatable=f["repeatable"], benefit=f["benefit"],
-                source="Owned (PHB 2024) — local ingest",
+                source=f.get("source", "Owned — local ingest"),
             )
             if _upsert(s, Feat, f["slug"], mapped):
                 result["feats_new"] += 1
@@ -2409,28 +2551,79 @@ def _repair_skill(s: str) -> str:
     return _SKILL_BY_KEY.get(re.sub(r"[^a-z]", "", s.lower()), re.sub(r"\s+", " ", s).strip())
 
 
+# Every known feat name (PHB 2024 + FR 2025) by collapse-key, for repairing a
+# background's Feat line — whose feat name can carry a dropped ligature
+# ('Spellfire'->'Spellre', 'Ruffian'->'Ruan').
+_ALL_FEAT_BY_KEY = {re.sub(r"[^a-z]", "", n.lower()): n
+                    for n in (_CANONICAL_FEAT_NAMES + _FR_FEATS)}
+
+
 def _repair_feat(s: str) -> str:
-    return _CANONICAL_BY_KEY.get(re.sub(r"[^a-z]", "", s.lower()), re.sub(r"\s+", " ", s).strip())
+    raw = re.sub(r"[\s\x00]+", " ", s).strip()
+    key = re.sub(r"[^a-z]", "", raw.lower())
+    if key in _ALL_FEAT_BY_KEY:
+        return _ALL_FEAT_BY_KEY[key]
+    import difflib
+    hit = difflib.get_close_matches(key, list(_ALL_FEAT_BY_KEY), n=1, cutoff=0.82)
+    return _ALL_FEAT_BY_KEY[hit[0]] if hit else raw
 
 
-def parse_backgrounds(text: str) -> list[dict]:
+def _parse_bg_equipment(block: str) -> list:
+    """Option-A equipment list from 'Equipment: Choose A or B: (A) ...; or (B)'.
+    Returns [[name, qty], ...] with leading counts split off ('5 Torches')."""
+    m = re.search(r"Equipment:?\s*Choose A or B:\s*\(A\)\s*(.+?)"
+                  r"(?:;?\s*or\s*\(B\)|$)", block, re.S | re.I)
+    if not m:
+        return []
+    items = []
+    for part in m.group(1).split(","):
+        p = re.sub(r"\([^)]*\)", "", part)          # drop "(3 days' worth)"
+        p = re.sub(r"\s+", " ", p).strip(" .")
+        if not p:
+            continue
+        qm = re.match(r"(\d+)\s+(.*)", p)
+        if qm:
+            items.append([qm.group(2).strip(), int(qm.group(1))])
+        else:
+            items.append([p, 1])
+    return items
+
+
+def parse_backgrounds(text: str, fp_index: Optional[dict] = None) -> list[dict]:
+    """Parse 2024 background stat blocks.
+
+    Core PHB/SRD backgrounds have their NAME detached from the stat block, so
+    they're keyed to a canonical name by their unique ability triple. Glyph-
+    dropped 5.5 books (Forgotten Realms 2025) instead print the name right above
+    the block — pass ``fp_index`` to recover it by fingerprint. A recovered name
+    is authoritative: it wins over the triple guess and so resolves FR/core
+    triple collisions (e.g. Chondathan Freebooter vs Sailor, both STR/DEX/WIS).
+    """
     lines = text.splitlines()
     out: dict[str, dict] = {}
     for i, l in enumerate(lines):
-        m = re.match(r"\s*Ability Scores:\s*(.+)", l)
+        m = re.match(r"\s*Ability Scores?:\s*(.+)", l)   # singular label too
         if not m:
             continue
         # Ordered ability codes (the +2/+1 display cares about order), plus the
         # unordered set used to key the canonical background name.
         ordered = [c for c in (_abil_code(t) for t in re.split(r"[,/]", m.group(1))) if c]
         codes = set(ordered)
-        name = _BG_BY_TRIPLE.get(frozenset(codes))
-        if not name:
-            continue
-        block = "\n".join(lines[i:i + 9])
+        name = None
+        if fp_index is not None:
+            name = _recover_display_title(lines[max(0, i - 6):i], fp_index)
+            if not name:
+                continue                              # don't triple-guess FR
+        else:
+            name = _BG_BY_TRIPLE.get(frozenset(codes))
+            if not name:
+                continue
+        block = "\n".join(lines[i:i + 12])
+        # Labels can be glyph-damaged ('Skill Pro\x00ciencies' — the 'fi'
+        # ligature drops to NUL), so match 'Pro' then anything up to the colon.
         fm = re.search(r"Feat:\s*([^(\n]+)", block)
-        sm = re.search(r"Skill\s*Prof[\w ]*?:\s*([^\n]+)", block, re.I)
-        tm = re.search(r"Tool\s*Prof[\w ]*?:\s*([^\n]+)", block, re.I)
+        sm = re.search(r"Skill\s*Pro[^\n:]*:\s*([^\n]+)", block, re.I)
+        tm = re.search(r"Tool\s*Pro[^\n:]*:\s*([^\n]+)", block, re.I)
         skills = ([_repair_skill(s)
                    for s in re.split(r"\s+and\s+|,", sm.group(1)) if s.strip()][:3]
                   if sm else [])
@@ -2447,7 +2640,8 @@ def parse_backgrounds(text: str) -> list[dict]:
             "feat": feat_name,
             "origin_feat": _slugify(feat_name) if feat_name else None,
             "skills": skills,
-            "tool": re.sub(r"\s+", " ", tm.group(1)).strip() if tm else None,
+            "tool": re.sub(r"[\s\x00]+", " ", tm.group(1)).strip() if tm else None,
+            "items": _parse_bg_equipment(block),
         }
         # Keep the first well-formed row (SRD parsed first = cleaner text).
         if slug not in out or (not out[slug]["skills"] and skills):
@@ -2456,15 +2650,26 @@ def parse_backgrounds(text: str) -> list[dict]:
 
 
 def ingest_backgrounds(workspace: Path = WORKSPACE) -> dict:
-    """Parse 2024 backgrounds (SRD 5.2.1 + PHB 2024) to owned_books/backgrounds.json."""
+    """Parse 2024 backgrounds to owned_books/backgrounds.json.
+
+    Order matters: SRD 5.2.1, then PHB 2024, then Forgotten Realms 2025 — later
+    sources win on slug overlap, so the FR versions supersede the SRD/PHB ones.
+    FR backgrounds are recovered by header fingerprint (`_FR_BACKGROUND_FP`);
+    core books key by ability triple.
+    """
     import json
     parsed: dict[str, dict] = {}
-    for glob_pat in ("*srd-cc-v5-2-1*.txt", "*players-handbook-2024*.txt"):
+    sources = [
+        ("*srd-cc-v5-2-1*.txt", None),
+        ("*players-handbook-2024*.txt", None),
+        ("*forgotten-realms*.txt", _FR_BACKGROUND_FP),
+    ]
+    for glob_pat, fp_index in sources:
         f = next(iter(workspace.glob(glob_pat)), None)
         if f is None:
             continue
-        for b in parse_backgrounds(f.read_text(encoding="utf-8")):
-            parsed[b["slug"]] = b   # PHB (last) wins on overlap
+        for b in parse_backgrounds(f.read_text(encoding="utf-8"), fp_index):
+            parsed[b["slug"]] = b   # later source wins (FR supersedes SRD/PHB)
     out = workspace / "backgrounds.json"
     out.write_text(json.dumps(sorted(parsed.values(), key=lambda x: x["name"]),
                               indent=2, ensure_ascii=False), encoding="utf-8")
