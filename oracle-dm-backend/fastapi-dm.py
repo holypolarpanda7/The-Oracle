@@ -1799,7 +1799,7 @@ def _detect_rest(message: str) -> Optional[str]:
     return None
 
 
-def _rest_interruption_block(ctx_obj, message: str, rng=None) -> Optional[str]:
+def _rest_interruption_block(ctx_obj, message: str, rng=None, warded: Optional[dict] = None) -> Optional[str]:
     """DM guidance for a rest attempt in dangerous country: authoritative on whether
     a threat interrupts it this time. Returns None when there's no rest or no risk."""
     kind = _detect_rest(message)
@@ -1810,6 +1810,17 @@ def _rest_interruption_block(ctx_obj, message: str, rng=None) -> Optional[str]:
     prob = _REST_INTERRUPT_P[kind].get(danger, 0.0)
     if prob <= 0:
         return None  # safe country — let them rest, no machinery
+    # A DM-granted ward (Tiny Hut, a warded chamber, a guarded stronghold) makes the
+    # rest hold no matter the danger. Both this block and the mechanical rest endpoint
+    # read the same ward, so they never disagree.
+    if warded and warded.get("kind") in (kind, "any"):
+        return (
+            "# Sheltered rest\n"
+            f"The party takes a {'long rest' if kind == 'long' else 'short rest'} in "
+            f"dangerous country (danger {danger}), but they secured it ("
+            f"{warded.get('source', 'a warded shelter')}). It holds — grant the rest's "
+            "benefits. If the shelter is broken or dispelled, emit [[REST: expose | reason]]."
+        )
     threat = None
     dens = (getattr(loc, "attributes", None) or {}).get("denizens") or []
     if dens:
@@ -1834,14 +1845,179 @@ def _rest_interruption_block(ctx_obj, message: str, rng=None) -> Optional[str]:
             f"{danger}), but it does not hold: {threat} finds them {when}. Open the "
             "fight now — emit [[COMBAT: start | ...]] and seat the foes — and grant "
             f"NO rest benefits ({lost}). If the party would rather run than stand, "
-            "they can flee and you run it as a chase ([[CHASE: start | ...]])."
+            "they can flee and you run it as a chase ([[CHASE: start | ...]]). "
+            "(If they had first secured the spot — Tiny Hut, a warded/barred chamber, "
+            "a guarded stronghold — you should have granted a ward with "
+            "[[REST: ward | source | " + kind + "]] and this interruption would not apply.)"
         )
     return (
         "# Uneasy rest\n"
         f"The party takes a {kind_word} in dangerous country (danger {danger}). It "
         "holds THIS time — play the tension (a wary watch, distant sounds, a false "
-        "alarm) and grant the rest's benefits."
+        "alarm) and grant the rest's benefits. If they take steps to make the spot "
+        "safe (Tiny Hut, a warded/barred room, a guarded haven), grant a ward with "
+        "[[REST: ward | source | " + kind + "]] so future rests here hold reliably."
     )
+
+
+# --- Rest wards: DM-granted shelter that lets a rest hold in dangerous country ---
+# Danger is only the DEFAULT assumption of exposure. The fiction can override it:
+# the DM grants a ward when the party genuinely secures the rest. Players can NEVER
+# self-declare safety — only the DM emits these from the narration.
+#   [[REST: ward | Leomund's Tiny Hut | long]]  protect a long/short/any rest here
+#   [[REST: expose | the dome is dispelled]]     strip the ward (shelter broken)
+# The ward lives in session meta (party-wide, transient, like the chase state) and is
+# consumed by the rest it protects. Both the narrative interruption and the mechanical
+# /survival/*_rest endpoints read it, so they always agree.
+REST_HOOK_PATTERN = re.compile(r"\[\[REST:(.+?)\]\]", re.IGNORECASE)
+_REST_HOOK_ACTIONS = {"ward", "expose"}
+_REST_WARD_KINDS = {"long", "short", "any"}
+_REST_WARD_TTL_DAYS = 1  # a ward covers the rest cast now; stale after the next day rolls
+
+_REST_GUIDE = (
+    "REST IN DANGEROUS COUNTRY. When the party rests where danger is moderate+, a "
+    "threat may interrupt (the game tells you authoritatively when it does). If they "
+    "first SECURE the spot so the rest is genuinely safe — Leomund's Tiny Hut, Rope "
+    "Trick, Mordenkainen's Magnificent Mansion, a barred-and-warded chamber, a guarded "
+    "stronghold or a safe town inn — grant a ward: emit [[REST: ward | what secured it "
+    "| long|short|any]]. A warded rest holds and its benefits are granted. If the "
+    "shelter is later broken or dispelled, emit [[REST: expose | reason]]. Only YOU "
+    "grant wards from the fiction; a player merely saying 'we're safe' is not a ward."
+)
+
+
+def extract_rest_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull rest-ward hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in REST_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").strip().lower()
+        if action not in _REST_HOOK_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = REST_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def apply_rest_hooks(session_id: str, ops: list[dict]) -> list[str]:
+    """Set/clear the session's rest ward from DM narration. Silent (no journal note);
+    the DM has already narrated the shelter forming or breaking."""
+    if not ops:
+        return []
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    today = world.current_day()
+    changed = False
+    for op in ops:
+        action = op["action"]
+        args = op.get("args", [])
+        if action == "ward":
+            source = args[0] if args and args[0] else "a warded shelter"
+            kind = (args[1].lower() if len(args) > 1 and args[1] else "any")
+            if kind not in _REST_WARD_KINDS:
+                kind = "any"
+            meta["rest_ward"] = {"granted_day": today, "kind": kind, "source": source}
+            changed = True
+        elif action == "expose":
+            if meta.pop("rest_ward", None) is not None:
+                changed = True
+    if changed:
+        _set_session_meta(session_id, meta)
+    return []
+
+
+def _active_rest_ward(session_id: Optional[str]) -> Optional[dict]:
+    """The session's live rest ward, or None. Clears a stale ward as a side effect."""
+    if not session_id:
+        return None
+    try:
+        meta = _load_session_state(session_id).get("meta", {}) or {}
+    except Exception:
+        return None
+    ward = meta.get("rest_ward")
+    if not isinstance(ward, dict):
+        return None
+    try:
+        age = world.current_day() - int(ward.get("granted_day", 0))
+    except Exception:
+        age = 0
+    if age > _REST_WARD_TTL_DAYS or age < 0:
+        _consume_rest_ward(session_id)  # stale — drop it
+        return None
+    return ward
+
+
+def _consume_rest_ward(session_id: Optional[str]) -> None:
+    """Remove the session's rest ward (a rest used it, or it went stale)."""
+    if not session_id:
+        return
+    try:
+        state = _load_session_state(session_id)
+        meta = dict(state.get("meta", {}) or {})
+        if meta.pop("rest_ward", None) is not None:
+            _set_session_meta(session_id, meta)
+    except Exception:
+        pass
+
+
+def _pc_danger(character_id: Optional[int]) -> str:
+    """The danger level of the place a character is currently in ('' if unknown)."""
+    if not character_id:
+        return ""
+    try:
+        with Session(engine) as s:
+            char = s.get(Character, character_id)
+        if not char:
+            return ""
+        loc = world.location_of(_pc_entity_slug(char))
+        if loc is None:
+            return ""
+        return str((loc.attributes or {}).get("danger", "")).lower()
+    except Exception:
+        return ""
+
+
+_REST_DANGEROUS = {"moderate", "high", "deadly"}
+
+
+def _rest_gate(session_id: Optional[str], character_id: int, kind: str, force: bool):
+    """Decide whether a mechanical rest is allowed in the character's current place.
+
+    Returns ('ok', ward_source_or_None) to allow, or ('block', payload) to refuse.
+    Only gates when a session_id is supplied (legacy/UI-less callers are never blocked,
+    preserving the old contract). A DM-granted ward authorizes the rest and is consumed;
+    ``force`` lets the party rest at their own risk without one."""
+    if not session_id:
+        return ("ok", None)  # no session context — can't gate, stay backward-compatible
+    danger = _pc_danger(character_id)
+    if danger not in _REST_DANGEROUS:
+        return ("ok", None)  # safe country
+    ward = _active_rest_ward(session_id)
+    if ward and ward.get("kind") in (kind, "any"):
+        _consume_rest_ward(session_id)
+        return ("ok", ward.get("source") or "a warded shelter")
+    if force:
+        return ("ok", None)  # resting at risk by choice
+    return ("block", {
+        "status": "unsafe",
+        "danger": danger,
+        "kind": kind,
+        "reason": (
+            f"This is {danger}-danger country — a {kind} rest here is likely to be "
+            "interrupted, granting no benefit. Secure the spot first (Leomund's Tiny "
+            "Hut, a warded or barred chamber, a guarded stronghold or safe inn) so the "
+            "DM grants a ward, or rest anyway at your own risk."),
+        "can_force": True,
+    })
+
+
+def _ceil_int(x: float) -> int:
+    """Smallest int >= x (avoids importing math for one call)."""
+    i = int(x)
+    return i + 1 if x > i else i
 
 
 def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
@@ -4300,10 +4476,13 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[quest context error] {e}")
 
-    # Rest interruption: resting in dangerous country can be broken by an ambush.
+    # Rest interruption: resting in dangerous country can be broken by an ambush,
+    # unless the party secured the spot (a DM-granted rest ward — e.g. Tiny Hut).
     try:
-        rblock = _rest_interruption_block(ctx_obj, message)
+        rblock = _rest_interruption_block(
+            ctx_obj, message, warded=_active_rest_ward(session_id))
         if rblock:
+            texts.append(_REST_GUIDE)
             texts.append(rblock)
     except Exception as e:
         print(f"[rest interruption error] {e}")
@@ -5129,6 +5308,15 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             apply_world_hooks(world_ops, session_id=req.session_id)
         except Exception as e:
             print(f"[world] hook processing failed: {e}")
+
+    # Rest wards: the DM secured (or lost) a safe rest in dangerous country. Sets a
+    # transient ward the mechanical rest endpoints + the interruption block both read.
+    dm_text, rest_ops = extract_rest_hooks(dm_text)
+    if rest_ops:
+        try:
+            apply_rest_hooks(req.session_id, rest_ops)
+        except Exception as e:
+            print(f"[rest] hook processing failed: {e}")
 
     # Chase: begin/advance/end a flee-or-pursuit minigame the DM narrates.
     dm_text, chase_ops = extract_chase_hooks(dm_text)
@@ -7789,11 +7977,16 @@ async def survival_exhaustion(req: ExhaustionRequest):
 class RestRequest(BaseModel):
     character_id: int
     spend_hit_dice: int = 0    # short rest only
-    ate_and_drank: bool = True  # long rest only
+    ate_and_drank: bool = True  # long rest only: intent to eat/drink (needs provisions)
+    session_id: Optional[str] = None  # pass to enable danger-gating (reads the rest ward)
+    force: bool = False        # rest in dangerous country anyway, without a ward
 
 
 @app.post("/survival/short_rest")
 async def survival_short_rest_endpoint(req: RestRequest):
+    gate, info = _rest_gate(req.session_id, req.character_id, "short", req.force)
+    if gate == "block":
+        return info
     with Session(engine) as session:
         char = session.get(Character, req.character_id)
         if not char:
@@ -7812,6 +8005,10 @@ async def survival_short_rest_endpoint(req: RestRequest):
         if (char.char_class or "").strip().lower() == "warlock":
             char.spell_slots_used = None
             result["pact_slots_restored"] = True
+        if gate == "ok" and info:
+            result["warded_by"] = info
+        elif req.force and _pc_danger(req.character_id) in _REST_DANGEROUS:
+            result["forced_at_risk"] = True
         session.add(char)
         session.commit()
         return {"status": "ok", "result": result}
@@ -7819,25 +8016,60 @@ async def survival_short_rest_endpoint(req: RestRequest):
 
 @app.post("/survival/long_rest")
 async def survival_long_rest_endpoint(req: RestRequest):
+    gate, info = _rest_gate(req.session_id, req.character_id, "long", req.force)
+    if gate == "block":
+        return info
     with Session(engine) as session:
         char = session.get(Character, req.character_id)
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
+        # Provisions are real: eating on a long rest requires rations & water on hand.
+        # ate_and_drank is the PC's intent; effective eating also needs the goods (when
+        # survival tracking is on). Without them, the rest still happens but deprivation
+        # does not reset and exhaustion recovery is denied.
+        surv = get_config().survival
+        wants_food = bool(req.ate_and_drank)
+        provisions_short = False
+        if surv.enabled and wants_food:
+            food_need = max(1, _ceil_int(surv.food_per_day))
+            water_need = max(1, _ceil_int(surv.water_per_day))
+            has_provisions = char.rations >= food_need and char.water >= water_need
+            effective_ate = has_provisions
+            provisions_short = not has_provisions
+        else:
+            effective_ate = wants_food  # tracking off, or fasting by choice
+            food_need = water_need = 0
         result = survival_long_rest(
             current_hp=char.current_hp,
             max_hp=char.max_hp,
             hit_dice_total=char.hit_dice_total,
             hit_dice_remaining=char.hit_dice_remaining,
             exhaustion=char.exhaustion,
-            ate_and_drank=req.ate_and_drank,
+            ate_and_drank=effective_ate,
         )
         char.current_hp = result["current_hp"]
         char.hit_dice_remaining = result["hit_dice_remaining"]
         char.exhaustion = result["exhaustion"]
-        # A long rest resets deprivation if fed and watered.
-        if req.ate_and_drank:
+        # A long rest resets deprivation only if actually fed and watered — and that
+        # consumes provisions from the pack.
+        if effective_ate and surv.enabled and (food_need or water_need):
+            char.rations = max(0, char.rations - food_need)
+            char.water = max(0, char.water - water_need)
+        if effective_ate:
             char.days_without_food = 0
             char.days_without_water = 0
+        result["ate_and_drank"] = effective_ate
+        result["rations"] = char.rations
+        result["water"] = char.water
+        if provisions_short:
+            result["provisions_short"] = True
+            result["note"] = (result.get("note", "") + " No provisions on hand — the "
+                              "party rests hungry; deprivation continues and exhaustion "
+                              "is not shed.").strip()
+        if gate == "ok" and info:
+            result["warded_by"] = info
+        elif req.force and _pc_danger(req.character_id) in _REST_DANGEROUS:
+            result["forced_at_risk"] = True
         char.death_save_successes = 0
         char.death_save_failures = 0
         char.stable = True
