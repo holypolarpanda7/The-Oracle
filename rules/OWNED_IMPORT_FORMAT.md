@@ -122,3 +122,24 @@ Any `rules_monster` field may be set; list fields hold `{name, desc, ...}` objec
 Weapons/armor may add the number fields (`two_handed_damage_dice`,
 `range_normal`/`range_long`, `armor_class_base`, `armor_dex_bonus`,
 `armor_max_dex_bonus`, `str_minimum`, `stealth_disadvantage`).
+
+## `puzzles_overrides.json` → `rules_puzzle`  (loader: `ingest_puzzles_overrides`)
+```json
+{
+  "slug": "perfect-hand", "name": "The Perfect Hand",
+  "puzzle_type": "sorting",          // riddle | mechanism | pattern | sequence | deduction | environmental | trap | social
+  "setting_tags": ["dungeon", "haunted-manor", "secret-passage"],
+  "difficulty": "easy",              // free text ("easy", "deadly (levels 5-10)", ...)
+  "check_dc": 15,                     // optional: DC of a check that substitutes for solving
+  "premise": "What the DM reads aloud — the player-facing setup and any spoken clue.",
+  "solution": "PRIVATE answer key — how it's solved. Never shown verbatim to players.",
+  "hints": ["Skill (Investigation) DC 10: graded nudge #1.", "..."],
+  "fail_state": "What happens on a wrong answer / giving up.",
+  "reward": "What solving it yields (door opens, treasure, passage, lore)."
+}
+```
+The library the DM brain draws puzzles from. The DM is fed `premise` + a private
+`solution`; the backend holds the answer/hints and reveals `hints` one per failed
+attempt so the LLM can't leak or forget the answer. Location gating (a world-graph
+puzzle site whose `setting_tags` match) + a `[[PUZZLE: slug]]` hook decide *when*
+one fires; live attempt/hint/solved state lives in the session, not this table.

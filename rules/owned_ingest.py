@@ -2940,6 +2940,28 @@ def ingest_spells_overrides(engine=None, database_url=None,
                                   engine, database_url, workspace)
 
 
+_PUZZLE_OVERRIDE_FIELDS = {
+    "name": "name", "puzzle_type": "puzzle_type", "type": "puzzle_type",
+    "setting_tags": "setting_tags", "difficulty": "difficulty",
+    "check_dc": "check_dc", "premise": "premise", "solution": "solution",
+    "hints": "hints", "fail_state": "fail_state", "reward": "reward",
+}
+
+
+def ingest_puzzles_overrides(engine=None, database_url=None,
+                             workspace: Path = WORKSPACE) -> dict:
+    """Apply curated puzzle overrides (owned_books/puzzles_overrides.json).
+
+    The library the DM brain draws puzzles from. Solution/hints live here (and get
+    held server-side at run time), so the DM presents only the premise. Entry:
+    {slug, name, puzzle_type, setting_tags:[str], difficulty?, check_dc?, premise,
+    solution, hints:[str], fail_state?, reward?}. Book-derived — never committed."""
+    from .models import Puzzle
+    return _apply_table_overrides(Puzzle, "puzzles_overrides.json",
+                                  _PUZZLE_OVERRIDE_FIELDS,
+                                  engine, database_url, workspace)
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -2979,6 +3001,7 @@ def main(argv: list[str]) -> None:
         print("[owned] spell overrides:", ingest_spells_overrides())
         print("[owned] monster overrides:", ingest_monsters_overrides())
         print("[owned] item overrides:", ingest_items_overrides())
+        print("[owned] puzzle overrides:", ingest_puzzles_overrides())
         print("[owned] backgrounds:", ingest_backgrounds())
 
 

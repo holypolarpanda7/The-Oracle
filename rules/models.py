@@ -300,6 +300,53 @@ class Item(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow)
 
 
+class Puzzle(SQLModel, table=True):
+    """A ready-to-run puzzle/riddle/mechanism the DM brain can drop into play.
+
+    Puzzles are book-derived reference content (own-worded, never committed — see
+    CLAUDE.md), stored so the DM never has to invent one from scratch AND, crucially,
+    so the *solution* and graded *hints* live server-side. The DM prompt is fed the
+    player-facing ``premise`` plus a private answer key; the backend tracks attempts
+    and reveals hints one at a time, so the LLM can't forget the answer or leak it.
+
+    The DM decides to run one via location gating (a world-graph entity tagged as a
+    puzzle site whose ``setting_tags`` match) plus a ``[[PUZZLE: slug]]`` hook; live
+    puzzle state (attempts, hints_given, solved) lives in the session, not here.
+    """
+    __tablename__ = "rules_puzzle"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    index_slug: str = Field(sa_column=Column(String, nullable=False, unique=True, index=True))
+    name: str = Field(sa_column=Column(String, nullable=False, index=True))
+
+    # riddle | mechanism | pattern | sequence | environmental | social | trap
+    puzzle_type: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+    # Where it fits, for location gating: ["tomb", "vault", "sealed-door", ...].
+    setting_tags: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # "easy" | "medium" | "hard" (free text); check_dc is the suggested DC when a
+    # skill check can substitute for solving it outright.
+    difficulty: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+    check_dc: Optional[int] = Field(default=None, sa_column=Column(Integer))
+
+    # What the players see when the DM presents the puzzle.
+    premise: Optional[str] = Field(default=None, sa_column=Column(String))
+    # PRIVATE answer key — never shown verbatim to players. What counts as solving it.
+    solution: Optional[str] = Field(default=None, sa_column=Column(String))
+    # Graded nudges, escalating; revealed one per failed attempt. list[str].
+    hints: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # What happens on failure / giving up (damage, alarm, dead end, ...).
+    fail_state: Optional[str] = Field(default=None, sa_column=Column(String))
+    # What solving it yields (the door opens, treasure, passage, lore, ...).
+    reward: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    source: str = Field(default=SRD_SOURCE, sa_column=Column(String, index=True))
+    raw: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class SrdEntry(SQLModel, table=True):
     """Generic SRD reference row for the broad mechanics sweep.
 

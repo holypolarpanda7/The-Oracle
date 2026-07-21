@@ -434,7 +434,8 @@ async def lifespan(app: FastAPI):
                                              ingest_subclasses_overrides,
                                              ingest_spells_overrides,
                                              ingest_monsters_overrides,
-                                             ingest_items_overrides)
+                                             ingest_items_overrides,
+                                             ingest_puzzles_overrides)
             # Standard paste-and-translate import: gitignored
             # owned_books/<type>_overrides.json applied with top precedence.
             ov = ingest_species_overrides(engine=engine)
@@ -446,7 +447,8 @@ async def lifespan(app: FastAPI):
             for label, fn in (("Subclass", ingest_subclasses_overrides),
                               ("Spell", ingest_spells_overrides),
                               ("Monster", ingest_monsters_overrides),
-                              ("Item", ingest_items_overrides)):
+                              ("Item", ingest_items_overrides),
+                              ("Puzzle", ingest_puzzles_overrides)):
                 res = fn(engine=engine)
                 if any(v for k, v in res.items() if k.endswith(("_applied", "_new"))):
                     print(f"[Startup] {label} overrides: {res}")
