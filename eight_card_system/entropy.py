@@ -242,3 +242,100 @@ def run_if_due(graph: WorldGraph, *, interval_days: int = ENTROPY_INTERVAL_DAYS)
             if dead is not None and census.spawn_successor(graph, dead):
                 out["successions"] += 1
     return out
+
+
+# --- quest stakes clocks: living-time pressure from (in)activity -------------
+# The party's engagement is the world's lever. A quest earns a clock ONLY when
+# the DM gives it `stakes` (opt-in pressure — freedom preserved for open-ended
+# threads). Touching a quest via any [[QUEST]] hook resets its neglect window
+# (the ACTIVITY half, handled in the backend); this pass is the INACTIVITY half:
+# neglected stakes escalate over world-days and, unheeded, the quest slips away —
+# and its failure can leave the world materially worse (its place grows more
+# dangerous). Quest success ripples the other way (handled on resolve).
+STAKES_PERIOD_DAYS = 7        # world-days of neglect between escalations
+STAKES_FAIL_LEVEL = 3         # escalations before an ignored quest slips beyond reach
+_DANGER_LADDER = ["low", "moderate", "high", "deadly"]
+
+
+def shift_place_danger(graph: WorldGraph, slug: str, step: int, reason: str,
+                       *, session_id: Optional[str] = None) -> Optional[str]:
+    """Nudge a place's danger up/down one rung and log why. Returns the new rung
+    (or None if the place has no danger rating to move). This is how party deeds
+    leave a lasting mark: clearing a threat makes an area safer, failure worse."""
+    place = graph.get_entity(slug)
+    if place is None:
+        return None
+    attrs = dict(place.attributes or {})
+    cur = str(attrs.get("danger", "")).lower()
+    if cur not in _DANGER_LADDER:
+        return None
+    i = _DANGER_LADDER.index(cur)
+    new_i = max(0, min(len(_DANGER_LADDER) - 1, i + step))
+    if new_i == i:
+        return cur
+    new = _DANGER_LADDER[new_i]
+    graph.upsert_entity(place.name, place.type, slug=place.slug,
+                        status=place.status, attributes={"danger": new})
+    verb = "grows more dangerous" if step > 0 else "grows safer"
+    graph.add_event(f"{place.name} {verb} ({new}) — {reason}.",
+                    location=place.slug, session_id=session_id)
+    return new
+
+
+def advance_quest_clocks(graph: WorldGraph, *, session_id: Optional[str] = None,
+                         period_days: int = STAKES_PERIOD_DAYS,
+                         fail_level: int = STAKES_FAIL_LEVEL) -> dict:
+    """Escalate ACTIVE quests the party has neglected; a long-ignored quest fails
+    and its fallout worsens its place. Cheap: only quests carrying `stakes` have a
+    clock, and each is gated by its own neglect window."""
+    out = {"escalated": 0, "failed": 0}
+    escalations: list[tuple[str, str, str, Optional[str]]] = []
+    fails: list[tuple[str, str, Optional[str]]] = []
+    with Session(graph.engine) as s:
+        meta = s.get(WorldMeta, 1)
+        if meta is None:
+            return out
+        today = meta.world_day
+        quests = list(s.exec(select(Entity).where(
+            Entity.type == "quest", Entity.status == "active")).all())
+        for q in quests:
+            attrs = dict(q.attributes or {})
+            if str(attrs.get("state", "active")).lower() != "active":
+                continue
+            stakes = attrs.get("stakes")
+            if not stakes:
+                continue  # no stakes => no clock (not every thread presses)
+            last = attrs.get("last_touched_day")
+            if last is None:
+                attrs["last_touched_day"] = today  # start the clock from now
+                q.attributes = attrs
+                s.add(q)
+                continue
+            period = max(1, int(attrs.get("stakes_period_days", period_days)))
+            if today - int(last) < period:
+                continue
+            level = int(attrs.get("stakes_level", 0)) + 1
+            attrs["stakes_level"] = level
+            attrs["last_touched_day"] = today
+            if level >= fail_level:
+                attrs["state"] = "failed"
+                fails.append((q.name, q.slug, attrs.get("location_slug")))
+            else:
+                escalations.append((q.name, str(stakes), q.slug,
+                                    attrs.get("location_slug")))
+            q.attributes = attrs
+            s.add(q)
+        s.commit()
+
+    for name, stakes, slug, loc in escalations:
+        graph.add_event(f"With no one acting, {name} worsens: {stakes}",
+                        location=loc, involved=[slug], session_id=session_id)
+        out["escalated"] += 1
+    for name, slug, loc in fails:
+        graph.add_event(f"{name} slips beyond reach — the moment has passed.",
+                        location=loc, involved=[slug], session_id=session_id)
+        out["failed"] += 1
+        if loc:
+            shift_place_danger(graph, loc, +1, f"the fallout of {name}",
+                               session_id=session_id)
+    return out

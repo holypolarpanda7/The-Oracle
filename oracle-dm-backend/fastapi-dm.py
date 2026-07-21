@@ -1790,6 +1790,7 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
     if not ops:
         return []
     notes: list[str] = []
+    today = world.current_day()
     for op in ops:
         action = op["action"]
         args = op.get("args", [])
@@ -1805,12 +1806,14 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
                     elif a:
                         conflict = a
                 state = QuestState.OFFERED if tier == "rumor" else QuestState.ACTIVE
-                patch = {"state": state, "tier": tier}
+                patch = {"state": state, "tier": tier, "last_touched_day": today}
                 if conflict:
                     patch["conflict"] = conflict
+                loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
+                if loc is not None:
+                    patch["location_slug"] = loc.slug
                 ent = world.upsert_entity(name, EntityType.QUEST,
                                           attributes=patch, tags=["quest"])
-                loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
                 if loc is not None:
                     try:
                         world.add_relation(ent, RelationType.LOCATED_AT, loc)
@@ -1824,7 +1827,8 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
                 if not val:
                     continue
                 world.upsert_entity(name, EntityType.QUEST,
-                                    attributes={action: val}, tags=["quest"])
+                                    attributes={action: val, "last_touched_day": today},
+                                    tags=["quest"])
                 if action == "patron":
                     giver, q = world.get_entity(val), world.get_entity(name)
                     if giver is not None and q is not None:
@@ -1839,7 +1843,8 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
                 objs = list(_quest_attrs(name).get("objectives") or [])
                 objs.append({"text": val, "done": False})
                 world.upsert_entity(name, EntityType.QUEST,
-                                    attributes={"objectives": objs}, tags=["quest"])
+                                    attributes={"objectives": objs, "last_touched_day": today},
+                                    tags=["quest"])
             elif action == "lead":
                 val = args[1] if len(args) > 1 else ""
                 if not val:
@@ -1847,7 +1852,8 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
                 leads = list(_quest_attrs(name).get("leads") or [])
                 leads.append(val)
                 world.upsert_entity(name, EntityType.QUEST,
-                                    attributes={"leads": leads}, tags=["quest"])
+                                    attributes={"leads": leads, "last_touched_day": today},
+                                    tags=["quest"])
             elif action == "done":
                 val = args[1] if len(args) > 1 else ""
                 objs = list(_quest_attrs(name).get("objectives") or [])
@@ -1862,20 +1868,28 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
                             matched = o.get("text")
                             break
                 world.upsert_entity(name, EntityType.QUEST,
-                                    attributes={"objectives": objs}, tags=["quest"])
+                                    attributes={"objectives": objs, "last_touched_day": today},
+                                    tags=["quest"])
                 if matched:
                     notes.append(f"📜 *{name}:* {matched} ✓")
             elif action == "advance":
                 val = args[1] if len(args) > 1 else ""
+                world.upsert_entity(name, EntityType.QUEST,
+                                    attributes={"last_touched_day": today}, tags=["quest"])
                 world.add_event(f"[{name}] {val}".strip(), session_id=session_id)
             elif action == "branch":
                 child = args[1] if len(args) > 1 else ""
                 conflict = args[2] if len(args) > 2 else ""
                 if not child:
                     continue
-                patch = {"state": QuestState.ACTIVE, "tier": "side", "parent": name}
+                patch = {"state": QuestState.ACTIVE, "tier": "side",
+                         "parent": name, "last_touched_day": today}
                 if conflict:
                     patch["conflict"] = conflict
+                # A branched quest inherits its parent's place anchor for ripples.
+                ploc = _quest_attrs(name).get("location_slug")
+                if ploc:
+                    patch["location_slug"] = ploc
                 c = world.upsert_entity(child, EntityType.QUEST,
                                         attributes=patch, tags=["quest"])
                 parent = world.get_entity(name)
@@ -1884,17 +1898,33 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
                         world.add_relation(parent, RelationType.INVOLVES, c)
                     except Exception:
                         pass
+                    # Branching is engagement with the parent too.
+                    world.upsert_entity(parent.name, EntityType.QUEST, slug=parent.slug,
+                                        attributes={"last_touched_day": today}, tags=["quest"])
                 notes.append(f"📜 New lead — **{c.name}**")
             elif action == "resolve":
                 outcome = (args[1].lower() if len(args) > 1 else "completed")
                 text = args[2] if len(args) > 2 else ""
                 state = (QuestState.FAILED if outcome.startswith("fail")
                          else QuestState.COMPLETED)
-                reward = _quest_attrs(name).get("reward") or ""
+                qa = _quest_attrs(name)
+                reward = qa.get("reward") or ""
                 world.upsert_entity(name, EntityType.QUEST,
                                     attributes={"state": state}, tags=["quest"])
                 world.add_event(f"Quest {state}: {name}" + (f" — {text}" if text else ""),
                                 session_id=session_id)
+                # Activity ripple: a resolved quest leaves a mark on its place —
+                # success makes the area safer, failure more dangerous (rumors
+                # are too small to move the world).
+                loc_slug = qa.get("location_slug")
+                if loc_slug and qa.get("tier") != "rumor":
+                    try:
+                        world_entropy.shift_place_danger(
+                            world, loc_slug,
+                            -1 if state == QuestState.COMPLETED else +1,
+                            f"the resolution of {name}", session_id=session_id)
+                    except Exception as e:
+                        print(f"[quest] danger ripple failed: {e}")
                 if state == QuestState.COMPLETED:
                     notes.append(f"📜 Quest complete — **{name}**"
                                  + (f". {reward}" if reward else ""))
@@ -4574,6 +4604,12 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         _ent = world_entropy.run_if_due(world)
         if any(_ent.values()):
             print(f"[entropy] {_ent}")
+        # Living-time pressure: neglected quests with stakes escalate (and may
+        # fail + worsen their place) as world-days pass — logged as events BEFORE
+        # context assembly, so the DM narrates the fallout this turn.
+        _qc = world_entropy.advance_quest_clocks(world, session_id=req.session_id)
+        if any(_qc.values()):
+            print(f"[quest-clock] {_qc}")
     except Exception as e:
         print(f"[entropy] clock sync failed: {e}")
 
