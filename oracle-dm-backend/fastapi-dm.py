@@ -1,5 +1,6 @@
 import os
 import json
+import random
 import re
 import time
 import base64
@@ -1765,6 +1766,82 @@ def _format_quests_block(quests: list) -> str:
         if a.get("stakes"):
             lines.append(f"    if ignored: {a['stakes']}")
     return "\n".join(lines)
+
+
+# --- Rest interruption: resting in dangerous country risks an ambush ----------
+# Detect a rest attempt in the player's message; in a dangerous area there's a
+# danger-scaled chance a threat interrupts it (combat), and the rest yields no
+# benefit until the party deals with it (or flees). Faithful to 5e: a short rest
+# lost is just lost; a long rest interrupted by a fight must be restarted.
+_REST_LONG_RE = re.compile(
+    r"\b(long rest|make camp|set(?:ting)? up camp|camp for the night|rest for the "
+    r"night|sleep for the night|bed down|settle in for the night|full night'?s?|"
+    r"eight hours|8 hours|we sleep|go to sleep|turn in for the night)\b", re.I)
+_REST_SHORT_RE = re.compile(
+    r"\b(short rest|catch (?:our|my|their) breath|take an hour|bind (?:our|my|their) "
+    r"wounds|brief rest|rest for an hour|patch (?:ourselves|myself|themselves) up)\b", re.I)
+_REST_GENERIC_RE = re.compile(
+    r"\b(take a rest|we rest|i rest|let'?s rest|rest here|resting|make a rest)\b", re.I)
+_REST_INTERRUPT_P = {
+    "short": {"moderate": 0.20, "high": 0.45, "deadly": 0.70},
+    "long":  {"moderate": 0.35, "high": 0.60, "deadly": 0.85},
+}
+
+
+def _detect_rest(message: str) -> Optional[str]:
+    """Classify a rest attempt in the message as 'long' | 'short' | None."""
+    if _REST_LONG_RE.search(message or ""):
+        return "long"
+    if _REST_SHORT_RE.search(message or ""):
+        return "short"
+    if _REST_GENERIC_RE.search(message or ""):
+        return "long" if re.search(r"\b(night|sleep|camp)\b", message or "", re.I) else "short"
+    return None
+
+
+def _rest_interruption_block(ctx_obj, message: str, rng=None) -> Optional[str]:
+    """DM guidance for a rest attempt in dangerous country: authoritative on whether
+    a threat interrupts it this time. Returns None when there's no rest or no risk."""
+    kind = _detect_rest(message)
+    if not kind:
+        return None
+    loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
+    danger = str((getattr(loc, "attributes", None) or {}).get("danger", "")).lower()
+    prob = _REST_INTERRUPT_P[kind].get(danger, 0.0)
+    if prob <= 0:
+        return None  # safe country — let them rest, no machinery
+    threat = None
+    dens = (getattr(loc, "attributes", None) or {}).get("denizens") or []
+    if dens:
+        threat = dens[0]
+    else:
+        for e in (getattr(ctx_obj, "entities", None) or []):
+            ea = getattr(e, "attributes", None) or {}
+            if str(ea.get("danger", "")).lower() in ("moderate", "high", "deadly") and ea.get("denizens"):
+                threat = (ea["denizens"] or [None])[0]
+                break
+    threat = threat or "something in the dark"
+    kind_word = "long rest" if kind == "long" else "short rest"
+    interrupted = (rng or random.Random()).random() < prob
+    if interrupted:
+        when = "in the dark hours" if kind == "long" else "partway through"
+        lost = ("a long rest interrupted by a fight must be started over once the "
+                "threat is dealt with" if kind == "long"
+                else "the short rest is simply lost")
+        return (
+            "# Rest interrupted\n"
+            f"The party tries to take a {kind_word} in dangerous country (danger "
+            f"{danger}), but it does not hold: {threat} finds them {when}. Open the "
+            "fight now — emit [[COMBAT: start | ...]] and seat the foes — and grant "
+            f"NO rest benefits ({lost}). If the party would rather run than stand, "
+            "they can flee and you run it as a chase ([[CHASE: start | ...]])."
+        )
+    return (
+        "# Uneasy rest\n"
+        f"The party takes a {kind_word} in dangerous country (danger {danger}). It "
+        "holds THIS time — play the tension (a wary watch, distant sounds, a false "
+        "alarm) and grant the rest's benefits."
+    )
 
 
 def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
@@ -4035,6 +4112,14 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
                 texts.append(qblock)
     except Exception as e:
         print(f"[quest context error] {e}")
+
+    # Rest interruption: resting in dangerous country can be broken by an ambush.
+    try:
+        rblock = _rest_interruption_block(ctx_obj, message)
+        if rblock:
+            texts.append(rblock)
+    except Exception as e:
+        print(f"[rest interruption error] {e}")
 
     return ctx_obj, texts
 
