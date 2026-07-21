@@ -4666,6 +4666,49 @@ def _provision_totals(char: Character) -> tuple[int, int]:
     return (food, water)
 
 
+def _consume_inventory_day(char: Character) -> tuple[bool, bool, List[str]]:
+    """Draw one day's food and water from CARRIED inventory items only (not the
+    counters). A single both-item (soup/stew) covers both in one serving. Mutates
+    char.inventory in place. Returns (got_food, got_water, used_item_names) — each
+    flag is independent, so a pack with food but no drink returns (True, False, ...)."""
+    inv = _inventory_items(char)
+    used: List[str] = []
+    got_food = got_water = False
+
+    def take(idx: int) -> None:
+        it = inv[idx]
+        q = _item_units(it)
+        if q > 1:
+            it["quantity"] = q - 1
+        else:
+            inv.pop(idx)
+        used.append(str(it.get("name", "provisions")))
+
+    # Prefer a both-item first so soup feeds AND hydrates from one serving.
+    for i, it in enumerate(inv):
+        f, w = _provision_profile(str(it.get("name", "")))
+        if f and w:
+            take(i)
+            got_food = got_water = True
+            break
+    if not got_food:
+        for i, it in enumerate(inv):
+            f, _w = _provision_profile(str(it.get("name", "")))
+            if f:
+                take(i)
+                got_food = True
+                break
+    if not got_water:
+        for i, it in enumerate(inv):
+            _f, w = _provision_profile(str(it.get("name", "")))
+            if w:
+                take(i)
+                got_water = True
+                break
+    char.inventory = inv
+    return got_food, got_water, used
+
+
 def _consume_one_day_provisions(char: Character) -> Dict[str, Any]:
     """Consume one day of food + water for a long rest, preferring inventory items
     (a both-item like soup covers both at once) and falling back to the rations/water
@@ -4677,45 +4720,11 @@ def _consume_one_day_provisions(char: Character) -> Dict[str, Any]:
     if food_avail < 1 or water_avail < 1:
         return {"fed": False, "food_available": food_avail,
                 "water_available": water_avail, "used": []}
-    inv = _inventory_items(char)
-    used: List[str] = []
-
-    def take(idx: int) -> None:
-        it = inv[idx]
-        q = _item_units(it)
-        if q > 1:
-            it["quantity"] = q - 1
-        else:
-            inv.pop(idx)
-        used.append(str(it.get("name", "provisions")))
-
-    need_food = need_water = True
-    # A single both-item (soup/stew) satisfies both needs in one serving.
-    for i, it in enumerate(inv):
-        f, w = _provision_profile(str(it.get("name", "")))
-        if f and w:
-            take(i)
-            need_food = need_water = False
-            break
-    if need_food:
-        for i, it in enumerate(inv):
-            f, w = _provision_profile(str(it.get("name", "")))
-            if f:
-                take(i)
-                need_food = False
-                break
-        if need_food:
-            char.rations = max(0, int(char.rations or 0) - 1)
-    if need_water:
-        for i, it in enumerate(inv):
-            f, w = _provision_profile(str(it.get("name", "")))
-            if w:
-                take(i)
-                need_water = False
-                break
-        if need_water:
-            char.water = max(0, int(char.water or 0) - 1)
-    char.inventory = inv
+    got_food, got_water, used = _consume_inventory_day(char)
+    if not got_food:  # inventory had no food source — spend a loose ration
+        char.rations = max(0, int(char.rations or 0) - 1)
+    if not got_water:  # ...and/or a loose water day
+        char.water = max(0, int(char.water or 0) - 1)
     return {"fed": True, "food_available": food_avail,
             "water_available": water_avail, "used": used}
 
@@ -7937,9 +7946,15 @@ async def survival_consume_day(req: ConsumeDayRequest):
         char = session.get(Character, req.character_id)
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
+        # Draw the day's food/water from carried inventory first (a bowl of soup
+        # covers both); only the shortfall falls through to the loose counters and
+        # its deprivation math. We hand consume_day a +1 "virtual" day for whatever
+        # inventory supplied, which its own -1 then absorbs, leaving the real counter
+        # untouched when the pack fed the character.
+        got_food, got_water, used = _consume_inventory_day(char)
         result = consume_day(
-            rations=char.rations,
-            water=char.water,
+            rations=char.rations + (1 if got_food else 0),
+            water=char.water + (1 if got_water else 0),
             days_without_food=char.days_without_food,
             days_without_water=char.days_without_water,
             exhaustion=char.exhaustion,
@@ -7949,6 +7964,10 @@ async def survival_consume_day(req: ConsumeDayRequest):
         char.days_without_food = result["days_without_food"]
         char.days_without_water = result["days_without_water"]
         char.exhaustion = result["exhaustion"]
+        food_left, water_left = _provision_totals(char)
+        result["provisions_days"] = {"food": food_left, "water": water_left}
+        if used:
+            result["provisions_used"] = used
         session.add(char)
         session.commit()
         end_day = world.current_day()
