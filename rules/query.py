@@ -13,7 +13,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
 from .ingest import get_engine
-from .models import Feat, Monster, Spell, Subclass, Item, SrdEntry
+from .models import Feat, Monster, Spell, Subclass, Item, SrdEntry, Puzzle
 
 
 def ability_modifier(score: Optional[int]) -> int:
@@ -274,6 +274,52 @@ class RulesLibrary:
             stmt = stmt.order_by(SrdEntry.name).limit(limit)  # type: ignore[attr-defined]
             return list(s.exec(stmt).all())
 
+    # ----- puzzles (the DM brain's ready-made puzzle/riddle/trap library) -----
+
+    def get_puzzle(self, ref: str) -> Optional[Puzzle]:
+        with Session(self.engine) as s:
+            p = s.exec(select(Puzzle).where(Puzzle.index_slug == ref)).first()
+            if p:
+                return p
+            ref_l = ref.strip().lower()
+            return s.exec(select(Puzzle).where(Puzzle.name.ilike(ref_l))).first()  # type: ignore[attr-defined]
+
+    def search_puzzles(
+        self,
+        tags: Optional[list[str]] = None,
+        *,
+        puzzle_type: Optional[str] = None,
+        limit: int = 3,
+    ) -> list[Puzzle]:
+        """Puzzles whose ``setting_tags`` (or ``puzzle_type``) overlap ``tags``.
+
+        Tags and the stored setting tags are both exploded on ``-``/whitespace so
+        a scene token like ``tomb`` matches a ``crypt-tomb`` style tag. With no
+        tags, returns the first ``limit`` puzzles (optionally type-filtered).
+        """
+        tagset: set[str] = set()
+        for t in (tags or []):
+            tagset.update(x for x in re.split(r"[-\s]+", str(t).lower()) if x)
+        with Session(self.engine) as s:
+            stmt = select(Puzzle)
+            if puzzle_type:
+                stmt = stmt.where(Puzzle.puzzle_type == puzzle_type)
+            rows = list(s.exec(stmt).all())
+        if not tagset:
+            return rows[:limit]
+        scored: list[tuple[int, Puzzle]] = []
+        for p in rows:
+            toks: set[str] = set()
+            for t in (p.setting_tags or []):
+                toks.update(x for x in re.split(r"[-\s]+", str(t).lower()) if x)
+            if p.puzzle_type:
+                toks.add(str(p.puzzle_type).lower())
+            overlap = len(toks & tagset)
+            if overlap:
+                scored.append((overlap, p))
+        scored.sort(key=lambda sp: (-sp[0], sp[1].name))
+        return [p for _, p in scored[:limit]]
+
     # ----- mention scanning (for auto-injecting stats the DM referenced) -----
 
     def _ensure_name_index(self) -> None:
@@ -407,6 +453,27 @@ def format_spell_brief(sp: Spell) -> str:
             desc = desc[:300].rsplit(" ", 1)[0] + "…"
         bits.append(desc)
     return "\n".join(bits)
+
+
+def format_puzzle_available(puzzles: list[Puzzle]) -> str:
+    """Offer block: ready-made puzzles that fit the current scene, with slugs."""
+    lines = [
+        "# Puzzles available here (optional)",
+        "This location fits one or more ready-made puzzles. If the scene calls for "
+        "it, set one up by emitting `[[PUZZLE: start | <slug>]]` — the game then "
+        "presents it, holds the solution, and doles out hints on request. You are "
+        "never required to use one.",
+    ]
+    for p in puzzles:
+        prem = " ".join((p.premise or "").split())
+        if len(prem) > 160:
+            prem = prem[:160].rsplit(" ", 1)[0] + "…"
+        diff = f", {p.difficulty}" if p.difficulty else ""
+        lines.append(
+            f"- `{p.index_slug}`: **{p.name}** ({p.puzzle_type or 'puzzle'}{diff})"
+            + (f" — {prem}" if prem else "")
+        )
+    return "\n".join(lines)
 
 
 def format_feat_brief(f: Feat) -> str:

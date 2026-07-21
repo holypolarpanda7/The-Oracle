@@ -48,6 +48,7 @@ from rules import (
     format_spell_brief,
     format_item_brief,
     format_reference_brief,
+    format_puzzle_available,
     ingest_srd,
     ingest_items,
     ingest_reference,
@@ -1479,6 +1480,177 @@ def apply_trust_hooks(character_id: Optional[int], ops: list[dict]) -> list[str]
                                         reason=op.get("reason", ""))
             if result:
                 notes.append(f"{ent.name} -> {result['attitude']} (trust {result['trust']})")
+    return notes
+
+
+# The DM runs puzzles/riddles/traps from the puzzle library (rules_puzzle) with
+# PUZZLE hooks. The solution + graded hints live server-side: the DM is fed the
+# answer key privately (never narrated) and asks the game to dispense the next
+# hint, so the LLM can't leak or forget the answer.
+#   [[PUZZLE: start | perfect-hand]]   arm a puzzle by slug (presents it in-scene)
+#   [[PUZZLE: hint]]                    dispense the next graded hint to the players
+#   [[PUZZLE: attempt]]                 record a wrong guess
+#   [[PUZZLE: solved]]                  the players cracked it (pays out, logs event)
+#   [[PUZZLE: end]]                     drop the puzzle (left/abandoned)
+PUZZLE_HOOK_PATTERN = re.compile(r"\[\[PUZZLE:(.+?)\]\]", re.IGNORECASE)
+_PUZZLE_HOOK_ACTIONS = {"start", "hint", "attempt", "solved", "end"}
+# Turns to wait before offering another ready-made puzzle after one resolves.
+_PUZZLE_COOLDOWN_TURNS = 6
+
+# Scene words that mark a location as puzzle-worthy (the availability gate only
+# fires when one of these is present, so puzzles never surface in a tavern).
+_PUZZLE_SITE_KEYWORDS = {
+    "dungeon", "tomb", "crypt", "grave", "catacomb", "catacombs", "vault",
+    "ruin", "ruins", "temple", "shrine", "sanctum", "sanctuary", "maze",
+    "labyrinth", "door", "gate", "portcullis", "puzzle", "riddle", "statue",
+    "sphinx", "guardian", "altar", "mechanism", "lock", "sealed", "chamber",
+    "antechamber", "obelisk", "glyph", "rune", "pedestal",
+}
+# Map raw scene tokens onto the canonical setting_tags used in the library.
+_PUZZLE_TAG_SYNONYMS = {
+    "crypt": "tomb", "grave": "tomb", "catacomb": "tomb", "catacombs": "tomb",
+    "ruins": "ruin", "sphinx": "riddle-guardian", "guardian": "riddle-guardian",
+    "riddle": "riddle-guardian", "sealed": "sealed-door", "door": "sealed-door",
+    "gate": "sealed-door", "lock": "sealed-door", "shrine": "temple",
+    "sanctum": "vault", "sanctuary": "vault", "manor": "haunted-manor",
+    "mansion": "haunted-manor", "labyrinth": "maze",
+}
+
+
+def _scene_puzzle_tags(ctx_obj, message: str) -> list[str]:
+    """Canonical puzzle tags for the current scene, or [] if it isn't a site."""
+    tokens: set[str] = set()
+
+    def add(s: str) -> None:
+        for t in re.split(r"[^a-z]+", (s or "").lower()):
+            if t:
+                tokens.add(t)
+
+    add(message)
+    loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
+    if loc is not None:
+        add(getattr(loc, "name", "") or "")
+        add(str(getattr(loc, "type", "") or ""))
+        attrs = getattr(loc, "attributes", None) or {}
+        for k in ("kind", "terrain", "biome", "site", "danger"):
+            add(str(attrs.get(k, "") or ""))
+    if not (tokens & _PUZZLE_SITE_KEYWORDS):
+        return []
+    return list({_PUZZLE_TAG_SYNONYMS.get(t, t) for t in tokens})
+
+
+def _format_active_puzzle_block(ap: dict) -> str:
+    """DM-eyes-only block: the live puzzle's private answer key + verb reminders."""
+    hints = ap.get("hints") or []
+    given = int(ap.get("hints_given", 0) or 0)
+    lines = [
+        "# Active puzzle — DM eyes only (NEVER state the solution in narration)",
+        f"The players are engaged with **{ap.get('name', 'a puzzle')}**.",
+        f"SOLUTION (keep secret; use it only to judge their answers): "
+        f"{ap.get('solution') or '—'}",
+        f"Hints revealed so far: {given}/{len(hints)}.",
+        "- When a player earns a hint (a fitting skill check or a direct ask), emit "
+        "`[[PUZZLE: hint]]` and the game delivers the next graded hint in-scene — do "
+        "not invent hints yourself.",
+        "- Judge answers against the solution. On a correct solve emit "
+        "`[[PUZZLE: solved]]`; on a clear wrong guess emit `[[PUZZLE: attempt]]`.",
+        "- If the players leave it or give up, emit `[[PUZZLE: end]]`.",
+    ]
+    if ap.get("reward"):
+        lines.append(f"On success: {ap['reward']}")
+    if ap.get("fail_state"):
+        lines.append(f"On failure/abandonment: {ap['fail_state']}")
+    return "\n".join(lines)
+
+
+def extract_puzzle_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull puzzle-control hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in PUZZLE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").strip().lower()
+        if action not in _PUZZLE_HOOK_ACTIONS:
+            continue
+        op = {"action": action}
+        if len(parts) > 1 and parts[1]:
+            op["arg"] = parts[1].strip()
+        ops.append(op)
+    clean = PUZZLE_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def process_puzzle_hooks(session_id: str, ops: list[dict]) -> list[str]:
+    """Apply puzzle-control ops to session state. Returns player-visible notes
+    (the presented premise, dispensed hints, solve payout) — never the solution."""
+    if not ops:
+        return []
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    turn_count = int(state.get("turn_count", 0) or 0)
+    notes: list[str] = []
+    changed = False
+    for op in ops:
+        action = op["action"]
+        if action == "start":
+            slug = (op.get("arg") or "").strip()
+            if not slug:
+                continue
+            pz = rules_lib.get_puzzle(slug)
+            if not pz:
+                print(f"[puzzle] start: no puzzle '{slug}' in the library")
+                continue
+            meta["active_puzzle"] = {
+                "slug": pz.index_slug, "name": pz.name,
+                "premise": pz.premise or "", "solution": pz.solution or "",
+                "hints": list(pz.hints or []), "hints_given": 0,
+                "attempts": 0, "solved": False,
+                "reward": pz.reward or "", "fail_state": pz.fail_state or "",
+            }
+            changed = True
+            prem = (pz.premise or "").strip()
+            notes.append(f"🧩 **{pz.name}**" + (f"\n\n{prem}" if prem else ""))
+        elif action == "hint":
+            ap = meta.get("active_puzzle")
+            if not ap:
+                continue
+            hints = ap.get("hints") or []
+            given = int(ap.get("hints_given", 0) or 0)
+            if given < len(hints):
+                notes.append(f"🧩 *Hint:* {hints[given]}")
+                ap["hints_given"] = given + 1
+            else:
+                notes.append("🧩 *No further hints remain — every clue is already in play.*")
+            changed = True
+        elif action == "attempt":
+            ap = meta.get("active_puzzle")
+            if not ap:
+                continue
+            ap["attempts"] = int(ap.get("attempts", 0) or 0) + 1
+            changed = True
+        elif action == "solved":
+            ap = meta.get("active_puzzle")
+            if not ap:
+                continue
+            reward = (ap.get("reward") or "").strip()
+            notes.append("🧩 *Puzzle solved!*" + (f" {reward}" if reward else ""))
+            try:
+                world.add_event(
+                    f"The party solved the puzzle '{ap.get('name')}'.",
+                    session_id=session_id)
+            except Exception as e:
+                print(f"[puzzle] world event failed: {e}")
+            meta.pop("active_puzzle", None)
+            meta["puzzle_cooldown_turn"] = turn_count + _PUZZLE_COOLDOWN_TURNS
+            changed = True
+        elif action == "end":
+            if meta.pop("active_puzzle", None) is not None:
+                meta["puzzle_cooldown_turn"] = turn_count + _PUZZLE_COOLDOWN_TURNS
+                changed = True
+    if changed:
+        _set_session_meta(session_id, meta)
     return notes
 
 
@@ -3454,6 +3626,23 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
         except Exception as e:
             print(f"[resource context error] {e}")
 
+    # Puzzle layer: if one is live, feed the DM its private answer key; else — at
+    # a puzzle-worthy location and off cooldown — offer ready-made candidates.
+    try:
+        ap = (meta or {}).get("active_puzzle")
+        if ap and not ap.get("solved"):
+            texts.append(_format_active_puzzle_block(ap))
+        else:
+            turn_count = int(state.get("turn_count", 0) or 0)
+            if turn_count >= int((meta or {}).get("puzzle_cooldown_turn", 0) or 0):
+                ptags = _scene_puzzle_tags(ctx_obj, message)
+                if ptags:
+                    cands = rules_lib.search_puzzles(tags=ptags, limit=3)
+                    if cands:
+                        texts.append(format_puzzle_available(cands))
+    except Exception as e:
+        print(f"[puzzle context error] {e}")
+
     return ctx_obj, texts
 
 
@@ -4228,6 +4417,18 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             apply_trust_hooks(character_id, trust_ops)
         except Exception as e:
             print(f"[trust] hook processing failed: {e}")
+
+    # Puzzles: present a puzzle the DM armed, dispense the next graded hint, or
+    # record a solve/abandon. The solution stays server-side (fed only to the DM
+    # prompt), so only premise/hint/payout text reaches the players here.
+    dm_text, puzzle_ops = extract_puzzle_hooks(dm_text)
+    if puzzle_ops:
+        try:
+            puzzle_notes = process_puzzle_hooks(req.session_id, puzzle_ops)
+            if puzzle_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(puzzle_notes)
+        except Exception as e:
+            print(f"[puzzle] hook processing failed: {e}")
 
     # Keep the initiative tracker true to the narration: start fights, seat
     # combatants, record damage/healing, advance turns, end the battle.

@@ -25,6 +25,7 @@ from .query import (
     format_spell_brief,
     format_item_brief,
     format_reference_brief,
+    format_puzzle_available,
 )
 from .owned_monsters import OWNED_MONSTERS, seed_owned_monsters, XP_BY_CR
 from .templates import (
@@ -56,6 +57,7 @@ __all__ = [
     "format_spell_brief",
     "format_item_brief",
     "format_reference_brief",
+    "format_puzzle_available",
     "OWNED_MONSTERS",
     "seed_owned_monsters",
     "XP_BY_CR",
