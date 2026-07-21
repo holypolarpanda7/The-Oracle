@@ -70,6 +70,8 @@ export interface SheetData {
   gold?: number;
   // ---- v1 additions (all optional; the UI degrades gracefully when absent) ----
   race?: string | null;
+  creature_type?: string | null;   // "Humanoid" for most; Construct/Undead/etc. for some species
+  immunities?: string[];           // condition/effect immunities from species traits
   char_class?: string | null;
   subclass?: string | null;
   portrait?: string | null;      // data URL or /path to the stored PC portrait
@@ -212,6 +214,7 @@ export interface CCOptions {
     ability_bonuses: Record<string, number>;
     choose_bonus: number[];
     speed: number; size: string; darkvision: boolean;
+    creature_type?: string; immunities?: string[];
     languages?: string | null; traits: string[];
     // 2024: flavor sub-species (no ASI) and any species-granted feat choice.
     lineages?: { slug: string; name: string; traits: string[];

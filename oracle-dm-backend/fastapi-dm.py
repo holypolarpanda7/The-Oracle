@@ -9751,6 +9751,8 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "gold": (sheet.get("purse") or {}).get("gp"),
         # ---- v1 structured / themeable fields ----
         "race": sheet.get("race"),
+        "creature_type": sheet.get("creature_type"),
+        "immunities": sheet.get("immunities") or [],
         "char_class": sheet.get("char_class"),
         "subclass": sheet.get("subclass"),
         "background": background,

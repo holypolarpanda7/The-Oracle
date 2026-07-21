@@ -185,6 +185,12 @@ export function CharacterSheet({ sheet, panel, onInspect }: {
             {(race || cls) && (
               <p>{[race, cls, sub && `(${sub})`].filter(Boolean).join(" ")}</p>
             )}
+            {sheet.creature_type && sheet.creature_type !== "Humanoid" && (
+              <p><b>Creature type · {sheet.creature_type}.</b></p>
+            )}
+            {sheet.immunities && sheet.immunities.length > 0 && (
+              <p><b>Immune to.</b> {sheet.immunities.join(" · ")}</p>
+            )}
           </div>
         </div>
 

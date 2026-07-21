@@ -253,6 +253,8 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 >
                   <div className="cf-card-name">{r.name}</div>
                   <div className="cf-card-sub">
+                    {r.creature_type && r.creature_type !== "Humanoid"
+                      ? `${r.creature_type} · ` : ""}
                     {r.size} · {r.speed} ft{r.darkvision ? " · darkvision" : ""}
                     {r.lineages?.length ? ` · ${r.lineages.length} lineages` : ""}
                     {r.feat_choice ? " · feat" : ""}
@@ -758,9 +760,12 @@ function DetailPanel({ opts, stage, raceSlug, clsSlug, lineageSlug, hovered }: {
         <div className="cf-detail-body">
           <h3>{r.name}{lin ? ` · ${lin.name}` : ""}</h3>
           <p className="cf-detail-meta">
-            {r.size} · {(lin?.speed ?? r.speed)} ft speed
+            {(r.creature_type ?? "Humanoid")} · {r.size} · {(lin?.speed ?? r.speed)} ft speed
             {(lin?.darkvision ?? r.darkvision) ? " · darkvision" : ""}
           </p>
+          {r.immunities && r.immunities.length > 0 && (
+            <p className="cf-detail-meta">Immune to: {r.immunities.join(", ")}</p>
+          )}
           {r.languages && <p className="cf-detail-meta">{r.languages}</p>}
           <ul>{r.traits.map((t, i) => <li key={i}>{t}</li>)}</ul>
           {lin && (
