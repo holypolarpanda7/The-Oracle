@@ -6043,7 +6043,7 @@ async def register_character(req: RegisterCharacterRequest):
                     continue  # unknown slug (e.g. owned-ingest feat) — allow
                 met, why = _feat_prereq_met(
                     frow.prerequisite, frow.min_level, fstats,
-                    req.char_class, req.level)
+                    req.char_class, req.level, race=req.race)
                 if not met:
                     raise HTTPException(
                         status_code=400,
@@ -6102,20 +6102,49 @@ _ABILITY_FULL = {"str": "strength", "dex": "dexterity", "con": "constitution",
                  "int": "intelligence", "wis": "wisdom", "cha": "charisma"}
 
 
+_SPECIES_PREREQ = {"dragonborn", "dwarf", "elf", "gnome", "half-elf", "half-orc",
+                   "halfling", "human", "tiefling", "orc", "goliath", "aasimar",
+                   "drow", "eladrin"}
+_SUBRACE_PREREQ = {"drow", "high", "wood", "hill", "mountain", "deep", "forest",
+                   "rock", "lightfoot", "stout"}
+
+
+def _prereq_species_ok(prereq_l: str, race_l: str) -> Optional[bool]:
+    """Race-prerequisite check (XGE racial feats: 'Halfling', 'Elf (drow)', ...).
+    Returns None when the prereq names no species (skip), else True/False. A
+    size-only clause ('a Small race') is unverifiable here → permissive (True)."""
+    tokens = re.findall(r"[a-z]+(?:-[a-z]+)?", prereq_l)
+    species_opts = [t for t in tokens if t in _SPECIES_PREREQ]
+    if not species_opts:
+        return None
+    if "small race" in prereq_l:  # size-based (Squat Nimbleness) — can't verify → allow
+        return True
+    # A required sub-species in parentheses (e.g. "Elf (drow)") must be present.
+    sub = re.search(r"\(([a-z]+)\)", prereq_l)
+    if sub and sub.group(1) in _SUBRACE_PREREQ:
+        return sub.group(1) in race_l
+    return any(o in race_l for o in species_opts)
+
+
 def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
                      stats: Dict[str, int], char_class: Optional[str],
-                     level: int, existing_feats: Optional[list] = None
+                     level: int, existing_feats: Optional[list] = None,
+                     race: Optional[str] = None
                      ) -> tuple[bool, Optional[str]]:
     """Check whether a character meets a feat's prerequisites.
 
     Verifiable prereqs: level minimum, ability-score minimums ('Strength 13'),
-    and 'Spellcasting' (a spellcasting class). Unrecognized prereq clauses are
-    NOT blocked (best-effort — we don't silently forbid a legal pick). Returns
-    (met, reason_if_not)."""
+    'Spellcasting' (a spellcasting class), and a SPECIES requirement (XGE racial
+    feats). Unrecognized prereq clauses are NOT blocked (best-effort — we don't
+    silently forbid a legal pick). Returns (met, reason_if_not)."""
     if level < int(min_level or 1):
         return False, f"requires level {min_level}"
     if not prerequisite:
         return True, None
+
+    species_ok = _prereq_species_ok(prerequisite.lower(), (race or "").lower())
+    if species_ok is False:
+        return False, f"requires {prerequisite}"
 
     def _score(code: str) -> int:
         full = _ABILITY_FULL.get(code, code)

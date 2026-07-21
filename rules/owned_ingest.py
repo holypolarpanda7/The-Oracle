@@ -382,6 +382,100 @@ def parse_phb_feats(text: str) -> list[dict]:
     return list(seen.values())
 
 
+# XGE racial feats: the canonical (name, race prerequisite) pairs are uncopyrightable
+# FACTS (a name + "requires Halfling"); the benefit prose is extracted from the user's
+# local file into the gitignored DB, never committed. Matches the OCR-damaged headers
+# ("FLAMES or PHLEGETHOS", "ORCI SH F U RY") by letters-only fuzzy match.
+_XGE_RACIAL_FEATS: list[tuple[str, str, str]] = [
+    ("bountiful-luck", "Bountiful Luck", "Halfling"),
+    ("dragon-fear", "Dragon Fear", "Dragonborn"),
+    ("dragon-hide", "Dragon Hide", "Dragonborn"),
+    ("drow-high-magic", "Drow High Magic", "Elf (drow)"),
+    ("dwarven-fortitude", "Dwarven Fortitude", "Dwarf"),
+    ("elven-accuracy", "Elven Accuracy", "Elf or half-elf"),
+    ("fade-away", "Fade Away", "Gnome"),
+    ("fey-teleportation", "Fey Teleportation", "Elf (high)"),
+    ("flames-of-phlegethos", "Flames of Phlegethos", "Tiefling"),
+    ("infernal-constitution", "Infernal Constitution", "Tiefling"),
+    ("orcish-fury", "Orcish Fury", "Half-orc"),
+    ("prodigy", "Prodigy", "Half-elf, half-orc, or human"),
+    ("second-chance", "Second Chance", "Halfling"),
+    ("squat-nimbleness", "Squat Nimbleness", "Dwarf or a Small race"),
+    ("wood-elf-magic", "Wood Elf Magic", "Elf (wood)"),
+]
+
+
+def _letters(s: str) -> str:
+    return re.sub(r"[^a-z]", "", (s or "").lower())
+
+
+def _clean_feat_benefit(block: str) -> str:
+    """Tidy an OCR'd benefit block: rejoin soft-hyphen line breaks, drop obvious
+    noise lines, normalize dashes/whitespace, cap length."""
+    out_lines = []
+    for ln in block.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        letters = sum(c.isalpha() for c in s)
+        if letters < max(2, len(s) // 2):  # mostly punctuation = OCR gutter noise
+            continue
+        out_lines.append(s)
+    joined = "\n".join(out_lines)
+    joined = re.sub(r"[—-]\n", "", joined)      # rejoin hyphenated line breaks
+    joined = joined.replace("—", "-")
+    joined = re.sub(r"\s+", " ", joined).strip()
+    return joined[:2000]
+
+
+def parse_xge_racial_feats(text: str) -> list[dict]:
+    """Parse XGE racial feats from the local extraction. Feat blocks are anchored by
+    a 'Prerequisite:' line; the (damaged) header on the line above is fuzzy-matched to
+    a canonical name. The canonical name + race prerequisite come from the fact table;
+    only the benefit prose is taken from the book text."""
+    from difflib import SequenceMatcher
+    lines = text.splitlines()
+    anchors = [i for i, l in enumerate(lines) if re.match(r"\s*Prerequisite\s*:", l, re.I)]
+
+    def prev_nonblank(i: int) -> int:
+        j = i - 1
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        return j
+
+    canon_letters = {slug: _letters(name) for slug, name, _ in _XGE_RACIAL_FEATS}
+    by_slug = {slug: (name, prereq) for slug, name, prereq in _XGE_RACIAL_FEATS}
+    feats: list[dict] = []
+    for idx, ai in enumerate(anchors):
+        header = lines[prev_nonblank(ai)].strip() if prev_nonblank(ai) >= 0 else ""
+        hl = _letters(header)
+        if not hl:
+            continue
+        # Best canonical match for this damaged header.
+        best_slug, best_ratio = None, 0.0
+        for slug, cl in canon_letters.items():
+            r = SequenceMatcher(None, hl, cl).ratio()
+            if r > best_ratio:
+                best_slug, best_ratio = slug, r
+        if best_slug is None or best_ratio < 0.7:
+            continue
+        name, prereq = by_slug[best_slug]
+        end = prev_nonblank(anchors[idx + 1]) if idx + 1 < len(anchors) else len(lines)
+        benefit = _clean_feat_benefit("\n".join(lines[ai + 1:end]))
+        feats.append({
+            "slug": best_slug, "name": name, "category": "general",
+            "prerequisite": prereq, "min_level": 1, "repeatable": False,
+            "benefit": benefit,
+            "source": "Owned (Xanathar's Guide to Everything) — local ingest",
+        })
+    # Dedupe by slug, keep the richest benefit.
+    seen: dict[str, dict] = {}
+    for f in feats:
+        if f["slug"] not in seen or len(f["benefit"]) > len(seen[f["slug"]]["benefit"]):
+            seen[f["slug"]] = f
+    return list(seen.values())
+
+
 def ingest_feats(engine: Optional[Engine] = None,
                  database_url: Optional[str] = None,
                  workspace: Path = WORKSPACE) -> dict:
@@ -405,6 +499,13 @@ def ingest_feats(engine: Optional[Engine] = None,
         feats += parse_display_feats(
             fr.read_text(encoding="utf-8"), _FR_FEAT_FP,
             "Owned (Forgotten Realms 2025) — local ingest")
+    # XGE racial feats (Dragon Fear, Elven Accuracy, Squat Nimbleness, ...) — a
+    # Race->Feat table + "Prerequisite: <race>" blocks; own parser (fuzzy headers).
+    xge = next((p for pat in ("*racial_feats*xge*.txt", "*racial-feats*xge*.txt",
+                              "*xanathar*.txt", "*racial_feats*.txt")
+                for p in workspace.glob(pat)), None)
+    if xge is not None:
+        feats += parse_xge_racial_feats(xge.read_text(encoding="utf-8"))
     if not feats:
         return {"error": "no feat sources found — run extract_pdfs() first"}
 
