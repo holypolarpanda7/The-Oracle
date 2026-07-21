@@ -2182,6 +2182,10 @@ def _format_active_chase_block(ac: dict, session_id: str = "") -> str:
             "Fatigue: after this much all-out Dashing, call a DC 10 CON save at the end of "
             "a hard-pressed runner's turn or they gain 1 Exhaustion "
             "([[CONDITION: add | exhaustion | hard running]]).")
+    if rnd >= 6:
+        lines.append(
+            "This has run long — bring it to a head THIS round: force the decisive escape "
+            "check or a final gambit, then resolve to gain or lose. Don't let it stall.")
     if role == "flee":
         lines.append(
             "Escape check: the moment the party breaks the pursuers' line of sight, call a "
