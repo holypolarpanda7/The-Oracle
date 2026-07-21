@@ -628,6 +628,16 @@ def seed_races(
     """Seed playable races. Offline and idempotent (upsert by slug)."""
     engine = engine or get_engine(database_url)
     SQLModel.metadata.create_all(engine)
+    # Self-heal: create_all never ALTERs, so add newer columns to a pre-existing
+    # rules_race table before upserting rows that use them.
+    with engine.connect() as conn:
+        existing_cols = {row[1] for row in
+                         conn.exec_driver_sql('PRAGMA table_info("rules_race")')}
+        for col, ddl in [("creature_type", "TEXT DEFAULT 'Humanoid'"),
+                         ("immunities", "JSON")]:
+            if existing_cols and col not in existing_cols:
+                conn.exec_driver_sql(f'ALTER TABLE "rules_race" ADD COLUMN {col} {ddl}')
+        conn.commit()
     result = {"races_new": 0, "races_total": len(_RACES)}
     with Session(engine) as s:
         for r in _RACES:
@@ -637,6 +647,8 @@ def seed_races(
                 ability_bonuses=r.get("bonuses") or {},
                 choose_bonus=r.get("choose_bonus"),
                 speed=r.get("speed", 30), size=r.get("size", "Medium"),
+                creature_type=r.get("creature_type", "Humanoid"),
+                immunities=r.get("immunities"),
                 darkvision=bool(r.get("darkvision")),
                 languages=r.get("languages"), traits=r.get("traits"),
                 description=r.get("description"),

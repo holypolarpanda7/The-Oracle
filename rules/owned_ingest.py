@@ -2330,6 +2330,27 @@ def _extract_features(block: str) -> list[dict]:
     return feats
 
 
+def _detect_species_immunities(block: str) -> list[str]:
+    """Best-effort: read condition/effect immunities out of a species' trait text
+    (e.g. Warforged 'Constructed Resilience', an Undead species' nature trait).
+    Own-worded detection over the local ingest only — no book text is stored, just
+    the resulting keyword flags. Returns lowercase keys like 'poisoned', 'disease'."""
+    b = block.lower()
+    imm: list[str] = []
+    # "you are immune to ...", "immunity to ...", "you can't gain ..." / "can't be ..."
+    def _immune_to(word: str) -> bool:
+        return bool(re.search(rf"(immun\w*\s+to\b[^.]*\b{word}|"
+                              rf"can'?t\s+(?:be|gain|suffer)\b[^.]*\b{word})", b))
+    for word, key in (("poison", "poisoned"), ("disease", "disease"),
+                      ("exhaust", "exhaustion"), ("charm", "charmed"),
+                      ("frighten", "frightened"), ("paralyz", "paralyzed"),
+                      ("sleep", "sleep")):
+        if _immune_to(word):
+            imm.append(key)
+    # dedupe, stable order
+    return list(dict.fromkeys(imm))
+
+
 def parse_species(text: str) -> list[dict]:
     lines = text.splitlines()
     anchors = [i for i, l in enumerate(lines) if re.match(r"\s*Creature Type:", l)]
@@ -2361,10 +2382,14 @@ def parse_species(text: str) -> list[dict]:
         sm = re.search(r"Speed:\s*(\d+)", block)
         speed = int(sm.group(1)) if sm else 30
         darkvision = bool(re.search(r"Darkvision", block))
+        ctm = re.search(r"Creature Type:\s*([A-Za-z]+)", block)
+        creature_type = ctm.group(1).title() if ctm else "Humanoid"
         feats = _extract_features(block)
         out.append({
             "slug": _slugify(name), "name": name, "size": size, "speed": speed,
             "darkvision": darkvision, "features": feats,
+            "creature_type": creature_type,
+            "immunities": _detect_species_immunities(block),
             "traits": [f["name"] for f in feats],
         })
     # Dedupe by slug, keep the richest (most features).
@@ -2420,6 +2445,15 @@ def ingest_species(engine=None, database_url=None,
     from .models import Race
     engine = engine or get_engine(database_url)
     SQLModel.metadata.create_all(engine)
+    # Self-heal: add newer columns to a pre-existing rules_race table.
+    with engine.connect() as conn:
+        existing_cols = {row[1] for row in
+                         conn.exec_driver_sql('PRAGMA table_info("rules_race")')}
+        for col, ddl in [("creature_type", "TEXT DEFAULT 'Humanoid'"),
+                         ("immunities", "JSON")]:
+            if existing_cols and col not in existing_cols:
+                conn.exec_driver_sql(f'ALTER TABLE "rules_race" ADD COLUMN {col} {ddl}')
+        conn.commit()
 
     books = [
         ("*srd-cc-v5-2-1*.txt", "SRD 5.2.1 (CC-BY-4.0) 2024"),
@@ -2466,6 +2500,13 @@ def ingest_species(engine=None, database_url=None,
                 # background (see the CC ability stage). Empty on both.
                 ability_bonuses={}, choose_bonus=[],
                 speed=r["speed"], size=r["size"], darkvision=r["darkvision"],
+                # Creature type + trait-granted immunities parsed from the book;
+                # fall back to a prior/default so an OCR miss can't erase them.
+                creature_type=(r.get("creature_type")
+                               or (prior.creature_type if prior else None)
+                               or "Humanoid"),
+                immunities=(r.get("immunities")
+                            or (prior.immunities if prior else None) or []),
                 languages=(prior.languages if prior and prior.languages
                            else "Common plus one more of your choice"),
                 # Never let an empty parse (OCR-damaged books yield 0 traits)

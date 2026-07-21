@@ -82,6 +82,10 @@ class PCProfile:
     # 2024 Exhaustion level (0-6): applies -2 x level to this PC's D20 Tests
     # (attack rolls, saving throws, ability checks) — never to DCs or damage.
     exhaustion: int = 0
+    # Creature type (targeting: Hold/Charm Person only affect Humanoids) and the
+    # set of normalized condition immunities from species traits.
+    creature_type: str = "Humanoid"
+    immunities: set[str] = field(default_factory=set)
 
 
 # Class features the engine resolves mechanically. "per_encounter": how many
@@ -132,6 +136,10 @@ _CONSUMABLE_TEMPS = {"potion of heroism": 10}
 # 2024: Exhaustion is no longer a disadvantage tag — it's a -2 x level penalty to
 # every D20 Test, applied numerically via CombatEngine._exh_pen.
 _ATTACKER_DISADV = {"poisoned", "prone", "restrained", "blinded", "frightened"}
+
+# Spells that only affect Humanoids — a Construct/Undead/etc. target is simply not
+# a legal target (resisting by type, not by a save).
+_HUMANOID_ONLY_SPELLS = {"hold person", "charm person", "dominate person"}
 _TARGET_GIVES_ADV = {"restrained", "stunned", "paralyzed", "unconscious",
                      "petrified", "blinded", "faerie fire"}
 _CANNOT_ACT = {"incapacitated", "stunned", "paralyzed", "unconscious", "petrified"}
@@ -289,6 +297,30 @@ class CombatEngine:
             lvl = max(0, min(6, int(getattr(profiles[c.character_id], "exhaustion", 0) or 0)))
             return -2 * lvl
         return 0
+
+    def _creature_type(self, c: Combatant, profiles: dict[int, PCProfile]) -> str:
+        """Lowercased creature type of a combatant (PC from profile, monster from its
+        statblock, default 'humanoid')."""
+        if c.character_id and profiles and c.character_id in profiles:
+            return (getattr(profiles[c.character_id], "creature_type", None)
+                    or "humanoid").lower()
+        m = self._monster(c)
+        if m and getattr(m, "type", None):
+            return str(m.type).lower()
+        return "humanoid"
+
+    def _immune_to(self, c: Combatant, cond: str,
+                   profiles: dict[int, PCProfile]) -> bool:
+        """True if a combatant is immune to a condition (PC species immunities, or a
+        monster's condition_immunities)."""
+        cond = (cond or "").lower()
+        if c.character_id and profiles and c.character_id in profiles:
+            return cond in (getattr(profiles[c.character_id], "immunities", None) or set())
+        m = self._monster(c)
+        if m:
+            return cond in {str(x).lower()
+                            for x in (getattr(m, "condition_immunities", None) or [])}
+        return False
 
     def _attack_profile(self, c: Combatant, weapon: str,
                         profiles: dict[int, PCProfile]) -> Optional[dict]:
@@ -1444,7 +1476,15 @@ class CombatEngine:
                     f"{sp.name} damage", shared.detail, shared.total,
                     expr=dmg_expr))
             results: list[dict] = []
+            spell_l = (sp.name or "").lower()
             for tgt in targets:
+                # Humanoid-only spells (Hold/Charm Person) can't touch a non-Humanoid.
+                if spell_l in _HUMANOID_ONLY_SPELLS \
+                        and self._creature_type(tgt, profiles) != "humanoid":
+                    results.append({"target": tgt.name,
+                                    "unaffected": "not a Humanoid"})
+                    ev["notes"].append(f"{tgt.name} is not a Humanoid — unaffected")
+                    continue
                 t_mod = self._ability_mod(tgt, sp.dc_type, profiles)
                 t_mod += self._exh_pen(tgt, profiles)
                 save = saving_throw(t_mod, dc=dc,
@@ -1456,14 +1496,18 @@ class CombatEngine:
                 res: dict = {"target": tgt.name, "saved": bool(save.success)}
                 if not save.success and eff and eff.get("save_condition"):
                     cond = eff["save_condition"]
-                    self.tracker.add_condition(tgt.id, cond)
-                    res["condition"] = cond
-                    if eff.get("repeat_save"):
-                        fresh_t = self.tracker.get_combatant(tgt.id)
-                        saves = list(fresh_t.pending_saves or [])
-                        saves.append({"condition": cond,
-                                      "ability": sp.dc_type, "dc": dc})
-                        self.tracker.set_pending_saves(tgt.id, saves)
+                    if self._immune_to(tgt, cond, profiles):
+                        res["immune"] = cond
+                        ev["notes"].append(f"{tgt.name} is immune to {cond}")
+                    else:
+                        self.tracker.add_condition(tgt.id, cond)
+                        res["condition"] = cond
+                        if eff.get("repeat_save"):
+                            fresh_t = self.tracker.get_combatant(tgt.id)
+                            saves = list(fresh_t.pending_saves or [])
+                            saves.append({"condition": cond,
+                                          "ability": sp.dc_type, "dc": dc})
+                            self.tracker.set_pending_saves(tgt.id, saves)
                 if shared is not None:
                     total = shared.total
                     if save.success and (sp.dc_success or "").lower() == "half":

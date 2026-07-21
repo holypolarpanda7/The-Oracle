@@ -258,6 +258,8 @@ async def lifespan(app: FastAPI):
                     ("hit_dice_total", "INTEGER DEFAULT 1"),
                     ("hit_dice_remaining", "INTEGER DEFAULT 1"),
                     ("exhaustion", "INTEGER DEFAULT 0"),
+                    ("creature_type", "TEXT DEFAULT 'Humanoid'"),
+                    ("immunities", "JSON"),
                     ("rations", "INTEGER DEFAULT 0"),
                     ("water", "INTEGER DEFAULT 0"),
                     ("days_without_food", "INTEGER DEFAULT 0"),
@@ -860,6 +862,15 @@ class Character(SQLModel, table=True):
     pp: int = Field(default=0)
     lifestyle: str = Field(default="modest", sa_column=Column(String))
 
+    # Creature type (2024): almost every player species is "Humanoid", but owned/
+    # homebrew species can be Construct, Undead, Fey, etc. Matters for TARGETING —
+    # Hold Person / Charm Person and the like only affect Humanoids.
+    creature_type: str = Field(default="Humanoid", sa_column=Column(String))
+    # Condition/effect immunities granted by species traits (lowercase keys, e.g.
+    # "exhaustion", "poisoned", "disease", "charmed"). Type alone grants none in RAW —
+    # these come from traits (Warforged Constructed Resilience, Undead Nature, ...).
+    immunities: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
     # Survival state: HP pool, Hit Dice, death saves, exhaustion, provisions.
     max_hp: int = Field(default=0)
     current_hp: int = Field(default=0)
@@ -1417,15 +1428,21 @@ def apply_condition_hooks(character_id: Optional[int], ops: list[dict]) -> list[
             return []
         changed = False
         for op in ops:
+            action = (op.get("action") or "add").lower()
+            cname = _normalize_condition_name(op.get("name", ""))
+            # Creature-type / trait immunity: a Warforged shrugs off poison, an
+            # Undead can't be exhausted. Never apply a condition they're immune to.
+            if action in ("add", "update") and cname and _char_immune(char, cname):
+                notes.append(f"immune to {cname} — not applied")
+                continue
             if _apply_condition_op(char, op):
                 changed = True
-                action = (op.get("action") or "add").lower()
                 if action == "clear":
                     notes.append("conditions cleared")
                 elif action == "remove":
-                    notes.append(f"no longer {_normalize_condition_name(op.get('name',''))}")
+                    notes.append(f"no longer {cname}")
                 else:
-                    notes.append(f"now {_normalize_condition_name(op.get('name',''))}")
+                    notes.append(f"now {cname}")
         if changed:
             session.add(char)
             session.commit()
@@ -2788,7 +2805,9 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         prof=pb, skills=skills, weapons=weapons, attacks_per_action=attacks,
         features=features, spell_attack_bonus=spell_atk, spell_dc=spell_dc,
         spell_mod=cast_key, slots=slots, reaction_spells=reaction_spells,
-        exhaustion=int(char.exhaustion or 0))
+        exhaustion=int(char.exhaustion or 0),
+        creature_type=(char.creature_type or "Humanoid"),
+        immunities={_normalize_immunity(x) for x in (char.immunities or [])})
 
 
 # ---- deterministic pre-parser: the common phrasings never need an LLM ----
@@ -5036,6 +5055,8 @@ def _build_character_sheet(char: Character) -> Dict[str, Any]:
         "id": char.id,
         "name": char.name,
         "race": char.race,
+        "creature_type": getattr(char, "creature_type", None) or "Humanoid",
+        "immunities": getattr(char, "immunities", None) or [],
         "char_class": char.char_class,
         "subclass": char.subclass,
         "level": char.level,
@@ -5084,6 +5105,16 @@ def _character_resource_block(character_id: int) -> str:
 
         # Survival state (HP, exhaustion, provisions) when enabled.
         cfg = get_config()
+        # Creature type + immunities — only when notable, so the common Humanoid
+        # case adds nothing. Cues the DM on targeting (Hold/Charm Person) + immunity.
+        _ct = getattr(char, "creature_type", None) or "Humanoid"
+        _imm = [str(x) for x in (getattr(char, "immunities", None) or [])]
+        if _ct.lower() != "humanoid" or _imm:
+            _ctl = f"Creature type: {_ct}"
+            if _imm:
+                _ctl += f" — immune to: {', '.join(_imm)} (never apply these)"
+            lines.append(_ctl)
+
         if cfg.survival.enabled:
             hp_line = f"HP: {char.current_hp}/{char.max_hp}"
             if char.current_hp <= 0 and not char.stable:
@@ -5972,11 +6003,14 @@ async def register_character(req: RegisterCharacterRequest):
                                    or (req.stats or {}).get("CON"))
         start_hp = max(1, die_faces + con_mod)
         surv = get_config().survival
+        ctype, cimmun = _race_type_and_immunities(session, req.race)
 
         char = Character(
             discord_user_id=req.discord_user_id,
             name=req.name,
             race=req.race,
+            creature_type=ctype,
+            immunities=cimmun or None,
             char_class=req.char_class,
             subclass=req.subclass,
             level=req.level,
@@ -6150,6 +6184,8 @@ def cc_options():
             "ability_bonuses": r.ability_bonuses or {},
             "choose_bonus": r.choose_bonus or [],
             "speed": r.speed, "size": r.size, "darkvision": bool(r.darkvision),
+            "creature_type": getattr(r, "creature_type", None) or "Humanoid",
+            "immunities": getattr(r, "immunities", None) or [],
             "languages": r.languages, "traits": r.traits or [],
             # 2024 additions: flavor lineages (no ASI) and any species-granted
             # feat choice ("origin" | "any").
@@ -6322,10 +6358,13 @@ def import_ddb_endpoint(req: DDBImportRequest):
         start_hp = max(1, int(hit_die[1:]) + con_mod)
         surv = get_config().survival
 
+        _ctype, _cimmun = _race_type_and_immunities(session, parsed.get("race"))
         char = Character(
             discord_user_id=req.discord_user_id,
             name=parsed["name"],
             race=parsed.get("race"),
+            creature_type=_ctype,
+            immunities=_cimmun or None,
             char_class=parsed.get("char_class"),
             subclass=None,                       # chosen in-system at subclass level
             level=1,
@@ -6539,6 +6578,52 @@ _DEFAULT_NPC_STATS = {
     "strength": 14, "dexterity": 13, "constitution": 14,
     "intelligence": 10, "wisdom": 12, "charisma": 10,
 }
+
+
+# Immunity keys are normalized so "poison"/"poisoned" and "disease"/"diseased"
+# collapse together — species traits and DM narration phrase them either way.
+_IMMUNITY_ALIASES = {
+    "poison": "poisoned", "poisoned": "poisoned",
+    "disease": "disease", "diseased": "disease",
+    "charm": "charmed", "charmed": "charmed",
+    "fright": "frightened", "frightened": "frightened",
+    "exhaust": "exhaustion", "exhaustion": "exhaustion",
+    "paralyze": "paralyzed", "paralyzed": "paralyzed",
+    "sleep": "sleep", "magical sleep": "sleep",
+}
+
+
+def _normalize_immunity(key: str) -> str:
+    k = str(key or "").strip().lower()
+    return _IMMUNITY_ALIASES.get(k, k)
+
+
+def _char_immunities(char: Character) -> set:
+    return {_normalize_immunity(x) for x in (getattr(char, "immunities", None) or [])}
+
+
+def _char_immune(char: Character, key: str) -> bool:
+    """True if the character is immune to a condition/effect (normalized key)."""
+    return _normalize_immunity(key) in _char_immunities(char)
+
+
+def _race_type_and_immunities(session: Session, race_name: Optional[str]) -> tuple[str, list]:
+    """Resolve a species' creature type + trait-granted immunities from rules_race.
+    Defaults to ('Humanoid', []) for an unknown/blank species."""
+    if not race_name:
+        return ("Humanoid", [])
+    try:
+        from rules.models import Race as _Race
+        want = str(race_name).strip().lower()
+        row = session.exec(select(_Race).where(func.lower(_Race.name) == want)).first()
+        if row is None:
+            row = session.exec(select(_Race).where(
+                _Race.index_slug == slugify(race_name))).first()
+        if row is not None:
+            return (row.creature_type or "Humanoid", list(row.immunities or []))
+    except Exception as e:
+        print(f"[creature-type lookup] {e}")
+    return ("Humanoid", [])
 
 
 def _pc_entity_slug(char: Character) -> str:
@@ -7960,6 +8045,12 @@ async def survival_consume_day(req: ConsumeDayRequest):
         char.water = result["water"]
         char.days_without_food = result["days_without_food"]
         char.days_without_water = result["days_without_water"]
+        # Immune species never gain exhaustion from deprivation — the days still
+        # tick (harmless) but the exhaustion level is held.
+        if _char_immune(char, "exhaustion") and result["exhaustion"] > char.exhaustion:
+            result["exhaustion"] = char.exhaustion
+            result["exhaustion_gained"] = 0
+            result["immune_to_exhaustion"] = True
         char.exhaustion = result["exhaustion"]
         food_left, water_left = _provision_totals(char)
         result["provisions_days"] = {"food": food_left, "water": water_left}
@@ -8083,16 +8174,21 @@ async def survival_exhaustion(req: ExhaustionRequest):
         char = session.get(Character, req.character_id)
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
+        # Immune species (Undead/Construct nature) never accrue exhaustion — an
+        # increase is a no-op; lowering/clearing still works. (add_/remove_exhaustion
+        # return a dict; take ["level"].)
+        immune = _char_immune(char, "exhaustion")
         if req.set_to is not None:
-            char.exhaustion = max(0, min(6, req.set_to))
+            char.exhaustion = 0 if immune else max(0, min(6, req.set_to))
         elif req.delta >= 0:
-            char.exhaustion = add_exhaustion(char.exhaustion, req.delta)
+            char.exhaustion = char.exhaustion if immune \
+                else add_exhaustion(char.exhaustion, req.delta)["level"]
         else:
-            char.exhaustion = remove_exhaustion(char.exhaustion, -req.delta)
+            char.exhaustion = remove_exhaustion(char.exhaustion, -req.delta)["level"]
         session.add(char)
         session.commit()
         session.refresh(char)
-        return {"status": "ok", "exhaustion": char.exhaustion,
+        return {"status": "ok", "exhaustion": char.exhaustion, "immune": immune,
                 "description": describe_exhaustion(char.exhaustion)}
 
 

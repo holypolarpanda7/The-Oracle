@@ -141,6 +141,12 @@ class Race(SQLModel, table=True):
 
     speed: int = Field(default=30, sa_column=Column(Integer))
     size: str = Field(default="Medium", sa_column=Column(String))
+    # Creature type (2024) — almost all playable species are "Humanoid"; owned/
+    # homebrew species may be Construct, Undead, Fey, etc. Used for targeting.
+    creature_type: str = Field(default="Humanoid", sa_column=Column(String))
+    # Condition/effect immunities granted by this species' traits (lowercase keys,
+    # e.g. "poisoned", "disease", "charmed"). Empty for the SRD Humanoid species.
+    immunities: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     darkvision: bool = Field(default=False)
     languages: Optional[str] = Field(default=None, sa_column=Column(String))
     # One-line trait summaries: ["Fey Ancestry: advantage vs charm...", ...]
