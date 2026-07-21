@@ -2014,12 +2014,6 @@ def _rest_gate(session_id: Optional[str], character_id: int, kind: str, force: b
     })
 
 
-def _ceil_int(x: float) -> int:
-    """Smallest int >= x (avoids importing math for one call)."""
-    i = int(x)
-    return i + 1 if x > i else i
-
-
 def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
     """Pull quest-control hooks out of the narration. Returns (clean, ops)."""
     ops: list[dict] = []
@@ -4617,6 +4611,114 @@ _LIGHT_SOURCE_ITEMS = {
     "lamp": "lamp",
 }
 
+# Food/water provisions map to inventory items (the same idea as light sources
+# mapping to a burnable item). Each provision item yields whole "days" of food
+# and/or water per unit; some items count as BOTH — a bowl of soup feeds AND
+# hydrates. Quantity is the day count ("Rations" x5 = 5 days). The rations/water
+# integer counters are the fallback stock when no matching item is carried, so a
+# long rest can draw on either. Rules are checked in order (both -> food -> water)
+# and the first keyword match wins, so "freshwater fish" reads as food, not water.
+_PROVISION_RULES: list[tuple[tuple[str, ...], int, int]] = [
+    # Both food AND water (soups/stews, water-rich produce).
+    (("soup", "stew", "broth", "chowder", "porridge", "pottage", "gruel", "bisque",
+      "watermelon", "coconut", "melon"), 1, 1),
+    # Food only.
+    (("ration", "hardtack", "pemmican", "jerky", "dried meat", "dried fruit",
+      "trail mix", "trail food", "bread", "biscuit", "cheese", "meat", "fish",
+      "fruit", "berries", "nuts", "grain", "sausage", "egg", "vegetable",
+      "provisions", "foodstuff", "food"), 1, 0),
+    # Water / drink only.
+    (("waterskin", "water skin", "water bottle", "canteen", "flask of water",
+      "water", "ale", "beer", "wine", "mead", "cider", "milk"), 0, 1),
+]
+
+
+def _provision_profile(name: str) -> tuple[int, int]:
+    """(food_per_unit, water_per_unit) for an item name; (0, 0) if not a provision."""
+    n = _normalize_item_name(name)
+    if not n:
+        return (0, 0)
+    for kws, f, w in _PROVISION_RULES:
+        if any(k in n for k in kws):
+            return (f, w)
+    return (0, 0)
+
+
+def _item_units(it: Dict[str, Any]) -> int:
+    """A provision line's day-count (its quantity, min 1)."""
+    try:
+        return max(1, int(it.get("quantity", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _provision_totals(char: Character) -> tuple[int, int]:
+    """Total available (food_days, water_days) from inventory items + the counters."""
+    food = int(char.rations or 0)
+    water = int(char.water or 0)
+    for it in _inventory_items(char):
+        f, w = _provision_profile(str(it.get("name", "")))
+        if not (f or w):
+            continue
+        units = _item_units(it)
+        food += f * units
+        water += w * units
+    return (food, water)
+
+
+def _consume_one_day_provisions(char: Character) -> Dict[str, Any]:
+    """Consume one day of food + water for a long rest, preferring inventory items
+    (a both-item like soup covers both at once) and falling back to the rations/water
+    counters. Mutates char.inventory / char.rations / char.water in place.
+
+    Returns {fed, food_available, water_available, used:[names]}. ``fed`` is True only
+    when BOTH food and water were available (a rest is fed-and-watered or it isn't)."""
+    food_avail, water_avail = _provision_totals(char)
+    if food_avail < 1 or water_avail < 1:
+        return {"fed": False, "food_available": food_avail,
+                "water_available": water_avail, "used": []}
+    inv = _inventory_items(char)
+    used: List[str] = []
+
+    def take(idx: int) -> None:
+        it = inv[idx]
+        q = _item_units(it)
+        if q > 1:
+            it["quantity"] = q - 1
+        else:
+            inv.pop(idx)
+        used.append(str(it.get("name", "provisions")))
+
+    need_food = need_water = True
+    # A single both-item (soup/stew) satisfies both needs in one serving.
+    for i, it in enumerate(inv):
+        f, w = _provision_profile(str(it.get("name", "")))
+        if f and w:
+            take(i)
+            need_food = need_water = False
+            break
+    if need_food:
+        for i, it in enumerate(inv):
+            f, w = _provision_profile(str(it.get("name", "")))
+            if f:
+                take(i)
+                need_food = False
+                break
+        if need_food:
+            char.rations = max(0, int(char.rations or 0) - 1)
+    if need_water:
+        for i, it in enumerate(inv):
+            f, w = _provision_profile(str(it.get("name", "")))
+            if w:
+                take(i)
+                need_water = False
+                break
+        if need_water:
+            char.water = max(0, int(char.water or 0) - 1)
+    char.inventory = inv
+    return {"fed": True, "food_available": food_avail,
+            "water_available": water_avail, "used": used}
+
 
 def _format_inventory(char: Character) -> Dict[str, Any]:
     """Structured inventory payload rendered from the character's stored items."""
@@ -4988,7 +5090,11 @@ def _character_resource_block(character_id: int) -> str:
                 f"Hit Dice: {char.hit_dice_remaining}/{char.hit_dice_total}{char.hit_die}")
             if char.exhaustion:
                 lines.append(f"Exhaustion: {describe_exhaustion(char.exhaustion)}")
-            lines.append(f"Provisions: {char.rations} rations, {char.water} water")
+            _food_days, _water_days = _provision_totals(char)
+            lines.append(
+                f"Provisions: ~{_food_days} day(s) food, ~{_water_days} day(s) water "
+                f"on hand (incl. carried food/drink; {char.rations} loose rations, "
+                f"{char.water} loose water)")
             if char.inspiration:
                 lines.append("Has Inspiration.")
 
@@ -8023,22 +8129,22 @@ async def survival_long_rest_endpoint(req: RestRequest):
         char = session.get(Character, req.character_id)
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
-        # Provisions are real: eating on a long rest requires rations & water on hand.
-        # ate_and_drank is the PC's intent; effective eating also needs the goods (when
-        # survival tracking is on). Without them, the rest still happens but deprivation
-        # does not reset and exhaustion recovery is denied.
+        # Provisions are real: eating on a long rest requires food & water actually on
+        # hand — carried inventory items (rations, a waterskin, a bowl of soup that
+        # counts as both) OR the rations/water counters. ate_and_drank is the PC's
+        # intent; effective eating also needs the goods (when survival tracking is on).
+        # Without them the rest still happens, but deprivation does not reset and the
+        # exhaustion recovery is denied.
         surv = get_config().survival
         wants_food = bool(req.ate_and_drank)
         provisions_short = False
+        consumed: Dict[str, Any] = {"used": []}
         if surv.enabled and wants_food:
-            food_need = max(1, _ceil_int(surv.food_per_day))
-            water_need = max(1, _ceil_int(surv.water_per_day))
-            has_provisions = char.rations >= food_need and char.water >= water_need
-            effective_ate = has_provisions
-            provisions_short = not has_provisions
+            consumed = _consume_one_day_provisions(char)
+            effective_ate = bool(consumed["fed"])
+            provisions_short = not effective_ate
         else:
             effective_ate = wants_food  # tracking off, or fasting by choice
-            food_need = water_need = 0
         result = survival_long_rest(
             current_hp=char.current_hp,
             max_hp=char.max_hp,
@@ -8050,17 +8156,19 @@ async def survival_long_rest_endpoint(req: RestRequest):
         char.current_hp = result["current_hp"]
         char.hit_dice_remaining = result["hit_dice_remaining"]
         char.exhaustion = result["exhaustion"]
-        # A long rest resets deprivation only if actually fed and watered — and that
-        # consumes provisions from the pack.
-        if effective_ate and surv.enabled and (food_need or water_need):
-            char.rations = max(0, char.rations - food_need)
-            char.water = max(0, char.water - water_need)
+        # A long rest resets deprivation only if actually fed and watered
+        # (_consume_one_day_provisions already drew the day's food/water from the
+        # inventory items and/or the counters).
         if effective_ate:
             char.days_without_food = 0
             char.days_without_water = 0
         result["ate_and_drank"] = effective_ate
+        food_left, water_left = _provision_totals(char)
         result["rations"] = char.rations
         result["water"] = char.water
+        result["provisions_days"] = {"food": food_left, "water": water_left}
+        if consumed.get("used"):
+            result["provisions_used"] = consumed["used"]
         if provisions_short:
             result["provisions_short"] = True
             result["note"] = (result.get("note", "") + " No provisions on hand — the "
