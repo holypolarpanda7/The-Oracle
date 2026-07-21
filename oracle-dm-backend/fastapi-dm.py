@@ -41,6 +41,7 @@ from eight_card_system.extraction import extract_and_apply
 from eight_card_system.models import (
     Entity as WorldEntity, Relation as WorldRelation, WorldEvent,
     EntityType, RelationType, Attitude, CompanionControl, NpcAttr, attitude_for_trust,
+    QuestState,
 )
 from rules import (
     RulesLibrary,
@@ -1688,6 +1689,220 @@ def process_puzzle_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list
                 changed = True
     if changed:
         _set_session_meta(session_id, meta)
+    return notes
+
+
+# QUEST hooks: the adventure-structuring layer. Players stay free; when the DM
+# RECOGNIZES a player goal it may structure an adventure around it — a conflict
+# (goal vs an opposing force), stakes, and a few objectives/leads offering
+# multiple paths — stored as scaffold on a QUEST world-entity. The scaffold is
+# advisory context, never a script; side quests and downtime run alongside, and
+# the world clock keeps turning so ignored quests can escalate through stakes.
+#   [[QUEST: open | <name> | main|side|rumor | <conflict: goal vs opposing force>]]
+#   [[QUEST: conflict | <name> | <goal vs opposing force>]]
+#   [[QUEST: stakes | <name> | <what worsens if ignored>]]
+#   [[QUEST: patron | <name> | <who gave/drives it>]]
+#   [[QUEST: reward | <name> | <what completing it yields>]]
+#   [[QUEST: objective | <name> | <a step the party could take>]]
+#   [[QUEST: lead | <name> | <an open thread pointing somewhere>]]
+#   [[QUEST: done | <name> | <objective text or number>]]
+#   [[QUEST: advance | <name> | <progress note (logged to the world)>]]
+#   [[QUEST: branch | <parent> | <side-quest name> | <conflict>]]
+#   [[QUEST: resolve | <name> | completed|failed | <outcome>]]
+QUEST_HOOK_PATTERN = re.compile(r"\[\[QUEST:(.+?)\]\]", re.IGNORECASE)
+_QUEST_HOOK_ACTIONS = {"open", "conflict", "stakes", "patron", "reward",
+                       "objective", "lead", "done", "advance", "branch", "resolve"}
+_QUEST_TIERS = {"main", "side", "rumor"}
+
+# Compact, own-worded DMG-style guidance kept in view so the DM can recognize a
+# goal and give it shape without railroading. (Framework only — no book text.)
+_QUEST_GUIDE = (
+    "# Quests & player goals\n"
+    "Players are FREE — never railroad. When a player reveals a GOAL, you may "
+    "structure an adventure around it: open a quest with a CONFLICT (the goal vs a "
+    "force opposing it), STAKES (what worsens if it's ignored), and a few "
+    "OBJECTIVES/LEADS that offer MULTIPLE PATHS — social, exploration, and combat, "
+    "something for everyone. Advance it only as they actually pursue it; let side "
+    "quests and plain downtime breathe; end it with a clear resolution + reward. "
+    "The world clock keeps turning, so a neglected quest can escalate via its "
+    "stakes rather than wait politely.\n"
+    "Hooks: [[QUEST: open | name | main|side|rumor | conflict]], "
+    "[[QUEST: objective | name | step]], [[QUEST: lead | name | thread]], "
+    "[[QUEST: stakes | name | ...]], [[QUEST: patron | name | who]], "
+    "[[QUEST: reward | name | ...]], [[QUEST: done | name | objective]], "
+    "[[QUEST: advance | name | progress]], [[QUEST: branch | parent | side-quest | "
+    "conflict]], [[QUEST: resolve | name | completed|failed | outcome]]."
+)
+
+
+def _format_quests_block(quests: list) -> str:
+    """Render active/offered quests as OPTIONAL threads for the DM (scaffold view)."""
+    live = [q for q in quests
+            if str((getattr(q, "attributes", None) or {}).get("state", "active"))
+            in (QuestState.OFFERED, QuestState.ACTIVE)]
+    if not live:
+        return ""
+    lines = ["# Active quests (optional threads — never force these)"]
+    for q in live[:4]:
+        a = getattr(q, "attributes", None) or {}
+        tier = a.get("tier", "side")
+        state = a.get("state", "active")
+        head = f"- **{q.name}** [{tier}, {state}]"
+        if a.get("conflict"):
+            head += f" — {a['conflict']}"
+        lines.append(head)
+        open_objs = [o.get("text", "") for o in (a.get("objectives") or [])
+                     if isinstance(o, dict) and not o.get("done")]
+        if open_objs:
+            lines.append("    objectives: " + "; ".join(open_objs[:4]))
+        if a.get("leads"):
+            lines.append("    leads: " + "; ".join(str(l) for l in a["leads"][:4]))
+        if a.get("stakes"):
+            lines.append(f"    if ignored: {a['stakes']}")
+    return "\n".join(lines)
+
+
+def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull quest-control hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in QUEST_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").strip().lower()
+        if action not in _QUEST_HOOK_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = QUEST_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def _quest_attrs(name: str) -> dict:
+    q = world.get_entity(name)
+    return dict((getattr(q, "attributes", None) or {})) if q else {}
+
+
+def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[str]:
+    """Apply quest-scaffold ops to the world graph. Returns player-facing journal
+    notes for the milestones (opened / objective met / branched / resolved); the
+    structural fields (conflict/stakes/leads/patron/reward) update silently."""
+    if not ops:
+        return []
+    notes: list[str] = []
+    for op in ops:
+        action = op["action"]
+        args = op.get("args", [])
+        name = args[0] if args else ""
+        if not name:
+            continue
+        try:
+            if action == "open":
+                tier, conflict = "side", ""
+                for a in args[1:]:
+                    if a.lower() in _QUEST_TIERS:
+                        tier = a.lower()
+                    elif a:
+                        conflict = a
+                state = QuestState.OFFERED if tier == "rumor" else QuestState.ACTIVE
+                patch = {"state": state, "tier": tier}
+                if conflict:
+                    patch["conflict"] = conflict
+                ent = world.upsert_entity(name, EntityType.QUEST,
+                                          attributes=patch, tags=["quest"])
+                loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
+                if loc is not None:
+                    try:
+                        world.add_relation(ent, RelationType.LOCATED_AT, loc)
+                    except Exception:
+                        pass
+                world.add_event(f"Quest begun: {ent.name}", session_id=session_id)
+                notes.append(("📜 A rumor surfaces — " if tier == "rumor"
+                              else "📜 New quest — ") + f"**{ent.name}**")
+            elif action in ("conflict", "stakes", "patron", "reward"):
+                val = args[1] if len(args) > 1 else ""
+                if not val:
+                    continue
+                world.upsert_entity(name, EntityType.QUEST,
+                                    attributes={action: val}, tags=["quest"])
+                if action == "patron":
+                    giver, q = world.get_entity(val), world.get_entity(name)
+                    if giver is not None and q is not None:
+                        try:
+                            world.add_relation(giver, RelationType.GIVES_QUEST, q)
+                        except Exception:
+                            pass
+            elif action == "objective":
+                val = args[1] if len(args) > 1 else ""
+                if not val:
+                    continue
+                objs = list(_quest_attrs(name).get("objectives") or [])
+                objs.append({"text": val, "done": False})
+                world.upsert_entity(name, EntityType.QUEST,
+                                    attributes={"objectives": objs}, tags=["quest"])
+            elif action == "lead":
+                val = args[1] if len(args) > 1 else ""
+                if not val:
+                    continue
+                leads = list(_quest_attrs(name).get("leads") or [])
+                leads.append(val)
+                world.upsert_entity(name, EntityType.QUEST,
+                                    attributes={"leads": leads}, tags=["quest"])
+            elif action == "done":
+                val = args[1] if len(args) > 1 else ""
+                objs = list(_quest_attrs(name).get("objectives") or [])
+                matched = None
+                if val.isdigit() and 0 <= int(val) - 1 < len(objs):
+                    objs[int(val) - 1]["done"] = True
+                    matched = objs[int(val) - 1].get("text")
+                if matched is None:
+                    for o in objs:
+                        if val and val.lower() in str(o.get("text", "")).lower():
+                            o["done"] = True
+                            matched = o.get("text")
+                            break
+                world.upsert_entity(name, EntityType.QUEST,
+                                    attributes={"objectives": objs}, tags=["quest"])
+                if matched:
+                    notes.append(f"📜 *{name}:* {matched} ✓")
+            elif action == "advance":
+                val = args[1] if len(args) > 1 else ""
+                world.add_event(f"[{name}] {val}".strip(), session_id=session_id)
+            elif action == "branch":
+                child = args[1] if len(args) > 1 else ""
+                conflict = args[2] if len(args) > 2 else ""
+                if not child:
+                    continue
+                patch = {"state": QuestState.ACTIVE, "tier": "side", "parent": name}
+                if conflict:
+                    patch["conflict"] = conflict
+                c = world.upsert_entity(child, EntityType.QUEST,
+                                        attributes=patch, tags=["quest"])
+                parent = world.get_entity(name)
+                if parent is not None:
+                    try:
+                        world.add_relation(parent, RelationType.INVOLVES, c)
+                    except Exception:
+                        pass
+                notes.append(f"📜 New lead — **{c.name}**")
+            elif action == "resolve":
+                outcome = (args[1].lower() if len(args) > 1 else "completed")
+                text = args[2] if len(args) > 2 else ""
+                state = (QuestState.FAILED if outcome.startswith("fail")
+                         else QuestState.COMPLETED)
+                reward = _quest_attrs(name).get("reward") or ""
+                world.upsert_entity(name, EntityType.QUEST,
+                                    attributes={"state": state}, tags=["quest"])
+                world.add_event(f"Quest {state}: {name}" + (f" — {text}" if text else ""),
+                                session_id=session_id)
+                if state == QuestState.COMPLETED:
+                    notes.append(f"📜 Quest complete — **{name}**"
+                                 + (f". {reward}" if reward else ""))
+                else:
+                    notes.append(f"📜 Quest failed — **{name}**"
+                                 + (f". {text}" if text else ""))
+        except Exception as e:
+            print(f"[quest] op {action} failed: {e}")
     return notes
 
 
@@ -3680,6 +3895,19 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[puzzle context error] {e}")
 
+    # Quests: keep goal-recognition guidance in view, and surface active/offered
+    # threads near the PC as OPTIONAL structure (never a script).
+    try:
+        texts.append(_QUEST_GUIDE)
+        quests = [e for e in (getattr(ctx_obj, "entities", None) or [])
+                  if getattr(e, "type", None) == EntityType.QUEST]
+        if quests:
+            qblock = _format_quests_block(quests)
+            if qblock:
+                texts.append(qblock)
+    except Exception as e:
+        print(f"[quest context error] {e}")
+
     return ctx_obj, texts
 
 
@@ -4466,6 +4694,18 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(puzzle_notes)
         except Exception as e:
             print(f"[puzzle] hook processing failed: {e}")
+
+    # Quests: open/advance/branch/resolve the adventure scaffold the DM structures
+    # around a recognized player goal. Structural fields update silently; milestone
+    # journal notes (new quest, objective met, resolution) reach the players.
+    dm_text, quest_ops = extract_quest_hooks(dm_text)
+    if quest_ops:
+        try:
+            quest_notes = apply_quest_hooks(req.session_id, quest_ops, ctx_obj=ctx_obj)
+            if quest_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(quest_notes)
+        except Exception as e:
+            print(f"[quest] hook processing failed: {e}")
 
     # Keep the initiative tracker true to the narration: start fights, seat
     # combatants, record damage/healing, advance turns, end the battle.
