@@ -48,6 +48,8 @@ def _frontier_stub_specs(stub_rng: random.Random) -> list[dict]:
             scale_ceiling="poi", direction="west", miles=20.0,
             description="Steep grazing hills west of Millbrook, sheep trails and old cairns.",
             motifs=roll_motifs("hills", 3, rng=stub_rng),
+            # The old cairns make this a natural barrow/vault puzzle site (gate #1).
+            puzzle_tags=["ruin", "vault", "tomb", "mechanism"],
         ),
         dict(
             name="The South River Road", biome="river", danger="low",
@@ -78,19 +80,23 @@ def _seed_frontier_stubs(
         if not include_east and spec["direction"] == "east":
             continue
         coords = geo.from_origin(spec["direction"], spec["miles"])
+        stub_attrs = {
+            "stub": True,
+            "biome": spec["biome"],
+            "danger": spec["danger"],
+            "scale_ceiling": spec["scale_ceiling"],
+            "motifs": spec["motifs"],
+            "denizens": census.stub_denizens(spec["biome"], stub_rng),
+            "description": spec["description"],
+            "coords": geo.coords_attr(*coords),
+        }
+        if spec.get("puzzle_tags"):
+            stub_attrs["puzzle_site"] = True
+            stub_attrs["puzzle_tags"] = spec["puzzle_tags"]
         stub = graph.upsert_entity(
             spec["name"], EntityType.PLACE,
             subtype=PlaceScale.WILDS, status="unexplored",
-            attributes={
-                "stub": True,
-                "biome": spec["biome"],
-                "danger": spec["danger"],
-                "scale_ceiling": spec["scale_ceiling"],
-                "motifs": spec["motifs"],
-                "denizens": census.stub_denizens(spec["biome"], stub_rng),
-                "description": spec["description"],
-                "coords": geo.coords_attr(*coords),
-            },
+            attributes=stub_attrs,
             tags=["frontier", "stub", spec["biome"]],
         )
         graph.add_relation(
@@ -202,6 +208,10 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         attributes={
             "description": "A humble field-stone shrine to Chauntea tended by Millbrook's farmers.",
             "scale": "poi",
+            # A warded inner sanctum makes this a natural puzzle site (gate #1):
+            # the availability gate will offer riddle/altar puzzles here.
+            "puzzle_site": True,
+            "puzzle_tags": ["temple", "altar", "riddle-guardian", "glyph"],
         },
         tags=["temple", "poi", "faith"],
     )

@@ -13,6 +13,7 @@ OpenRouter code. Pass any ``call_llm(messages) -> str`` (the backend's
 from __future__ import annotations
 
 import json
+import re
 from typing import Callable, Optional
 
 from pydantic import BaseModel, Field
@@ -62,6 +63,27 @@ class WorldDelta(BaseModel):
     advance_days: int = 0
 
 
+def _normalize_puzzle_attrs(attrs: dict) -> None:
+    """Clean an extracted place's puzzle-site tagging in place (gate #1).
+
+    The DM brain's availability gate reads ``puzzle_site``/``puzzle_tags``; make
+    them robust to the extractor sending a stringy or comma-joined tag list, and
+    let a non-empty tag list imply ``puzzle_site``.
+    """
+    if "puzzle_tags" in attrs:
+        raw = attrs["puzzle_tags"]
+        if isinstance(raw, str):
+            raw = re.split(r"[,\s]+", raw)
+        tags = [str(t).strip().lower() for t in (raw or []) if str(t).strip()]
+        if tags:
+            attrs["puzzle_tags"] = tags
+            attrs["puzzle_site"] = True
+        else:
+            attrs.pop("puzzle_tags", None)
+    if "puzzle_site" in attrs:
+        attrs["puzzle_site"] = bool(attrs["puzzle_site"])
+
+
 # ----- Prompt -----
 
 _EXTRACTOR_SYSTEM = (
@@ -76,6 +98,14 @@ _EXTRACTOR_SYSTEM = (
     "- Movement: when a character goes somewhere, add a `located_in` relation to the "
     "new place (the graph closes the old one automatically).\n"
     "- Deaths/destruction: set the entity `status` to 'dead' or 'destroyed'.\n"
+    "- Puzzle sites: when the narration establishes a place as a puzzle, riddle, or "
+    "trial location — a warded or sealed door that must be solved to pass, a riddling "
+    "guardian, a mechanism/lock/altar test, a barrow or vault sealed by a challenge — "
+    "set that place's `attributes.puzzle_site` to true and `attributes.puzzle_tags` to "
+    "a short list of fitting setting words (e.g. \"tomb\", \"vault\", \"sealed-door\", "
+    "\"riddle-guardian\", \"temple\", \"altar\", \"mechanism\", \"glyph\"). Do this for "
+    "the place entity, new or existing. ONLY for genuine puzzle locations — not "
+    "ordinary rooms, shops, or fights.\n"
     "- Use `advance_days` only when significant in-world time passes (travel, rest, "
     "time-skips); otherwise 0.\n"
     "- Allowed entity types: place, npc, faction, item, quest, event, pc.\n"
@@ -662,6 +692,8 @@ def apply_world_delta(
             attrs = ed.attributes or {}
             if "scale" in attrs:
                 subtype = _subtype_for_scale(attrs.get("scale"))
+            if ed.attributes:
+                _normalize_puzzle_attrs(ed.attributes)
         key = ed.name.strip().lower()
         target_slug = resolution.get(key)
         if target_slug:
