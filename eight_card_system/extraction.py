@@ -84,6 +84,26 @@ def _normalize_puzzle_attrs(attrs: dict) -> None:
         attrs["puzzle_site"] = bool(attrs["puzzle_site"])
 
 
+_QUEST_TIERS = {"main", "side", "rumor"}
+_QUEST_STATES = {"offered", "active", "completed", "failed"}
+
+
+def _normalize_quest_attrs(attrs: dict, today: int) -> None:
+    """Sane defaults for an extractor-minted quest thread (player goal recognition).
+
+    Keeps the lightweight thread compatible with the DM's [[QUEST]] scaffold: a
+    valid tier/state, a touch timestamp so the stakes clock doesn't misfire, and a
+    goal_source marker so the DM knows the players named it. Never adds stakes —
+    a recognized goal presses only once the DM gives it stakes."""
+    tier = str(attrs.get("tier", "")).strip().lower()
+    attrs["tier"] = tier if tier in _QUEST_TIERS else "side"
+    state = str(attrs.get("state", "")).strip().lower()
+    attrs["state"] = state if state in _QUEST_STATES else "active"
+    if attrs.get("goal_source"):
+        attrs["goal_source"] = str(attrs["goal_source"]).strip().lower()
+    attrs.setdefault("last_touched_day", today)
+
+
 # ----- Prompt -----
 
 _EXTRACTOR_SYSTEM = (
@@ -98,6 +118,18 @@ _EXTRACTOR_SYSTEM = (
     "- Movement: when a character goes somewhere, add a `located_in` relation to the "
     "new place (the graph closes the old one automatically).\n"
     "- Deaths/destruction: set the entity `status` to 'dead' or 'destroyed'.\n"
+    "- Player goals: when the player's action STATES or clearly implies a goal they "
+    "mean to pursue (\"I want to find the stolen relic\", \"we should clear the mine of "
+    "goblins\", \"I'll hunt the bandit who killed my sister\"), record it as a `quest` "
+    "entity naming that goal. Set attributes.goal_source to \"player\"; "
+    "attributes.state to \"active\" (or \"offered\" if they're only musing); "
+    "attributes.tier to \"main\" for a driving personal goal, else \"side\"; and "
+    "attributes.conflict to the goal in a few words. REUSE an existing quest's exact "
+    "name if it's the same goal — never duplicate a thread. Keep it LIGHT: do not "
+    "invent objectives, stakes, patrons, or NPCs (the DM fleshes those out in play). "
+    "Connect the new quest with an `involves` relation from the quest to the pc so it "
+    "surfaces near the player. Only record a REAL intention — not idle chatter, "
+    "questions, or things the DM merely offered.\n"
     "- Puzzle sites: when the narration establishes a place as a puzzle, riddle, or "
     "trial location — a warded or sealed door that must be solved to pass, a riddling "
     "guardian, a mechanism/lock/altar test, a barrow or vault sealed by a challenge — "
@@ -694,6 +726,8 @@ def apply_world_delta(
                 subtype = _subtype_for_scale(attrs.get("scale"))
             if ed.attributes:
                 _normalize_puzzle_attrs(ed.attributes)
+        elif ed.type == "quest" and ed.attributes:
+            _normalize_quest_attrs(ed.attributes, graph.current_day())
         key = ed.name.strip().lower()
         target_slug = resolution.get(key)
         if target_slug:

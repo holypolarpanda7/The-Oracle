@@ -1751,6 +1751,8 @@ def _format_quests_block(quests: list) -> str:
         tier = a.get("tier", "side")
         state = a.get("state", "active")
         head = f"- **{q.name}** [{tier}, {state}]"
+        if a.get("goal_source") == "player":
+            head += " (the players named this goal)"
         if a.get("conflict"):
             head += f" — {a['conflict']}"
         lines.append(head)
