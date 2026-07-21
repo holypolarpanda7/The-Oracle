@@ -102,7 +102,8 @@ class SurvivalConfig:
     # Forced march: travelling beyond this many hours/day risks exhaustion.
     forced_march_hours: int = 8
     forced_march_dc: int = 10
-    # Environmental hazard saving-throw DCs (Constitution).
+    # Environmental hazard saving-throw DCs (Constitution). Values follow the 2024
+    # Environmental Effects in SRD 5.2 (CC-BY-4.0); DCs are game facts, no book text.
     extreme_cold_dc: int = 10             # per hour without cold-weather gear
     extreme_heat_dc_base: int = 5         # +1 per hour (see extreme_heat_dc_per_hour)
     extreme_heat_dc_per_hour: int = 1

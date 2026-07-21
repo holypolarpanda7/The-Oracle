@@ -79,6 +79,9 @@ class PCProfile:
     # Reaction spells the engine may auto-cast when they change the outcome
     # (today: "shield" — +5 AC flips a hit into a miss).
     reaction_spells: set[str] = field(default_factory=set)
+    # 2024 Exhaustion level (0-6): applies -2 x level to this PC's D20 Tests
+    # (attack rolls, saving throws, ability checks) — never to DCs or damage.
+    exhaustion: int = 0
 
 
 # Class features the engine resolves mechanically. "per_encounter": how many
@@ -126,8 +129,9 @@ _CONSUMABLE_HEALS = {
 _CONSUMABLE_TEMPS = {"potion of heroism": 10}
 
 # Conditions that shape the attack advantage matrix.
-_ATTACKER_DISADV = {"poisoned", "prone", "restrained", "blinded", "frightened",
-                    "exhaustion"}
+# 2024: Exhaustion is no longer a disadvantage tag — it's a -2 x level penalty to
+# every D20 Test, applied numerically via CombatEngine._exh_pen.
+_ATTACKER_DISADV = {"poisoned", "prone", "restrained", "blinded", "frightened"}
 _TARGET_GIVES_ADV = {"restrained", "stunned", "paralyzed", "unconscious",
                      "petrified", "blinded", "faerie fire"}
 _CANNOT_ACT = {"incapacitated", "stunned", "paralyzed", "unconscious", "petrified"}
@@ -276,6 +280,15 @@ class CombatEngine:
                      "cha": m.charisma}.get(key)
             return ability_modifier(score) if score is not None else 0
         return c.dex_mod if key == "dex" else 0
+
+    def _exh_pen(self, c: Combatant, profiles: dict[int, PCProfile]) -> int:
+        """2024 Exhaustion penalty on a creature's D20 Test: -2 x level. Applied at
+        every roll site (attacks, saves, checks) but NEVER to DCs, passive scores, or
+        damage. Monster exhaustion isn't modeled numerically, so it returns 0."""
+        if c.character_id and profiles and c.character_id in profiles:
+            lvl = max(0, min(6, int(getattr(profiles[c.character_id], "exhaustion", 0) or 0)))
+            return -2 * lvl
+        return 0
 
     def _attack_profile(self, c: Combatant, weapon: str,
                         profiles: dict[int, PCProfile]) -> Optional[dict]:
@@ -666,7 +679,10 @@ class CombatEngine:
         self.tracker.update_economy(enemy.id, reaction_used=True)
         adv, dis, notes = self._attack_advantage(enemy, mover, False, encounter_id)
         eff_ac = self._eff_ac(mover)
-        atk = attack_roll(mprof["attack_bonus"], eff_ac, advantage=adv,
+        oa_exh = self._exh_pen(enemy, profiles)
+        if oa_exh:
+            notes.append(f"Exhaustion {oa_exh}")
+        atk = attack_roll(mprof["attack_bonus"] + oa_exh, eff_ac, advantage=adv,
                           disadvantage=dis,
                           label=f"Opportunity attack ({enemy.name})",
                           rng=self.rng)
@@ -784,6 +800,7 @@ class CombatEngine:
         keep: list[dict] = []
         for sv in saves:
             mod = self._ability_mod(fresh, sv.get("ability") or "con", profiles)
+            mod += self._exh_pen(fresh, profiles)
             res = saving_throw(mod, dc=int(sv.get("dc") or 10),
                                label=f"{(sv.get('ability') or '?').upper()} save "
                                      f"({fresh.name})", rng=self.rng)
@@ -913,6 +930,10 @@ class CombatEngine:
             d4 = damage_roll("1d4", rng=self.rng).total
             atk_bonus -= d4
             notes.append(f"Bane -{d4}")
+        exh = self._exh_pen(actor, profiles)
+        if exh:
+            atk_bonus += exh
+            notes.append(f"Exhaustion {exh}")
         eff_ac = self._eff_ac(target)
         atk = attack_roll(atk_bonus, eff_ac, advantage=adv,
                           disadvantage=dis, label=f"{prof['name']} ({actor.name})",
@@ -1175,6 +1196,7 @@ class CombatEngine:
         if actor.character_id and actor.character_id in profiles \
                 and "stealth" in profiles[actor.character_id].skills:
             mod += profiles[actor.character_id].prof
+        mod += self._exh_pen(actor, profiles)
         # Contested by the sharpest enemy's passive Perception.
         best_pp = 10
         for other in self.tracker.order(encounter_id):
@@ -1199,8 +1221,10 @@ class CombatEngine:
         if actor.character_id and actor.character_id in profiles \
                 and "athletics" in profiles[actor.character_id].skills:
             a_mod += profiles[actor.character_id].prof
+        a_mod += self._exh_pen(actor, profiles)
         t_mod = max(self._ability_mod(target, "str", profiles),
                     self._ability_mod(target, "dex", profiles))
+        t_mod += self._exh_pen(target, profiles)
         a = ability_check(a_mod, label=f"{label} ({actor.name})", rng=self.rng)
         t = ability_check(t_mod, label=f"contest ({target.name})", rng=self.rng)
         rolls = [self._roll_dict(f"{label} — {actor.name}", a.detail, a.total),
@@ -1375,6 +1399,10 @@ class CombatEngine:
                      else 2 + self._ability_mod(actor, "cha", profiles))
             adv, dis, notes = self._attack_advantage(
                 actor, target, sp.attack_type != "melee", encounter_id)
+            exh = self._exh_pen(actor, profiles)
+            if exh:
+                bonus += exh
+                notes.append(f"Exhaustion {exh}")
             eff_ac = self._eff_ac(target)
             atk = attack_roll(bonus, eff_ac, advantage=adv, disadvantage=dis,
                               label=f"{sp.name} ({actor.name})", rng=self.rng)
@@ -1418,6 +1446,7 @@ class CombatEngine:
             results: list[dict] = []
             for tgt in targets:
                 t_mod = self._ability_mod(tgt, sp.dc_type, profiles)
+                t_mod += self._exh_pen(tgt, profiles)
                 save = saving_throw(t_mod, dc=dc,
                                     label=f"{sp.dc_type.upper()} save ({tgt.name})",
                                     rng=self.rng)
@@ -1524,6 +1553,7 @@ class CombatEngine:
                       r"(?:vs|dc)\s*(\d+)", desc.lower())
         if m:
             mod = self._ability_mod(actor, m.group(1), profiles)
+            mod += self._exh_pen(actor, profiles)
             chk = ability_check(mod, dc=int(m.group(2)),
                                 label=f"{m.group(1).upper()} check ({actor.name})",
                                 rng=self.rng)

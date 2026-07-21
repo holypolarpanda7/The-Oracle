@@ -2787,7 +2787,8 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         character_id=char.id, name=char.name, level=lvl, ability_mods=mods,
         prof=pb, skills=skills, weapons=weapons, attacks_per_action=attacks,
         features=features, spell_attack_bonus=spell_atk, spell_dc=spell_dc,
-        spell_mod=cast_key, slots=slots, reaction_spells=reaction_spells)
+        spell_mod=cast_key, slots=slots, reaction_spells=reaction_spells,
+        exhaustion=int(char.exhaustion or 0))
 
 
 # ---- deterministic pre-parser: the common phrasings never need an LLM ----
@@ -4809,13 +4810,9 @@ def _base_walk_speed(char: Character) -> int:
     return 30
 
 
-def _exhaustion_speed_multiplier(level: Optional[int]) -> float:
-    lvl = int(level or 0)
-    if lvl >= 5:
-        return 0.0
-    if lvl >= 2:
-        return 0.5
-    return 1.0
+def _exhaustion_speed_penalty_ft(level: Optional[int]) -> int:
+    """2024: Speed is reduced by 5 ft x Exhaustion level (SRD 5.2)."""
+    return 5 * max(0, min(6, int(level or 0)))
 
 
 def _physical_capabilities(char: Character) -> Dict[str, Any]:
@@ -4843,11 +4840,11 @@ def _physical_capabilities(char: Character) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Exhaustion speed effect (halved at 2, zero at 5).
-    mult = _exhaustion_speed_multiplier(char.exhaustion)
-    if mult < 1.0:
-        speed = int(speed * mult)
-        notes.append("Exhaustion reduces speed.")
+    # Exhaustion speed effect (2024: -5 ft per level).
+    ex_pen = _exhaustion_speed_penalty_ft(char.exhaustion)
+    if ex_pen:
+        speed = max(0, speed - ex_pen)
+        notes.append(f"Exhaustion reduces speed by {ex_pen} ft.")
 
     long_jump_run = str_score
     high_jump_run = max(0, 3 + str_mod)

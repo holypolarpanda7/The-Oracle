@@ -1,8 +1,11 @@
 """Environmental hazards: extreme cold/heat, strong wind, frigid water.
 
-Each hazard exposes the Constitution save DC (from ``config.survival``) and the
-consequence of failure. Callers roll the save with the dice layer and pass the
-result to ``resolve`` to get the mechanical outcome (usually +1 exhaustion).
+Own-worded implementations of the 2024 Environmental Effects (SRD 5.2, CC-BY-4.0)
+— e.g. extreme cold is a DC 10 Constitution save each hour or 1 Exhaustion, extreme
+heat is DC 5 rising +1 per hour. Each hazard exposes the Constitution save DC (from
+``config.survival``) and the consequence of failure; callers roll the save with the
+dice layer and pass the result to ``resolve`` for the mechanical outcome (usually
++1 exhaustion). No book text or tables are reproduced — DCs are game facts.
 """
 from __future__ import annotations
 

@@ -1,8 +1,11 @@
-"""The exhaustion ladder (6 levels) and its recovery.
+"""The Exhaustion condition (2024 rules) and its recovery.
 
-The SRD tracks exhaustion as six cumulative levels. We keep the *level* as an
-integer on the character; this module turns a level into its mechanical effects
-and handles gaining/losing levels (a long rest with food & water removes one).
+2024 Exhaustion (from SRD 5.2, CC-BY-4.0) replaced the 2014 six-effect ladder
+with a single scaling penalty: while you have Exhaustion, every D20 Test is
+reduced by 2 x your Exhaustion level, and your Speed is reduced by 5 ft x your
+level. There are still six levels; level 6 is death. We keep the *level* as an
+integer on the character; this module turns a level into its effects and handles
+gaining/losing levels (a long rest removes one).
 """
 from __future__ import annotations
 
@@ -12,25 +15,34 @@ from game_config import get_config
 
 MAX_EXHAUSTION = 6
 
-# Cumulative effects: level N includes every effect at or below N.
-_LEVEL_EFFECTS: Dict[int, str] = {
-    1: "Disadvantage on ability checks",
-    2: "Speed halved",
-    3: "Disadvantage on attack rolls and saving throws",
-    4: "Hit point maximum halved",
-    5: "Speed reduced to 0",
-    6: "Death",
-}
-
 
 def clamp_level(level: int) -> int:
     return max(0, min(MAX_EXHAUSTION, int(level)))
 
 
+def d20_penalty(level: int) -> int:
+    """2024: every D20 Test (ability checks, attack rolls, saving throws) is
+    reduced by 2 x the Exhaustion level. Returned as a NEGATIVE number to add to
+    a roll. Does NOT apply to save DCs, damage, or passive scores."""
+    return -2 * clamp_level(level)
+
+
+def speed_reduction_feet(level: int) -> int:
+    """2024: Speed is reduced by 5 ft x the Exhaustion level (positive feet)."""
+    return 5 * clamp_level(level)
+
+
 def effects_for_level(level: int) -> List[str]:
-    """All active effects at a given exhaustion level (cumulative)."""
-    level = clamp_level(level)
-    return [_LEVEL_EFFECTS[n] for n in range(1, level + 1)]
+    """The active effects at a given Exhaustion level (2024 scaling model)."""
+    lvl = clamp_level(level)
+    if lvl <= 0:
+        return []
+    if lvl >= MAX_EXHAUSTION:
+        return ["Death"]
+    return [
+        f"-{2 * lvl} to all D20 Tests (ability checks, attack rolls, saving throws)",
+        f"Speed reduced by {5 * lvl} ft",
+    ]
 
 
 def add_exhaustion(level: int, amount: int = 1) -> Dict:
@@ -54,26 +66,14 @@ def remove_exhaustion(level: int, amount: int = 1) -> Dict:
     }
 
 
-def hp_max_multiplier(level: int) -> float:
-    """0.5 once exhaustion reaches level 4+, else 1.0 (for max-HP halving)."""
-    return 0.5 if clamp_level(level) >= 4 else 1.0
-
-
-def speed_multiplier(level: int) -> float:
-    lvl = clamp_level(level)
-    if lvl >= 5:
-        return 0.0
-    if lvl >= 2:
-        return 0.5
-    return 1.0
-
-
 def describe(level: int) -> str:
     lvl = clamp_level(level)
     if lvl == 0:
         return "No exhaustion."
-    effects = "; ".join(effects_for_level(lvl))
-    return f"Exhaustion {lvl}/{MAX_EXHAUSTION}: {effects}."
+    if lvl >= MAX_EXHAUSTION:
+        return f"Exhaustion {lvl}/{MAX_EXHAUSTION}: Death."
+    return (f"Exhaustion {lvl}/{MAX_EXHAUSTION}: -{2 * lvl} to all D20 Tests "
+            f"(checks, attacks, saves); Speed -{5 * lvl} ft.")
 
 
 def long_rest_recovery(level: int, *, ate_and_drank: bool) -> Dict:
