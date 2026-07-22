@@ -2775,6 +2775,78 @@ def process_divine_hooks(session_id: str, ops: list[dict]) -> list[str]:
     return notes
 
 
+# =====================  ESTABLISHED LORE  =================================
+# When the DM narrates the *why* behind a standing relationship (why a god and a
+# devil feud, why two houses are sworn allies) or a defining legend about one
+# power/person, that "why" must persist — or a second player asking the same
+# question later gets a different, contradictory tale. The DM marks it and the
+# backend stamps a BOUNDED reason onto the relationship edge (or a short legend on
+# the entity). Memory-cheap by design: one short string, no new nodes/edges. It is
+# rendered back in the world-context so the DM stays consistent. Syntax:
+#   [[LORE: Subject | Object | the established reason ...]]   (a relationship's why)
+#   [[LORE: Subject | the established legend ...]]            (one entity's lore)
+LORE_HOOK_PATTERN = re.compile(r"\[\[LORE:(.+?)\]\]", re.IGNORECASE)
+
+_LORE_GUIDE = (
+    "ESTABLISHED LORE. When you state, as settled world-truth, WHY two powers/"
+    "people/factions stand as they do (a feud's origin, why they are sworn "
+    "allies) or a defining legend about ONE of them, record it so it stays "
+    "consistent for every player: [[LORE: Subject | Object | the reason in one "
+    "sentence]] for a relationship, or [[LORE: Subject | the legend in one "
+    "sentence]] for a single power/person/place. Keep it to ONE terse sentence of "
+    "the durable why — not the whole scene. Record only lore you are treating as "
+    "TRUE canon, never a rumor a character might be lying about, and only the "
+    "first time it's established (it is already remembered afterward)."
+)
+
+# Moderately broad gating — 'why do they hate each other' / origin-of-a-feud
+# scenes are common, but this stays off ordinary action turns.
+_LORE_KEYWORDS = (
+    "why do", "why does", "why are", "why did", "the reason", "long ago",
+    "ages ago", "legend", "the tale of", "the story of", "feud", "grudge",
+    "betray", "history between", "ancient", "wronged", "sworn enemy",
+    "sworn allies", "old grudge", "bad blood", "origin of", "how did",
+)
+
+
+def extract_lore_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull established-lore hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in LORE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts or not parts[0]:
+            continue
+        subject = parts[0]
+        if len(parts) >= 3 and parts[1]:
+            obj = parts[1]
+            reason = " | ".join(parts[2:]).strip()
+        else:
+            obj = None
+            reason = " | ".join(parts[1:]).strip()
+        if not reason:
+            continue
+        ops.append({"subject": subject, "object": obj, "reason": reason})
+    clean = LORE_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def process_lore_hooks(ops: list[dict]) -> None:
+    """Persist established lore onto the world graph. Silent — the point is
+    consistency for the NEXT player, not an echo to this one."""
+    if not ops:
+        return
+    for op in ops:
+        try:
+            res = world.record_lore(
+                op["subject"], op.get("object"), reason=op["reason"])
+            if res:
+                print(f"[lore] recorded ({res.get('mode')}): "
+                      f"{op['subject']} / {op.get('object') or '-'}")
+        except Exception as e:  # noqa: BLE001 — a bad hook must never break play
+            print(f"[lore] record failed: {e}")
+
+
 def process_curse_hooks(session_id: str, ops: list[dict]) -> list[str]:
     """Lay / lift a curse (an Affliction kind='curse'). The lift condition is stored in
     notes (DM-eyes-only). Returns player-facing notes (never the lift condition)."""
@@ -5884,6 +5956,15 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[divine context error] {e}")
 
+    # Established lore: gate the how-to guide on 'why do they feud / the tale of'
+    # scenes so the DM records durable backstory only when it's actually stating
+    # settled canon, never on ordinary action turns.
+    try:
+        if any(k in _scene_text(message, ctx_obj) for k in _LORE_KEYWORDS):
+            texts.append(_LORE_GUIDE)
+    except Exception as e:
+        print(f"[lore context error] {e}")
+
     # Circle magic: show any sustained Circle spells + gate the how-to guide on a live
     # circle or scene keywords, so ordinary casting turns carry none of it.
     try:
@@ -6902,6 +6983,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(divine_notes)
         except Exception as e:
             print(f"[divine] hook processing failed: {e}")
+
+    # Established lore: persist the *why* behind a standing relationship or a
+    # defining legend so a later player asking the same question gets a consistent
+    # answer. Memory-cheap (a bounded reason on the edge, no new nodes) and silent
+    # — nothing is shown to the player.
+    dm_text, lore_ops = extract_lore_hooks(dm_text)
+    if lore_ops:
+        try:
+            process_lore_hooks(lore_ops)
+        except Exception as e:
+            print(f"[lore] hook processing failed: {e}")
 
     # Circle magic: resolve a cooperative Circle spell — validate the casters, compute the
     # enhancement from the option + contributor count, and expend the secondaries' slots.

@@ -458,33 +458,54 @@ def seed_pantheon(graph: WorldGraph) -> dict:
         seeded[fam] = len(members)
 
     # --- Defining cross-family relations (only ones that shape play) ---
-    def rel(a: str, r: str, b: str) -> None:
+    # Each carries a pre-authored "why" (established lore) so the DM narrates the
+    # SAME origin every time a priest or sage is asked — never re-improvises it.
+    # These reasons are rendered inline in the world-context Relationships block.
+    def rel(a: str, r: str, b: str, why: str = "") -> None:
         if a in by_slug and b in by_slug:
-            graph.add_relation(by_slug[a], r, by_slug[b])
+            graph.add_relation(by_slug[a], r, by_slug[b],
+                               attributes={"reason": why} if why else None)
 
     # Ymmarch: the exile and the rebel stand against the World-Anvil's order.
-    rel("vhorrek", RelationType.HOSTILE_TO, "vaskrun")
-    rel("diell", RelationType.HOSTILE_TO, "vaskrun")
-    rel("vhorrek", RelationType.HOSTILE_TO, "yssame")
+    rel("vhorrek", RelationType.HOSTILE_TO, "vaskrun",
+        "Cast out of the Great Measure for the monsters he sired, Vhorrek hates the All-Father who unmade his rank.")
+    rel("diell", RelationType.HOSTILE_TO, "vaskrun",
+        "Diell mocks the rigid Great Measure and defies the World-Anvil's cosmic order out of sheer spite.")
+    rel("vhorrek", RelationType.HOSTILE_TO, "yssame",
+        "Vhorrek warps the wild giant-kin Yssame nurtures, and she names his brood an abomination.")
     # Mortal gods: the tyrant preys on the lawful powers.
-    rel("sith-ra", RelationType.HOSTILE_TO, "auren")
-    rel("sith-ra", RelationType.HOSTILE_TO, "kael")
-    rel("serath", RelationType.ALLIED_WITH, "cernow")
-    rel("kael", RelationType.ALLIED_WITH, "auren")
+    rel("sith-ra", RelationType.HOSTILE_TO, "auren",
+        "The Whisper's hidden cults exist to subvert every charter and law the Judge upholds.")
+    rel("sith-ra", RelationType.HOSTILE_TO, "kael",
+        "Sith'ra prizes ambition without conscience; Kael's kept oaths are the one thing her murders cannot buy.")
+    rel("serath", RelationType.ALLIED_WITH, "cernow",
+        "The Dawnmother's tilled fields and the Green Father's wild wood share one border, and long ago struck a truce to keep it.")
+    rel("kael", RelationType.ALLIED_WITH, "auren",
+        "The honorable blade and the sworn word: Kael defends what Auren's law declares just.")
     # Celestials serve the Sovereign ideals and war on the fiends.
-    rel("myrrath", RelationType.ALLIED_WITH, "kael")
-    rel("veyanna", RelationType.ALLIED_WITH, "nyssa")
-    rel("myrrath", RelationType.HOSTILE_TO, "belisar")     # Choir vs. the Hells
-    rel("myrrath", RelationType.HOSTILE_TO, "kzarruk")     # Choir vs. the Abyss
-    rel("caizel", RelationType.HOSTILE_TO, "auravel")      # the Fallen vs. his old First
+    rel("myrrath", RelationType.ALLIED_WITH, "kael",
+        "The Choir's blade fights for the same honorable war Kael blesses.")
+    rel("veyanna", RelationType.ALLIED_WITH, "nyssa",
+        "Veyanna lights the dying to the very gate Nyssa keeps; they share the road of the dead.")
+    rel("myrrath", RelationType.HOSTILE_TO, "belisar",
+        "The Sword of Judgment leads the celestial host against the Nine Hells and its Iron Throne.")
+    rel("myrrath", RelationType.HOSTILE_TO, "kzarruk",
+        "Myrrath wars without end on the Ruin-Maw whose only desire is to unmake all creation.")
+    rel("caizel", RelationType.HOSTILE_TO, "auravel",
+        "Caizel was of the Choir before his pride cast him into the Hells; he hates Auravel, the First he once stood beside.")
     # The Blood War: the Nine and the Abyss are eternal enemies.
-    rel("halphur", RelationType.HOSTILE_TO, "kzarruk")
-    rel("belisar", RelationType.HOSTILE_TO, "kzarruk")
+    rel("halphur", RelationType.HOSTILE_TO, "kzarruk",
+        "The Blood War: the disciplined legions of the Nine grind endlessly against the Abyss's mindless ruin.")
+    rel("belisar", RelationType.HOSTILE_TO, "kzarruk",
+        "Order against entropy — the Iron Throne's dominion cannot abide a prince who would unmake everything to rule.")
     # The Twofold Court is at war with itself.
-    rel("bramblethorn", RelationType.HOSTILE_TO, "queen-verdaine")
+    rel("bramblethorn", RelationType.HOSTILE_TO, "queen-verdaine",
+        "Winter against summer: the Hollow King's frozen court and the Summer Crown's radiant one are the two halves of one endless feud.")
     # Death's law against the source of undeath.
-    rel("nyssa", RelationType.HOSTILE_TO, "orovoreth")
-    rel("nyssa", RelationType.HOSTILE_TO, "vhorrek")
+    rel("nyssa", RelationType.HOSTILE_TO, "orovoreth",
+        "The Pale Warden abhors the undead that cheat her gate — and the Worm Unending is the rot from which they first crawled.")
+    rel("nyssa", RelationType.HOSTILE_TO, "vhorrek",
+        "The keeper of the final gate names Vhorrek's warped, deathless brood a mockery of her law.")
 
     total = sum(seeded.values())
     return {

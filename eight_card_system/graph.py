@@ -257,6 +257,11 @@ class WorldContext:
                         if d >= 0.5:
                             extra = f" ({geo.compass_between(here, there)}, {geo.travel_time_str(d)})"
                 lines.append(f"- **{e.name}**{status}{extra}" + (f": {desc}" if desc else ""))
+                # Established legend about this power/person/place (recorded lore):
+                # a bounded one-liner kept consistent across sessions.
+                lore = attrs.get("lore")
+                if lore:
+                    lines.append(f"  · lore: {lore}")
                 # Merchants show this week's rolled stock — prices are canon.
                 if etype == "npc":
                     role_l = str(attrs.get("role", "")).strip().lower()
@@ -285,13 +290,19 @@ class WorldContext:
             lines.append("\n## Party companions")
             lines.extend(party_lines)
 
-        # Key current relationships worth stating explicitly.
-        rel_lines = [
-            f"- {label(r.src_id)} {r.rel_type.replace('_', ' ')} {label(r.dst_id)}"
-            for r in self.relations
-            if r.rel_type in (RelationType.ALLIED_WITH, RelationType.HOSTILE_TO,
-                              RelationType.MEMBER_OF, RelationType.OWNS)
-        ]
+        # Key current relationships worth stating explicitly. When an edge carries
+        # an established "why" (recorded lore), state it so the DM stays consistent
+        # with what a priest/sage said last time — never re-improvises the origin.
+        rel_lines = []
+        for r in self.relations:
+            if r.rel_type not in (RelationType.ALLIED_WITH, RelationType.HOSTILE_TO,
+                                  RelationType.MEMBER_OF, RelationType.OWNS):
+                continue
+            line = f"- {label(r.src_id)} {r.rel_type.replace('_', ' ')} {label(r.dst_id)}"
+            why = (r.attributes or {}).get("reason")
+            if why:
+                line += f" — {why}"
+            rel_lines.append(line)
         if rel_lines:
             lines.append("\n## Relationships")
             lines.extend(rel_lines)
@@ -650,6 +661,131 @@ class WorldGraph:
         """Convenience: close the current ``located_in`` and open a new one."""
         self.close_relation(entity, RelationType.LOCATED_IN)
         return self.add_relation(entity, RelationType.LOCATED_IN, place)
+
+    # ----- established lore (the durable "why" behind facts) -----
+    #
+    # When the DM narrates WHY two powers feud (or a defining legend about one),
+    # that "why" must persist or a later player asking gets a contradictory tale.
+    # We store it as CHEAPLY as possible: a bounded ``reason`` string stamped onto
+    # the relationship edge that already exists (no new node, no new edge), or a
+    # short ``lore`` string on a single entity. Rendered back in get_world_context
+    # so the DM stays consistent. This is the memory-optimized companion to the
+    # closed-pantheon world-law: the roster is fixed, and now the STORIES stick.
+
+    _LORE_MAX = 240  # cap the stored string — one terse sentence, never a scene
+
+    # Priority of edge types to attach a relational "why" to (best-typed first).
+    _LORE_REL_PRIORITY = (
+        RelationType.HOSTILE_TO, RelationType.ALLIED_WITH, RelationType.MEMBER_OF,
+        RelationType.WORSHIPS, RelationType.GOVERNS, RelationType.OWNS,
+        RelationType.KNOWS,
+    )
+    # Tiny sentiment cues to pick an edge type when the pair has none yet. Matched
+    # as WHOLE WORDS (via a prefix check on each token) so short cues don't fire
+    # on unrelated words ("war" in "toward", "kin" in "king").
+    _LORE_HOSTILE_CUES = (
+        "hate", "hated", "war", "wars", "betray", "betrayed", "wrong", "wronged",
+        "enemy", "enemies", "enmity", "feud", "grudge", "curse", "cursed", "slew",
+        "slain", "killed", "vengeance", "revenge", "rival", "spite", "broke",
+        "wounded", "stole",
+    )
+    _LORE_ALLIED_CUES = (
+        "ally", "allied", "love", "loved", "friend", "friends", "oath", "pact",
+        "bond", "bonded", "saved", "swore", "loyal", "loyalty", "wed", "married",
+        "kindred", "brother", "sister",
+    )
+
+    @staticmethod
+    def _has_cue(words: set[str], cues: tuple) -> bool:
+        return any(c in words for c in cues)
+
+    def _bound_lore(self, reason: str) -> str:
+        reason = " ".join((reason or "").split())
+        if len(reason) > self._LORE_MAX:
+            reason = reason[: self._LORE_MAX - 1].rstrip() + "…"
+        return reason
+
+    def record_lore(
+        self,
+        subject: EntityRef,
+        obj: Optional[EntityRef] = None,
+        *,
+        reason: str,
+        rel_type: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Persist the durable "why" behind a fact — memory-cheap, no new nodes.
+
+        - ``obj`` given: stamp a bounded ``reason`` onto the open relationship edge
+          between subject & object (either direction; best-typed edge wins). If the
+          pair has no edge yet, one is opened — its type is ``rel_type`` if given,
+          else inferred from the reason's sentiment (hostile/allied), else ``knows``.
+        - ``obj`` omitted: stamp a short ``lore`` legend on the subject entity.
+
+        Idempotent-ish: re-recording overwrites the same slot rather than growing
+        the graph. Returns a small dict describing what was written, or None.
+        """
+        reason = self._bound_lore(reason)
+        if not reason:
+            return None
+        with Session(self.engine) as s:
+            subj_e = self._resolve_entity(s, subject)
+            if subj_e is None:
+                return None
+
+            # Single-entity legend: one bounded string on the entity itself.
+            if obj is None:
+                subj_e.attributes = {**(subj_e.attributes or {}), "lore": reason}
+                subj_e.updated_at = _utcnow()
+                s.add(subj_e)
+                s.commit()
+                return {"mode": "entity", "subject": subj_e.slug, "reason": reason}
+
+            obj_e = self._resolve_entity(s, obj)
+            if obj_e is None:
+                return None
+            day = self._day(s)
+
+            # Any open edge between the two, either direction.
+            pair = {subj_e.id, obj_e.id}
+            rels = [
+                r for r in s.exec(
+                    select(Relation).where(Relation.valid_to == None)  # noqa: E711
+                ).all()
+                if {r.src_id, r.dst_id} == pair
+            ]
+            edge = None
+            if rel_type:
+                edge = next((r for r in rels if r.rel_type == rel_type), None)
+            if edge is None:
+                for rt in self._LORE_REL_PRIORITY:
+                    edge = next((r for r in rels if r.rel_type == rt), None)
+                    if edge is not None:
+                        break
+            if edge is None:
+                edge = next(iter(rels), None)
+
+            if edge is not None:
+                edge.attributes = {**(edge.attributes or {}), "reason": reason}
+                s.add(edge)
+                s.commit()
+                return {"mode": "relation", "rel_type": edge.rel_type,
+                        "created": False, "reason": reason}
+
+            # No edge yet: open one, inferring sentiment when not told.
+            rt = rel_type
+            if rt is None:
+                words = set(re.findall(r"[a-z]+", reason.lower()))
+                allied = self._has_cue(words, self._LORE_ALLIED_CUES)
+                hostile = self._has_cue(words, self._LORE_HOSTILE_CUES)
+                rt = (RelationType.HOSTILE_TO if hostile and not allied
+                      else RelationType.ALLIED_WITH if allied and not hostile
+                      else RelationType.KNOWS)
+            rel = Relation(src_id=subj_e.id, rel_type=rt, dst_id=obj_e.id,
+                           attributes={"reason": reason}, valid_from=day)
+            s.add(rel)
+            s.commit()
+            return {"mode": "relation", "rel_type": rt, "created": True,
+                    "reason": reason}
 
     # ----- NPC relationships: trust & party companionship -----
 
