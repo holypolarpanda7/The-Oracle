@@ -2811,6 +2811,96 @@ def _format_carried_item_curses(session: Session, character_id: int) -> str:
     return "\n".join(lines)
 
 
+def _iv(values: dict, key: str, default: int) -> int:
+    try:
+        return int(str(values.get(key)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _site_combat_env(sites: list) -> Optional[dict]:
+    """Translate a location's active arcane features into ENFORCED combat modifiers:
+    a flat d20 aura (everyone), a spell-attack/DC aura, and per-round hazard saves.
+    Numbers come from each site's `values` (bonus/dc/damage); returns None if inert."""
+    d20 = spell_d20 = spell_dc = 0
+    hazards: list[dict] = []
+    for s in (sites or []):
+        if not (isinstance(s, dict) and s.get("active", True)):
+            continue
+        ek = s.get("effect_kind")
+        v = s.get("values") or {}
+        bonus = _iv(v, "bonus", 2)
+        if ek == "spell_boost":
+            spell_d20 += bonus
+            spell_dc += bonus
+        elif ek == "magic_suppress":
+            spell_d20 -= bonus
+        elif ek == "boon":
+            d20 += bonus
+        elif ek == "bane":
+            d20 -= bonus
+        elif ek == "hazard_save":
+            hazards.append({
+                "name": s.get("name") or "the hazard",
+                "dc": _iv(v, "dc", 12),
+                "damage": str(v.get("damage") or "2d6"),
+                "ability": str(v.get("save") or v.get("ability") or "con")})
+    if not (d20 or spell_d20 or spell_dc or hazards):
+        return None
+    return {"d20": d20, "spell_d20": spell_d20, "spell_dc": spell_dc, "hazards": hazards}
+
+
+_CURSE_NO_HEAL_CUES = ("no heal", "no healing", "can't heal", "cannot heal",
+                       "can't regain", "cannot regain", "won't heal", "prevent heal",
+                       "prevents heal", "no hp", "cannot recover hit", "can't recover hit")
+
+
+def _curse_combat_effect(session: Session, character_id: int) -> tuple[int, bool]:
+    """Enforced numbers from a character's active curses (personal + carried cursed items):
+    (d20_penalty, no_heal). The d20 penalty is an opt-in `penalty=N` in the curse's effect
+    (always applied as a MINUS to rolls); no_heal fires on a phrase like 'can't regain HP'."""
+    effects: list[str] = [a.description or "" for a in _active_curses(session, character_id)]
+    ch = session.get(Character, character_id)
+    if ch:
+        effects += [it["curse"].get("effect", "") for it in _inventory_items(ch)
+                    if isinstance(it.get("curse"), dict)]
+    pen = 0
+    no_heal = False
+    for eff in effects:
+        pen -= abs(_iv(_parse_site_values(eff), "penalty", 0))
+        low = eff.lower()
+        if any(c in low for c in _CURSE_NO_HEAL_CUES):
+            no_heal = True
+    return pen, no_heal
+
+
+def _char_no_heal(character_id: Optional[int]) -> bool:
+    """Whether a curse currently blocks this character from regaining HP."""
+    if not character_id:
+        return False
+    try:
+        with Session(engine) as s:
+            return _curse_combat_effect(s, character_id)[1]
+    except Exception:
+        return False
+
+
+def _format_hazard_block(events: list) -> str:
+    """Render an auto-applied environmental hazard tick for the narration prompt."""
+    lines = ["# Environmental hazard (auto-applied this round)"]
+    for e in events:
+        seg = f"- {e.get('actor')} vs {e.get('hazard')}: "
+        if e.get("damage") is not None:
+            seg += f"failed the save — takes {e['damage']} ({e.get('target_hp', '')})"
+            if e.get("defeated"):
+                seg += " — DOWN"
+        else:
+            seg += "made the save"
+        lines.append(seg)
+    lines.append("These results are already applied to the tracker — narrate them.")
+    return "\n".join(lines)
+
+
 def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
     """Pull quest-control hooks out of the narration. Returns (clean, ops)."""
     ops: list[dict] = []
@@ -3515,6 +3605,14 @@ _CASTING_ABILITY = {"bard": "cha", "sorcerer": "cha", "warlock": "cha",
 
 def _combat_pc_profile(char: Character) -> PCProfile:
     """Build the engine's acting numbers for a PC from the character sheet."""
+    # Enforced curse numbers (a d20 penalty + whether HP regain is blocked).
+    curse_pen, curse_no_heal = 0, False
+    if char.id:
+        try:
+            with Session(engine) as _cs:
+                curse_pen, curse_no_heal = _curse_combat_effect(_cs, char.id)
+        except Exception as e:
+            print(f"[combat profile] curse effect failed: {e}")
     mods = {short: ability_modifier(_ability_score(char, full))
             for short, full in (("str", "strength"), ("dex", "dexterity"),
                                 ("con", "constitution"), ("int", "intelligence"),
@@ -3587,7 +3685,8 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         spell_mod=cast_key, slots=slots, reaction_spells=reaction_spells,
         exhaustion=int(char.exhaustion or 0),
         creature_type=(char.creature_type or "Humanoid"),
-        immunities={_normalize_immunity(x) for x in (char.immunities or [])})
+        immunities={_normalize_immunity(x) for x in (char.immunities or [])},
+        curse_pen=curse_pen, no_heal=curse_no_heal)
 
 
 # ---- deterministic pre-parser: the common phrasings never need an LLM ----
@@ -3875,6 +3974,13 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
                     except Exception as e:
                         print(f"[combat-engine] profile for {ch.name} failed: {e}")
 
+    # Location arcane aura (enforced): roll modifiers + per-round hazard saves.
+    try:
+        env = _site_combat_env(_pc_arcane_sites(char_id))
+    except Exception as e:
+        print(f"[combat env] {e}")
+        env = None
+
     blocks: list[str] = []
     rolls_out: list[dict] = []
     all_events: list[dict] = []
@@ -3893,7 +3999,7 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             c = combat.current_combatant(enc.id)
             if c is None or c.kind == "pc":
                 return
-            rep = combat_engine.run_monster_turn(enc.id, profiles=profiles)
+            rep = combat_engine.run_monster_turn(enc.id, profiles=profiles, env=env)
             take(rep)
             if rep.paused:
                 return  # frozen on a player's reaction decision
@@ -3903,6 +4009,33 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
                 return
 
     _round = enc.round
+
+    # Environmental hazard tick: once per round, everyone in a gas cloud / spore field
+    # makes the site's save or takes its damage. Applied server-side to the tracker.
+    if env and env.get("hazards"):
+        try:
+            _st = _load_session_state(session_id)
+            _hm = dict(_st.get("meta", {}) or {})
+            _last = int(_hm.get("hazard_round", 0) or 0) if _hm.get("hazard_enc") == enc.id else 0
+            if enc.round > _last:
+                hz_events = combat_engine.apply_environment_hazards(enc.id, env, profiles)
+                if hz_events:
+                    blocks.append(_format_hazard_block(hz_events))
+                    all_events.extend(hz_events)
+                    for c in combat.order(enc.id):
+                        if c.character_id:
+                            _combat_mirror_pc(c.id)  # persist auto-damage to PCs
+                _hm["hazard_enc"] = enc.id
+                _hm["hazard_round"] = enc.round
+                _set_session_meta(session_id, _hm)
+                over = _combat_fight_over(enc.id)
+                if over:
+                    blocks.append(over)
+                    return ("# Combat resolution (certified — already applied to the "
+                            "tracker)\n" + "\n".join(b for b in blocks if b))
+        except Exception as e:
+            print(f"[combat hazard tick] {e}")
+
     parse_source: Optional[str] = None
     raw_llm: Optional[str] = None
     kind = "turn"
@@ -3947,7 +4080,7 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             blocks.append(f"NOTE: no clear answer — {my.name} lets the "
                           "reaction pass (declined).")
         rrep = combat_engine.resume_reaction(enc.id, use=bool(decision),
-                                             profiles=profiles)
+                                             profiles=profiles, env=env)
         take(rrep)
         if not rrep.paused:
             over = _combat_fight_over(enc.id)
@@ -3997,7 +4130,7 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
     if not halted() and combat.get_active(session_id) is not None and intents:
         cur = combat.current_combatant(enc.id)
         if cur is not None and cur.id == my.id:
-            rep = combat_engine.resolve(enc.id, intents, profiles)
+            rep = combat_engine.resolve(enc.id, intents, profiles, env=env)
             take(rep)
             over = _combat_fight_over(enc.id)
             if over:
@@ -9120,6 +9253,10 @@ async def survival_short_rest_endpoint(req: RestRequest):
             con_mod=_con_mod(char),
             spend=req.spend_hit_dice,
         )
+        # A no-heal curse blocks HP regain (hit dice are still spent — they yield nothing).
+        if _curse_combat_effect(session, char.id)[1]:
+            result["current_hp"] = char.current_hp
+            result["no_heal"] = True
         char.current_hp = result["current_hp"]
         char.hit_dice_remaining = result["hit_dice_remaining"]
         # Pact Magic: a warlock's slots come back on a short rest.
@@ -9168,6 +9305,11 @@ async def survival_long_rest_endpoint(req: RestRequest):
             exhaustion=char.exhaustion,
             ate_and_drank=effective_ate,
         )
+        # A no-heal curse blocks the long rest's HP restoration (other benefits stand).
+        if _curse_combat_effect(session, char.id)[1]:
+            result["current_hp"] = char.current_hp
+            result["hp_restored"] = 0
+            result["no_heal"] = True
         char.current_hp = result["current_hp"]
         char.hit_dice_remaining = result["hit_dice_remaining"]
         char.exhaustion = result["exhaustion"]
@@ -9241,6 +9383,8 @@ async def survival_hp(req: DamageHealRequest):
                 char.death_save_successes = 0
                 char.death_save_failures = 0
                 note = "Dropped to 0 HP — dying and unstable."
+        elif _curse_combat_effect(session, char.id)[1]:
+            note = "A curse blocks healing — no HP regained."
         else:
             healed = -req.amount
             was_down = char.current_hp <= 0

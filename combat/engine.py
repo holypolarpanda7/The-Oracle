@@ -86,6 +86,10 @@ class PCProfile:
     # set of normalized condition immunities from species traits.
     creature_type: str = "Humanoid"
     immunities: set[str] = field(default_factory=set)
+    # Curse-enforced numbers: a flat penalty to this PC's D20 Tests, and whether a
+    # curse blocks HP regain (both derived from active curses by the backend).
+    curse_pen: int = 0
+    no_heal: bool = False
 
 
 # Class features the engine resolves mechanically. "per_encounter": how many
@@ -185,6 +189,9 @@ class CombatEngine:
     def __init__(self, tracker: CombatTracker, rng: Optional[random.Random] = None):
         self.tracker = tracker
         self.rng = rng or random.Random()
+        # Environmental combat aura for the current turn (set per top-level call from
+        # the location's arcane sites): {d20, spell_d20, spell_dc, hazards:[...]}.
+        self._env: dict = {}
 
     # ---------------- band / spacing model ----------------
 
@@ -297,6 +304,27 @@ class CombatEngine:
             lvl = max(0, min(6, int(getattr(profiles[c.character_id], "exhaustion", 0) or 0)))
             return -2 * lvl
         return 0
+
+    def _combat_roll_mod(self, c: Combatant, profiles: dict[int, PCProfile],
+                         *, spell: bool = False) -> int:
+        """Total flat modifier on a combatant's D20 Test: the per-character penalties
+        (exhaustion + curse) PLUS the environmental site aura (which applies to everyone
+        in the fight). ``spell`` adds the aura's spell-attack term. Never touches DCs,
+        passive scores, or damage."""
+        m = self._exh_pen(c, profiles)
+        if c.character_id and profiles and c.character_id in profiles:
+            m += int(getattr(profiles[c.character_id], "curse_pen", 0) or 0)
+        env = self._env or {}
+        m += int(env.get("d20", 0) or 0)
+        if spell:
+            m += int(env.get("spell_d20", 0) or 0)
+        return m
+
+    def _can_heal(self, c: Combatant, profiles: dict[int, PCProfile]) -> bool:
+        """False if a curse blocks this PC from regaining HP (monsters always heal)."""
+        if c.character_id and profiles and c.character_id in profiles:
+            return not bool(getattr(profiles[c.character_id], "no_heal", False))
+        return True
 
     def _creature_type(self, c: Combatant, profiles: dict[int, PCProfile]) -> str:
         """Lowercased creature type of a combatant (PC from profile, monster from its
@@ -556,10 +584,12 @@ class CombatEngine:
                 "notes": [payload.get("question", "")]}
 
     def resume_reaction(self, encounter_id: int, use: bool,
-                        profiles: Optional[dict[int, PCProfile]] = None) -> TurnReport:
+                        profiles: Optional[dict[int, PCProfile]] = None,
+                        env: Optional[dict] = None) -> TurnReport:
         """Answer the frozen reaction and finish the interrupted attack.
         May pause again (a declined Shield can chain into an Uncanny ask)."""
         profiles = profiles or {}
+        self._env = dict(env or {})
         rep = TurnReport()
         payload = self.tracker.get_pending_reaction(encounter_id)
         if not payload:
@@ -711,9 +741,9 @@ class CombatEngine:
         self.tracker.update_economy(enemy.id, reaction_used=True)
         adv, dis, notes = self._attack_advantage(enemy, mover, False, encounter_id)
         eff_ac = self._eff_ac(mover)
-        oa_exh = self._exh_pen(enemy, profiles)
+        oa_exh = self._combat_roll_mod(enemy, profiles)
         if oa_exh:
-            notes.append(f"Exhaustion {oa_exh}")
+            notes.append(f"Roll mod {oa_exh}")
         atk = attack_roll(mprof["attack_bonus"] + oa_exh, eff_ac, advantage=adv,
                           disadvantage=dis,
                           label=f"Opportunity attack ({enemy.name})",
@@ -743,10 +773,13 @@ class CombatEngine:
     # ---------------- intent resolution ----------------
 
     def resolve(self, encounter_id: int, intents: list[dict],
-                profiles: Optional[dict[int, PCProfile]] = None) -> TurnReport:
+                profiles: Optional[dict[int, PCProfile]] = None,
+                env: Optional[dict] = None) -> TurnReport:
         """Resolve intents for the CURRENT creature's turn. Illegal intents
-        are rejected with reasons; nothing about them is applied."""
+        are rejected with reasons; nothing about them is applied. ``env`` is the
+        location's arcane aura (roll modifiers), applied to every D20 Test this turn."""
         profiles = profiles or {}
+        self._env = dict(env or {})
         rep = TurnReport()
         if self.tracker.get_pending_reaction(encounter_id):
             rep.rejections.append({
@@ -832,7 +865,7 @@ class CombatEngine:
         keep: list[dict] = []
         for sv in saves:
             mod = self._ability_mod(fresh, sv.get("ability") or "con", profiles)
-            mod += self._exh_pen(fresh, profiles)
+            mod += self._combat_roll_mod(fresh, profiles)
             res = saving_throw(mod, dc=int(sv.get("dc") or 10),
                                label=f"{(sv.get('ability') or '?').upper()} save "
                                      f"({fresh.name})", rng=self.rng)
@@ -962,10 +995,10 @@ class CombatEngine:
             d4 = damage_roll("1d4", rng=self.rng).total
             atk_bonus -= d4
             notes.append(f"Bane -{d4}")
-        exh = self._exh_pen(actor, profiles)
+        exh = self._combat_roll_mod(actor, profiles)
         if exh:
             atk_bonus += exh
-            notes.append(f"Exhaustion {exh}")
+            notes.append(f"Roll mod {exh}")
         eff_ac = self._eff_ac(target)
         atk = attack_roll(atk_bonus, eff_ac, advantage=adv,
                           disadvantage=dis, label=f"{prof['name']} ({actor.name})",
@@ -1196,13 +1229,16 @@ class CombatEngine:
                                         attacks_made=0)
             ev["notes"].append("regains their action")
         if spec.get("heal"):
-            expr = spec["heal"].format(level=p.level)
-            r = damage_roll(expr, rng=self.rng)
-            out = self.tracker.heal(actor.id, r.total)
-            ev["rolls"].append(self._roll_dict(name.title(), r.detail, r.total,
-                                               expr=expr))
-            ev["notes"].append(f"regains {r.total} HP "
-                               f"({out['current_hp']}/{out['max_hp']})")
+            if not self._can_heal(actor, profiles):
+                ev["notes"].append("a curse blocks healing — no HP regained")
+            else:
+                expr = spec["heal"].format(level=p.level)
+                r = damage_roll(expr, rng=self.rng)
+                out = self.tracker.heal(actor.id, r.total)
+                ev["rolls"].append(self._roll_dict(name.title(), r.detail, r.total,
+                                                   expr=expr))
+                ev["notes"].append(f"regains {r.total} HP "
+                                   f"({out['current_hp']}/{out['max_hp']})")
         if spec.get("condition"):
             self.tracker.add_condition(actor.id, spec["condition"])
             ev["notes"].append(spec["condition"])
@@ -1228,7 +1264,7 @@ class CombatEngine:
         if actor.character_id and actor.character_id in profiles \
                 and "stealth" in profiles[actor.character_id].skills:
             mod += profiles[actor.character_id].prof
-        mod += self._exh_pen(actor, profiles)
+        mod += self._combat_roll_mod(actor, profiles)
         # Contested by the sharpest enemy's passive Perception.
         best_pp = 10
         for other in self.tracker.order(encounter_id):
@@ -1253,10 +1289,10 @@ class CombatEngine:
         if actor.character_id and actor.character_id in profiles \
                 and "athletics" in profiles[actor.character_id].skills:
             a_mod += profiles[actor.character_id].prof
-        a_mod += self._exh_pen(actor, profiles)
+        a_mod += self._combat_roll_mod(actor, profiles)
         t_mod = max(self._ability_mod(target, "str", profiles),
                     self._ability_mod(target, "dex", profiles))
-        t_mod += self._exh_pen(target, profiles)
+        t_mod += self._combat_roll_mod(target, profiles)
         a = ability_check(a_mod, label=f"{label} ({actor.name})", rng=self.rng)
         t = ability_check(t_mod, label=f"contest ({target.name})", rng=self.rng)
         rolls = [self._roll_dict(f"{label} — {actor.name}", a.detail, a.total),
@@ -1316,7 +1352,9 @@ class CombatEngine:
               "notes": []}
         healed = next((expr for k, expr in _CONSUMABLE_HEALS.items() if k in low), None)
         temp = next((n for k, n in _CONSUMABLE_TEMPS.items() if k in low), None)
-        if healed:
+        if healed and not self._can_heal(actor, profiles):
+            ev["notes"].append(f"{item} does nothing — a curse blocks healing")
+        elif healed:
             r = damage_roll(healed, rng=self.rng)
             out = self.tracker.heal(actor.id, r.total)
             ev["rolls"].append(self._roll_dict(item, r.detail, r.total, expr=healed))
@@ -1417,24 +1455,27 @@ class CombatEngine:
             mod = (prof.ability_mods.get(prof.spell_mod, 0)
                    if prof and prof.spell_mod
                    else self._ability_mod(actor, "wis", profiles))
-            expr = f"{n}{eff['heal']}" + (f"{mod:+d}" if mod else "")
-            r = damage_roll(expr, rng=self.rng)
-            out = self.tracker.heal(tgt.id, r.total)
-            ev["rolls"].append(self._roll_dict(
-                f"{sp.name if sp else spell_name} — healing", r.detail,
-                r.total, expr=expr))
-            ev["notes"].append(f"{tgt.name} regains {r.total} HP "
-                               f"({out['current_hp']}/{out['max_hp']})")
+            if not self._can_heal(tgt, profiles):
+                ev["notes"].append(f"{tgt.name} regains nothing — a curse blocks healing")
+            else:
+                expr = f"{n}{eff['heal']}" + (f"{mod:+d}" if mod else "")
+                r = damage_roll(expr, rng=self.rng)
+                out = self.tracker.heal(tgt.id, r.total)
+                ev["rolls"].append(self._roll_dict(
+                    f"{sp.name if sp else spell_name} — healing", r.detail,
+                    r.total, expr=expr))
+                ev["notes"].append(f"{tgt.name} regains {r.total} HP "
+                                   f"({out['current_hp']}/{out['max_hp']})")
         elif sp and sp.attack_type and target is not None:
             bonus = (prof.spell_attack_bonus if prof and
                      prof.spell_attack_bonus is not None
                      else 2 + self._ability_mod(actor, "cha", profiles))
             adv, dis, notes = self._attack_advantage(
                 actor, target, sp.attack_type != "melee", encounter_id)
-            exh = self._exh_pen(actor, profiles)
+            exh = self._combat_roll_mod(actor, profiles, spell=True)
             if exh:
                 bonus += exh
-                notes.append(f"Exhaustion {exh}")
+                notes.append(f"Roll mod {exh}")
             eff_ac = self._eff_ac(target)
             atk = attack_roll(bonus, eff_ac, advantage=adv, disadvantage=dis,
                               label=f"{sp.name} ({actor.name})", rng=self.rng)
@@ -1469,6 +1510,7 @@ class CombatEngine:
                     targets = targets[:cap]
             dc = (prof.spell_dc if prof and prof.spell_dc is not None
                   else 10 + self._ability_mod(actor, "cha", profiles))
+            dc += int((self._env or {}).get("spell_dc", 0) or 0)  # site aura on the DC
             # One damage roll shared by every creature in the effect (RAW).
             shared = damage_roll(dmg_expr, rng=self.rng) if dmg_expr else None
             if shared is not None:
@@ -1486,7 +1528,7 @@ class CombatEngine:
                     ev["notes"].append(f"{tgt.name} is not a Humanoid — unaffected")
                     continue
                 t_mod = self._ability_mod(tgt, sp.dc_type, profiles)
-                t_mod += self._exh_pen(tgt, profiles)
+                t_mod += self._combat_roll_mod(tgt, profiles)
                 save = saving_throw(t_mod, dc=dc,
                                     label=f"{sp.dc_type.upper()} save ({tgt.name})",
                                     rng=self.rng)
@@ -1597,7 +1639,7 @@ class CombatEngine:
                       r"(?:vs|dc)\s*(\d+)", desc.lower())
         if m:
             mod = self._ability_mod(actor, m.group(1), profiles)
-            mod += self._exh_pen(actor, profiles)
+            mod += self._combat_roll_mod(actor, profiles)
             chk = ability_check(mod, dc=int(m.group(2)),
                                 label=f"{m.group(1).upper()} check ({actor.name})",
                                 rng=self.rng)
@@ -1615,10 +1657,12 @@ class CombatEngine:
 
     def run_monster_turn(self, encounter_id: int,
                          intents: Optional[list[dict]] = None,
-                         profiles: Optional[dict[int, PCProfile]] = None) -> TurnReport:
+                         profiles: Optional[dict[int, PCProfile]] = None,
+                         env: Optional[dict] = None) -> TurnReport:
         """Resolve the current (non-PC) creature's whole turn: proposed intents
         first; if none land, a default AI acts. Always advances the turn."""
         profiles = profiles or {}
+        self._env = dict(env or {})
         cur = self.tracker.current_combatant(encounter_id)
         rep = TurnReport()
         if cur is None or cur.kind == "pc":
@@ -1634,7 +1678,7 @@ class CombatEngine:
             return rep
 
         if intents:
-            rep = self.resolve(encounter_id, intents, profiles)
+            rep = self.resolve(encounter_id, intents, profiles, env=env)
             if rep.paused:
                 return rep
         if not rep.events and not rep.turn_over:
@@ -1659,7 +1703,7 @@ class CombatEngine:
                 else:
                     seq = [{"verb": "dash", "actor": cur.name},
                            {"verb": "move", "actor": cur.name, "arg": "near"}]
-                rep = self.resolve(encounter_id, seq, profiles)
+                rep = self.resolve(encounter_id, seq, profiles, env=env)
         if rep.paused:
             return rep
         if not rep.turn_over:
@@ -1669,6 +1713,46 @@ class CombatEngine:
             self.tracker.next_turn(encounter_id)
             rep.turn_over = True
         return rep
+
+    def apply_environment_hazards(self, encounter_id: int, env: Optional[dict] = None,
+                                  profiles: Optional[dict[int, PCProfile]] = None) -> list[dict]:
+        """Environmental hazard tick (a gas cloud, spore field): every living combatant
+        makes the hazard's save or takes its damage. Call once per round. Returns event
+        dicts for the backend to render — this does not advance turns."""
+        hazards = (env or {}).get("hazards") or []
+        if not hazards:
+            return []
+        profiles = profiles or {}
+        events: list[dict] = []
+        for c in self.tracker.order(encounter_id):
+            if c.defeated:
+                continue
+            for hz in hazards:
+                ability = (hz.get("ability") or "con")[:3]
+                mod = self._ability_mod(c, ability, profiles) + self._exh_pen(c, profiles)
+                dc = int(hz.get("dc", 12) or 12)
+                hname = hz.get("name", "a hazard")
+                save = saving_throw(mod, dc=dc, label=f"{hname} save ({c.name})",
+                                    rng=self.rng)
+                ev = {"kind": "environment", "actor": c.name, "hazard": hname,
+                      "success": bool(save.success), "notes": [],
+                      "rolls": [self._roll_dict(f"{hname} — {c.name}", save.detail,
+                                                save.total, dc=dc, success=bool(save.success))]}
+                if not save.success:
+                    expr = str(hz.get("damage", "1d6"))
+                    dmg = damage_roll(expr, rng=self.rng)
+                    out = self.tracker.apply_damage(c.id, dmg.total)
+                    ev["damage"] = dmg.total
+                    ev["rolls"].append(self._roll_dict(f"{hname} damage", dmg.detail,
+                                                       dmg.total, expr=expr))
+                    ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+                    if out.get("defeated"):
+                        ev["defeated"] = True
+                    ev["notes"].append(f"takes {dmg.total}")
+                else:
+                    ev["notes"].append("resists")
+                events.append(ev)
+        return events
 
     # ---------------- report rendering ----------------
 
