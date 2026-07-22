@@ -153,6 +153,11 @@ def seed_minimal_world(graph: WorldGraph) -> dict:
 
     stubs = _seed_frontier_stubs(graph, millbrook, greenfields)
 
+    # Seed the world's gods up front as a CLOSED set, so play reuses them
+    # instead of inventing new ones (see pantheon.py / the pantheon world-law).
+    from .pantheon import seed_pantheon
+    seed_pantheon(graph)
+
     return {
         "greenfields": greenfields, "millbrook": millbrook, "tankard": tankard,
         **stubs,
@@ -204,9 +209,9 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         tags=["market", "poi", "trade"],
     )
     temple = e(
-        "Shrine of the Great Mother", EntityType.PLACE, subtype="temple",
+        "Shrine of the Dawnmother", EntityType.PLACE, subtype="temple",
         attributes={
-            "description": "A humble field-stone shrine to Chauntea tended by Millbrook's farmers.",
+            "description": "A humble field-stone shrine to Serath the Dawnmother, tended by Millbrook's farmers.",
             "scale": "poi",
             # A warded inner sanctum makes this a natural puzzle site (gate #1):
             # the availability gate will offer riddle/altar puzzles here.
@@ -236,16 +241,11 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         tags=["forest", "wilds", "dangerous", "arcane-site"],
     )
 
-    # --- Deity ---
-    chauntea = e(
-        "Chauntea", EntityType.DEITY,
-        attributes={
-            "description": "The Great Mother, goddess of agriculture and the harvest.",
-            "domain": "agriculture, life, plenty",
-            "alignment": "neutral good",
-        },
-        tags=["deity", "life", "harvest"],
-    )
+    # --- Deities: seed the world's closed pantheon; Millbrook's farmers keep
+    # the Dawnmother (harvest/life) as their local faith. ---
+    from .pantheon import seed_pantheon
+    seed_pantheon(graph)
+    dawnmother = graph.get_entity("serath")
 
     # --- Factions ---
     council = e(
@@ -341,7 +341,7 @@ def seed_starter_world(graph: WorldGraph) -> dict:
     graph.add_relation(marta, R.KNOWS, ferran)
 
     # Faith
-    graph.add_relation(marta, R.WORSHIPS, chauntea)
+    graph.add_relation(marta, R.WORSHIPS, dawnmother)
 
     # Knowledge / rumor: Ferran is the one who spreads the Duskwood rumor.
     graph.add_relation(ferran, R.KNOWS_ABOUT, duskwood_lights)
@@ -364,7 +364,7 @@ def seed_starter_world(graph: WorldGraph) -> dict:
     return {
         "greenfields": greenfields, "millbrook": millbrook, "tankard": tankard,
         "market": market, "temple": temple, "duskwood": duskwood,
-        "chauntea": chauntea, "council": council,
+        "dawnmother": dawnmother, "council": council,
         "marta": marta, "aldric": aldric, "ferran": ferran,
         "ledger": ledger, "missing_merchant": missing_merchant,
         "duskwood_lights": duskwood_lights,
