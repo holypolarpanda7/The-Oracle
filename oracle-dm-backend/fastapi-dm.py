@@ -2125,6 +2125,16 @@ _ARCANE_SITE_GUIDE = (
     "when it's destroyed/dispelled (name 'all' clears every feature here)."
 )
 
+# Scene words that make an arcane feature plausible — the guide is only injected when a
+# site is already here OR the scene reads magical, so mundane turns stay lean.
+_ARCANE_SITE_KEYWORDS = (
+    "crystal", "ley", "font", "aura", "gas", "fume", "fog", "mist", "miasma", "spore",
+    "rune", "glyph", "shrine", "altar", "sacred", "hallowed", "cursed", "blessed",
+    "arcane", "wild magic", "dead magic", "obelisk", "monolith", "standing stone",
+    "spring", "pool", "glade", "node", "vein", "radiant", "unholy", "profane", "surge",
+    "magic", "enchant", "sigil", "relic", "idol", "totem", "ward", "eldritch", "haunt",
+)
+
 
 def _normalize_site_kind(raw: str) -> str:
     k = re.sub(r"[\s-]+", "_", (raw or "").strip().lower())
@@ -2424,6 +2434,14 @@ _DECK_GUIDE = (
     "your world and adjudicate the specifics and any values (a 'reading' deck's cards are "
     "OMENS you tie to real people/places; a spirit board answers a question and may lie). "
     "Keep these RARE and momentous — not a parlor trick for every tavern."
+)
+
+# Scene words that make a fate object plausible — the guide is only injected when a deck
+# is in play OR the scene mentions one, so mundane turns stay lean.
+_DECK_KEYWORDS = (
+    "deck", "cards", "card", "tarot", "tarokka", "fortune", "oracle", "spirit board",
+    "ouija", "seance", "séance", "divination", "foretell", "prophec", "augur", "omen",
+    "fate", "read the", "read my", "scrying", "portent", "soothsay",
 )
 
 
@@ -4838,6 +4856,19 @@ def _resolve_session_character(session_id: str, user_id: str) -> Optional[int]:
     return char.id
 
 
+def _scene_text(message: str, ctx_obj) -> str:
+    """Lowercased blob of the incoming scene (player message + current location's name/
+    description + nearby entity names) used to gate optional guides by relevance."""
+    parts = [message or ""]
+    loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
+    if loc is not None:
+        parts.append(getattr(loc, "name", "") or "")
+        parts.append(str((getattr(loc, "attributes", None) or {}).get("description", "")))
+    for e in (getattr(ctx_obj, "entities", None) or [])[:12]:
+        parts.append(getattr(e, "name", "") or "")
+    return " ".join(parts).lower()
+
+
 def assemble_context(session_id: str, message: str, user_id: Optional[str] = None):
 
     """Build grounding context for a turn: the local world slice + referenced rules.
@@ -5020,14 +5051,16 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[quest context error] {e}")
 
-    # Arcane sites: rare, DM-flavored magical features persist on this place (a place
-    # can hold several). Read them back every turn so the look-and-feel stays consistent;
-    # also feed the guide so the DM can establish/mutate one when the fiction calls for it.
+    # Arcane sites: rare, DM-flavored magical features persist on this place (a place can
+    # hold several). Read active features back every turn so the look-and-feel stays
+    # consistent. The GUIDE is gated — injected only when a feature is here or the scene
+    # reads magical — so mundane turns don't carry it.
     _sites: list = []
     try:
         _sites = _active_arcane_sites(ctx_obj)
-        texts.append(_ARCANE_SITE_GUIDE)
         block = _format_arcane_sites_block(_sites) if _sites else ""
+        if _sites or any(k in _scene_text(message, ctx_obj) for k in _ARCANE_SITE_KEYWORDS):
+            texts.append(_ARCANE_SITE_GUIDE)
         if block:
             texts.append(block)
     except Exception as e:
@@ -5053,10 +5086,12 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[chase context error] {e}")
 
-    # Fate decks: teach the hook (rare) + show any decks in play and their state.
+    # Fate decks: show any decks in play + their state. The GUIDE is gated — injected only
+    # when a deck is in play or the scene mentions one — so mundane turns stay lean.
     try:
-        texts.append(_DECK_GUIDE)
         decks = (meta or {}).get("decks") or {}
+        if decks or any(k in _scene_text(message, ctx_obj) for k in _DECK_KEYWORDS):
+            texts.append(_DECK_GUIDE)
         dblock = _format_active_decks_block(decks) if decks else ""
         if dblock:
             texts.append(dblock)
