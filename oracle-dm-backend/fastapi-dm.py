@@ -1755,6 +1755,17 @@ _QUEST_GUIDE = (
     "npc]] — if that quest fails from neglect, inaction claims them."
 )
 
+# The quest guide is injected when a quest is already near the PC OR the scene reads
+# goal-ish (so the DM can structure one). Auto goal-RECOGNITION runs in the extractor
+# regardless, so a lean turn here never drops a stated goal.
+_QUEST_KEYWORDS = (
+    "want", "seek", "find", "hunt", "kill", "slay", "avenge", "revenge", "rescue",
+    "save", "retrieve", "recover", "deliver", "escort", "investigate", "explore",
+    "quest", "mission", "task", "job", "bounty", "reward", "goal", "swear", "vow",
+    "promise", "oath", "i will", "we must", "we need", "i need to", "help me",
+    "help us", "looking for", "in search", "track down", "put an end", "get revenge",
+)
+
 
 def _format_quests_block(quests: list) -> str:
     """Render active/offered quests as OPTIONAL threads for the DM (scaffold view)."""
@@ -2091,22 +2102,25 @@ _ARCANE_SITE_ACTIONS = {"mark", "mutate", "clear"}
 # Generic taxonomy (own-worded, edition-neutral). Each kind fixes the mechanical
 # CLASS; the DM supplies flavor + the concrete effect + values. `rest_safe=False`
 # means the area can't be rested in (wired into the rest system).
+# `volatile` = a transient phenomenon that naturally disperses/drifts over time (gas,
+# spores, fog); the entropy pass can dissipate or spread it. Geological/ley features
+# (crystals, fonts, dead-magic) are permanent and are never auto-mutated.
 _ARCANE_SITE_KINDS: Dict[str, Dict[str, Any]] = {
-    "magic_font":    {"rest_safe": True,  "effect_kind": "spell_boost",
+    "magic_font":    {"rest_safe": True,  "effect_kind": "spell_boost", "volatile": False,
                       "hint": "magic runs strong here — a ley font, humming crystals, a blessed pool"},
-    "dead_magic":    {"rest_safe": True,  "effect_kind": "magic_suppress",
+    "dead_magic":    {"rest_safe": True,  "effect_kind": "magic_suppress", "volatile": False,
                       "hint": "a dead-magic zone where spells and items sputter or fail"},
-    "wild_magic":    {"rest_safe": True,  "effect_kind": "wild_surge",
+    "wild_magic":    {"rest_safe": True,  "effect_kind": "wild_surge", "volatile": False,
                       "hint": "a wild-magic zone where casting risks a surge"},
-    "hazard_field":  {"rest_safe": False, "effect_kind": "hazard_save",
+    "hazard_field":  {"rest_safe": False, "effect_kind": "hazard_save", "volatile": True,
                       "hint": "choking gas, spores, radiant scald — you can't linger or rest here"},
-    "blessing_aura": {"rest_safe": True,  "effect_kind": "boon",
+    "blessing_aura": {"rest_safe": True,  "effect_kind": "boon", "volatile": False,
                       "hint": "a hallowed or blessed site that aids those within"},
-    "bane_aura":     {"rest_safe": True,  "effect_kind": "bane",
+    "bane_aura":     {"rest_safe": True,  "effect_kind": "bane", "volatile": False,
                       "hint": "a cursed or profaned site that preys on those within"},
-    "restorative":   {"rest_safe": True,  "effect_kind": "heal",
+    "restorative":   {"rest_safe": True,  "effect_kind": "heal", "volatile": False,
                       "hint": "a healing spring, restorative grove, or sacred pool"},
-    "arcane_node":   {"rest_safe": True,  "effect_kind": "charge",
+    "arcane_node":   {"rest_safe": True,  "effect_kind": "charge", "volatile": False,
                       "hint": "a mana crystal or arcane node that can be tapped for magic"},
 }
 
@@ -2265,7 +2279,8 @@ def process_arcane_site_hooks(session_id: str, ops: list[dict], ctx_obj=None) ->
             spec = _ARCANE_SITE_KINDS[kind]
             feat = {"kind": kind, "name": name, "flavor": flavor, "effect": effect,
                     "values": values, "rest_safe": spec["rest_safe"],
-                    "effect_kind": spec["effect_kind"], "since_day": day, "active": True}
+                    "effect_kind": spec["effect_kind"], "volatile": spec.get("volatile", False),
+                    "since_day": day, "active": True}
             existing = _find_site(sites, name)  # same-name mark updates in place
             if existing is not None:
                 existing.update(feat)
@@ -2586,21 +2601,27 @@ def process_deck_hooks(session_id: str, ops: list[dict]) -> list[str]:
 # — fed back into the DM prompt every turn (so the model can't forget it) and REDACTED
 # from the player-facing afflictions endpoint (so it can't leak). Like a puzzle's
 # solution held server-side. The DM lifts it when the fiction satisfies the condition
-# (or a remove-curse effect lands). Attaches to the acting PC or a named character.
+# (or a remove-curse effect lands). Attaches to the acting PC, a named character, or an
+# ITEM (target "item:<name>" — a cursed item hides its curse until it manifests and rides
+# the object, not a person).
 #   [[CURSE: lay | pc | The Hollow Thirst | you can't regain HP from any source | lift: drink from the spring where you were cursed]]
+#   [[CURSE: lay | item:Blackthorn Blade | Bloodbound | it won't leave your hand and demands a kill each dawn | lift: sever it with cold iron on hallowed ground]]
 #   [[CURSE: lift | pc | The Hollow Thirst | they returned to the spring and drank]]
 CURSE_HOOK_PATTERN = re.compile(r"\[\[CURSE:(.+?)\]\]", re.IGNORECASE)
 _CURSE_ACTIONS = {"lay", "lift"}
 _CURSE_SELF_WORDS = {"", "pc", "self", "me", "the pc", "player", "party"}
+_CURSE_ITEM_RE = re.compile(r"^\s*item\s*[:=]\s*", re.IGNORECASE)
 
 _CURSE_GUIDE = (
     "CURSES (rare). A curse is a lasting affliction you FLAVOR, with a HIDDEN way to lift "
     "it the players must discover in the fiction. Lay one: [[CURSE: lay | who | curse name "
     "| its effect (what the players feel) | lift: how it's broken]] — 'who' is the affected "
-    "character's name (or 'pc'/'self' for the acting character). The lift condition is kept "
-    "SECRET: you'll be reminded of it privately each turn; NEVER state it outright — let the "
-    "players uncover it. When the fiction satisfies it (or a remove-curse effect lands), lift "
-    "it: [[CURSE: lift | who | curse name | reason]]. Keep curses RARE and meaningful."
+    "character's name ('pc'/'self' for the acting character) OR an item as 'item:<name>' (a "
+    "cursed ITEM hides its curse until it manifests and can't simply be dropped). The lift "
+    "condition is kept SECRET: you'll be reminded of it privately each turn; NEVER state it "
+    "outright — let the players uncover it. When the fiction satisfies it (or a remove-curse "
+    "effect lands), lift it: [[CURSE: lift | who-or-item | curse name | reason]]. Keep curses "
+    "RARE and meaningful."
 )
 _CURSE_KEYWORDS = (
     "curse", "cursed", "hex", "hexed", "doom", "afflict", "blight", "jinx",
@@ -2660,7 +2681,12 @@ def process_curse_hooks(session_id: str, ops: list[dict]) -> list[str]:
         for op in ops:
             action = op["action"]
             args = op.get("args", [])
-            cid = _resolve_curse_target(session, session_id, args[0] if args else "")
+            tref = args[0] if args else ""
+            if _CURSE_ITEM_RE.match(tref):  # curse rides an ITEM, not a person
+                item_name = _CURSE_ITEM_RE.sub("", tref).strip()
+                _process_item_curse(session, session_id, action, item_name, args, day, notes)
+                continue
+            cid = _resolve_curse_target(session, session_id, tref)
             if not cid:
                 continue
             if action == "lay":
@@ -2713,6 +2739,75 @@ def _format_curses_block(session: Session, character_id: int) -> str:
     lines.append("Let the players DISCOVER how to break these in the fiction; when they "
                  "satisfy it (or a remove-curse effect lands), emit [[CURSE: lift | who | "
                  "name | reason]].")
+    return "\n".join(lines)
+
+
+def _resolve_item_carrier(session: Session, session_id: str, item_name: str):
+    """Find (character, normalized-inventory, item_dict) for an item matching name — the
+    session PC first, then any character. The returned inventory is written back onto the
+    character so a mutation of item_dict persists on session.add(character)."""
+    needle = _normalize_item_name(item_name)
+    if not needle:
+        return None, None, None
+    meta = _load_session_state(session_id).get("meta", {}) or {}
+    order: list[int] = []
+    if meta.get("character_id"):
+        order.append(int(meta["character_id"]))
+    for c in session.exec(select(Character)).all():
+        if c.id not in order:
+            order.append(c.id)
+    for cid in order:
+        ch = session.get(Character, cid)
+        if not ch:
+            continue
+        inv = _inventory_items(ch)
+        for it in inv:
+            nm = _normalize_item_name(str(it.get("name", "")))
+            if nm and (nm == needle or needle in nm or nm in needle):
+                ch.inventory = inv  # persist the normalized (dict) form
+                return ch, inv, it
+    return None, None, None
+
+
+def _process_item_curse(session: Session, session_id: str, action: str, item_name: str,
+                        args: list, day: int, notes: list) -> None:
+    """Lay / lift a curse that rides an inventory ITEM (stored on the item dict; the lift
+    condition is DM-eyes-only, redacted from player-facing inventory)."""
+    ch, _inv, item = _resolve_item_carrier(session, session_id, item_name)
+    if item is None:
+        return
+    if action == "lay":
+        cname = (args[1] if len(args) > 1 and args[1] else "a curse")
+        effect = (args[2] if len(args) > 2 else "") or ""
+        lift = (args[3] if len(args) > 3 else "") or ""
+        lift = re.sub(r"^\s*(lift|cure|break)\s*:\s*", "", lift, flags=re.I).strip()
+        item["curse"] = {"name": cname, "effect": effect, "lift": lift, "since_day": day}
+        session.add(ch)
+        notes.append(f"🕯️ *A curse settles into {item.get('name')}.*")
+    elif action == "lift":
+        if isinstance(item.get("curse"), dict):
+            item.pop("curse", None)
+            session.add(ch)
+            notes.append(f"🕯️ *The curse on {item.get('name')} is broken.*")
+
+
+def _format_carried_item_curses(session: Session, character_id: int) -> str:
+    """DM-facing reminder of cursed ITEMS a character carries: effect (player-known once it
+    manifests) + the lift condition, which is EYES-ONLY — never narrated or sent to players."""
+    ch = session.get(Character, character_id)
+    if not ch:
+        return ""
+    cursed = [(it.get("name") or "an item", it["curse"]) for it in _inventory_items(ch)
+              if isinstance(it.get("curse"), dict)]
+    if not cursed:
+        return ""
+    lines = ["# Cursed items carried"]
+    for iname, cz in cursed:
+        lines.append(f"- {iname} — {cz.get('name', 'a curse')}: {cz.get('effect', '')}")
+        if cz.get("lift"):
+            lines.append(f"  (DM ONLY — never reveal) Lifts when: {cz['lift']}")
+    lines.append("The players don't know an item is cursed until it manifests — reveal it "
+                 "through play. Break it with [[CURSE: lift | item:<name> | curse | reason]].")
     return "\n".join(lines)
 
 
@@ -5178,9 +5273,11 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     # Quests: keep goal-recognition guidance in view, and surface active/offered
     # threads near the PC as OPTIONAL structure (never a script).
     try:
-        texts.append(_QUEST_GUIDE)
         quests = [e for e in (getattr(ctx_obj, "entities", None) or [])
                   if getattr(e, "type", None) == EntityType.QUEST]
+        # Gate the guide: quests already in view, or the scene reads goal-ish.
+        if quests or any(k in _scene_text(message, ctx_obj) for k in _QUEST_KEYWORDS):
+            texts.append(_QUEST_GUIDE)
         if quests:
             qblock = _format_quests_block(quests)
             if qblock:
@@ -5505,10 +5602,12 @@ def _format_inventory(char: Character) -> Dict[str, Any]:
             parts.append(f"({', '.join(extras)})")
         lines.append(" ".join(parts))
     purse = {"cp": char.cp, "sp": char.sp, "ep": char.ep, "gp": char.gp, "pp": char.pp}
+    # A hidden item curse never leaves the DM's view — strip it from the player payload.
+    pub_items = [{k: v for k, v in it.items() if k != "curse"} for it in items]
     return {
         "character_id": char.id,
         "name": char.name,
-        "items": items,
+        "items": pub_items,
         "lines": lines,
         "carried_weight": round(_carried_weight(char), 2),
         "purse": purse,
@@ -5906,6 +6005,9 @@ def _character_resource_block(character_id: int) -> str:
             curse_block = _format_curses_block(session, character_id)
             if curse_block:
                 lines.append(curse_block)
+            item_curse_block = _format_carried_item_curses(session, character_id)
+            if item_curse_block:
+                lines.append(item_curse_block)
 
         # Faction reputation.
         if cfg.reputation.enabled:

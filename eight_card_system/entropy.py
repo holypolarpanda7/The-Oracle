@@ -177,7 +177,8 @@ def build_life_record(graph: WorldGraph, pc_ref) -> Optional[dict]:
 def run_if_due(graph: WorldGraph, *, interval_days: int = ENTROPY_INTERVAL_DAYS) -> dict:
     """Demographic pass, gated so it runs at most once per interval of world
     time. Cheap no-op between intervals. Returns a summary of what happened."""
-    out = {"deaths": 0, "successions": 0, "drifted": 0, "festered": 0}
+    out = {"deaths": 0, "successions": 0, "drifted": 0, "festered": 0,
+           "sites_drifted": 0}
     with Session(graph.engine) as s:
         meta = s.get(WorldMeta, 1)
         if meta is None:
@@ -248,6 +249,12 @@ def run_if_due(graph: WorldGraph, *, interval_days: int = ENTROPY_INTERVAL_DAYS)
         graph.add_event(f"{name} grows more dangerous ({new_danger}) — {cause}.",
                         location=slug)
         out["festered"] += 1
+
+    # Volatile arcane features (gas clouds, spore fogs) disperse or drift on the same
+    # cadence — a natural world event that mutates a site nobody has anchored.
+    for _name, slug, cause in _drift_arcane_sites(graph, today):
+        graph.add_event(f"{cause}.", location=slug)
+        out["sites_drifted"] += 1
     return out
 
 
@@ -397,6 +404,81 @@ def _fester_threats(graph: WorldGraph, today: int) -> list[tuple]:
                             f"the trouble in {p.name} is spilling over"))
         s.commit()
     return changes
+
+
+# Volatile arcane features (gas clouds, spore fogs) naturally disperse or drift over
+# time — the "natural world event" that mutates a site nobody has anchored. Permanent
+# features (crystals, ley fonts, dead-magic) carry volatile=False and are never touched.
+SITE_DRIFT_MIN_DAYS = 14        # a volatile hazard lingers this long before it may move
+SITE_DISSIPATE_CHANCE = 0.5
+SITE_SPREAD_CHANCE = 0.25       # < dissipate, and a drifted copy also decays -> converges
+
+
+def _drift_arcane_sites(graph: WorldGraph, today: int) -> list[tuple]:
+    """Volatile arcane features disperse, or drift into a neighbor, over world-time.
+    Bounded so it converges: only volatile+aged features move, a drift resets the copy's
+    clock (so it too decays), and it never stacks onto a place that already has a volatile
+    feature. Returns (name, slug, cause) for the world log."""
+    era = today // ENTROPY_INTERVAL_DAYS
+    events: list[tuple] = []
+    with Session(graph.engine) as s:
+        places = list(s.exec(select(Entity).where(
+            Entity.type == "place", Entity.status == "active")).all())
+        by_id = {p.id: p for p in places}
+        adj: dict[int, set] = {}
+        for r in s.exec(select(Relation).where(
+                Relation.rel_type == RelationType.ADJACENT_TO,
+                Relation.valid_to == None)).all():  # noqa: E711
+            adj.setdefault(r.src_id, set()).add(r.dst_id)
+            adj.setdefault(r.dst_id, set()).add(r.src_id)
+
+        def has_volatile(p) -> bool:
+            return any(isinstance(x, dict) and x.get("active", True) and x.get("volatile")
+                       for x in ((p.attributes or {}).get("arcane_sites") or []))
+
+        for p in places:
+            attrs = dict(p.attributes or {})
+            sites = attrs.get("arcane_sites")
+            if not isinstance(sites, list) or not sites:
+                continue
+            changed = False
+            for site in sites:
+                if not (isinstance(site, dict) and site.get("active", True)
+                        and site.get("volatile")):
+                    continue
+                sd = site.get("since_day")
+                sd = today if sd is None else int(sd)  # note: day 0 is valid, not falsy
+                if today - sd < SITE_DRIFT_MIN_DAYS:
+                    continue
+                rng = random.Random(f"sitedrift:{p.slug}:{site.get('name')}:{era}")
+                roll = rng.random()
+                if roll < SITE_SPREAD_CHANCE:
+                    cands = [by_id[nid] for nid in adj.get(p.id, ())
+                             if nid in by_id and not has_volatile(by_id[nid])]
+                    if cands:
+                        n = rng.choice(sorted(cands, key=lambda x: x.slug))
+                        n_attrs = dict(n.attributes or {})
+                        n_attrs["arcane_sites"] = list(n_attrs.get("arcane_sites") or []) + [
+                            {**site, "since_day": today, "active": True}]
+                        n.attributes = n_attrs
+                        s.add(n)
+                        site["active"] = False  # it drifts away from the origin
+                        changed = True
+                        events.append((site.get("name"), n.slug,
+                                       f"{site.get('name')} drifts from {p.name} into {n.name}"))
+                        continue  # handled — don't also dissipate
+                if roll < SITE_SPREAD_CHANCE + SITE_DISSIPATE_CHANCE:
+                    site["active"] = False
+                    changed = True
+                    events.append((site.get("name"), p.slug,
+                                   f"{site.get('name')} disperses from {p.name}"))
+            if changed:  # drop the features that dispersed/drifted away
+                attrs["arcane_sites"] = [x for x in sites
+                                         if not (isinstance(x, dict) and x.get("active") is False)]
+                p.attributes = attrs
+                s.add(p)
+        s.commit()
+    return events
 
 
 def advance_quest_clocks(graph: WorldGraph, *, session_id: Optional[str] = None,
