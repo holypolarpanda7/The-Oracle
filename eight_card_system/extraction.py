@@ -165,7 +165,12 @@ _EXTRACTOR_SYSTEM = (
     "omitted values are filled with sensible defaults.\n"
     "- When an NPC meaningfully teaches a player about a place (directions, a "
     "described route, local geography), record it: add a `knows_about` relation "
-    "from the pc to that place. This is what lets them draw it on a map later.\n\n"
+    "from the pc to that place. This is what lets them draw it on a map later.\n"
+    "- Powers & faiths are a CLOSED pantheon: never create a new `deity`. When a "
+    "god, archfey, archdevil, demon prince, or other power is invoked, reference "
+    "the EXISTING power by name (an unfamiliar name is treated as an aspect of one "
+    "already in the world). A new worshipping order is a `faction` (a cult), never "
+    "a deity. New powers enter only through rare, explicit divine events, not play.\n\n"
     "Output JSON with this shape (omit empty arrays is fine):\n"
     "{\n"
     '  "entities": [{"name": "...", "type": "npc", "status": "active", "attributes": {"description": "..."}, "tags": ["..."]}],\n'
@@ -233,6 +238,33 @@ def _subtype_for_scale(scale_word: str) -> str:
     if word in PlaceScale.ALL:
         return word
     return PlaceScale.POI
+
+
+# --- Pantheon law: cosmic powers are a closed, per-family-capped set ---------
+_POWER_FUZZY_CUTOFF = 0.86   # a "new god" this close to a seeded one is its aspect
+
+
+def _norm_power_name(name: str) -> str:
+    """Letters-only lowercase key, apostrophes/spaces stripped ('Sith'ra' -> 'sithra')."""
+    return re.sub(r"[^a-z]", "", (name or "").lower())
+
+
+def _closest_power(name: str, existing: dict[str, Entity]) -> Optional[Entity]:
+    """The seeded power a proposed deity name is (near-)identical to, or None.
+    ``existing`` maps normalized name -> Entity. Exact normalized match wins;
+    otherwise the best fuzzy ratio above the cutoff (folds epithets/typos)."""
+    from difflib import SequenceMatcher
+    key = _norm_power_name(name)
+    if not key:
+        return None
+    if key in existing:
+        return existing[key]
+    best, best_r = None, 0.0
+    for norm, ent in existing.items():
+        r = SequenceMatcher(None, key, norm).ratio()
+        if r > best_r:
+            best, best_r = ent, r
+    return best if best_r >= _POWER_FUZZY_CUTOFF else None
 
 
 def validate_world_delta(
@@ -657,6 +689,71 @@ def validate_world_delta(
         kept_ra2.append(ra)
     relations_add = kept_ra2
 
+    # --- (e2) Pantheon law: cosmic powers (deities) are a CLOSED, per-family-
+    # capped set. Routine play may NOT mint new gods — a proposed "new power"
+    # either resolves to an existing one (an epithet/aspect) or is dropped;
+    # only a DM-gated divine event (attributes.divine_event) may add a power,
+    # and never past its family's cap. This is what stops the pantheon from
+    # inflating every time narration names a god. See pantheon.py. ---
+    from .pantheon import POWER_FAMILIES, cap_for
+    with Session(graph.engine) as _s:
+        existing_powers = _s.exec(
+            select(Entity).where(Entity.type == "deity")).all()
+    power_by_norm = {_norm_power_name(p.name): p for p in existing_powers}
+    fam_counts: dict[str, int] = {fam: 0 for fam in POWER_FAMILIES}
+    for p in existing_powers:
+        fam = (p.attributes or {}).get("family")
+        if fam in fam_counts:
+            fam_counts[fam] += 1
+
+    kept_entities: list[EntityDelta] = []
+    approved_powers: dict[str, int] = {}   # family -> new powers admitted this delta
+    for ed in entities:
+        if ed.type != "deity":
+            kept_entities.append(ed)
+            continue
+        # An already-known power in scope is just an update — keep it.
+        if resolve_existing(ed.name) is not None:
+            kept_entities.append(ed)
+            continue
+        # Canon-first: a near-identical name is an aspect/epithet of an existing
+        # power — fold references onto it (via the resolution cache) and drop.
+        match = _closest_power(ed.name, power_by_norm)
+        if match is not None:
+            existing_cache[ed.name.strip().lower()] = match
+            notes.append(
+                f"'{ed.name}': treated as an aspect of the existing power "
+                f"'{match.name}' — no new deity minted")
+            continue
+        gated = bool((ed.attributes or {}).get("divine_event"))
+        if not gated:
+            notes.append(
+                f"'{ed.name}': the pantheon is closed canon — a new deity can't be "
+                "minted by play; invoke an existing power (or a cult FACTION), or "
+                "introduce it through a divine event")
+            continue
+        # Gated creation (schism / apotheosis / summoning): enforce the FAMILY cap.
+        fam = (ed.attributes or {}).get("family")
+        if fam not in POWER_FAMILIES:
+            fam = "sovereign"
+        cap = cap_for(fam)
+        cur = fam_counts.get(fam, 0) + approved_powers.get(fam, 0)
+        if cap is not None and cur >= cap:
+            notes.append(
+                f"'{ed.name}': {POWER_FAMILIES[fam]['label']} is at its cap "
+                f"({cur}/{cap}) — a schism must raise the cap first; deity dropped")
+            continue
+        approved_powers[fam] = approved_powers.get(fam, 0) + 1
+        meta = POWER_FAMILIES[fam]
+        ed.attributes = {**(ed.attributes or {}), "family": fam,
+                         "family_label": meta["label"],
+                         "power_class": meta["power_class"], "plane": meta["plane"]}
+        notes.append(
+            f"'{ed.name}': admitted to {meta['label']} via a divine event "
+            f"({cur + 1}/{cap})")
+        kept_entities.append(ed)
+    entities = kept_entities
+
     # Resolution map for the applier: every referenced name -> concrete slug
     # (or None = mint a new identity).
     all_names: set[str] = {ed.name for ed in entities}
@@ -721,7 +818,8 @@ def apply_world_delta(
         return resolution.get(name.strip().lower()) or name
 
     for ed in delta.entities:
-        if ed.type not in {"place", "npc", "faction", "item", "quest", "event", "pc"}:
+        if ed.type not in {"place", "npc", "faction", "item", "quest",
+                           "event", "pc", "deity"}:
             continue
         subtype = None
         if ed.type == "place":
@@ -732,6 +830,10 @@ def apply_world_delta(
                 _normalize_puzzle_attrs(ed.attributes)
         elif ed.type == "quest" and ed.attributes:
             _normalize_quest_attrs(ed.attributes, graph.current_day())
+        elif ed.type == "deity":
+            # Only validator-approved powers reach here (see the pantheon law);
+            # subtype carries the power's class (god, celestial, archdevil, …).
+            subtype = (ed.attributes or {}).get("power_class")
         key = ed.name.strip().lower()
         target_slug = resolution.get(key)
         if target_slug:
