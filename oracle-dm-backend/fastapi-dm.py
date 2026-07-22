@@ -2579,6 +2579,143 @@ def process_deck_hooks(session_id: str, ops: list[dict]) -> list[str]:
     return notes
 
 
+# =====================  CURSES  ===========================================
+# A curse is a lasting, DM-FLAVORED affliction with a HIDDEN way to lift it that the
+# players must uncover in the fiction. Stored as an Affliction(kind="curse"): the
+# effect (description) is player-facing, but the lift condition (notes) is DM-eyes-only
+# — fed back into the DM prompt every turn (so the model can't forget it) and REDACTED
+# from the player-facing afflictions endpoint (so it can't leak). Like a puzzle's
+# solution held server-side. The DM lifts it when the fiction satisfies the condition
+# (or a remove-curse effect lands). Attaches to the acting PC or a named character.
+#   [[CURSE: lay | pc | The Hollow Thirst | you can't regain HP from any source | lift: drink from the spring where you were cursed]]
+#   [[CURSE: lift | pc | The Hollow Thirst | they returned to the spring and drank]]
+CURSE_HOOK_PATTERN = re.compile(r"\[\[CURSE:(.+?)\]\]", re.IGNORECASE)
+_CURSE_ACTIONS = {"lay", "lift"}
+_CURSE_SELF_WORDS = {"", "pc", "self", "me", "the pc", "player", "party"}
+
+_CURSE_GUIDE = (
+    "CURSES (rare). A curse is a lasting affliction you FLAVOR, with a HIDDEN way to lift "
+    "it the players must discover in the fiction. Lay one: [[CURSE: lay | who | curse name "
+    "| its effect (what the players feel) | lift: how it's broken]] — 'who' is the affected "
+    "character's name (or 'pc'/'self' for the acting character). The lift condition is kept "
+    "SECRET: you'll be reminded of it privately each turn; NEVER state it outright — let the "
+    "players uncover it. When the fiction satisfies it (or a remove-curse effect lands), lift "
+    "it: [[CURSE: lift | who | curse name | reason]]. Keep curses RARE and meaningful."
+)
+_CURSE_KEYWORDS = (
+    "curse", "cursed", "hex", "hexed", "doom", "afflict", "blight", "jinx",
+    "malediction", "maledict", "geas", "witch", "evil eye", "wither", "haunt",
+)
+
+
+def _resolve_curse_target(session: Session, session_id: str, ref: str) -> Optional[int]:
+    """Resolve a curse target to a character_id (the acting PC, or a named character)."""
+    r = (ref or "").strip().lower()
+    if r not in _CURSE_SELF_WORDS:
+        row = session.exec(select(Character).where(func.lower(Character.name) == r)).first()
+        if row:
+            return row.id
+        for c in session.exec(select(Character)).all():
+            if r and r in (c.name or "").lower():
+                return c.id
+    meta = _load_session_state(session_id).get("meta", {}) or {}
+    return meta.get("character_id")
+
+
+def _active_curses(session: Session, character_id: int) -> list:
+    return list(session.exec(select(Affliction).where(
+        Affliction.character_id == character_id,
+        Affliction.kind == "curse",
+        Affliction.active == True,  # noqa: E712
+    )).all())
+
+
+def extract_curse_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull curse hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in CURSE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").strip().lower()
+        if action not in _CURSE_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = CURSE_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def process_curse_hooks(session_id: str, ops: list[dict]) -> list[str]:
+    """Lay / lift a curse (an Affliction kind='curse'). The lift condition is stored in
+    notes (DM-eyes-only). Returns player-facing notes (never the lift condition)."""
+    if not ops:
+        return []
+    notes: list[str] = []
+    try:
+        day = world.current_day()
+    except Exception:
+        day = 0
+    with Session(engine) as session:
+        for op in ops:
+            action = op["action"]
+            args = op.get("args", [])
+            cid = _resolve_curse_target(session, session_id, args[0] if args else "")
+            if not cid:
+                continue
+            if action == "lay":
+                name = (args[1] if len(args) > 1 and args[1] else "a curse")
+                effect = (args[2] if len(args) > 2 else "") or ""
+                lift = (args[3] if len(args) > 3 else "") or ""
+                lift = re.sub(r"^\s*(lift|cure|break)\s*:\s*", "", lift, flags=re.I).strip()
+                existing = next((a for a in _active_curses(session, cid)
+                                 if (a.name or "").lower() == name.lower()), None)
+                if existing is not None:
+                    if effect:
+                        existing.description = effect
+                    if lift:
+                        existing.notes = lift
+                    session.add(existing)
+                else:
+                    session.add(Affliction(
+                        character_id=cid, kind="curse", name=name,
+                        description=effect, notes=lift, onset_day=day, active=True))
+                notes.append(f"🕯️ *A curse takes hold: {name}.*")
+            elif action == "lift":
+                name = (args[1] if len(args) > 1 else "").strip()
+                rows = _active_curses(session, cid)
+                target = None
+                if name:
+                    target = next((a for a in rows
+                                   if name.lower() in (a.name or "").lower()), None)
+                if target is None and len(rows) == 1:
+                    target = rows[0]
+                if target is not None:
+                    target.active = False
+                    target.ends_day = day
+                    session.add(target)
+                    notes.append(f"🕯️ *The curse lifts: {target.name}.*")
+        session.commit()
+    return notes
+
+
+def _format_curses_block(session: Session, character_id: int) -> str:
+    """DM-facing curse reminder: the effect (player-known) + the lift condition, which is
+    EYES-ONLY — printed here for the DM but never narrated or sent to the player."""
+    curses = _active_curses(session, character_id)
+    if not curses:
+        return ""
+    lines = ["# Active curses"]
+    for a in curses:
+        lines.append(f"- {a.name}: {a.description or 'a lingering curse'}")
+        if a.notes:
+            lines.append(f"  (DM ONLY — never reveal) Lifts when: {a.notes}")
+    lines.append("Let the players DISCOVER how to break these in the fiction; when they "
+                 "satisfy it (or a remove-curse effect lands), emit [[CURSE: lift | who | "
+                 "name | reason]].")
+    return "\n".join(lines)
+
+
 def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
     """Pull quest-control hooks out of the narration. Returns (clean, ops)."""
     ops: list[dict] = []
@@ -5098,6 +5235,14 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[deck context error] {e}")
 
+    # Curses: the how-to-lay guide is gated by scene keywords (active curses are already
+    # surfaced, with their lift condition, in the character resource block above).
+    try:
+        if any(k in _scene_text(message, ctx_obj) for k in _CURSE_KEYWORDS):
+            texts.append(_CURSE_GUIDE)
+    except Exception as e:
+        print(f"[curse context error] {e}")
+
     return ctx_obj, texts
 
 
@@ -5742,7 +5887,8 @@ def _character_resource_block(character_id: int) -> str:
             except Exception as e:
                 print(f"[weather block error] {e}")
 
-        # Active afflictions (diseases / madness).
+        # Active afflictions (diseases / madness). Curses are handled separately below
+        # so their hidden lift condition can be shown to the DM but never to the player.
         if cfg.hazard.enabled:
             afflictions = session.exec(
                 select(Affliction).where(
@@ -5750,12 +5896,16 @@ def _character_resource_block(character_id: int) -> str:
                     Affliction.active == True,  # noqa: E712
                 )
             ).all()
-            if afflictions:
+            non_curse = [a for a in afflictions if a.kind != "curse"]
+            if non_curse:
                 names = ", ".join(
                     f"{a.name}" + (f" ({a.severity})" if a.severity else "")
-                    for a in afflictions
+                    for a in non_curse
                 )
                 lines.append(f"Afflictions: {names}")
+            curse_block = _format_curses_block(session, character_id)
+            if curse_block:
+                lines.append(curse_block)
 
         # Faction reputation.
         if cfg.reputation.enabled:
@@ -6071,6 +6221,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(deck_notes)
         except Exception as e:
             print(f"[deck] hook processing failed: {e}")
+
+    # Curses: lay or lift a DM-flavored curse. The lift condition is held server-side
+    # (DM-eyes-only) so the players must uncover it; only the effect reaches them.
+    dm_text, curse_ops = extract_curse_hooks(dm_text)
+    if curse_ops:
+        try:
+            curse_notes = process_curse_hooks(req.session_id, curse_ops)
+            if curse_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(curse_notes)
+        except Exception as e:
+            print(f"[curse] hook processing failed: {e}")
 
     # Chase: begin/advance/end a flee-or-pursuit minigame the DM narrates.
     dm_text, chase_ops = extract_chase_hooks(dm_text)
@@ -9277,7 +9438,14 @@ async def character_afflictions(character_id: int):
                 Affliction.active == True,  # noqa: E712
             )
         ).all()
-        return {"afflictions": [a.model_dump() for a in rows]}
+        out = []
+        for a in rows:
+            d = a.model_dump()
+            if a.kind == "curse":
+                # notes = the hidden lift condition — NEVER expose it to players.
+                d.pop("notes", None)
+            out.append(d)
+        return {"afflictions": out}
 
 
 # ===================== Reputation ==========================================
