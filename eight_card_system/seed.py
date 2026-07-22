@@ -222,8 +222,17 @@ def seed_starter_world(graph: WorldGraph) -> dict:
             "scale": "wilds",
             "danger": "moderate",
             "coords": geo.coords_attr(*geo.from_origin("east", 10.0)),
+            # A rare, persistent arcane site — the DM can reflavor or mutate it in play.
+            "arcane_site": {
+                "kind": "wild_magic", "effect_kind": "wild_surge", "rest_safe": True,
+                "name": "The Mistlight Glade",
+                "flavor": ("A ring of pale toadstools and slow-drifting motes of light in a "
+                           "clearing where the air tastes of copper and old magic."),
+                "effect": "Casting a spell here risks a wild-magic surge (DM's call).",
+                "values": {}, "since_day": 0, "active": True,
+            },
         },
-        tags=["forest", "wilds", "dangerous"],
+        tags=["forest", "wilds", "dangerous", "arcane-site"],
     )
 
     # --- Deity ---

@@ -1816,12 +1816,22 @@ def _detect_rest(message: str) -> Optional[str]:
     return None
 
 
-def _rest_interruption_block(ctx_obj, message: str, rng=None, warded: Optional[dict] = None) -> Optional[str]:
+def _rest_interruption_block(ctx_obj, message: str, rng=None, warded: Optional[dict] = None,
+                             site: Optional[dict] = None) -> Optional[str]:
     """DM guidance for a rest attempt in dangerous country: authoritative on whether
     a threat interrupts it this time. Returns None when there's no rest or no risk."""
     kind = _detect_rest(message)
     if not kind:
         return None
+    # A no-rest arcane site (a choking gas cloud, a searing aura) forbids resting here
+    # outright, regardless of danger — the party must leave the area first.
+    if site and site.get("active", True) and site.get("rest_safe") is False:
+        return (
+            "# Can't rest here\n"
+            f"This place — {site.get('name', 'an arcane hazard')} — cannot be rested in "
+            f"while it persists ({site.get('effect') or 'its effect makes rest impossible'}). "
+            "The rest does not happen; the party must move to safe ground first. Grant NO "
+            "rest benefits.")
     loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
     danger = str((getattr(loc, "attributes", None) or {}).get("danger", "")).lower()
     prob = _REST_INTERRUPT_P[kind].get(danger, 0.0)
@@ -1997,6 +2007,22 @@ def _pc_danger(character_id: Optional[int]) -> str:
         return ""
 
 
+def _pc_arcane_site(character_id: Optional[int]) -> Optional[dict]:
+    """The active arcane site at a character's current location (or None)."""
+    if not character_id:
+        return None
+    try:
+        with Session(engine) as s:
+            char = s.get(Character, character_id)
+        if not char:
+            return None
+        loc = world.location_of(_pc_entity_slug(char))
+        site = (getattr(loc, "attributes", None) or {}).get("arcane_site") if loc else None
+        return site if (site and site.get("active", True)) else None
+    except Exception:
+        return None
+
+
 _REST_DANGEROUS = {"moderate", "high", "deadly"}
 
 
@@ -2009,6 +2035,19 @@ def _rest_gate(session_id: Optional[str], character_id: int, kind: str, force: b
     ``force`` lets the party rest at their own risk without one."""
     if not session_id:
         return ("ok", None)  # no session context — can't gate, stay backward-compatible
+    # A no-rest arcane site (gas cloud, searing aura) forbids resting outright — the
+    # party must leave the area (force still lets them try, at their own risk).
+    nrs = _pc_arcane_site(character_id)
+    if nrs and nrs.get("rest_safe") is False and not force:
+        return ("block", {
+            "status": "no_rest_here",
+            "site": nrs.get("name"),
+            "kind": kind,
+            "reason": (f"You cannot rest here — {nrs.get('name', 'an arcane hazard')} "
+                       f"({nrs.get('effect') or 'its effect makes rest impossible'}). "
+                       "Move to safe ground first."),
+            "can_force": True,
+        })
     danger = _pc_danger(character_id)
     if danger not in _REST_DANGEROUS:
         return ("ok", None)  # safe country
@@ -2029,6 +2068,213 @@ def _rest_gate(session_id: Optional[str], character_id: int, kind: str, force: b
             "DM grants a ward, or rest anyway at your own risk."),
         "can_force": True,
     })
+
+
+# =====================  ARCANE SITES  =====================================
+# Rare, location-bound magical features the DM FLAVORS and the world REMEMBERS:
+# a font of wild magic, a dead-magic hollow, a choking gas cloud you can't rest in,
+# a healing spring, a crystal node that grants a spell. The DM picks a generic KIND
+# (which fixes the mechanical class — chiefly whether you can rest there) and supplies
+# the name, look-and-feel, the specific effect, and any numeric values. It is stored on
+# the world-graph place, so the flavor STICKS and is fed back every turn the party is
+# here; it only changes via a [[SITE: mutate]] (a player-driven or natural world event)
+# or [[SITE: clear]]. Kept rare by guidance — a handful across the whole world.
+#   [[SITE: mark | wild_magic | The Weeping Crystals | violet crystals that hum... | casting risks a surge | dc=13]]
+#   [[SITE: mutate | the crystals are shattered, the hum fades to a dead-magic silence | the party smashed them | dead_magic]]
+#   [[SITE: clear | dispelled by the ritual]]
+ARCANE_SITE_HOOK_PATTERN = re.compile(r"\[\[SITE:(.+?)\]\]", re.IGNORECASE)
+_ARCANE_SITE_ACTIONS = {"mark", "mutate", "clear"}
+
+# Generic taxonomy (own-worded, edition-neutral). Each kind fixes the mechanical
+# CLASS; the DM supplies flavor + the concrete effect + values. `rest_safe=False`
+# means the area can't be rested in (wired into the rest system).
+_ARCANE_SITE_KINDS: Dict[str, Dict[str, Any]] = {
+    "magic_font":    {"rest_safe": True,  "effect_kind": "spell_boost",
+                      "hint": "magic runs strong here — a ley font, humming crystals, a blessed pool"},
+    "dead_magic":    {"rest_safe": True,  "effect_kind": "magic_suppress",
+                      "hint": "a dead-magic zone where spells and items sputter or fail"},
+    "wild_magic":    {"rest_safe": True,  "effect_kind": "wild_surge",
+                      "hint": "a wild-magic zone where casting risks a surge"},
+    "hazard_field":  {"rest_safe": False, "effect_kind": "hazard_save",
+                      "hint": "choking gas, spores, radiant scald — you can't linger or rest here"},
+    "blessing_aura": {"rest_safe": True,  "effect_kind": "boon",
+                      "hint": "a hallowed or blessed site that aids those within"},
+    "bane_aura":     {"rest_safe": True,  "effect_kind": "bane",
+                      "hint": "a cursed or profaned site that preys on those within"},
+    "restorative":   {"rest_safe": True,  "effect_kind": "heal",
+                      "hint": "a healing spring, restorative grove, or sacred pool"},
+    "arcane_node":   {"rest_safe": True,  "effect_kind": "charge",
+                      "hint": "a mana crystal or arcane node that can be tapped for magic"},
+}
+
+_ARCANE_SITE_GUIDE = (
+    "ARCANE SITES. The world holds RARE, location-bound magical features — a font of "
+    "wild magic, a dead-magic hollow, a choking gas cloud, a healing spring, a crystal "
+    "that grants a spell. When the party is AT such a place and you establish one, mark "
+    "it: [[SITE: mark | kind | name | look-and-feel | the effect | dc=.. bonus=.. ]] where "
+    "kind is one of " + ", ".join(_ARCANE_SITE_KINDS) + ". You choose the flavor and the "
+    "numbers; the kind fixes whether it can be rested in (hazard_field cannot). Keep them "
+    "RARE — a handful in the whole world, not every room. Once marked, the site persists "
+    "and you'll be reminded of its established look each turn — DON'T re-invent it. Change "
+    "it only when the fiction does: [[SITE: mutate | new look/effect | reason | new_kind?]] "
+    "for a player or world event, or [[SITE: clear | reason]] when it's destroyed/dispelled."
+)
+
+
+def _normalize_site_kind(raw: str) -> str:
+    k = re.sub(r"[\s-]+", "_", (raw or "").strip().lower())
+    if k in _ARCANE_SITE_KINDS:
+        return k
+    for name in _ARCANE_SITE_KINDS:  # loose contains-match ("magic font" -> magic_font)
+        if k and (k in name or name in k):
+            return name
+    return "magic_font"
+
+
+def _parse_site_values(text: str) -> Dict[str, str]:
+    """Pull key=value numbers the DM assigned (dc=15 bonus=1 damage=2d6 heal=1d8)."""
+    return {m.group(1).lower(): m.group(2)
+            for m in re.finditer(r"\b([A-Za-z_]+)\s*=\s*([^\s|]+)", text or "")}
+
+
+def _current_place(ctx_obj, session_id: str):
+    """The place the party is in this turn (ctx slice first, then the PC's world node)."""
+    loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
+    if loc is not None:
+        return loc
+    try:
+        meta = _load_session_state(session_id).get("meta", {}) or {}
+        cid = meta.get("character_id")
+        if cid:
+            with Session(engine) as s:
+                ch = s.get(Character, cid)
+            if ch:
+                return world.location_of(_pc_entity_slug(ch))
+    except Exception:
+        pass
+    return None
+
+
+def _format_arcane_site_block(site: dict) -> str:
+    """DM-facing reminder of the location's established arcane feature. Reading it back
+    from storage every turn is what keeps the look-and-feel consistent."""
+    if not site or not site.get("active", True):
+        return ""
+    name = site.get("name") or "an arcane feature"
+    lines = [f"# Arcane site here: {name}"]
+    if site.get("flavor"):
+        lines.append(f"Established look (keep it consistent): {site['flavor']}")
+    if site.get("effect"):
+        lines.append(f"Effect: {site['effect']}")
+    vals = site.get("values") or {}
+    if vals:
+        lines.append("Values: " + ", ".join(f"{k}={v}" for k, v in vals.items()))
+    if site.get("rest_safe") is False:
+        lines.append("The party CANNOT take a rest here while this persists.")
+    lines.append("This is persistent — narrate it consistently; change it only via "
+                 "[[SITE: mutate|...]] or [[SITE: clear|...]] when the fiction does.")
+    return "\n".join(lines)
+
+
+def extract_arcane_site_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull arcane-site hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in ARCANE_SITE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").strip().lower()
+        if action not in _ARCANE_SITE_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = ARCANE_SITE_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def process_arcane_site_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[str]:
+    """Establish / mutate / clear the current location's arcane feature on the world
+    graph (persistent). Returns brief player-facing journal notes for milestones."""
+    if not ops:
+        return []
+    notes: list[str] = []
+    for op in ops:
+        action = op["action"]
+        args = op.get("args", [])
+        loc = _current_place(ctx_obj, session_id)
+        if loc is None:
+            continue
+        cur = (getattr(loc, "attributes", None) or {}).get("arcane_site") or {}
+        try:
+            day = world.current_day()
+        except Exception:
+            day = 0
+        if action == "mark":
+            kind = _normalize_site_kind(args[0] if args else "")
+            name = (args[1] if len(args) > 1 and args[1] else "an arcane feature")
+            flavor = (args[2] if len(args) > 2 else "") or ""
+            effect = (args[3] if len(args) > 3 else "") or ""
+            values = _parse_site_values(" ".join(args))
+            spec = _ARCANE_SITE_KINDS[kind]
+            site = {"kind": kind, "name": name, "flavor": flavor, "effect": effect,
+                    "values": values, "rest_safe": spec["rest_safe"],
+                    "effect_kind": spec["effect_kind"], "since_day": day, "active": True}
+            _store_arcane_site(loc, site)
+            _log_world_event(f"Arcane site established at {loc.name}: {name}", loc, session_id)
+            notes.append(f"✨ *{name}* — this place is now touched by magic.")
+        elif action == "mutate":
+            if not cur:
+                continue
+            new_look = args[0] if args else ""
+            reason = args[1] if len(args) > 1 else ""
+            new_kind = _normalize_site_kind(args[2]) if len(args) > 2 and args[2] else None
+            if new_look:
+                # A mutation replaces the effect/look; keep name unless clearly renamed.
+                cur["effect"] = new_look
+                cur.setdefault("flavor", "")
+                cur["flavor"] = new_look if not cur.get("flavor") else cur["flavor"]
+            vals = _parse_site_values(" ".join(args))
+            if vals:
+                cur["values"] = {**(cur.get("values") or {}), **vals}
+            if new_kind:
+                cur["kind"] = new_kind
+                cur["rest_safe"] = _ARCANE_SITE_KINDS[new_kind]["rest_safe"]
+                cur["effect_kind"] = _ARCANE_SITE_KINDS[new_kind]["effect_kind"]
+            cur["since_day"] = day
+            _store_arcane_site(loc, cur)
+            _log_world_event(
+                f"Arcane site at {loc.name} shifted: {reason or new_look}", loc, session_id)
+            notes.append(f"✨ *The magic here has changed.*")
+        elif action == "clear":
+            reason = args[0] if args else ""
+            _store_arcane_site(loc, None)
+            _log_world_event(
+                f"Arcane site at {loc.name} ended: {reason}", loc, session_id)
+            notes.append("✨ *The magic here fades.*")
+    return notes
+
+
+def _store_arcane_site(loc, site: Optional[dict]) -> None:
+    """Persist (or clear) the arcane site on a place entity's attributes."""
+    try:
+        world.upsert_entity(loc.name, loc.type, slug=loc.slug, status=loc.status,
+                            attributes={"arcane_site": site})
+    except Exception as e:
+        print(f"[site] store failed: {e}")
+
+
+def _log_world_event(summary: str, loc, session_id: str) -> None:
+    try:
+        world.add_event(summary, location=loc.slug, session_id=session_id)
+    except Exception:
+        pass
+
+
+def _active_arcane_site(ctx_obj) -> Optional[dict]:
+    """The current location's active arcane site (or None)."""
+    loc = getattr(ctx_obj, "location", None) if ctx_obj is not None else None
+    site = (getattr(loc, "attributes", None) or {}).get("arcane_site") if loc else None
+    return site if (site and site.get("active", True)) else None
 
 
 def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
@@ -4490,11 +4736,25 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[quest context error] {e}")
 
+    # Arcane site: a rare, DM-flavored magical feature persists on this place. Read it
+    # back every turn so its look-and-feel stays consistent; also feed the guide so the
+    # DM can establish/mutate one when the fiction calls for it.
+    _site = None
+    try:
+        _site = _active_arcane_site(ctx_obj)
+        texts.append(_ARCANE_SITE_GUIDE)
+        block = _format_arcane_site_block(_site) if _site else ""
+        if block:
+            texts.append(block)
+    except Exception as e:
+        print(f"[arcane site error] {e}")
+
     # Rest interruption: resting in dangerous country can be broken by an ambush,
     # unless the party secured the spot (a DM-granted rest ward — e.g. Tiny Hut).
+    # A no-rest arcane site (a gas cloud) forbids resting outright.
     try:
         rblock = _rest_interruption_block(
-            ctx_obj, message, warded=_active_rest_ward(session_id))
+            ctx_obj, message, warded=_active_rest_ward(session_id), site=_site)
         if rblock:
             texts.append(_REST_GUIDE)
             texts.append(rblock)
@@ -5460,6 +5720,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             apply_rest_hooks(req.session_id, rest_ops)
         except Exception as e:
             print(f"[rest] hook processing failed: {e}")
+
+    # Arcane sites: the DM flavored a rare, persistent magical feature onto this place
+    # (or mutated / cleared one). Stored on the world graph so the look-and-feel sticks.
+    dm_text, site_ops = extract_arcane_site_hooks(dm_text)
+    if site_ops:
+        try:
+            site_notes = process_arcane_site_hooks(req.session_id, site_ops, ctx_obj=ctx_obj)
+            if site_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(site_notes)
+        except Exception as e:
+            print(f"[site] hook processing failed: {e}")
 
     # Chase: begin/advance/end a flee-or-pursuit minigame the DM narrates.
     dm_text, chase_ops = extract_chase_hooks(dm_text)
