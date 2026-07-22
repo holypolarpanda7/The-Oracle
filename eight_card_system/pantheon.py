@@ -289,13 +289,16 @@ def _power_attrs(fam: str, m: dict) -> dict:
 
 
 def count_by_family(graph: WorldGraph) -> dict[str, int]:
-    """Live census: how many DEITY entities currently sit in each family.
-    The (future) per-family world-law compares this against each family's cap."""
+    """Live census: how many LIVING powers sit in each family. Dead powers
+    (status "dead" — slain/unmade in a divine event) stay in the graph as
+    history but no longer consume their family's cap."""
     from sqlmodel import Session, select
     from .models import Entity
     counts = {fam: 0 for fam in POWER_FAMILIES}
     with Session(graph.engine) as s:
         for ent in s.exec(select(Entity).where(Entity.type == EntityType.DEITY)):
+            if ent.status == "dead":
+                continue
             fam = (ent.attributes or {}).get("family")
             if fam in counts:
                 counts[fam] += 1
@@ -303,9 +306,134 @@ def count_by_family(graph: WorldGraph) -> dict[str, int]:
 
 
 def cap_for(family: str) -> Optional[int]:
-    """The member ceiling for a family (None if the family isn't known)."""
+    """The STATIC member ceiling for a family (None if the family isn't known)."""
     meta = POWER_FAMILIES.get(family)
     return meta["cap"] if meta else None
+
+
+def _cap_overrides(graph: WorldGraph) -> dict:
+    from sqlmodel import Session
+    from .models import WorldMeta
+    with Session(graph.engine) as s:
+        meta = s.get(WorldMeta, 1)
+        return dict((meta.pantheon_caps or {})) if meta else {}
+
+
+def effective_cap(graph: WorldGraph, family: str) -> Optional[int]:
+    """A family's live ceiling: its static cap, or a higher override raised by a
+    divine event. This is what the world-law checks."""
+    base = cap_for(family)
+    ov = _cap_overrides(graph).get(family)
+    if ov is None:
+        return base
+    return max(base or 0, int(ov))
+
+
+def _raise_cap(graph: WorldGraph, family: str, new_cap: int) -> None:
+    from sqlmodel import Session
+    from .models import WorldMeta
+    with Session(graph.engine) as s:
+        meta = s.get(WorldMeta, 1) or WorldMeta(id=1)
+        caps = dict(meta.pantheon_caps or {})
+        caps[family] = int(new_cap)
+        meta.pantheon_caps = caps
+        s.add(meta)
+        s.commit()
+
+
+def apply_divine_event(
+    graph: WorldGraph, *,
+    family: str,
+    new_powers: Optional[list[dict]] = None,
+    dying: Optional[str] = None,
+    reason: str = "",
+    event_kind: str = "schism",
+    session_id: Optional[str] = None,
+) -> dict:
+    """A DM-GATED divine event: a power dies and/or new powers arise.
+
+    This is the ONLY sanctioned way to change the roster after seeding, so it is
+    privileged — it writes the powers directly rather than going through the
+    extraction world-law. It keeps the graph append-only (a slain power is marked
+    ``status="dead"`` and kept as history, its worship edges closed) and keeps the
+    per-family cap invariant true (the family's cap is raised to hold the new
+    living count, so "one god dies, two arise" is allowed exactly once, as canon).
+
+    ``new_powers``: dicts like the _ROSTER members ({name, title, alignment,
+    domains, symbol, blurb}). ``dying``: a name/slug of the power being unmade.
+    Returns {"created": [...], "died": slug|None, "cap": n, "notes": [...]}.
+    """
+    from sqlmodel import Session, select
+    from .models import Entity, Relation, WorldMeta, RelationType as RT
+
+    if family not in POWER_FAMILIES:
+        raise ValueError(f"unknown power family: {family!r}")
+    graph.create_tables()
+    meta = POWER_FAMILIES[family]
+    day = graph.current_day()
+    notes: list[str] = []
+    created: list[str] = []
+    died_slug: Optional[str] = None
+
+    # 1. A dying power: close its open worship edges, mark it dead (kept as
+    #    history), and log the unmaking.
+    if dying:
+        dent = graph.get_entity(dying) or next(
+            iter(graph.find_entities_by_name(dying)), None)
+        if dent is not None and dent.type == EntityType.DEITY:
+            with Session(graph.engine) as s:
+                open_worship = s.exec(select(Relation).where(
+                    Relation.dst_id == dent.id,
+                    Relation.rel_type == RT.WORSHIPS,
+                    Relation.valid_to == None)).all()  # noqa: E711
+                for r in open_worship:
+                    r.valid_to = day
+                    s.add(r)
+                s.commit()
+                closed = len(open_worship)
+            graph.upsert_entity(
+                dent.name, EntityType.DEITY, slug=dent.slug, status="dead",
+                attributes={**(dent.attributes or {}),
+                            "died_day": day, "death_reason": reason})
+            died_slug = dent.slug
+            graph.add_event(
+                f"{dent.name} is unmade ({event_kind}): {reason}".strip(": "),
+                involved=[dent.slug], session_id=session_id)
+            notes.append(f"{dent.name} is slain/unmade — {closed} worship bond(s) severed "
+                         f"(kept as history).")
+
+    # 2. New powers arise — written directly, tagged to the family.
+    for p in (new_powers or []):
+        attrs = _power_attrs(family, {
+            "title": p.get("title", ""), "domains": p.get("domains", ""),
+            "alignment": p.get("alignment", "neutral"),
+            "symbol": p.get("symbol", ""),
+            "blurb": p.get("blurb", p.get("description", "")),
+        })
+        attrs.update({"divine_event": True, "born_day": day, "origin": reason})
+        ent = graph.upsert_entity(
+            p["name"], EntityType.DEITY, subtype=meta["power_class"],
+            attributes=attrs,
+            tags=["deity", family, meta["power_class"]]
+                 + (p.get("domains", "").split(", ")[:1] if p.get("domains") else []))
+        created.append(ent.slug)
+        notes.append(f"{ent.name} rises among {meta['label']}.")
+
+    # 3. Keep the cap invariant: raise the family cap to hold the new LIVING count.
+    living = count_by_family(graph)[family]
+    cur_cap = effective_cap(graph, family) or 0
+    if living > cur_cap:
+        _raise_cap(graph, family, living)
+        notes.append(f"{meta['label']} cap raised to {living} by this {event_kind}.")
+
+    # 4. Log the event itself.
+    graph.add_event(
+        f"Divine {event_kind} — {meta['label']}: {reason}".strip(": "),
+        involved=created + ([died_slug] if died_slug else []),
+        session_id=session_id)
+
+    return {"created": created, "died": died_slug,
+            "cap": effective_cap(graph, family), "notes": notes}
 
 
 def seed_pantheon(graph: WorldGraph) -> dict:

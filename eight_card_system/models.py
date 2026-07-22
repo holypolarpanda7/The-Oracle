@@ -307,6 +307,11 @@ class WorldMeta(SQLModel, table=True):
     # Last world-day the entropy demographic pass ran (see entropy.py).
     last_entropy_day: int = Field(default=0)
 
+    # Per-family pantheon cap OVERRIDES (family -> raised cap), set only by a
+    # DM-gated divine event (schism/apotheosis). Absent families use the static
+    # caps in pantheon.POWER_FAMILIES. See pantheon.effective_cap.
+    pantheon_caps: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+
     updated_at: datetime = Field(default_factory=_utcnow)
 
 

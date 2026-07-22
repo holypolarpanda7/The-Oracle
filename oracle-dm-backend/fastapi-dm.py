@@ -344,7 +344,8 @@ async def lifespan(app: FastAPI):
                                      ("year", "INTEGER DEFAULT 1247"),
                                      ("month", "INTEGER DEFAULT 1"),
                                      ("day_of_month", "INTEGER DEFAULT 1"),
-                                     ("time_of_day", "VARCHAR DEFAULT 'morning'")]:
+                                     ("time_of_day", "VARCHAR DEFAULT 'morning'"),
+                                     ("pantheon_caps", "JSON")]:
                         if col not in wm_existing:
                             conn.exec_driver_sql(
                                 f'ALTER TABLE "world_meta" ADD COLUMN {col} {ddl}')
@@ -2665,6 +2666,113 @@ def extract_curse_hooks(text: str) -> tuple[str, list[dict]]:
     clean = CURSE_HOOK_PATTERN.sub("", text)
     clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
     return clean, ops
+
+
+# =====================  DIVINE EVENTS  ====================================
+# The pantheon is a CLOSED, per-family set (see eight_card_system/pantheon.py).
+# Routine play can't add or remove a god. A DIVINE event is the rare, momentous
+# exception — a god is slain/unmade, or new power(s) ascend (a schism, an
+# apotheosis, a summoning from beyond). It marks the dead as history (append-only,
+# worship bonds severed), admits the new power(s) to their family, and raises that
+# family's cap to hold them. Syntax:
+#   [[DIVINE: <kind> | <family> | <dying-power or -> | <reason> | <new powers>]]
+# <family> is one of the seven family keys; <new powers> is a semicolon list, each
+# "Name : domains". Example (a god dies, two arise):
+#   [[DIVINE: schism | archdevils | Belisar | the Iron Throne shattered in the War Below | Vornith the Split Crown : tyranny, law ; Maskyr the Split Crown : tyranny, ambition]]
+# A mortal's ascension (no death):
+#   [[DIVINE: apotheosis | sovereign | - | the martyr Kaelen ascended at the Last Ford | Kaelen the Ever-Vigilant : valor, sacrifice]]
+DIVINE_HOOK_PATTERN = re.compile(r"\[\[DIVINE:(.+?)\]\]", re.IGNORECASE)
+_DIVINE_KINDS = {"schism", "apotheosis", "summoning", "death"}
+
+_DIVINE_GUIDE = (
+    "DIVINE EVENTS (VERY RARE — a whole campaign may see none). The world's gods "
+    "and powers are a fixed, closed pantheon; you may NOT invent new ones in "
+    "ordinary narration. The single exception is a momentous, myth-level turn — a "
+    "god is slain or unmade, or a new power ascends — which you mark: "
+    "[[DIVINE: kind | family | dying-power-or- | reason | New Name : domains ; ...]] "
+    "where kind is schism/apotheosis/summoning/death and family is one of "
+    "sovereign, ymmarch, celestial, archfey, old_gods, archdevils, demon_lords. "
+    "A god merely being "
+    "ANGRY, worshipped by a new cult, or gaining a title is NOT a divine event — a "
+    "new cult is a faction, a new title is just narration. Reserve this for the "
+    "death or birth of a power itself."
+)
+
+# Tight, high-signal gating — only genuine god-death/ascension scenes, never an
+# ordinary priest recounting lore (that must NOT trigger this).
+_DIVINE_KEYWORDS = (
+    "apotheosis", "ascend to godhood", "become a god", "becomes a god",
+    "godhood", "godslay", "slay a god", "kill a god", "a god dies", "dying god",
+    "god is slain", "godhead", "divine spark", "claim the throne of heaven",
+    "shatter the pantheon", "unmake a god", "ascends as a god", "new god is born",
+)
+
+
+def extract_divine_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull divine-event hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in DIVINE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        kind = (parts[0] or "").strip().lower()
+        if kind not in _DIVINE_KINDS:
+            continue
+        ops.append({"kind": kind, "args": [p.strip() for p in parts[1:]]})
+    clean = DIVINE_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def _parse_new_powers(raw: str) -> list[dict]:
+    """Parse the new-powers field ('Name : domains ; Name2 : domains2')."""
+    out: list[dict] = []
+    for chunk in (raw or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        name, _, domains = chunk.partition(":")
+        name = name.strip()
+        if name:
+            out.append({"name": name, "domains": domains.strip(),
+                        "blurb": f"A power newly risen: {name}."})
+    return out
+
+
+def process_divine_hooks(session_id: str, ops: list[dict]) -> list[str]:
+    """Enact a DM-gated divine event on the world pantheon (see pantheon.py).
+    Returns brief player-facing chronicle notes."""
+    if not ops:
+        return []
+    from eight_card_system.pantheon import apply_divine_event, POWER_FAMILIES
+    notes: list[str] = []
+    for op in ops:
+        args = op.get("args", [])
+        family = (args[0] if len(args) > 0 else "").strip().lower()
+        if family not in POWER_FAMILIES:
+            print(f"[divine] unknown family '{family}' — skipped")
+            continue
+        dying = (args[1] if len(args) > 1 else "").strip()
+        dying = None if dying in ("", "-", "none") else dying
+        reason = (args[2] if len(args) > 2 else "").strip()
+        new_powers = _parse_new_powers(args[3] if len(args) > 3 else "")
+        if not dying and not new_powers:
+            continue
+        try:
+            res = apply_divine_event(
+                world, family=family, new_powers=new_powers, dying=dying,
+                reason=reason, event_kind=op["kind"], session_id=session_id)
+        except Exception as e:  # noqa: BLE001 — a bad hook must never break play
+            print(f"[divine] event failed: {e}")
+            continue
+        for n in res.get("notes", []):
+            print(f"[divine] {n}")
+        if res.get("died"):
+            notes.append(f"⚰️ *A power has fallen from the heavens — the world will not soon forget.*")
+        if res.get("created"):
+            rose = ", ".join(g.replace("-", " ").title() for g in res["created"])
+            notes.append(f"✨ *A new power ascends: {rose}.*")
+    return notes
 
 
 def process_curse_hooks(session_id: str, ops: list[dict]) -> list[str]:
@@ -5767,6 +5875,15 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[curse context error] {e}")
 
+    # Divine events: the how-to guide is gated on VERY high-signal keywords, so it
+    # appears only in a genuine god-death/ascension scene — never when a priest is
+    # merely recounting divine lore.
+    try:
+        if any(k in _scene_text(message, ctx_obj) for k in _DIVINE_KEYWORDS):
+            texts.append(_DIVINE_GUIDE)
+    except Exception as e:
+        print(f"[divine context error] {e}")
+
     # Circle magic: show any sustained Circle spells + gate the how-to guide on a live
     # circle or scene keywords, so ordinary casting turns carry none of it.
     try:
@@ -6773,6 +6890,18 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(curse_notes)
         except Exception as e:
             print(f"[curse] hook processing failed: {e}")
+
+    # Divine events: a rare, momentous schism/apotheosis — a god is unmade or a
+    # new power ascends. Enacted on the closed pantheon (append-only; the family
+    # cap is raised to hold any new power). See eight_card_system/pantheon.py.
+    dm_text, divine_ops = extract_divine_hooks(dm_text)
+    if divine_ops:
+        try:
+            divine_notes = process_divine_hooks(req.session_id, divine_ops)
+            if divine_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(divine_notes)
+        except Exception as e:
+            print(f"[divine] hook processing failed: {e}")
 
     # Circle magic: resolve a cooperative Circle spell — validate the casters, compute the
     # enhancement from the option + contributor count, and expend the secondaries' slots.

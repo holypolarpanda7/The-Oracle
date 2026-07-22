@@ -695,16 +695,12 @@ def validate_world_delta(
     # only a DM-gated divine event (attributes.divine_event) may add a power,
     # and never past its family's cap. This is what stops the pantheon from
     # inflating every time narration names a god. See pantheon.py. ---
-    from .pantheon import POWER_FAMILIES, cap_for
+    from .pantheon import POWER_FAMILIES, effective_cap, count_by_family
     with Session(graph.engine) as _s:
         existing_powers = _s.exec(
             select(Entity).where(Entity.type == "deity")).all()
     power_by_norm = {_norm_power_name(p.name): p for p in existing_powers}
-    fam_counts: dict[str, int] = {fam: 0 for fam in POWER_FAMILIES}
-    for p in existing_powers:
-        fam = (p.attributes or {}).get("family")
-        if fam in fam_counts:
-            fam_counts[fam] += 1
+    fam_counts = count_by_family(graph)   # living powers only (dead don't count)
 
     kept_entities: list[EntityDelta] = []
     approved_powers: dict[str, int] = {}   # family -> new powers admitted this delta
@@ -736,7 +732,7 @@ def validate_world_delta(
         fam = (ed.attributes or {}).get("family")
         if fam not in POWER_FAMILIES:
             fam = "sovereign"
-        cap = cap_for(fam)
+        cap = effective_cap(graph, fam)
         cur = fam_counts.get(fam, 0) + approved_powers.get(fam, 0)
         if cap is not None and cur >= cap:
             notes.append(
