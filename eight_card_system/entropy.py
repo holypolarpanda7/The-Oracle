@@ -27,7 +27,7 @@ from sqlmodel import Session, select
 from .graph import WorldGraph
 from .models import Entity, Relation, RelationType, WorldEvent, WorldMeta
 
-DAYS_PER_YEAR = 360  # 12 months x 30 days (Calendar of Harptos view)
+DAYS_PER_YEAR = 360  # 12 months x 30 days (world calendar)
 
 # --- memory fade tuning ---
 MEMORY_GRACE_DAYS = 30          # no fade inside this window

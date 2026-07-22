@@ -318,7 +318,7 @@ class WorldGraph:
             return meta.world_day if meta else 0
 
     def current_date_str(self) -> str:
-        """Human-facing Calendar-of-Harptos date/time string."""
+        """Human-facing world-calendar date/time string."""
         with Session(self.engine) as s:
             meta = self._ensure_meta(s)
             return describe_date(meta)

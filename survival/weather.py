@@ -2,7 +2,7 @@
 
 Weather is generated from ``(world_day, climate)`` with a stable seed, so the same
 day in the same region always produces the same weather (reproducible, no storage
-needed). Season is derived from the Harptos month. The output feeds
+needed). Season is derived from the world-calendar month. The output feeds
 ``environment.py`` to decide which hazards are in play.
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ _WIND = ["calm", "light breeze", "strong wind", "gale"]
 
 
 def season_for_month(month: int) -> str:
-    """Harptos month (1..12) -> season."""
+    """World-calendar month (1..12) -> season."""
     m = ((int(month) - 1) % 12) + 1
     if m in (12, 1, 2):
         return "winter"

@@ -40,7 +40,7 @@ class EntityType:
     QUEST = "quest"
     EVENT = "event"      # a notable happening promoted to a first-class node
     PC = "pc"            # player character (mirror of backend Character)
-    DEITY = "deity"      # gods/powers worshipped in the world (Faerûn pantheon)
+    DEITY = "deity"      # gods & cosmic powers (see eight_card_system/pantheon.py)
     LORE = "lore"        # a rumor, secret, clue, or piece of knowledge
 
     ALL = {PLACE, NPC, FACTION, ITEM, QUEST, EVENT, PC, DEITY, LORE}
@@ -165,12 +165,17 @@ class TimeOfDay:
     ALL = set(ORDER)
 
 
-# Calendar of Harptos month names (Faerûn), 12 months of 30 days each. These are
-# factual world labels, not book prose. Override for a different setting.
-HARPTOS_MONTHS = [
-    "Hammer", "Alturiak", "Ches", "Tarsakh", "Mirtul", "Kythorn",
-    "Flamerule", "Eleasis", "Eleint", "Marpenoth", "Uktar", "Nightal",
+# The world calendar (ORIGINAL setting canon — not Faerûn's Harptos). 12 months
+# of 30 days each = a 360-day year. Month 1 is deep winter; the order is what the
+# season/weather logic keys on (see survival/weather.season_for_month), so keep
+# winter->spring->summer->autumn ordering if you rename these.
+WORLD_MONTHS = [
+    "Hearthdeep", "Frostwane", "Thawmarch", "Greentide", "Blossomhigh", "Sunreach",
+    "Highsun", "Goldharvest", "Emberfall", "Duskwane", "Greymist", "Longnight",
 ]
+# Era reckoning: years are counted "After the Forging" (AF) — since Vaskrun the
+# World-Anvil hammered the world into shape (see docs/lore/pantheon.md).
+WORLD_ERA = "AF"
 DAYS_PER_MONTH = 30
 
 
@@ -281,16 +286,16 @@ class WorldMeta(SQLModel, table=True):
 
     ``world_day`` is an absolute day counter (day 0 = campaign start). The
     calendar fields (``year``/``month``/``day_of_month``/``time_of_day``) are a
-    human-facing Calendar-of-Harptos view kept in sync by ``WorldGraph``.
+    human-facing world-calendar view kept in sync by ``WorldGraph``.
     """
     __tablename__ = "world_meta"
 
     id: Optional[int] = Field(default=1, primary_key=True)
     world_day: int = Field(default=0)
 
-    # Calendar of Harptos view of the current date/time.
-    year: int = Field(default=1492)              # Dalereckoning (DR)
-    month: int = Field(default=1)                # 1..12 index into HARPTOS_MONTHS
+    # World-calendar view of the current date/time.
+    year: int = Field(default=1247)              # years After the Forging (AF)
+    month: int = Field(default=1)                # 1..12 index into WORLD_MONTHS
     day_of_month: int = Field(default=1)         # 1..30
     time_of_day: str = Field(default=TimeOfDay.MORNING, sa_column=Column(String))
 
@@ -306,8 +311,8 @@ class WorldMeta(SQLModel, table=True):
 
 
 def describe_date(meta: "WorldMeta") -> str:
-    """Render a WorldMeta as e.g. 'morning of 5 Mirtul, 1492 DR (day 12)'."""
+    """Render a WorldMeta as e.g. 'morning of 5 Greentide, 1247 AF (day 12)'."""
     idx = max(1, min(12, meta.month)) - 1
-    month_name = HARPTOS_MONTHS[idx]
+    month_name = WORLD_MONTHS[idx]
     return (f"{meta.time_of_day} of {meta.day_of_month} {month_name}, "
-            f"{meta.year} DR (day {meta.world_day})")
+            f"{meta.year} {WORLD_ERA} (day {meta.world_day})")

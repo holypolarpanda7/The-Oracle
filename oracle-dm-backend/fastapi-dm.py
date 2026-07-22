@@ -341,7 +341,7 @@ async def lifespan(app: FastAPI):
                     for col, ddl in [("real_anchor_ts", "REAL"),
                                      ("anchor_world_day", "INTEGER DEFAULT 0"),
                                      ("last_entropy_day", "INTEGER DEFAULT 0"),
-                                     ("year", "INTEGER DEFAULT 1492"),
+                                     ("year", "INTEGER DEFAULT 1247"),
                                      ("month", "INTEGER DEFAULT 1"),
                                      ("day_of_month", "INTEGER DEFAULT 1"),
                                      ("time_of_day", "VARCHAR DEFAULT 'morning'")]:
