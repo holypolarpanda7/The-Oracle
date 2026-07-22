@@ -2334,6 +2334,233 @@ def _active_arcane_sites(ctx_obj) -> list:
     return _active_sites(_site_list(loc)) if loc else []
 
 
+# =====================  FATE DECKS  =======================================
+# Rare, DM-flavored oracle/fate objects — a Deck of Many Things, a tarokka-style
+# reading deck, a spirit board. The GENERIC archetypes below (own-worded, edition-
+# neutral — NOT any book's card list) give the outcomes; the DM reskins the name +
+# look and adjudicates the specifics/values. Drawing is resolved SERVER-SIDE with a
+# seeded RNG, so the outcome is fair and the model can't cherry-pick or reorder the
+# cards; the drawn card + its generic effect are then revealed for the DM to narrate.
+# A presented deck persists in session state (it depletes as once-cards are drawn).
+#   [[DECK: present | fate | The Deck of Whispers | ivory cards edged in gold]]
+#   [[DECK: draw | The Deck of Whispers | 2]]     (or just [[DECK: draw | 1]] for the only deck)
+DECK_HOOK_PATTERN = re.compile(r"\[\[DECK:(.+?)\]\]", re.IGNORECASE)
+_DECK_ACTIONS = {"present", "draw", "shuffle", "putaway"}
+
+# Each card: (name, tone, effect, once, weight). tone = boon|bane|neutral|omen|answer.
+_GENERIC_DECKS: Dict[str, Dict[str, Any]] = {
+    "fate": {
+        "name": "a Deck of Fate", "blurb": "a deck of fateful cards, heavy with promise and peril",
+        "cards": [
+            ("The Hoard", "boon", "A sudden fortune — treasure or wealth falls to the drawer.", False, 1),
+            ("The Champion", "boon", "A loyal ally or companion is bound to the drawer.", False, 1),
+            ("The Blessing", "boon", "A lasting boon — a charm, a free reroll held in reserve, or a granted advantage.", False, 1),
+            ("The Wish", "boon", "A single wish, great but perilous — the DM adjudicates its cost.", True, 1),
+            ("The Ascendant", "boon", "The drawer advances — a step in power (XP, a level, or a permanent boon; DM's call).", False, 1),
+            ("The Key", "boon", "A rare magic item appears in the drawer's hands.", False, 1),
+            ("The Blank", "neutral", "Nothing. The card is void; fate withholds its hand.", False, 1),
+            ("The Jester", "neutral", "Fate twists — draw two more cards, or take a stroke of inspiration.", False, 1),
+            ("The Toll", "bane", "A price is paid — wealth or treasure is lost.", False, 1),
+            ("The Snare", "bane", "The drawer is taken — imprisoned or spirited away (DM adjudicates the trap).", False, 1),
+            ("The Ruin", "bane", "The drawer is diminished — a step lost (a level or a permanent penalty; DM's call).", False, 1),
+            ("The Wraith", "bane", "A powerful foe now hunts the drawer.", False, 1),
+            ("The Severance", "bane", "A treasured item or a bond is torn away.", False, 1),
+            ("The Shade", "bane", "Death's mark — a brush with the end (DM adjudicates the peril).", True, 1),
+        ],
+    },
+    "reading": {
+        "name": "a Reading Deck", "blurb": "an old deck read for omens, each card a thread of fate",
+        "cards": [
+            ("The Beast", "omen", "A danger or savage foe lies along the path.", False, 1),
+            ("The Crown", "omen", "One in power — a ruler, patron, or rival — shapes what comes.", False, 1),
+            ("The Tempest", "omen", "Upheaval and change; the old order breaks.", False, 1),
+            ("The Lantern", "omen", "A guide, a truth, or a hidden thing about to be revealed.", False, 1),
+            ("The Serpent", "omen", "Betrayal or deceit coils near someone trusted.", False, 1),
+            ("The Hollow", "omen", "A place of the dead, of ruin, or of buried things.", False, 1),
+            ("The Bridge", "omen", "A journey or a crossing — a threshold that must be passed.", False, 1),
+            ("The Ember", "omen", "A small hope, an ally, or a spark that could become a blaze.", False, 1),
+            ("The Mask", "omen", "Something or someone is not what it seems.", False, 1),
+            ("The Tomb", "omen", "An ending, a sacrifice, or a sealed fate.", False, 1),
+        ],
+    },
+    "spirit": {
+        "name": "a Spirit Board", "blurb": "a board the spirits use to answer — truthfully or not",
+        "cards": [
+            ("YES", "answer", "The spirits affirm it.", False, 3),
+            ("NO", "answer", "The spirits deny it.", False, 3),
+            ("SOON", "answer", "The spirits say: it comes, but not yet.", False, 2),
+            ("NOT YET", "answer", "The spirits say: the time is wrong.", False, 2),
+            ("BEWARE", "answer", "The spirits warn of danger tied to the question.", False, 2),
+            ("A NAME", "answer", "The pointer spells a name (the DM supplies it).", False, 1),
+            ("SILENCE", "answer", "The board goes still — no answer comes.", False, 2),
+            ("A LIE", "answer", "The spirits answer falsely (the DM knows; the players do not).", False, 1),
+            ("FAREWELL", "answer", "The spirit departs; the board closes for now.", True, 1),
+        ],
+    },
+}
+
+
+def _normalize_deck_archetype(raw: str) -> str:
+    k = re.sub(r"[\s-]+", "_", (raw or "").strip().lower())
+    if k in _GENERIC_DECKS:
+        return k
+    aliases = {"deck_of_many_things": "fate", "many_things": "fate", "domt": "fate",
+               "tarokka": "reading", "tarot": "reading", "divination": "reading",
+               "ouija": "spirit", "spirit_board": "spirit", "seance": "spirit"}
+    if k in aliases:
+        return aliases[k]
+    for name in _GENERIC_DECKS:
+        if k and (k in name or name in k):
+            return name
+    return "fate"
+
+
+_DECK_GUIDE = (
+    "FATE DECKS (rare). The world holds rare oracle objects — a Deck of Many Things, a "
+    "reading/tarokka deck, a spirit board. When the party finds or uses one, present it: "
+    "[[DECK: present | fate|reading|spirit | your flavored name | look-and-feel]]. To draw, "
+    "emit [[DECK: draw | deck name | count]] — the GAME picks the card(s) fairly; you do NOT "
+    "choose them. You'll be shown each drawn card + a generic effect; narrate its meaning in "
+    "your world and adjudicate the specifics and any values (a 'reading' deck's cards are "
+    "OMENS you tie to real people/places; a spirit board answers a question and may lie). "
+    "Keep these RARE and momentous — not a parlor trick for every tavern."
+)
+
+
+def _card_to_dict(c) -> dict:
+    return {"name": c[0], "tone": c[1], "effect": c[2], "once": c[3], "weight": c[4]}
+
+
+def _resolve_deck_slug(decks: dict, ref: str) -> Optional[str]:
+    """Pick which presented deck a draw refers to (by name, or the only one)."""
+    ref = (ref or "").strip().lower()
+    if ref and not ref.isdigit():
+        for slug, d in decks.items():
+            if slug == slugify(ref) or ref in (d.get("name", "").lower()):
+                return slug
+    return next(iter(decks)) if len(decks) == 1 else None
+
+
+def _weighted_draw(remaining: list, rng: random.Random) -> dict:
+    total = sum(max(1, int(c.get("weight", 1) or 1)) for c in remaining)
+    pick = rng.randint(1, total)
+    upto = 0
+    for c in remaining:
+        upto += max(1, int(c.get("weight", 1) or 1))
+        if pick <= upto:
+            return c
+    return remaining[-1]
+
+
+def _format_active_decks_block(decks: dict) -> str:
+    """Tell the DM which flavored decks are in play (persistent), and their state."""
+    if not decks:
+        return ""
+    lines = ["# Fate decks in play (persistent):"]
+    for d in decks.values():
+        n = len(d.get("remaining") or [])
+        lines.append(f"- {d.get('name')} ({d.get('archetype')}) — {n} card(s) left, "
+                     f"{d.get('draws', 0)} drawn so far. Draw with "
+                     f"[[DECK: draw | {d.get('name')} | n]] (the game picks the card).")
+    return "\n".join(lines)
+
+
+def extract_deck_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull fate-deck hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in DECK_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = re.sub(r"[\s_]+", "", (parts[0] or "").strip().lower())
+        action = "putaway" if action in ("putaway", "put") else action
+        if action not in _DECK_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = DECK_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def process_deck_hooks(session_id: str, ops: list[dict]) -> list[str]:
+    """Present / draw / shuffle / put away a fate deck. Draws are resolved server-side
+    (seeded RNG) so the outcome is fair; returns the revealed cards as player-facing notes."""
+    if not ops:
+        return []
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    decks = dict(meta.get("decks") or {})
+    notes: list[str] = []
+    changed = False
+    for op in ops:
+        action = op["action"]
+        args = op.get("args", [])
+        if action == "present":
+            arche = _normalize_deck_archetype(args[0] if args else "")
+            name = (args[1] if len(args) > 1 and args[1] else _GENERIC_DECKS[arche]["name"])
+            flavor = (args[2] if len(args) > 2 else "") or ""
+            slug = slugify(name)
+            decks[slug] = {
+                "name": name, "archetype": arche, "flavor": flavor,
+                "remaining": [_card_to_dict(c) for c in _GENERIC_DECKS[arche]["cards"]],
+                "drawn": [], "draws": 0}
+            changed = True
+            notes.append(f"🎴 **{name}** — {_GENERIC_DECKS[arche]['blurb']}.")
+            try:
+                world.add_event(f"A fate object appears: {name}", session_id=session_id)
+            except Exception:
+                pass
+        elif action == "draw":
+            slug = _resolve_deck_slug(decks, args[0] if args else "")
+            if not slug:
+                notes.append("🎴 (No deck is in play — present one first.)")
+                continue
+            deck = decks[slug]
+            # count: a numeric arg (either position)
+            n = 1
+            for a in args:
+                if a and a.strip().isdigit():
+                    n = max(1, min(13, int(a.strip())))
+                    break
+            for _ in range(n):
+                remaining = deck["remaining"]
+                if not remaining:
+                    notes.append(f"🎴 *{deck['name']} is spent — no cards remain.*")
+                    break
+                rng = random.Random(f"{session_id}:{slug}:{deck['draws']}")
+                card = _weighted_draw(remaining, rng)
+                deck["draws"] = int(deck.get("draws", 0)) + 1
+                deck["drawn"].append(card["name"])
+                notes.append(f"🎴 **{card['name']}** — {card['effect']}")
+                if card.get("once"):
+                    deck["remaining"] = [c for c in remaining if c is not card]
+            changed = True
+            try:
+                world.add_event(
+                    f"{deck['name']} drawn: {', '.join(deck['drawn'][-n:])}",
+                    session_id=session_id)
+            except Exception:
+                pass
+        elif action == "shuffle":
+            slug = _resolve_deck_slug(decks, args[0] if args else "")
+            if slug:
+                arche = decks[slug]["archetype"]
+                decks[slug]["remaining"] = [_card_to_dict(c)
+                                            for c in _GENERIC_DECKS[arche]["cards"]]
+                changed = True
+                notes.append(f"🎴 *{decks[slug]['name']} is shuffled anew.*")
+        elif action == "putaway":
+            slug = _resolve_deck_slug(decks, args[0] if args else "")
+            if slug:
+                name = decks.pop(slug)["name"]
+                changed = True
+                notes.append(f"🎴 *{name} is put away.*")
+    if changed:
+        meta["decks"] = decks
+        _set_session_meta(session_id, meta)
+    return notes
+
+
 def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
     """Pull quest-control hooks out of the narration. Returns (clean, ops)."""
     ops: list[dict] = []
@@ -4826,6 +5053,16 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[chase context error] {e}")
 
+    # Fate decks: teach the hook (rare) + show any decks in play and their state.
+    try:
+        texts.append(_DECK_GUIDE)
+        decks = (meta or {}).get("decks") or {}
+        dblock = _format_active_decks_block(decks) if decks else ""
+        if dblock:
+            texts.append(dblock)
+    except Exception as e:
+        print(f"[deck context error] {e}")
+
     return ctx_obj, texts
 
 
@@ -5788,6 +6025,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(site_notes)
         except Exception as e:
             print(f"[site] hook processing failed: {e}")
+
+    # Fate decks: present a rare oracle object or draw from it. Draws are resolved
+    # server-side (seeded RNG) so the outcome is fair; revealed cards reach the players.
+    dm_text, deck_ops = extract_deck_hooks(dm_text)
+    if deck_ops:
+        try:
+            deck_notes = process_deck_hooks(req.session_id, deck_ops)
+            if deck_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(deck_notes)
+        except Exception as e:
+            print(f"[deck] hook processing failed: {e}")
 
     # Chase: begin/advance/end a flee-or-pursuit minigame the DM narrates.
     dm_text, chase_ops = extract_chase_hooks(dm_text)
