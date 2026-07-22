@@ -2901,6 +2901,300 @@ def _format_hazard_block(events: list) -> str:
     return "\n".join(lines)
 
 
+# =====================  CIRCLE MAGIC  =====================================
+# Cooperative casting: a PRIMARY caster + one or more SECONDARY casters combine into a
+# single "Circle spell" that applies ONE enhancement option. Built for solo-run parties
+# with several caster PCs and for multiplayer tables. The engine VALIDATES the casters
+# (each must actually have spell slots), COMPUTES the enhanced number from the option and
+# the count of contributors, and EXPENDS the secondaries' slots for the options that cost
+# them (Expand / Prolong / Supplant) — persisted to the DB. The DM narrates the resolved
+# effect the engine reports. Own-worded, edition-neutral.
+#   [[CIRCLE: cast | expand   | Fireball | Mira | Talis, Bramble]]
+#   [[CIRCLE: cast | prolong  | Fly      | Mira | Talis]]
+#   [[CIRCLE: cast | safeguard| Cloudkill| Mira | Talis, Bramble]]
+#   [[CIRCLE: cast | special  | Doomtide | Mira | Talis, Bram, Iri, Sel, Wyn | min=3]]
+#   [[CIRCLE: end  | Fly]]
+CIRCLE_HOOK_PATTERN = re.compile(r"\[\[CIRCLE:(.+?)\]\]", re.IGNORECASE)
+_CIRCLE_ACTIONS = {"cast", "end"}
+
+# option -> {slots: do secondaries expend a slot?, kind}. 'special' is a spell's OWN
+# "Casting as a Circle Spell" clause (the DM narrates its unique effect; the secondaries
+# still expend slots, at the level the DM names via min=).
+_CIRCLE_OPTIONS: Dict[str, Dict[str, Any]] = {
+    "augment":    {"slots": False, "kind": "range"},
+    "distribute": {"slots": False, "kind": "concentration"},
+    "expand":     {"slots": True,  "kind": "area"},
+    "prolong":    {"slots": True,  "kind": "duration"},
+    "safeguard":  {"slots": False, "kind": "safezone"},
+    "supplant":   {"slots": True,  "kind": "material"},
+    "special":    {"slots": True,  "kind": "special"},
+}
+_CIRCLE_OPTION_ALIASES = {
+    "extend range": "augment", "range": "augment",
+    "share": "distribute", "shared": "distribute", "shared concentration": "distribute",
+    "enlarge": "expand", "area": "expand", "bigger": "expand",
+    "extend": "prolong", "duration": "prolong", "longer": "prolong",
+    "safe": "safeguard", "safe zone": "safeguard",
+    "material": "supplant", "component": "supplant", "cheaper": "supplant",
+    "innate": "special", "circle spell": "special", "own": "special",
+}
+
+_CIRCLE_GUIDE = (
+    "CIRCLE MAGIC (cooperative casting). Several caster PCs can combine into ONE 'Circle "
+    "spell' — a boon for a party with multiple spellcasters. When a primary caster and one "
+    "or more OTHER caster PCs (within 30 ft) deliberately cast together, emit "
+    "[[CIRCLE: cast | option | spell | primary | secondary casters (comma-separated)]] with "
+    "ONE option: augment (range up to +1 mile), distribute (share Concentration), expand "
+    "(bigger area), prolong (longer duration), safeguard (carve a safe zone), or supplant "
+    "(cheaper costly component). Use 'special' (add min=N) when the spell has its OWN "
+    "'Casting as a Circle Spell' clause. The GAME validates the casters, computes the "
+    "enhanced number from how many join, and spends the secondaries' slots where the option "
+    "requires it — you narrate the result it reports. Eligible spells take an action or 1+ "
+    "minute and use a slot. Keep it deliberate — casters plan it, and each still gets to act."
+)
+# Scene words that make cooperative casting plausible — the guide is only injected when a
+# circle is already sustained OR the scene reads like combined casting, so lean turns stay lean.
+_CIRCLE_KEYWORDS = (
+    "circle magic", "circle spell", "cast together", "cast as one", "combine their magic",
+    "combine our magic", "combine your magic", "channel together", "cooperative", "in unison",
+    "join their magic", "join our magic", "lend their magic", "lend our magic", "ritual circle",
+    "weave together", "pool their", "pool our", "cast in concert",
+)
+
+
+def _normalize_circle_option(raw: str) -> str:
+    k = re.sub(r"[\s_-]+", " ", (raw or "").strip().lower()).strip()
+    if k in _CIRCLE_OPTIONS:
+        return k
+    return _CIRCLE_OPTION_ALIASES.get(k, k.replace(" ", ""))
+
+
+def _split_names(raw: str) -> list[str]:
+    """Split a comma/'and'-separated caster list into individual names."""
+    if not raw:
+        return []
+    parts = re.split(r"\s*(?:,|;|/|&|\band\b)\s*", raw, flags=re.IGNORECASE)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _circle_min_level(args: list) -> int:
+    """Optional min=/level=/slot= token → the minimum slot secondaries must expend."""
+    for a in args:
+        m = re.search(r"(?:min|level|lvl|slot)\s*[:=]?\s*(\d+)", str(a), re.IGNORECASE)
+        if m:
+            return max(1, min(9, int(m.group(1))))
+    return 1
+
+
+def _resolve_caster(session: Session, session_id: str, ref: str) -> Optional[Character]:
+    """Resolve a caster reference (name, or pc/self for the acting PC) to a Character."""
+    r = (ref or "").strip().lower()
+    if r in _CURSE_SELF_WORDS:
+        meta = _load_session_state(session_id).get("meta", {}) or {}
+        cid = meta.get("character_id")
+        return session.get(Character, cid) if cid else None
+    row = session.exec(select(Character).where(func.lower(Character.name) == r)).first()
+    if row:
+        return row
+    for c in session.exec(select(Character)).all():
+        if r and r in (c.name or "").lower():
+            return c
+    return None
+
+
+# Class -> spellcasting ability (2024/5e standard). Character rows don't store the ability,
+# so a Circle spell's Safeguard (which scales on the PRIMARY's spellcasting modifier) derives
+# it from the class; unknown/multi-ability casters fall back to the PC's best mental modifier.
+_CASTER_ABILITY: Dict[str, str] = {
+    "wizard": "intelligence", "artificer": "intelligence",
+    "cleric": "wisdom", "druid": "wisdom", "ranger": "wisdom",
+    "bard": "charisma", "sorcerer": "charisma", "warlock": "charisma", "paladin": "charisma",
+}
+
+
+def _spellcasting_mod(char: Character) -> int:
+    """The PC's spellcasting ability modifier (by class), else best of INT/WIS/CHA."""
+    ability = _CASTER_ABILITY.get((char.char_class or "").strip().lower())
+    if ability:
+        return _ability_mod(char, ability)
+    return max(_ability_mod(char, "intelligence"),
+               _ability_mod(char, "wisdom"),
+               _ability_mod(char, "charisma"))
+
+
+def _is_caster(char: Character) -> bool:
+    """True if the PC has any spell slots (a Spellcasting/Pact-Magic feature)."""
+    return bool(_spell_slots_for(char.char_class, char.level, None))
+
+
+def _pc_open_slots(char: Character) -> list[int]:
+    """Ascending list of the PC's currently-open (unexpended) slot levels."""
+    out: list[int] = []
+    for s in _spell_slots_for(char.char_class, char.level, char.spell_slots_used):
+        for _ in range(max(0, int(s.get("total", 0)) - int(s.get("used", 0)))):
+            out.append(int(s["level"]))
+    return sorted(out)
+
+
+def _expend_slot(char: Character, min_level: int = 1) -> Optional[int]:
+    """Expend the PC's lowest OPEN slot of level >= min_level. Returns the level spent
+    (mutating char.spell_slots_used) or None if none is available."""
+    for s in sorted(_spell_slots_for(char.char_class, char.level, char.spell_slots_used),
+                    key=lambda x: int(x["level"])):
+        lvl = int(s["level"])
+        if lvl < int(min_level or 1):
+            continue
+        if int(s.get("used", 0)) < int(s.get("total", 0)):
+            used = {int(k): int(v) for k, v in (char.spell_slots_used or {}).items()}
+            used[lvl] = used.get(lvl, 0) + 1
+            char.spell_slots_used = {str(k): v for k, v in used.items()}
+            return lvl
+    return None
+
+
+def _circle_compute(option: str, n: int, prim_mod: int) -> str:
+    """Own-worded description of the enhancement, with the number the option yields for
+    `n` secondary casters (and the primary's spellcasting modifier where it matters)."""
+    if option == "augment":
+        add = min(1000 * n, 5280)
+        cap = " (the 1-mile maximum)" if add >= 5280 else ""
+        return f"range extended by {add} ft{cap}"
+    if option == "distribute":
+        return "Concentration is shared — any contributor can sustain it, and it holds while at least one does"
+    if option == "expand":
+        return f"one dimension of the area of effect grows by {10 * n} ft"
+    if option == "prolong":
+        added = "1 hour" if n <= 3 else "8 hours" if n <= 6 else "24 hours"
+        return f"duration extended by {added}"
+    if option == "safeguard":
+        cubes = max(1, prim_mod + n)
+        return f"a safe zone of {cubes} five-foot cube(s) is carved out of the area"
+    if option == "supplant":
+        return f"a costly Material component's minimum cost is reduced by {50 * n} gp"
+    return "the spell's own Circle-spell clause takes effect — narrate it per the spell"
+
+
+def _format_active_circles_block(circles: dict) -> str:
+    """Remind the DM which Circle spells are being sustained (Distribute / Prolong)."""
+    if not circles:
+        return ""
+    lines = ["# Circle spells sustained (persistent):"]
+    for c in circles.values():
+        who = ", ".join(c.get("contributors") or [])
+        lines.append(f"- {c.get('spell')} ({c.get('option')}) — led by {c.get('primary')} "
+                     f"with {who}: {c.get('detail')}. End it with "
+                     f"[[CIRCLE: end | {c.get('spell')}]].")
+    return "\n".join(lines)
+
+
+def extract_circle_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull circle-magic hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in CIRCLE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = re.sub(r"[\s_]+", "", (parts[0] or "").strip().lower())
+        if action not in _CIRCLE_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = CIRCLE_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def process_circle_hooks(session_id: str, ops: list[dict]) -> list[str]:
+    """Resolve a Circle spell: validate the casters, compute the enhancement from the
+    option + contributor count, expend the secondaries' slots where required (persisted),
+    and track ongoing Distribute/Prolong effects. Returns player-facing notes."""
+    if not ops:
+        return []
+    notes: list[str] = []
+    try:
+        day = world.current_day()
+    except Exception:
+        day = 0
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    circles = dict(meta.get("circles") or {})
+    changed = False
+    with Session(engine) as session:
+        for op in ops:
+            action = op["action"]
+            args = op.get("args", [])
+            if action == "end":
+                ref = (args[0] if args else "").strip().lower()
+                key = next((k for k, v in circles.items()
+                            if not ref or ref == k or ref in (v.get("spell", "").lower())), None)
+                if key:
+                    sp = circles.pop(key).get("spell", "the spell")
+                    changed = True
+                    notes.append(f"✴️ *The circle sustaining {sp} disperses.*")
+                continue
+            # --- cast ---
+            option = _normalize_circle_option(args[0] if args else "")
+            spell = ((args[1].strip() if len(args) > 1 else "") or "a spell")
+            primary = _resolve_caster(session, session_id, args[2] if len(args) > 2 else "")
+            sec_refs = _split_names(args[3] if len(args) > 3 else "")
+            min_level = _circle_min_level(args)
+            if option not in _CIRCLE_OPTIONS:
+                notes.append("✴️ (Unknown circle option — use augment, distribute, expand, "
+                             "prolong, safeguard, supplant, or special.)")
+                continue
+            if primary is None or not _is_caster(primary):
+                notes.append("✴️ (The primary must be a spellcaster to lead a Circle spell.)")
+                continue
+            secs: list[Character] = []
+            seen: set = {primary.id}
+            for r in sec_refs:
+                c = _resolve_caster(session, session_id, r)
+                if c and c.id not in seen and _is_caster(c):
+                    secs.append(c)
+                    seen.add(c.id)
+            if not secs:
+                notes.append("✴️ (A Circle spell needs at least one OTHER spellcaster "
+                             "within 30 ft to lend their magic.)")
+                continue
+            n = len(secs)
+            spent: list[str] = []
+            if _CIRCLE_OPTIONS[option]["slots"]:
+                short = [c.name for c in secs
+                         if not any(lv >= min_level for lv in _pc_open_slots(c))]
+                if short:
+                    lvtxt = f" of level {min_level}+" if min_level > 1 else ""
+                    notes.append(f"✴️ (Circle fails — no slot is spent. These casters have "
+                                 f"no open slot{lvtxt}: {', '.join(short)}.)")
+                    continue
+                for c in secs:
+                    lv = _expend_slot(c, min_level)
+                    session.add(c)
+                    spent.append(f"{c.name} (L{lv})")
+            prim_mod = _spellcasting_mod(primary)
+            detail = _circle_compute(option, n, prim_mod)
+            who = ", ".join(c.name for c in secs)
+            note = (f"✴️ **Circle {option}** — {primary.name} leads {n} secondary caster(s) "
+                    f"({who}) casting {spell}: {detail}.")
+            if spent:
+                note += f" Slots spent: {', '.join(spent)}."
+            notes.append(note)
+            if option in ("distribute", "prolong"):
+                circles[slugify(spell)] = {
+                    "spell": spell, "option": option, "primary": primary.name,
+                    "contributors": [c.name for c in secs], "detail": detail, "day": day}
+            changed = True
+            try:
+                world.add_event(
+                    f"Circle magic: {primary.name} + {n} cast {spell} ({option})",
+                    session_id=session_id)
+            except Exception:
+                pass
+        session.commit()
+    if changed:
+        meta["circles"] = circles
+        _set_session_meta(session_id, meta)
+    return notes
+
+
 def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
     """Pull quest-control hooks out of the narration. Returns (clean, ops)."""
     ops: list[dict] = []
@@ -5473,6 +5767,18 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[curse context error] {e}")
 
+    # Circle magic: show any sustained Circle spells + gate the how-to guide on a live
+    # circle or scene keywords, so ordinary casting turns carry none of it.
+    try:
+        circles = (meta or {}).get("circles") or {}
+        if circles or any(k in _scene_text(message, ctx_obj) for k in _CIRCLE_KEYWORDS):
+            texts.append(_CIRCLE_GUIDE)
+        cblock = _format_active_circles_block(circles) if circles else ""
+        if cblock:
+            texts.append(cblock)
+    except Exception as e:
+        print(f"[circle context error] {e}")
+
     return ctx_obj, texts
 
 
@@ -6467,6 +6773,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(curse_notes)
         except Exception as e:
             print(f"[curse] hook processing failed: {e}")
+
+    # Circle magic: resolve a cooperative Circle spell — validate the casters, compute the
+    # enhancement from the option + contributor count, and expend the secondaries' slots.
+    dm_text, circle_ops = extract_circle_hooks(dm_text)
+    if circle_ops:
+        try:
+            circle_notes = process_circle_hooks(req.session_id, circle_ops)
+            if circle_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(circle_notes)
+        except Exception as e:
+            print(f"[circle] hook processing failed: {e}")
 
     # Chase: begin/advance/end a flee-or-pursuit minigame the DM narrates.
     dm_text, chase_ops = extract_chase_hooks(dm_text)
