@@ -1011,6 +1011,15 @@ def _split_caps_words(chunk: str) -> str:
     return " ".join(w.capitalize() for w in remerged)
 
 
+def _clean_name(raw: str) -> str:
+    """Normalise an already-correct header from a clean (non-OCR) extract:
+    collapse whitespace and tidy a spaced possessive ("Delver 'S"->"Delver's").
+    Casing is preserved as printed, so "Fury of Kostchtchie" and "Giant Ox"
+    survive intact instead of being shredded by the OCR word-splitter."""
+    s = re.sub(r"\s*'\s*[sS]\b", "'s", raw)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def _repair_caps_name(raw: str) -> str:
     """Repair a glyph-spaced caps header ('Dr E Ad Ambusher', \"LAND 'S AID\")
     by re-splitting the collapsed letters with an English wordlist. Possessive
@@ -1987,7 +1996,11 @@ _B14_SECTIONS = ("Actions", "Bonus Actions", "Reactions", "Legendary Actions",
                  "Lair Actions")
 
 
-def parse_2014_statblocks(text: str, source_book: str) -> list[dict]:
+def parse_2014_statblocks(text: str, source_book: str,
+                          ocr: bool = True) -> list[dict]:
+    # ``ocr`` books route names/alignment through the glyph-spacing repair;
+    # clean extracts (direct-text, e.g. Bigby's now) keep the printed header.
+    fix_name = _repair_caps_name if ocr else _clean_name
     out: list[dict] = []
     anchors = list(_B14_AC.finditer(text))
     for i, am in enumerate(anchors):
@@ -2013,9 +2026,9 @@ def parse_2014_statblocks(text: str, source_book: str) -> list[dict]:
         alignment = None
         al = re.search(r",\s*(?:typically\s*)?([^,\n]+)$", size_line, re.I)
         if al:
-            alignment = _repair_caps_name(
+            alignment = fix_name(
                 re.sub(r"(?i)^typically", "", al.group(1)).strip())
-        name = _repair_caps_name(raw_name)
+        name = fix_name(raw_name)
         if len(re.sub(r"[^A-Za-z]", "", name)) < 3:
             continue
 
@@ -2110,15 +2123,20 @@ def parse_2014_statblocks(text: str, source_book: str) -> list[dict]:
 
 
 def ingest_2014_monsters(glob_pat: str, source_book: str, engine=None,
-                         database_url=None, workspace: Path = WORKSPACE) -> dict:
-    """Ingest any 2014-format book's stat blocks (Bigby's, Volo's, …)."""
+                         database_url=None, workspace: Path = WORKSPACE,
+                         ocr: bool = True) -> dict:
+    """Ingest any 2014-format book's stat blocks (Bigby's, Volo's, …).
+
+    ``ocr=False`` for clean direct-text extracts (Bigby's), so names keep the
+    printed spelling instead of being re-split by the OCR word-splitter."""
     from .models import Monster
     engine = engine or get_engine(database_url)
     SQLModel.metadata.create_all(engine)
     bb = next(iter(workspace.glob(glob_pat)), None)
     if bb is None:
         return {"error": f"extraction not found: {glob_pat}"}
-    monsters = parse_2014_statblocks(bb.read_text(encoding="utf-8"), source_book)
+    monsters = parse_2014_statblocks(bb.read_text(encoding="utf-8"),
+                                     source_book, ocr=ocr)
     result = {"monsters_parsed": len(monsters), "new": 0, "updated": 0}
     with Session(engine) as s:
         slug_by_key = {_collapse_key(n): slug for n, slug in
@@ -2204,14 +2222,20 @@ _NAME_SMALL_WORDS = {"of", "the", "and", "a", "an", "to", "in", "on", "for",
                      "from", "with", "at", "by", "or"}
 
 
-def _respace_name(raw: str) -> str:
+def _respace_name(raw: str, ocr: bool = True) -> str:
     """Turn an item header into a clean name. Canonical list wins; an already-
     spaced header is kept (2025 books); an OCR-merged one is split on the word
-    dictionary. Returns "" when the result looks like OCR garbage."""
+    dictionary. Returns "" when the result looks like OCR garbage.
+
+    ``ocr=False`` for clean direct-text extracts (Bigby's): the header is kept
+    verbatim (only whitespace/possessive tidied), so proper names like
+    "Delver's Claws" and "Wyrmreaver Gauntlets" aren't split by the word list."""
     raw = raw.strip()
     key = re.sub(r"[^a-z0-9]", "", raw.lower())
     if key in _COMMON_ITEM_BY_KEY:
         return _COMMON_ITEM_BY_KEY[key]
+    if not ocr:
+        return _clean_name(raw)
     # De-merge each long alpha run so partially-spaced headers
     # ("HELM OFPERFECTPOTENTIAL") split too, not just fully-merged ones.
     tokens: list[str] = []
@@ -2277,7 +2301,8 @@ def _clean_item_desc(text: str) -> str:
     return text[:600]
 
 
-def parse_magic_items(text: str, *, canonical_only: bool = False) -> list[dict]:
+def parse_magic_items(text: str, *, canonical_only: bool = False,
+                      ocr: bool = True) -> list[dict]:
     """Extract magic items (all rarities) from an owned-book extraction.
 
     Names come from the canonical common list where known, else a de-merged
@@ -2308,7 +2333,7 @@ def parse_magic_items(text: str, *, canonical_only: bool = False) -> list[dict]:
         if canonical_only:
             name = _COMMON_ITEM_BY_KEY.get(re.sub(r"[^a-z0-9]", "", raw_name.lower()), "")
         else:
-            name = _respace_name(raw_name)
+            name = _respace_name(raw_name, ocr=ocr)
         if not name or len(name) < 3:
             continue
         # Description runs from after the type line to just before the NEXT
@@ -2333,18 +2358,19 @@ def parse_magic_items(text: str, *, canonical_only: bool = False) -> list[dict]:
     return list(seen.values())
 
 
-# Owned books to sweep for magic items. Header OCR is clean-lettered in these
-# (merged spaces at worst — wordninja fixes that). The DMG 2024 is deliberately
-# ``canonical_only``: its small-caps header font OCRs to letter-garbage
-# ("Bneo oF NoURTSHMENT"), so only names we can verify against the canonical
-# list get through — its standard higher-rarity items already live in the SRD.
+# Owned books to sweep for magic items. Tuple: (glob, source, canonical_only,
+# ocr). ``canonical_only`` restricts to verified canonical names (the DMG 2024's
+# small-caps header font OCRs to letter-garbage, "Bneo oF NoURTSHMENT", so only
+# names we can verify get through — its standard items already live in the SRD).
+# ``ocr`` books route headers through the word-splitter (merged spaces); a clean
+# direct-text extract (Bigby's now) keeps its printed header verbatim instead.
 _ITEM_BOOKS = [
-    ("*xanathar*.txt", "Owned (Xanathar's Guide to Everything) — local ingest", False),
-    ("*bigby*.txt", "Owned (Bigby's Glory of the Giants) — local ingest", False),
-    ("*van-richten*.txt", "Owned (Van Richten's Guide to Ravenloft) — local ingest", False),
-    ("*eberron*.txt", "Owned (Eberron: Forge of the Artificer 2025) — local ingest", False),
-    ("*forgotten-realms*.txt", "Owned (Forgotten Realms 2025) — local ingest", False),
-    ("*dungeon-master-guide-2024*.txt", "Owned (DMG 2024) — local ingest", True),
+    ("*xanathar*.txt", "Owned (Xanathar's Guide to Everything) — local ingest", False, True),
+    ("*bigby*.txt", "Owned (Bigby's Glory of the Giants) — local ingest", False, False),
+    ("*van-richten*.txt", "Owned (Van Richten's Guide to Ravenloft) — local ingest", False, True),
+    ("*eberron*.txt", "Owned (Eberron: Forge of the Artificer 2025) — local ingest", False, True),
+    ("*forgotten-realms*.txt", "Owned (Forgotten Realms 2025) — local ingest", False, True),
+    ("*dungeon-master-guide-2024*.txt", "Owned (DMG 2024) — local ingest", True, True),
 ]
 
 
@@ -2360,12 +2386,12 @@ def ingest_owned_items(engine=None, database_url=None,
     SQLModel.metadata.create_all(engine)
 
     parsed: dict[str, dict] = {}
-    for glob_pat, source, canonical_only in _ITEM_BOOKS:
+    for glob_pat, source, canonical_only, ocr in _ITEM_BOOKS:
         f = next(iter(workspace.glob(glob_pat)), None)
         if f is None:
             continue
         for it in parse_magic_items(f.read_text(encoding="utf-8"),
-                                    canonical_only=canonical_only):
+                                    canonical_only=canonical_only, ocr=ocr):
             if it["slug"] not in parsed or len(it["desc"]) > len(parsed[it["slug"]]["desc"]):
                 parsed[it["slug"]] = dict(it, source=source)
 
@@ -3127,7 +3153,8 @@ def main(argv: list[str]) -> None:
         print("[owned] xgte subclasses:", ingest_xgte_subclasses())
         print("[owned] monsters:", ingest_monsters())
         print("[owned] bigby monsters:", ingest_2014_monsters(
-            "*bigby*.txt", "Owned (Bigby's Glory of the Giants) — local ingest"))
+            "*bigby*.txt", "Owned (Bigby's Glory of the Giants) — local ingest",
+            ocr=False))
         print("[owned] volo monsters:", ingest_2014_monsters(
             "*volo*.txt", "Owned (Volo's Guide to Monsters) — local ingest"))
         print("[owned] vrgtr monsters:", ingest_2014_monsters(
