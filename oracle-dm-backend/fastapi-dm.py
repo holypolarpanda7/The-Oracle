@@ -2847,6 +2847,89 @@ def process_lore_hooks(ops: list[dict]) -> None:
             print(f"[lore] record failed: {e}")
 
 
+# =====================  DEEDS (living relationships)  =====================
+# A DEED records a concrete act between two parties and drives the LIVING
+# relationship model (eight_card_system/relationships.py): it appends to a small,
+# bounded, decaying ledger on the pair's edge; the target's alignment reshapes how
+# much it weighs; the net can auto-flip enemies to allies (append-only history);
+# and the deed drifts the ACTOR's own alignment (enough vengeance turns a good god
+# evil). Where [[LORE:]] states a static "why", [[DEED:]] records a change. Syntax:
+#   [[DEED: Actor | Target | tag | short description | judged?]]
+# tag is one of: betrayal, murder, cruelty, theft, tyranny, defiance, oath_broken,
+# mercy, protection, rescue, gift, healing, loyalty, oath_kept, honor, sacrifice
+# (loose words like 'spared'/'saved'/'betrayed' are accepted). The optional 5th
+# field 'judged' marks a deed the target merely WITNESSED (third-party moral
+# judgement, where alignment can invert it) rather than one done TO them.
+# Example: [[DEED: Duke Verrin | King Aldric | betrayal | sold the ford to the enemy]]
+DEED_HOOK_PATTERN = re.compile(r"\[\[DEED:(.+?)\]\]", re.IGNORECASE)
+
+_DEED_GUIDE = (
+    "DEEDS (living relationships). When one party does something to another that "
+    "would genuinely change how they regard each other — a betrayal, a rescue, a "
+    "kept or broken oath, an act of mercy or cruelty — record it: "
+    "[[DEED: Actor | Target | tag | short description]] where tag is one of "
+    "betrayal, murder, cruelty, theft, tyranny, defiance, oath_broken, mercy, "
+    "protection, rescue, gift, healing, loyalty, oath_kept, honor, sacrifice. The "
+    "world tracks the running, fading tally and will turn enemies to allies (or "
+    "the reverse) on its own, and a pattern of deeds slowly shifts the ACTOR's own "
+    "alignment — so record only real, weighty acts, not every pleasantry. Add "
+    "'| judged' as a 5th field if the target only witnessed the deed rather than "
+    "being its object."
+)
+
+_DEED_KEYWORDS = (
+    "betray", "avenge", "vengeance", "spared", "spare", "saved", "rescue",
+    "swore", "oath", "broke his word", "broke her word", "broke faith",
+    "tortured", "slew", "murder", "sacrificed", "defied", "rebel", "gift",
+    "pledged", "forgave", "forsaken", "turned on", "stood by", "protected",
+)
+
+
+def extract_deed_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull deed hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in DEED_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if len(parts) < 3 or not parts[0] or not parts[1] or not parts[2]:
+            continue
+        actor, target, tag = parts[0], parts[1], parts[2]
+        text_desc = parts[3] if len(parts) > 3 else ""
+        judged = len(parts) > 4 and parts[4].strip().lower() in (
+            "judged", "witness", "witnessed", "public", "observed")
+        ops.append({"actor": actor, "target": target, "tag": tag,
+                    "text": text_desc, "personal": not judged})
+    clean = DEED_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def process_deed_hooks(session_id: str, ops: list[dict]) -> None:
+    """Drive the living-relationship model from recorded deeds. Silent — the
+    change shows through the DM's own narration + the evolving world-context."""
+    if not ops:
+        return
+    from eight_card_system.relationships import record_deed
+    for op in ops:
+        try:
+            res = record_deed(
+                world, op["actor"], op["target"], tag=op["tag"],
+                text=op.get("text", ""), personal=op.get("personal", True),
+                session_id=session_id)
+            if not res:
+                print(f"[deed] skipped (unknown entity/tag): "
+                      f"{op['actor']} -{op['tag']}-> {op['target']}")
+                continue
+            note = (f"[deed] {op['actor']} -{res['tag']}-> {op['target']}: "
+                    f"net {res['net']} ({res['category'].replace('_', ' ')})")
+            if res.get("flipped"):
+                note += f" FLIP {res['flipped'][0]}->{res['flipped'][1]}"
+            if res.get("actor_alignment"):
+                note += f"; {op['actor']} alignment -> {res['actor_alignment']}"
+            print(note)
+        except Exception as e:  # noqa: BLE001 — a bad hook must never break play
+            print(f"[deed] record failed: {e}")
+
+
 def process_curse_hooks(session_id: str, ops: list[dict]) -> list[str]:
     """Lay / lift a curse (an Affliction kind='curse'). The lift condition is stored in
     notes (DM-eyes-only). Returns player-facing notes (never the lift condition)."""
@@ -5965,6 +6048,15 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[lore context error] {e}")
 
+    # Deeds: gate the how-to guide on scenes where a weighty act (a betrayal, a
+    # rescue, a kept/broken oath) is actually happening, so relationships evolve
+    # only on real turning points — never on ordinary chatter.
+    try:
+        if any(k in _scene_text(message, ctx_obj) for k in _DEED_KEYWORDS):
+            texts.append(_DEED_GUIDE)
+    except Exception as e:
+        print(f"[deed context error] {e}")
+
     # Circle magic: show any sustained Circle spells + gate the how-to guide on a live
     # circle or scene keywords, so ordinary casting turns carry none of it.
     try:
@@ -6994,6 +7086,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             process_lore_hooks(lore_ops)
         except Exception as e:
             print(f"[lore] hook processing failed: {e}")
+
+    # Deeds: record weighty acts between parties that drive the LIVING relationship
+    # model — a fading, alignment-weighted ledger that turns enemies to allies (and
+    # back), and drifts the actor's own alignment over time. Silent to the player;
+    # the change surfaces through the DM's narration and the evolving world-context.
+    dm_text, deed_ops = extract_deed_hooks(dm_text)
+    if deed_ops:
+        try:
+            process_deed_hooks(req.session_id, deed_ops)
+        except Exception as e:
+            print(f"[deed] hook processing failed: {e}")
 
     # Circle magic: resolve a cooperative Circle spell — validate the casters, compute the
     # enhancement from the option + contributor count, and expend the secondaries' slots.

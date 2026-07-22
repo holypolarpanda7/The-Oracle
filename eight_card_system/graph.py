@@ -257,6 +257,15 @@ class WorldContext:
                         if d >= 0.5:
                             extra = f" ({geo.compass_between(here, there)}, {geo.travel_time_str(d)})"
                 lines.append(f"- **{e.name}**{status}{extra}" + (f": {desc}" if desc else ""))
+                # Live alignment for powers (canon-relevant) and for anyone whose
+                # deeds have drifted their soul off its origin — so the DM narrates
+                # who they are NOW, not who they were seeded as.
+                if etype == "deity" or attrs.get("align_axes"):
+                    from . import relationships as _rel
+                    lbl = _rel.axes_to_label(_rel.get_axes(e))
+                    origin = attrs.get("align_origin")
+                    drift = f" (drifted from {origin})" if origin and origin != lbl else ""
+                    lines.append(f"  · alignment: {lbl}{drift}")
                 # Established legend about this power/person/place (recorded lore):
                 # a bounded one-liner kept consistent across sessions.
                 lore = attrs.get("lore")
@@ -293,15 +302,31 @@ class WorldContext:
         # Key current relationships worth stating explicitly. When an edge carries
         # an established "why" (recorded lore), state it so the DM stays consistent
         # with what a priest/sage said last time — never re-improvises the origin.
+        # A ledgered bond is rendered LIVE: its decayed, alignment-weighted net
+        # (from the source's current alignment) gives the temperature word and top
+        # reason, so the DM sees a feud cooling or a friendship souring in motion.
+        from . import relationships as _rel
         rel_lines = []
         for r in self.relations:
-            if r.rel_type not in (RelationType.ALLIED_WITH, RelationType.HOSTILE_TO,
-                                  RelationType.MEMBER_OF, RelationType.OWNS):
-                continue
-            line = f"- {label(r.src_id)} {r.rel_type.replace('_', ' ')} {label(r.dst_id)}"
-            why = (r.attributes or {}).get("reason")
-            if why:
-                line += f" — {why}"
+            attrs = r.attributes or {}
+            ledger = attrs.get("ledger")
+            typed = r.rel_type in (RelationType.ALLIED_WITH, RelationType.HOSTILE_TO,
+                                   RelationType.MEMBER_OF, RelationType.OWNS)
+            if not ledger and not typed:
+                continue  # skip bare knows/trust edges with no recorded history
+            if ledger:
+                src_ent = by_id.get(r.src_id)
+                axes = _rel.get_axes(src_ent) if src_ent is not None else {"m": 0, "e": 0}
+                net = _rel.net_sentiment(ledger, axes, self.world_day)
+                line = f"- {label(r.src_id)} {_rel.band_word(net)} toward {label(r.dst_id)}"
+                why = attrs.get("reason") or _rel._top_reason(ledger, axes, self.world_day)
+                if why:
+                    line += f" — {why}"
+            else:
+                line = f"- {label(r.src_id)} {r.rel_type.replace('_', ' ')} {label(r.dst_id)}"
+                why = attrs.get("reason")
+                if why:
+                    line += f" — {why}"
             rel_lines.append(line)
         if rel_lines:
             lines.append("\n## Relationships")
