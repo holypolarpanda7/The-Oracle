@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Frame } from "./Frame";
 import { CharacterSheet } from "./CharacterSheet";
 import { IconDefs } from "./icons";
@@ -17,8 +17,16 @@ function hpMood(hp: number, max: number): string {
 function renderBlock(b: Block, i: number, onBlockDone: (i: number) => void) {
   if (b.kind === "player") {
     return (
-      <p className="player" key={i}>
+      <p className={`player${b.secret ? " secret" : ""}`} key={i}>
+        {b.secret && <span className="secret-tag">🔒 </span>}
         {b.who && <span className="hl-name">{b.who} · </span>}{b.text}
+      </p>
+    );
+  }
+  if (b.kind === "whisper") {
+    return (
+      <p className="whisper" key={i}>
+        <span className="secret-tag">🤫 </span>{b.text}
       </p>
     );
   }
@@ -36,7 +44,8 @@ function renderBlock(b: Block, i: number, onBlockDone: (i: number) => void) {
     );
   }
   return (
-    <p key={i}>
+    <p key={i} className={b.secret ? "secret" : undefined}>
+      {b.secret && <span className="secret-tag">🔒 to you · </span>}
       <RevealedSpans spans={b.spans} done={b.done} onDone={() => onBlockDone(i)} />
     </p>
   );
@@ -50,7 +59,7 @@ export interface PlayProps {
   combat: CombatState | null;
   input: string;
   setInput: (v: string) => void;
-  submit: () => void;
+  submit: (secret?: boolean) => void;
   busy: boolean;
   rateWait: number;
   onSkip: () => void;
@@ -66,6 +75,10 @@ export function PlaySurface(p: PlayProps) {
   const scroll = useResizable("scroll", { minW: 300, minH: 150, fillImg: true });
   const sheetR = useResizable("sheet", { minW: 260, minH: 320 });
   const txtRef = useRef<HTMLDivElement>(null);
+  // "Secret" input: the action + the Oracle's answer stay private to you — your
+  // tablemates never see it (cheat, lie, a hidden roll).
+  const [secret, setSecret] = useState(false);
+  const send = () => { p.submit(secret); setSecret(false); };
 
   useEffect(() => {
     const el = txtRef.current;
@@ -94,19 +107,26 @@ export function PlaySurface(p: PlayProps) {
             <div className="grip" title="Drag to resize" onPointerDown={scroll.onGripDown} />
           </div>
 
-          <div className="promptbar">
+          <div className={`promptbar${secret ? " secret" : ""}`}>
+            <button
+              className={`psecret${secret ? " on" : ""}`}
+              onClick={() => setSecret((s) => !s)}
+              title={secret ? "Secret: only you will see this" : "Act in secret (hidden from your table)"}
+              aria-pressed={secret}
+            >{secret ? "🔒" : "🎭"}</button>
             <input
               value={p.input}
               onChange={(e) => p.setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && p.submit()}
+              onKeyDown={(e) => e.key === "Enter" && send()}
               placeholder={
                 p.rateWait > 0 ? `the table needs a breath — ${p.rateWait}s…`
+                  : secret ? "whisper a secret deed — only you will see the Oracle's reply…"
                   : p.busy ? "the Oracle is weaving…"
                   : "Speak your deed, and the Oracle shall answer…"
               }
               disabled={p.busy || p.rateWait > 0}
             />
-            <button className="psend" onClick={p.submit} disabled={p.busy || !p.input.trim()} aria-label="Send">➤</button>
+            <button className="psend" onClick={send} disabled={p.busy || !p.input.trim()} aria-label="Send">➤</button>
           </div>
 
           {p.party.length > 0 && (

@@ -175,8 +175,9 @@ export interface CharacterSummary {
 export type ServerEvent =
   | { t: "hello"; channel: string; characters: CharacterSummary[] }
   | { t: "lexicon"; entries: LexEntry[] }
-  | { t: "player"; text: string; who?: string }
-  | { t: "narration"; text: string }
+  | { t: "player"; text: string; who?: string; secret?: boolean }
+  | { t: "narration"; text: string; secret?: boolean }
+  | { t: "whisper"; text: string }
   | { t: "roll"; roll: RollResult }
   | { t: "sheet"; sheet: SheetData }
   | { t: "party"; members: Ally[] }
@@ -196,7 +197,7 @@ export type ServerEvent =
   | { t: "busy"; on: boolean };
 
 export type ClientEvent =
-  | { t: "action"; text: string }
+  | { t: "action"; text: string; private?: boolean }
   | { t: "levelup_apply"; subclass?: string }
   | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload }

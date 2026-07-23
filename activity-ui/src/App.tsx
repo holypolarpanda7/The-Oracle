@@ -99,10 +99,14 @@ export default function App({ session }: { session: Session }) {
           lexRef.current = ev.entries;
           break;
         case "player":
-          setBlocks((b) => [...b, { kind: "player", text: ev.text, who: ev.who }]);
+          setBlocks((b) => [...b, { kind: "player", text: ev.text, who: ev.who,
+                                    secret: ev.secret }]);
           break;
         case "narration":
-          setBlocks((b) => [...b, makeOracleBlock(ev.text, lexRef.current)]);
+          setBlocks((b) => [...b, makeOracleBlock(ev.text, lexRef.current, ev.secret)]);
+          break;
+        case "whisper":
+          setBlocks((b) => [...b, { kind: "whisper", text: ev.text }]);
           break;
         case "roll":
           rollThunk(ev.roll.success);
@@ -155,11 +159,11 @@ export default function App({ session }: { session: Session }) {
     return () => conn.close();
   }, []);
 
-  const submit = () => {
+  const submit = (secret?: boolean) => {
     const text = input.trim();
     if (!text || busy) return;
     setInput("");
-    connRef.current?.send({ t: "action", text });
+    connRef.current?.send({ t: "action", text, private: !!secret });
   };
 
   const inspectItem = (name: string) => {

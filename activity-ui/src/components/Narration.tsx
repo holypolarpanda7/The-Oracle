@@ -4,12 +4,14 @@ import { markText, type Span } from "../lib/highlight";
 import { typeBlip } from "../lib/sound";
 
 export type Block =
-  | { kind: "player"; text: string; who?: string }
-  | { kind: "oracle"; spans: Span[]; done: boolean }
+  | { kind: "player"; text: string; who?: string; secret?: boolean }
+  | { kind: "oracle"; spans: Span[]; done: boolean; secret?: boolean }
+  | { kind: "whisper"; text: string }
   | { kind: "roll"; roll: RollResult };
 
-export function makeOracleBlock(text: string, lexicon: LexEntry[]): Block {
-  return { kind: "oracle", spans: markText(text, lexicon), done: false };
+export function makeOracleBlock(text: string, lexicon: LexEntry[],
+                                secret = false): Block {
+  return { kind: "oracle", spans: markText(text, lexicon), done: false, secret };
 }
 
 /** Reveal pacing: base cadence per character, with breath at punctuation. */
@@ -93,9 +95,17 @@ export function NarrationPane({ blocks, onBlockDone, onSkip }: {
         {blocks.map((b, i) => {
           if (b.kind === "player") {
             return (
-              <p key={i} className="narration-block player">
+              <p key={i} className={`narration-block player${b.secret ? " secret" : ""}`}>
+                {b.secret && <span className="secret-tag">🔒 secret · </span>}
                 {b.who && <span className="hl-name">{b.who} · </span>}
                 {b.text}
+              </p>
+            );
+          }
+          if (b.kind === "whisper") {
+            return (
+              <p key={i} className="narration-block whisper">
+                <span className="secret-tag">🤫 whisper · </span>{b.text}
               </p>
             );
           }
@@ -117,9 +127,9 @@ export function NarrationPane({ blocks, onBlockDone, onSkip }: {
             );
           }
           return (
-            <p key={i} className="narration-block oracle">
+            <p key={i} className={`narration-block oracle${b.secret ? " secret" : ""}`}>
               {i === 0 || blocks[i - 1]?.kind !== "oracle" ? (
-                <span className="speaker">The Oracle</span>
+                <span className="speaker">{b.secret ? "The Oracle (to you)" : "The Oracle"}</span>
               ) : null}
               <RevealedSpans
                 spans={b.spans}
