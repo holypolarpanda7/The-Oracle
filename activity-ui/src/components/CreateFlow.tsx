@@ -62,6 +62,7 @@ interface Draft {
   cart: Record<string, number>;   // buyable item name -> quantity
   wondrous?: string;              // rules_item slug
   deity?: string;                 // patron god (esp. clerics/paladins/warlocks)
+  gender?: string;                // gender identity (free-form)
   name: string;
 }
 
@@ -219,6 +220,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         race: lineageName ? `${race!.name} (${lineageName})` : race!.name,
         char_class: cls!.name, background: bg!.slug,
         deity: d.deity?.trim() || undefined,
+        gender: d.gender?.trim() || undefined,
         stats, skills: d.skills, feats: feats.length ? feats : undefined,
         gear_mode: d.gearMode,
         bought_items: d.gearMode === "buy"
@@ -344,6 +346,23 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
               </button>
             ))}
             <div className="cf-faith">
+              <label className="cf-sub-label">Gender</label>
+              <div className="cf-chips" style={{ marginBottom: 10 }}>
+                {["Male", "Female", "Nonbinary"].map((g) => (
+                  <button
+                    key={g}
+                    className={`cf-chip ${d.gender === g ? "picked" : ""}`}
+                    onClick={() => { uiTick(); setD({ ...d, gender: g }); }}
+                  >{g}</button>
+                ))}
+                <input
+                  className="cf-input"
+                  style={{ maxWidth: 180 }}
+                  value={["Male", "Female", "Nonbinary"].includes(d.gender ?? "") ? "" : (d.gender ?? "")}
+                  placeholder="or type your own…"
+                  onChange={(e) => setD({ ...d, gender: e.target.value })}
+                />
+              </div>
               <label className="cf-sub-label">
                 Patron deity{/cleric|paladin|warlock|druid/i.test(cls?.name ?? "")
                   ? " — your class draws its power from one"

@@ -289,6 +289,7 @@ async def lifespan(app: FastAPI):
                     ("background", "TEXT"),
                     ("deity", "TEXT"),
                     ("dnr", "INTEGER DEFAULT 0"),
+                    ("gender", "TEXT"),
                     ("notes", "TEXT"),
                     ("active_portrait", "TEXT"),
                     ("created_at", "DATETIME"),
@@ -552,6 +553,7 @@ class RegisterCharacterRequest(BaseModel):
     level: int = 1
     stats: Optional[Dict[str, int]] = None
     background: Optional[str] = None
+    gender: Optional[str] = None
     # Patron deity / worshipped power (esp. clerics/paladins/warlocks).
     deity: Optional[str] = None
     ddb_url: Optional[str] = None
@@ -861,6 +863,9 @@ class Character(SQLModel, table=True):
 
     # Basic character info
     name: str = Field(sa_column=Column(String, nullable=False))
+    # Gender identity (free-form; common picks male/female/nonbinary). Recorded on
+    # the sheet and used to steer portrait generation.
+    gender: Optional[str] = Field(default=None, sa_column=Column(String))
     race: Optional[str] = Field(default=None, sa_column=Column(String))
     char_class: Optional[str] = Field(default=None, sa_column=Column(String))
     subclass: Optional[str] = Field(default=None, sa_column=Column(String))
@@ -7893,8 +7898,10 @@ def _clear_long_rest_conditions(char: Character) -> List[str]:
 
 
 def _portrait_base_look(char: Character) -> str:
-    """A short appearance seed (race/class/subclass) to anchor a PC portrait."""
+    """A short appearance seed (gender/race/class/subclass) to anchor a PC portrait."""
     parts: List[str] = []
+    if getattr(char, "gender", None):
+        parts.append(str(char.gender))
     if char.race:
         parts.append(str(char.race))
     if char.char_class:
@@ -7971,6 +7978,7 @@ def _build_character_sheet(char: Character) -> Dict[str, Any]:
     return {
         "id": char.id,
         "name": char.name,
+        "gender": getattr(char, "gender", None),
         "race": char.race,
         "creature_type": getattr(char, "creature_type", None) or "Humanoid",
         "immunities": getattr(char, "immunities", None) or [],
@@ -9207,6 +9215,7 @@ async def register_character(req: RegisterCharacterRequest):
         char = Character(
             discord_user_id=req.discord_user_id,
             name=req.name,
+            gender=(req.gender or None),
             race=req.race,
             creature_type=ctype,
             immunities=cimmun or None,
@@ -9591,6 +9600,7 @@ def import_ddb_endpoint(req: DDBImportRequest):
         char = Character(
             discord_user_id=req.discord_user_id,
             name=parsed["name"],
+            gender=(parsed.get("gender") or None),
             race=parsed.get("race"),
             creature_type=_ctype,
             immunities=_cimmun or None,
@@ -13162,6 +13172,7 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "char_class": sheet.get("char_class"),
         "subclass": sheet.get("subclass"),
         "background": background,
+        "gender": getattr(char, "gender", None),
         "deity": getattr(char, "deity", None),
         "dnr": bool(getattr(char, "dnr", False)),
         "portrait": portrait,
@@ -13498,6 +13509,7 @@ async def activity_ws(ws: WebSocket, channel: str):
                         name=(p.get("name") or "").strip(),
                         race=p.get("race"), char_class=p.get("char_class"),
                         background=p.get("background"), deity=p.get("deity"),
+                        gender=p.get("gender"),
                         stats=p.get("stats"), skills=p.get("skills"),
                         feats=p.get("feats"), approve=True, source="guided",
                         gear_mode=p.get("gear_mode") or "kit",

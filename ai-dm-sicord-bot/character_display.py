@@ -49,7 +49,10 @@ def build_sheet_embed(sheet: dict) -> Tuple[discord.Embed, Optional[discord.File
     subclass = sheet.get("subclass")
     cls = sheet.get("char_class") or "Adventurer"
     class_line = f"{subclass} {cls}" if subclass else cls
-    header = f"Level {sheet.get('level', 1)} {sheet.get('race', '')} {class_line}".strip()
+    gender = sheet.get("gender")
+    header = (f"Level {sheet.get('level', 1)} "
+              f"{(gender + ' ') if gender else ''}{sheet.get('race', '')} {class_line}"
+              ).strip()
     if sheet.get("deity"):
         header += f"\n*Devoted to {sheet['deity']}*"
     if sheet.get("dnr"):

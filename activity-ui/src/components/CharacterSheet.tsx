@@ -259,6 +259,7 @@ export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr }
 
         <div className={`tabpane ${tab === "origin" ? "on" : ""}`}>
           <div className="lore">
+            {sheet.gender && <p><b>Gender · {sheet.gender}.</b></p>}
             {sheet.background && <p><b>Background · {sheet.background}.</b></p>}
             {sheet.deity && <p><b>Faith · devoted to {sheet.deity}.</b></p>}
             <p className="dnr-row">

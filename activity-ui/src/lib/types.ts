@@ -77,6 +77,7 @@ export interface SheetData {
   inventory: (string | InventoryItem)[]; // strings (legacy) or rich item objects
   gold?: number;
   // ---- v1 additions (all optional; the UI degrades gracefully when absent) ----
+  gender?: string | null;          // gender identity (free-form)
   race?: string | null;
   creature_type?: string | null;   // "Humanoid" for most; Construct/Undead/etc. for some species
   immunities?: string[];           // condition/effect immunities from species traits
@@ -224,6 +225,7 @@ export interface CCPayload {
   bought_items?: { name: string; quantity: number }[];
   wondrous_item?: string;
   deity?: string;
+  gender?: string;
 }
 
 /** GET /cc/options response (deterministic CC data from the rules DB). */
