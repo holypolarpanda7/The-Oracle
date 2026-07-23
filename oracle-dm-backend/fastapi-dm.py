@@ -1022,6 +1022,10 @@ IMAGE_HOOK_PATTERN = re.compile(r"\[\[IMAGE:(.+?)\]\]", re.IGNORECASE)
 # A permanent appearance change / removal: wipe a subject's stored pictures.
 #   [[IMAGE-RESET: kind | subject | reason]]
 IMAGE_RESET_PATTERN = re.compile(r"\[\[IMAGE-RESET:(.+?)\]\]", re.IGNORECASE)
+# A per-image marker the DM appends ONLY when a player explicitly asks for a
+# mature/adult depiction. It routes just that one render to the NSFW checkpoint
+# (never stored), and only if the table has opted into mature content.
+_MATURE_HOOK_KEYWORDS = {"mature", "explicit", "nsfw", "adult"}
 
 
 def _split_hook(inner: str) -> list[str]:
@@ -1037,6 +1041,18 @@ def extract_image_hooks(text: str) -> tuple[str, list[dict], list[dict]]:
     images: list[dict] = []
     for m in IMAGE_HOOK_PATTERN.finditer(text):
         parts = _split_hook(m.group(1))
+        # A standalone 'mature'/'explicit'/'nsfw'/'adult' field (anywhere past the
+        # subject) flags THIS one image as an explicit player request; it is
+        # stripped so the rest of the fields stay positional. The flag only takes
+        # effect if the table has opted into mature content (checked downstream).
+        mature = False
+        kept: list[str] = []
+        for i, p in enumerate(parts):
+            if i >= 2 and p.strip().lower() in _MATURE_HOOK_KEYWORDS:
+                mature = True
+            else:
+                kept.append(p)
+        parts = kept
         if not parts or not parts[0]:
             continue
         images.append({
@@ -1044,6 +1060,7 @@ def extract_image_hooks(text: str) -> tuple[str, list[dict], list[dict]]:
             "subject": parts[1] if len(parts) > 1 else "",
             "context": parts[2] if len(parts) > 2 else "",
             "look": parts[3] if len(parts) > 3 else "",
+            "mature": mature,
         })
 
     resets: list[dict] = []
@@ -1088,7 +1105,7 @@ def _scene_reference_refs(subject: str, pc_name: Optional[str],
 def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict],
                         *, pc_name: Optional[str] = None,
                         ctx_entities: Optional[list] = None,
-                        mature: bool = False) -> list[dict]:
+                        mature_allowed: bool = False) -> list[dict]:
     """Apply image-reset purges and render/reuse pictures for image requests.
 
     Returns a list of transport payloads (base64 image + metadata) for the bot,
@@ -1098,6 +1115,11 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict],
     ``kind: scene`` requests are special: rendered fresh (never bucketed) with
     stored art of their named participants as visual references, so the scene
     depicts THESE people and creatures, not generic lookalikes.
+
+    ``mature_allowed`` is the table's opt-in PERMISSION, not a blanket switch:
+    the mature checkpoint is used only for an individual request the DM flagged
+    ``mature`` (a player explicitly asked) AND only when the table permits it.
+    Such renders are never persisted; every other image uses the safe model.
     """
     cfg = get_config().imagery
     if not cfg.enabled:
@@ -1120,19 +1142,21 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict],
         subject = rq.get("subject") or ""
         if not subject:
             continue
+        # Per-image: the DM flagged this render mature AND the table opted in.
+        req_mature = bool(mature_allowed and rq.get("mature"))
         try:
             if (rq.get("kind") or "").strip().lower() == "scene":
                 refs = _scene_reference_refs(subject, pc_name, ctx_entities)
                 result = image_store.generate_scene(
                     subject, context=rq.get("context") or "",
                     extra=rq.get("look") or "", reference_refs=refs,
-                    mature=mature,
+                    mature=req_mature,
                 )
             else:
                 result = image_store.ensure_image(
                     rq.get("kind") or "creature", subject,
                     look=rq.get("look") or "", context=rq.get("context") or "",
-                    mature=mature,
+                    mature=req_mature,
                 )
         except Exception as e:
             print(f"[imagery] generation error for '{subject}': {e}")
@@ -5698,6 +5722,17 @@ def generate_dm_reply(
             f"- At most {_img_cfg.max_images_per_reply} image hook(s) per reply. Put each on its own line;\n"
             "  hooks are removed from what the player sees.\n"
         )
+        # Mature-marker guidance ONLY for tables that have opted into mature
+        # content — tables without the opt-in never learn the marker, and even
+        # if one leaked through it is ignored downstream.
+        if _table_is_mature(session_id) and getattr(_img_cfg, "checkpoint_mature", None):
+            system_prompt += (
+                "- This table has enabled mature content. ONLY when a player EXPLICITLY asks for an\n"
+                "  adult/mature depiction, append a final 'mature' field to that one hook:\n"
+                "    [[IMAGE: scene | <what the player asked to see> | <setting/mood> | <details> | mature]]\n"
+                "  Never add 'mature' on your own initiative — only on an explicit player request. Such an\n"
+                "  image is shown once and never saved. Every other picture stays non-mature.\n"
+            )
 
     messages.append({"role": "system", "content": system_prompt})
 
@@ -6941,7 +6976,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             image_reqs, reset_reqs,
             pc_name=(state.get("meta", {}) or {}).get("character_name"),
             ctx_entities=list(ctx_obj.entities) if ctx_obj else None,
-            mature=bool((state.get("meta", {}) or {}).get("mature", False)),
+            mature_allowed=bool((state.get("meta", {}) or {}).get("mature", False)),
         )
         # Player cartography: rendered map artifacts ride the image channel.
         dm_text, map_ops = extract_map_hooks(dm_text)
@@ -7305,7 +7340,7 @@ async def enter_world(req: EnterRequest):
             image_reqs, reset_reqs,
             pc_name=chosen.name,
             ctx_entities=list(_ctx_obj.entities) if _ctx_obj else None,
-            mature=_table_is_mature(session_id),
+            mature_allowed=_table_is_mature(session_id),
         )
     except Exception as e:
         print(f"[enterworld imagery error] {e}")

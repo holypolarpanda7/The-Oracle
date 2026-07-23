@@ -255,7 +255,9 @@ class ImageStore:
         result with ``offline=True`` (placeholder bytes, not stored) is returned.
         ``mature`` routes the render through the NSFW-capable checkpoint + its
         prompt tags; it is the caller's (per-table maturity policy) decision, and
-        is a no-op unless ``checkpoint_mature`` is configured.
+        is a no-op unless ``checkpoint_mature`` is configured. A mature render is
+        NEVER stored — it short-circuits to a throwaway ``generate_temp`` render,
+        so NSFW art never persists to the DB (safe art still caches/reuses).
         """
         cfg = self._cfg()
         if not cfg.enabled:
@@ -263,15 +265,22 @@ class ImageStore:
 
         kind = normalize_kind(kind)
         ref = slugify(ref_slug or subject)
-        # Keep mature/safe renders in separate buckets so one never draws the
-        # other from cache.
-        ckey = context_key((context + " __mature" if mature else context))
 
-        use_mature = bool(mature and getattr(cfg, "checkpoint_mature", None))
+        # Mature renders are NEVER persisted (no bucket read, no store) — the
+        # whole storage/reuse path below is safe-only. A mature-flagged request
+        # short-circuits to a fresh, throwaway render so NSFW art never lands in
+        # the DB. No-op fallthrough to safe when no mature checkpoint exists.
+        if bool(mature and getattr(cfg, "checkpoint_mature", None)):
+            return self.generate_temp(
+                kind, subject, look=look, context=context, extra=extra,
+                mature=True,
+            )
+
+        ckey = context_key(context)
         prompt = build_prompt(
             kind, subject, look=look, context=context, ref_slug=ref,
-            style_prompt=(cfg.mature_style_prompt if use_mature else cfg.style_prompt),
-            negative_prompt=(cfg.mature_negative_prompt if use_mature else cfg.negative_prompt),
+            style_prompt=cfg.style_prompt,
+            negative_prompt=cfg.negative_prompt,
             extra=extra,
         )
 
@@ -282,7 +291,7 @@ class ImageStore:
                 return self._draw_random(s, existing, prompt.caption)
 
         # Otherwise render a fresh image (building bucket variety up to the cap).
-        raw, seed, offline = self._render(cfg, prompt, ckey, mature=use_mature)
+        raw, seed, offline = self._render(cfg, prompt, ckey)
         if offline or raw is None:
             # Backend down: prefer any stored art for this bucket over a
             # placeholder — a slightly-repeated picture beats a blank one.
@@ -333,18 +342,27 @@ class ImageStore:
         look: str = "",
         context: str = "",
         extra: str = "",
+        mature: bool = False,
     ) -> Optional[ImageResult]:
-        """Render a throwaway image (never stored). ``None`` if temp disabled."""
+        """Render a throwaway image (never stored). ``None`` if temp disabled.
+
+        ``mature`` routes the render through the NSFW-capable checkpoint + its
+        prompt tags; a no-op unless ``checkpoint_mature`` is configured. Because
+        temp images are never persisted, this is the ONLY path mature art takes.
+        """
         cfg = self._cfg()
         if not cfg.enabled or not cfg.allow_temp:
             return None
         kind = normalize_kind(kind)
+        use_mature = bool(mature and getattr(cfg, "checkpoint_mature", None))
         prompt = build_prompt(
             kind, subject, look=look, context=context,
-            style_prompt=cfg.style_prompt, negative_prompt=cfg.negative_prompt,
+            style_prompt=(cfg.mature_style_prompt if use_mature else cfg.style_prompt),
+            negative_prompt=(cfg.mature_negative_prompt if use_mature else cfg.negative_prompt),
             extra=extra,
         )
-        raw, seed, offline = self._render(cfg, prompt, context_key(context))
+        raw, seed, offline = self._render(cfg, prompt, context_key(context),
+                                          mature=use_mature)
         if offline or raw is None:
             return ImageResult(
                 kind=kind, ref_slug=slugify(subject), context_key=context_key(context),
