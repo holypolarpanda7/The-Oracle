@@ -225,6 +225,26 @@ async def cancel_character_creation(ctx: commands.Context):
     )
 
 
+@bot.command(name="dnr")
+async def dnr(ctx: commands.Context, setting: str = "on", *, character_name: str = None):
+    """Set your character's Do-Not-Resuscitate wish. Usage: !dnr on|off [character]"""
+    on = str(setting).strip().lower() not in ("off", "false", "no", "0", "clear", "lift")
+    user_id = str(ctx.author.id)
+    chosen, characters = await backend_integration.resolve_character(
+        user_id, CHECK_CHARACTER_URL, character_name)
+    if not chosen:
+        await ctx.send("📜 I couldn't find that character. Use `!sheet` to see yours.")
+        return
+    res = await backend_integration.set_character_dnr(chosen["id"], on, BACKEND_URL)
+    if res.get("error"):
+        await ctx.send(f"⚠️ {res['error']}")
+    elif on:
+        await ctx.send(f"🕯️ **{chosen['name']}** now bears a Do-Not-Resuscitate wish — "
+                       f"they do not wish to be called back from death. Revivers, beware.")
+    else:
+        await ctx.send(f"🕯️ **{chosen['name']}**'s Do-Not-Resuscitate wish is lifted.")
+
+
 @bot.command(name="sheet")
 async def sheet(ctx: commands.Context, *, character_name: str = None):
     """Show your character sheet (rendered from your live character record)."""

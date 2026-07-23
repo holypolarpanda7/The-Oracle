@@ -118,6 +118,21 @@ async def active_session_for_user(user_id: str, backend_url: str) -> Optional[st
     return None
 
 
+async def set_character_dnr(character_id: int, dnr: bool, backend_url: str) -> Dict:
+    """Set/clear a character's Do-Not-Resuscitate wish."""
+    url = f"{_api_base(backend_url)}/character/{character_id}/dnr"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json={"dnr": bool(dnr)},
+                                    timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return {"error": await _error_detail(resp)}
+        except Exception as e:
+            print(f"[set_character_dnr error] {e}")
+            return {"error": "Could not reach the Oracle's backend."}
+
+
 async def open_pvp_pact(a_user: str, b_user: str, terms: str,
                         backend_url: str) -> Dict:
     """Open a sanctioned-duel pact between two players (the consent handshake).
