@@ -167,6 +167,13 @@ async def enter_world(ctx: commands.Context, *, character_name: str = None):
         f"you'll create a character or resume your tale right there.")
 
 
+@bot.command(name="duel")
+async def duel(ctx: commands.Context, target: discord.Member = None, *, terms: str = "to-yield"):
+    """Challenge another player to a SANCTIONED duel (they must accept).
+    Usage: !duel @player [first-blood|to-yield|to-the-death]"""
+    await dm_commands.duel_command(ctx, target, terms, BACKEND_URL)
+
+
 @bot.command(name="voicetest")
 async def voice_test(ctx: commands.Context):
     """Play ~15s of test music in your current voice channel via the DAVE sidecar."""

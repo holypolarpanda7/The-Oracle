@@ -118,6 +118,26 @@ async def active_session_for_user(user_id: str, backend_url: str) -> Optional[st
     return None
 
 
+async def open_pvp_pact(a_user: str, b_user: str, terms: str,
+                        backend_url: str) -> Dict:
+    """Open a sanctioned-duel pact between two players (the consent handshake).
+
+    The backend resolves each user's active table + seated character. Returns the
+    pact dict, or {"error": ...}."""
+    url = f"{_api_base(backend_url)}/pvp/pact"
+    payload = {"a_user": str(a_user), "b_user": str(b_user), "terms": terms}
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url, json=payload,
+                                    timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                return {"error": await _error_detail(resp)}
+        except Exception as e:
+            print(f"[open_pvp_pact error] {e}")
+            return {"error": "Could not reach the Oracle's backend."}
+
+
 async def reset_backend_session(session_id: str, reset_url: str) -> str:
     """Reset (clear) a conversation session in the backend."""
     payload = {"session_id": session_id}
