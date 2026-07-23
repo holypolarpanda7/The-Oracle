@@ -3281,7 +3281,8 @@ def _drift_pc_alignment(char: Character, good_delta: int, law_delta: int) -> Opt
 
 
 def _pvp_apply_smite(session: Session, killer: Character, outcome) -> str:
-    """Apply the divine strike to the killer's HP/death state. Returns a note."""
+    """Apply the divine strike to the killer's HP/death state (Character fields only —
+    the caller marks the world entity dead AFTER committing). Returns a note."""
     if outcome.smite == "hp":
         dmg = max(1, round((killer.max_hp or 1) * float(outcome.smite_fraction)))
         killer.current_hp = max(0, (killer.current_hp or 0) - dmg)
@@ -3297,28 +3298,27 @@ def _pvp_apply_smite(session: Session, killer: Character, outcome) -> str:
         killer.current_hp = 0
         killer.stable = False
         killer.death_save_failures = 3
-        try:
-            pc = world.find_pc(killer.discord_user_id, killer.name)
-            if pc is not None:
-                world.set_status(pc.slug, "dead")
-        except Exception:
-            pass
         return f"{killer.name} is smitten dead where they stand."
     return ""
 
 
 def _canonize_pc_death(session: Session, victim: Character) -> None:
-    """Permadeath for a slain PC: HP to 0 + failed saves, world entity marked dead."""
+    """Permadeath for a slain PC (Character fields only — the caller marks the world
+    entity dead AFTER committing, so the two SQLite writers don't deadlock)."""
     victim.current_hp = 0
     victim.stable = False
     victim.death_save_failures = 3
     session.add(victim)
+
+
+def _mark_pc_entity_dead(char: Character) -> None:
+    """World-graph death write — call OUTSIDE any open Character session."""
     try:
-        pc = world.find_pc(victim.discord_user_id, victim.name)
+        pc = world.find_pc(char.discord_user_id, char.name)
         if pc is not None:
             world.set_status(pc.slug, "dead")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[pvp] mark-dead failed: {e}")
 
 
 def extract_pvp_hooks(text: str) -> tuple[str, list[dict]]:
@@ -3469,6 +3469,11 @@ def process_pvp_hooks(session_id: str, ops: list[dict], meta: Dict[str, Any],
                             notes=outcome.curse["lift"], onset_day=day, active=True))
                 session.add(attacker)
                 session.commit()
+                # World-graph death writes AFTER the character session committed
+                # (SQLite has one writer — doing these mid-transaction deadlocks).
+                _mark_pc_entity_dead(victim)
+                if outcome.smite == "death":
+                    _mark_pc_entity_dead(attacker)
                 # Alignment collapse + notoriety on the world entity.
                 sh = outcome.align_shift or {}
                 _drift_pc_alignment(attacker, sh.get("good", 0), sh.get("law", 0))
@@ -3509,6 +3514,7 @@ def process_pvp_hooks(session_id: str, ops: list[dict], meta: Dict[str, Any],
             else:  # authorized — a fair duel; canonize a duel-death but no wrath.
                 if action == "kill":
                     session.commit()
+                    _mark_pc_entity_dead(victim)
                 if outcome.public:
                     public.append("⚔️ " + outcome.public)
 
