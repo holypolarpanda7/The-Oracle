@@ -5,12 +5,13 @@ import { speciesPortraitFor } from "../lib/assets";
 
 /** Male+female species portraits for a race card. Each image hides itself if the
  * art hasn't been generated yet, so the strip simply collapses when absent. */
-function SpeciesPortrait({ slug }: { slug: string }) {
+function SpeciesPortrait({ slug, large }: { slug: string; large?: boolean }) {
   const [ok, setOk] = useState<{ m: boolean; f: boolean }>({ m: true, f: true });
+  useEffect(() => { setOk({ m: true, f: true }); }, [slug]);
   const p = speciesPortraitFor(slug);
   if (!ok.m && !ok.f) return null;
   return (
-    <div className="cf-portrait">
+    <div className={`cf-portrait${large ? " cf-portrait-lg" : ""}`}>
       {ok.m && <img src={p.m} alt="" loading="lazy"
                     onError={() => setOk((s) => ({ ...s, m: false }))} />}
       {ok.f && <img src={p.f} alt="" loading="lazy"
@@ -792,6 +793,7 @@ function DetailPanel({ opts, stage, raceSlug, clsSlug, lineageSlug, hovered }: {
       return (
         <div className="cf-detail-body">
           <h3>{r.name}{lin ? ` · ${lin.name}` : ""}</h3>
+          <SpeciesPortrait slug={r.slug} large />
           <p className="cf-detail-meta">
             {(r.creature_type ?? "Humanoid")} · {r.size} · {(lin?.speed ?? r.speed)} ft speed
             {(lin?.darkvision ?? r.darkvision) ? " · darkvision" : ""}

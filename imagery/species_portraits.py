@@ -175,7 +175,7 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
     catalog = species_from_db()
     if slugs:
         want = {_ALIASES.get(_norm(s), _norm(s)) for s in slugs}
-        catalog = [(sl, lk) for sl, lk in catalog if _norm(sl) in want or _norm(sl) in {_norm(x) for x in want}]
+        catalog = [(sl, lk) for sl, lk in catalog if _norm(sl) in want]
     sexes = sexes or ["m", "f"]
 
     _OUT_DIR.mkdir(parents=True, exist_ok=True)

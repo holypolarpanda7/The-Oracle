@@ -209,6 +209,8 @@ body {
   border-radius: 4px; border: 1px solid var(--panel-edge);
 }
 .cf-portrait img:only-child { width: 100%; }
+.cf-portrait-lg { gap: 6px; margin: 4px 0 12px; }
+.cf-portrait-lg img { aspect-ratio: 4 / 5; border-radius: 6px; }
 .cf-card-name { font-size: 15px; color: var(--parchment); }
 .cf-card-sub { font-size: 11px; color: var(--text-dim); margin-top: 4px; line-height: 1.45; }
 .cf-subpanel { margin-top: 14px; }
