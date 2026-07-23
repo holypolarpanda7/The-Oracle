@@ -1,8 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Frame, CORNER, type PanelHandle } from "./Frame";
 import { ABILITY_ICON, Icon } from "./icons";
 import { crestFor, raceBgFor, parseSubtitle } from "../lib/assets";
 import type { InventoryItem, SheetData } from "../lib/types";
+
+// Mirror of the backend MAX_PORTRAIT_LOOKS: base + up to this many gear looks.
+const MAX_GEAR_LOOKS = 3;
+const lookThumb = (id?: number | null) =>
+  id != null ? `/imagery/image/${id}?thumb=true` : "";
 
 const RARITY_COLOR: Record<string, string> = {
   common: "#9fb0bd", uncommon: "#5fae5f", rare: "#4aa3ff",
@@ -31,12 +36,25 @@ function featIcon(kind?: string): string {
 
 type Tab = "stats" | "inv" | "origin" | "feat";
 
-export function CharacterSheet({ sheet, panel, onInspect }: {
+export function CharacterSheet({ sheet, panel, onInspect, onPortrait }: {
   sheet: SheetData | null;
   panel: PanelHandle;
   onInspect: (name: string) => void;
+  onPortrait: (action: "regear" | "select" | "delete",
+               opts?: { context?: string; replace_context?: string; detail?: string }) => void;
 }) {
   const [tab, setTab] = useState<Tab>("stats");
+  // Portrait look-switcher state: which look is active + the two transient modes
+  // (waiting on a render, or picking a look to replace when at the gear cap).
+  const active = sheet?.active_portrait ?? "portrait";
+  const looks = sheet?.portrait_looks ?? [];
+  const [replaceMode, setReplaceMode] = useState(false);
+  const [regearing, setRegearing] = useState(false);
+  // A fresh sheet push (active look or look-set changed) means the render landed.
+  useEffect(() => {
+    setRegearing(false);
+    setReplaceMode(false);
+  }, [active, looks.length]);
 
   if (!sheet) {
     return (
@@ -76,6 +94,66 @@ export function CharacterSheet({ sheet, panel, onInspect }: {
               : <div className="noportrait">no portrait yet</div>}
           </div>
         </div>
+
+        {(sheet.portrait || looks.length > 0) && (
+          <div className={`plooks ${replaceMode ? "replacing" : ""}`}>
+            <div className="plook-row">
+              {looks.map((lk) => {
+                const isActive = lk.context === active;
+                const canReplace = replaceMode && !lk.is_base;
+                return (
+                  <button
+                    key={lk.context}
+                    className={`plook ${isActive ? "on" : ""} ${canReplace ? "repl" : ""}`}
+                    title={lk.is_base ? "Base look" : lk.label}
+                    onClick={() => {
+                      if (replaceMode) {
+                        if (lk.is_base) return;            // base is never overwritten
+                        setRegearing(true);
+                        onPortrait("regear", { replace_context: lk.context });
+                      } else {
+                        onPortrait("select", { context: lk.context });
+                      }
+                    }}
+                  >
+                    {lookThumb(lk.image_id)
+                      ? <img src={lookThumb(lk.image_id)} alt={lk.label} />
+                      : <span className="pdot" />}
+                    {lk.is_base && <span className="pbase">base</span>}
+                    {!lk.is_base && !replaceMode && (
+                      <span
+                        className="pdel"
+                        title="Delete this look"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onPortrait("delete", { context: lk.context });
+                        }}
+                      >×</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              className="plook-add"
+              disabled={regearing}
+              onClick={() => {
+                if (replaceMode) { setReplaceMode(false); return; }
+                const gear = looks.filter((l) => !l.is_base);
+                if (gear.length >= MAX_GEAR_LOOKS) { setReplaceMode(true); return; }
+                setRegearing(true);
+                onPortrait("regear");
+              }}
+            >
+              {regearing ? "conjuring…"
+                : replaceMode ? "cancel"
+                : looks.filter((l) => !l.is_base).length >= MAX_GEAR_LOOKS
+                  ? "replace a look…"
+                  : "＋ show my gear"}
+            </button>
+            {replaceMode && <div className="plook-hint">Choose a look to replace.</div>}
+          </div>
+        )}
 
         <div className="cname">{sheet.name}</div>
         <div className="csub">{sheet.subtitle}</div>

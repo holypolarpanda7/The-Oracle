@@ -57,6 +57,14 @@ export interface ItemDetail {
   contents?: { name: string; qty?: number }[];
 }
 
+/** One saved portrait look: the base + up to 3 equipped-gear variants. */
+export interface PortraitLook {
+  context: string;          // "portrait" (base) or "portrait-gear-*"
+  label: string;            // human name (the equipped loadout it was saved under)
+  image_id?: number | null; // for a thumbnail via /imagery/image/{id}?thumb=true
+  is_base: boolean;
+}
+
 export interface SheetData {
   name: string;
   subtitle: string; // "Level 3 Ranger (Gloom Stalker) · Custom Lineage"
@@ -74,7 +82,9 @@ export interface SheetData {
   immunities?: string[];           // condition/effect immunities from species traits
   char_class?: string | null;
   subclass?: string | null;
-  portrait?: string | null;      // data URL or /path to the stored PC portrait
+  portrait?: string | null;      // data URL or /path to the stored PC portrait (active look)
+  portrait_looks?: PortraitLook[]; // base + saved gear looks the player can switch between
+  active_portrait?: string;      // context key of the currently shown look
   background?: string | null;    // origin / background name for the Origin tab
   spell_slots?: SpellSlotRow[];
   resources?: ResourceRow[];     // class resources (Bardic Inspiration, Ki, …)
@@ -192,7 +202,9 @@ export type ClientEvent =
   | { t: "cc_register"; payload: CCPayload }
   | { t: "inspect_item"; name: string }
   | { t: "inscribe_spell"; spell: string; book?: string }
-  | { t: "item_action"; name: string; action: string; target?: string };
+  | { t: "item_action"; name: string; action: string; target?: string }
+  | { t: "portrait_action"; action: "regear" | "select" | "delete";
+      context?: string; replace_context?: string; detail?: string };
 
 export interface CCPayload {
   name: string;

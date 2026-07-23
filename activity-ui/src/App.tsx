@@ -174,6 +174,12 @@ export default function App({ session }: { session: Session }) {
     setItemView((v) => (v ? { ...v, loading: true, error: undefined } : v));
     connRef.current?.send({ t: "item_action", name, action, target });
   };
+  const portraitAction = (
+    action: "regear" | "select" | "delete",
+    opts?: { context?: string; replace_context?: string; detail?: string },
+  ) => {
+    connRef.current?.send({ t: "portrait_action", action, ...opts });
+  };
 
   const skipAll = () =>
     setBlocks((bs) => bs.map((b) => (b.kind === "oracle" ? { ...b, done: true } : b)));
@@ -283,6 +289,7 @@ export default function App({ session }: { session: Session }) {
               onBlockDone={markDone}
               onMainMenu={() => setScreen("landing")}
               onInspect={inspectItem}
+              onPortrait={portraitAction}
             />
             <ItemInspector
               view={itemView}

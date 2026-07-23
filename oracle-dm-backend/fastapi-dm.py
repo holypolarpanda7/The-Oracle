@@ -11786,6 +11786,8 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         background = char.background
         portrait = _activity_portrait_url(char.name,
                                           getattr(char, "active_portrait", None))
+        portrait_looks = image_store.portrait_looks(char.name)
+        active_portrait = getattr(char, "active_portrait", None) or image_store.BASE_CONTEXT
         inventory = _activity_inventory(char)
         ac_val = _compute_ac(char)
     bits = [f"Level {sheet['level']} {sheet['char_class'] or '?'}"]
@@ -11813,6 +11815,8 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "subclass": sheet.get("subclass"),
         "background": background,
         "portrait": portrait,
+        "portrait_looks": portrait_looks,
+        "active_portrait": active_portrait,
         "spell_slots": spell_slots,
         "resources": resources,
         "features": features,
@@ -12370,6 +12374,95 @@ async def activity_ws(ws: WebSocket, channel: str):
                 refreshed = _activity_sheet(session_id, user_id)
                 if refreshed:
                     await ws.send_json({"t": "sheet", "sheet": refreshed})
+                continue
+
+            # ---- portrait looks: regear from gear, switch look, or delete one ----
+            if msg.get("t") == "portrait_action":
+                action = (msg.get("action") or "").strip()
+                cid = _activity_char_id(session_id, user_id) if session_id else None
+                if not cid or action not in ("regear", "select", "delete"):
+                    continue
+
+                if action == "select":
+                    ctx = (msg.get("context") or "").strip() or image_store.BASE_CONTEXT
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        if not ch:
+                            continue
+                        valid = {image_store.BASE_CONTEXT} | {
+                            l["context"] for l in image_store.portrait_looks(ch.name)}
+                        if ctx not in valid:
+                            await ws.send_json({"t": "item_error",
+                                                "detail": "No such saved look."})
+                            continue
+                        ch.active_portrait = (None if ctx == image_store.BASE_CONTEXT
+                                              else ctx)
+                        s.add(ch); s.commit()
+                    refreshed = _activity_sheet(session_id, user_id)
+                    if refreshed:
+                        await ws.send_json({"t": "sheet", "sheet": refreshed})
+                    continue
+
+                if action == "delete":
+                    ctx = (msg.get("context") or "").strip()
+                    if ctx == image_store.BASE_CONTEXT \
+                            or not ctx.startswith(image_store.LOOK_PREFIX):
+                        await ws.send_json({"t": "item_error",
+                            "detail": "The base portrait can't be deleted."})
+                        continue
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        if not ch:
+                            continue
+                        image_store.delete_look(ch.name, ctx)
+                        if (getattr(ch, "active_portrait", None) or "") == ctx:
+                            ch.active_portrait = None
+                            s.add(ch); s.commit()
+                    refreshed = _activity_sheet(session_id, user_id)
+                    if refreshed:
+                        await ws.send_json({"t": "sheet", "sheet": refreshed})
+                    continue
+
+                # action == "regear": render off the event loop, then push sheet.
+                if not get_config().imagery.enabled:
+                    await ws.send_json({"t": "item_error",
+                                        "detail": "Imagery is disabled."})
+                    continue
+                detail = (msg.get("detail") or "").strip()
+                replace_ctx = (msg.get("replace_context") or "").strip() or None
+                _unload_local_llm()
+                _mark_diffusion_dirty()
+
+                async def _regear(cid=cid, detail=detail, replace_ctx=replace_ctx):
+                    try:
+                        def _work():
+                            with Session(engine) as s:
+                                ch = s.get(Character, cid)
+                                if not ch:
+                                    return {"status": "missing"}
+                                return _do_regear(s, ch, extra_desc=detail,
+                                                  replace_context=replace_ctx)
+                        loop = asyncio.get_event_loop()
+                        result = await loop.run_in_executor(None, _work)
+                        status = result.get("status")
+                        if status == "ok":
+                            refreshed = _activity_sheet(session_id, user_id)
+                            if refreshed:
+                                await ws.send_json({"t": "sheet", "sheet": refreshed})
+                        elif status == "choose_deletion":
+                            saved = ", ".join(l["label"] for l in result["looks"])
+                            await ws.send_json({"t": "item_error",
+                                "detail": f"Already at {MAX_PORTRAIT_LOOKS} gear "
+                                          f"looks ({saved}). Delete one first."})
+                        elif status == "offline":
+                            await ws.send_json({"t": "item_error",
+                                "detail": "The portrait artist is offline right now."})
+                        elif status == "disabled":
+                            await ws.send_json({"t": "item_error",
+                                                "detail": "Imagery is disabled."})
+                    except Exception as e:
+                        print(f"[activity] portrait regear: {e}")
+                asyncio.create_task(_regear())
                 continue
 
             # ---- act on an item: equip/attune/expend/use (interactive items) ----

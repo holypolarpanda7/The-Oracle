@@ -57,6 +57,8 @@ export interface PlayProps {
   onBlockDone: (i: number) => void;
   onMainMenu: () => void;
   onInspect: (name: string) => void;
+  onPortrait: (action: "regear" | "select" | "delete",
+               opts?: { context?: string; replace_context?: string; detail?: string }) => void;
 }
 
 export function PlaySurface(p: PlayProps) {
@@ -123,7 +125,8 @@ export function PlaySurface(p: PlayProps) {
         </div>
 
         <aside>
-          <CharacterSheet sheet={p.sheet} panel={sheetR} onInspect={p.onInspect} />
+          <CharacterSheet sheet={p.sheet} panel={sheetR} onInspect={p.onInspect}
+                          onPortrait={p.onPortrait} />
           <div className="menu">
             <button className="mbtn" onClick={resetAllPanels}>⟲ Reset Layout</button>
             <button className="mbtn" onClick={p.onMainMenu}>☰ Main Menu</button>
