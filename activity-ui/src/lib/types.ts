@@ -82,6 +82,7 @@ export interface SheetData {
   immunities?: string[];           // condition/effect immunities from species traits
   char_class?: string | null;
   subclass?: string | null;
+  deity?: string | null;         // patron god (drives divine PvP retribution)
   portrait?: string | null;      // data URL or /path to the stored PC portrait (active look)
   portrait_looks?: PortraitLook[]; // base + saved gear looks the player can switch between
   active_portrait?: string;      // context key of the currently shown look
@@ -218,6 +219,7 @@ export interface CCPayload {
   gear_mode?: "kit" | "buy";
   bought_items?: { name: string; quantity: number }[];
   wondrous_item?: string;
+  deity?: string;
 }
 
 /** GET /cc/options response (deterministic CC data from the rules DB). */

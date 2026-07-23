@@ -204,6 +204,14 @@ body {
   margin-bottom: 8px;
 }
 .cf-bonus-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.cf-faith { grid-column: 1 / -1; margin-top: 12px; }
+.cf-input {
+  width: 100%; box-sizing: border-box; padding: 9px 12px;
+  background: rgba(8, 11, 20, 0.6); border: 1px solid var(--edge);
+  border-radius: 6px; color: var(--text); font-family: var(--serif); font-size: 0.95rem;
+}
+.cf-input::placeholder { color: var(--text-dim); font-style: italic; }
+.cf-input:focus { outline: none; border-color: var(--gold, #e6bc64); }
 .cf-bonus-amt { font-family: var(--mono); color: var(--brass); width: 30px; }
 .cf-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .cf-chip {

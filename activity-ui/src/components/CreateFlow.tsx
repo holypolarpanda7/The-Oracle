@@ -43,6 +43,7 @@ interface Draft {
   gearMode: "kit" | "buy";
   cart: Record<string, number>;   // buyable item name -> quantity
   wondrous?: string;              // rules_item slug
+  deity?: string;                 // patron god (esp. clerics/paladins/warlocks)
   name: string;
 }
 
@@ -199,6 +200,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         name: d.name.trim(),
         race: lineageName ? `${race!.name} (${lineageName})` : race!.name,
         char_class: cls!.name, background: bg!.slug,
+        deity: d.deity?.trim() || undefined,
         stats, skills: d.skills, feats: feats.length ? feats : undefined,
         gear_mode: d.gearMode,
         bought_items: d.gearMode === "buy"
@@ -322,6 +324,19 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 </div>
               </button>
             ))}
+            <div className="cf-faith">
+              <label className="cf-sub-label">
+                Patron deity{/cleric|paladin|warlock|druid/i.test(cls?.name ?? "")
+                  ? " — your class draws its power from one"
+                  : " (optional)"}
+              </label>
+              <input
+                className="cf-input"
+                value={d.deity ?? ""}
+                placeholder="e.g. Serath the Dawnmother — or leave blank"
+                onChange={(e) => setD({ ...d, deity: e.target.value })}
+              />
+            </div>
           </div>
         )}
 

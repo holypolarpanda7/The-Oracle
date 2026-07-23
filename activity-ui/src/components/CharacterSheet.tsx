@@ -259,6 +259,7 @@ export function CharacterSheet({ sheet, panel, onInspect, onPortrait }: {
         <div className={`tabpane ${tab === "origin" ? "on" : ""}`}>
           <div className="lore">
             {sheet.background && <p><b>Background · {sheet.background}.</b></p>}
+            {sheet.deity && <p><b>Faith · devoted to {sheet.deity}.</b></p>}
             <p><b>Skills.</b> {sheet.skills.join(" · ") || "—"}</p>
             {(race || cls) && (
               <p>{[race, cls, sub && `(${sub})`].filter(Boolean).join(" ")}</p>

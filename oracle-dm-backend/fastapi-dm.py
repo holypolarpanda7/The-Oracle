@@ -13120,7 +13120,7 @@ async def activity_ws(ws: WebSocket, channel: str):
                         discord_user_id=user_id,
                         name=(p.get("name") or "").strip(),
                         race=p.get("race"), char_class=p.get("char_class"),
-                        background=p.get("background"),
+                        background=p.get("background"), deity=p.get("deity"),
                         stats=p.get("stats"), skills=p.get("skills"),
                         feats=p.get("feats"), approve=True, source="guided",
                         gear_mode=p.get("gear_mode") or "kit",
