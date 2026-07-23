@@ -87,6 +87,7 @@ from games import (
     SpellComponents, adjudicate as adjudicate_cheat, get_engine as get_game_engine,
     get_spec as get_game_spec,
 )
+import pvp as ipvp
 from bastion import (
     can_own_bastion,
     facilities_for_level,
@@ -3187,6 +3188,328 @@ def _match_player(ref: str, players: list[str]) -> str:
         if r and r in p.lower():
             return p
     return ref
+
+
+# =====================  PLAYER-VS-PLAYER  =================================
+# PvP has consequences, and the DM recognizes AUTHORIZED PvP (a sanctioned duel)
+# so a fair fight draws none. Consent is server-recorded (a pact from the Accept/
+# Decline handshake, or a DM sanction on clear mutual agreement). Unsanctioned
+# violence answers back: a mere strike draws a warning/omen; a KILL brings the
+# victim's god down on the killer — scaled by level gap and repeat kinslaying, up to
+# a lethal smiting — plus a Kinslayer's Mark curse, alignment collapse, and ruined
+# standing. All the heavy lifting lives in the pvp/ package; this wires it in.
+#   [[PVP: sanction | A | B | first-blood|to-yield|to-the-death]]
+#   [[PVP: strike | attacker | victim]]      [[PVP: kill | attacker | victim]]
+#   [[PVP: yield | who ]]                     [[PVP: end | A | B ]]
+PVP_HOOK_PATTERN = re.compile(r"\[\[PVP:(.+?)\]\]", re.IGNORECASE)
+_PVP_ACTIONS = {"sanction", "strike", "kill", "yield", "end"}
+
+# In-play patron capture: [[DEITY: pc | Serath the Dawnmother]] records a PC's god.
+DEITY_HOOK_PATTERN = re.compile(r"\[\[DEITY:(.+?)\]\]", re.IGNORECASE)
+
+_PVP_GUIDE = (
+    "PLAYER-VS-PLAYER. When one PC turns on another, it MATTERS. First check whether "
+    "the fight is a SANCTIONED duel (an active pact — you'll be told in context, or "
+    "both players clearly agree in the fiction). If both consent, open/confirm it: "
+    "[[PVP: sanction | A | B | first-blood|to-yield|to-the-death]] — a sanctioned duel "
+    "carries NO divine punishment. For UNsanctioned violence, mark the act and the game "
+    "applies the consequence: [[PVP: strike | attacker | victim]] for a hostile blow "
+    "(draws a warning/omen, maybe a minor curse), and [[PVP: kill | attacker | victim]] "
+    "for a killing blow — the victim's god answers, striking the killer down (harder the "
+    "weaker the victim was and the more they've killed before), branding a Kinslayer's "
+    "Mark, and blackening their soul and name. Narrate the smiting the game reports; it "
+    "handles the mechanics. Resolve a duel with [[PVP: yield | who]] or [[PVP: end | A | B]]. "
+    "If you learn a PC's patron god in play, record it: [[DEITY: pc-name | God the Title]]."
+)
+_PVP_KEYWORDS = (
+    "duel", "pvp", "kill", "murder", "slay", "slain", "strike down", "attack",
+    "betray", "backstab", "turn on", "kinslayer", "cut down", "stab", "assassinate",
+    "challenge", "fight to the death", "draw steel", "against each other", "friendly fire",
+)
+
+
+def _resolve_pc_char(session: Session, name: str) -> Optional[Character]:
+    """Find a PLAYER character by name (exact, then substring)."""
+    r = (name or "").strip().lower()
+    if not r:
+        return None
+    row = session.exec(select(Character).where(
+        func.lower(Character.name) == r, Character.is_npc == False)).first()  # noqa: E712
+    if row:
+        return row
+    for c in session.exec(select(Character).where(Character.is_npc == False)).all():  # noqa: E712
+        if r in (c.name or "").lower():
+            return c
+    return None
+
+
+def _pc_alignment_label(char: Character) -> Optional[str]:
+    """The PC's live alignment label from its world entity, or None."""
+    try:
+        from eight_card_system.relationships import get_axes, axes_to_label
+        pc = world.find_pc(char.discord_user_id, char.name)
+        return axes_to_label(get_axes(pc)) if pc is not None else None
+    except Exception:
+        return None
+
+
+def _drift_pc_alignment(char: Character, good_delta: int, law_delta: int) -> Optional[str]:
+    """Shove a PC's alignment axes (m=good/evil, e=lawful/chaotic). Returns new label."""
+    if not good_delta and not law_delta:
+        return None
+    try:
+        from eight_card_system.relationships import get_axes, axes_to_label, _clamp_axis
+        pc = world.find_pc(char.discord_user_id, char.name)
+        if pc is None:
+            return None
+        cur = get_axes(pc)
+        ax = {"m": _clamp_axis(cur["m"] + int(good_delta)),
+              "e": _clamp_axis(cur["e"] + int(law_delta))}
+        label = axes_to_label(ax)
+        world.upsert_entity(pc.name, pc.type, slug=pc.slug, status=pc.status,
+                            attributes={"align_axes": ax, "alignment": label})
+        return label
+    except Exception as e:
+        print(f"[pvp] alignment drift failed: {e}")
+        return None
+
+
+def _pvp_apply_smite(session: Session, killer: Character, outcome) -> str:
+    """Apply the divine strike to the killer's HP/death state. Returns a note."""
+    if outcome.smite == "hp":
+        dmg = max(1, round((killer.max_hp or 1) * float(outcome.smite_fraction)))
+        killer.current_hp = max(0, (killer.current_hp or 0) - dmg)
+        if killer.current_hp <= 0:
+            killer.stable = False
+        return f"{killer.name} takes {dmg} searing divine damage."
+    if outcome.smite == "down":
+        killer.current_hp = 0
+        killer.stable = False
+        killer.death_save_failures = max(int(killer.death_save_failures or 0), 1)
+        return f"{killer.name} is struck down, broken and dying."
+    if outcome.smite == "death":
+        killer.current_hp = 0
+        killer.stable = False
+        killer.death_save_failures = 3
+        try:
+            pc = world.find_pc(killer.discord_user_id, killer.name)
+            if pc is not None:
+                world.set_status(pc.slug, "dead")
+        except Exception:
+            pass
+        return f"{killer.name} is smitten dead where they stand."
+    return ""
+
+
+def _canonize_pc_death(session: Session, victim: Character) -> None:
+    """Permadeath for a slain PC: HP to 0 + failed saves, world entity marked dead."""
+    victim.current_hp = 0
+    victim.stable = False
+    victim.death_save_failures = 3
+    session.add(victim)
+    try:
+        pc = world.find_pc(victim.discord_user_id, victim.name)
+        if pc is not None:
+            world.set_status(pc.slug, "dead")
+    except Exception:
+        pass
+
+
+def extract_pvp_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull [[PVP: ...]] hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in PVP_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").strip().lower()
+        if action not in _PVP_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = PVP_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def extract_deity_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull [[DEITY: pc | Name]] hooks. Returns (clean, [{pc, deity}])."""
+    ops: list[dict] = []
+    for m in DEITY_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if len(parts) >= 2 and parts[1].strip():
+            ops.append({"pc": parts[0].strip(), "deity": parts[1].strip()})
+    clean = DEITY_HOOK_PATTERN.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", clean).strip(), ops
+
+
+def process_deity_hooks(ops: list[dict]) -> None:
+    """Record a patron deity learned in play onto the PC + mirror the WORSHIPS edge."""
+    if not ops:
+        return
+    with Session(engine) as session:
+        for op in ops:
+            char = _resolve_pc_char(session, op["pc"])
+            if not char:
+                continue
+            char.deity = op["deity"]
+            session.add(char)
+            session.commit()
+            _mirror_deity_worship(char)
+
+
+def _format_active_pvp_block(pvp_state: dict) -> str:
+    """DM-eyes-only: active sanctioned duels + the standing PvP rule."""
+    pacts = ipvp.describe_pacts(pvp_state or {})
+    lines = ["# Player-vs-player (DM eyes only)"]
+    if pacts:
+        lines.append("Active SANCTIONED duels (no divine wrath applies between these):")
+        lines.append(pacts)
+    else:
+        lines.append("No sanctioned duels are active — any PC-on-PC violence is "
+                     "UNsanctioned and draws consequences.")
+    lines.append("A killing blow between PCs → emit [[PVP: kill | attacker | victim]]; "
+                 "a hostile strike → [[PVP: strike | attacker | victim]]. The game applies "
+                 "the god's judgement — narrate what it reports.")
+    return "\n".join(lines)
+
+
+def process_pvp_hooks(session_id: str, ops: list[dict], meta: Dict[str, Any],
+                      acting_user_id: Optional[str],
+                      ) -> tuple[list[str], list[dict]]:
+    """Apply PVP ops (sanction/strike/kill/yield/end). Returns (public_notes, whispers).
+
+    Sanctioned duels draw no wrath; unsanctioned kills bring the victim's god down on
+    the killer (curse + smite + alignment/renown collapse) and canonize the victim's
+    death. All graded severity comes from the pvp/ package."""
+    if not ops:
+        return [], []
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    pvp_state = dict(meta.get("pvp") or ipvp.new_state())
+    turn_count = int(state.get("turn_count", 0) or 0)
+    cfg = get_config().pvp
+    public: list[str] = []
+    whispers: list[dict] = []
+    changed = False
+
+    for op in ops:
+        action = op["action"]
+        args = op.get("args", [])
+        if action == "sanction":
+            if len(args) < 2:
+                continue
+            a, b = args[0], args[1]
+            terms = args[2] if len(args) > 2 else cfg.pact_default_terms
+            pact = ipvp.open_pact(pvp_state, a, b, terms, turn_count)
+            changed = True
+            public.append(f"⚔️ A sanctioned duel is struck: **{pact['a']}** vs "
+                          f"**{pact['b']}** ({pact['terms']}). Honor binds it.")
+            continue
+        if action == "yield":
+            who = args[0] if args else ""
+            closed = None
+            for p in ipvp.active_pacts(pvp_state):
+                if who.lower() in (p["a"].lower(), p["b"].lower()):
+                    closed = ipvp.close_pact(pvp_state, p["a"], p["b"], status="yielded")
+                    break
+            if closed:
+                changed = True
+                public.append(f"🏳️ **{who}** yields — the duel ends with honor intact.")
+            continue
+        if action == "end":
+            if len(args) >= 2 and ipvp.close_pact(pvp_state, args[0], args[1]):
+                changed = True
+                public.append("⚔️ The duel is ended.")
+            continue
+
+        # strike / kill — the consequence path.
+        if len(args) < 2:
+            continue
+        attacker_name, victim_name = args[0], args[1]
+        authorized = bool(ipvp.authorized(pvp_state, attacker_name, victim_name,
+                                          turn_count))
+        with Session(engine) as session:
+            attacker = _resolve_pc_char(session, attacker_name)
+            victim = _resolve_pc_char(session, victim_name)
+            if attacker is None or victim is None:
+                # Not both real PCs (e.g. a PC killing an NPC) — no PvP consequence.
+                continue
+            victim_align = _pc_alignment_label(victim)
+            retributor = ipvp.retributor_for(getattr(victim, "deity", None), victim_align)
+            offense = ipvp.offense_count(pvp_state, attacker_name)
+            outcome = ipvp.assess(
+                action, attacker.level or 1, victim.level or 1, retributor,
+                authorized=authorized, offense_count=offense,
+                divine_retribution=cfg.divine_retribution,
+                lethal_retribution=cfg.lethal_retribution,
+                punchdown_scaling=cfg.punchdown_scaling)
+
+            if action == "kill":
+                _canonize_pc_death(session, victim)
+
+            if not authorized and action == "kill":
+                ipvp.record_offense(pvp_state, attacker_name)
+                changed = True
+                # Smite the killer.
+                smite_note = _pvp_apply_smite(session, attacker, outcome)
+                # Kinslayer's Mark curse.
+                if outcome.curse:
+                    day = world.current_day()
+                    if not next((a for a in _active_curses(session, attacker.id)
+                                 if (a.name or "").lower() == outcome.curse["name"].lower()), None):
+                        session.add(Affliction(
+                            character_id=attacker.id, kind="curse",
+                            name=outcome.curse["name"], description=outcome.curse["effect"],
+                            notes=outcome.curse["lift"], onset_day=day, active=True))
+                session.add(attacker)
+                session.commit()
+                # Alignment collapse + notoriety on the world entity.
+                sh = outcome.align_shift or {}
+                _drift_pc_alignment(attacker, sh.get("good", 0), sh.get("law", 0))
+                try:
+                    pc = world.find_pc(attacker.discord_user_id, attacker.name)
+                    if pc is not None:
+                        world.upsert_entity(pc.name, pc.type, slug=pc.slug,
+                                            status=pc.status,
+                                            attributes={"notoriety": "kinslayer"})
+                    world.add_event(
+                        f"{attacker.name} murdered {victim.name} — {ipvp.full_name(retributor)} "
+                        f"passed judgement.", session_id=session_id)
+                except Exception as e:
+                    print(f"[pvp] world mark failed: {e}")
+                if outcome.public:
+                    public.append("⚡ " + (smite_note + " " if smite_note else "") + outcome.public)
+                whispers.append({"user_id": str(attacker.discord_user_id),
+                                 "text": "⚡ (the gods, to you alone) " + outcome.private})
+
+            elif not authorized and action == "strike":
+                changed = True
+                if outcome.curse:
+                    day = world.current_day()
+                    if not next((a for a in _active_curses(session, attacker.id)
+                                 if (a.name or "").lower() == outcome.curse["name"].lower()), None):
+                        session.add(Affliction(
+                            character_id=attacker.id, kind="curse",
+                            name=outcome.curse["name"], description=outcome.curse["effect"],
+                            notes=outcome.curse["lift"], onset_day=day, active=True))
+                        session.commit()
+                sh = outcome.align_shift or {}
+                _drift_pc_alignment(attacker, sh.get("good", 0), sh.get("law", 0))
+                if outcome.public:
+                    public.append("⚠️ " + outcome.public)
+                whispers.append({"user_id": str(attacker.discord_user_id),
+                                 "text": "⚠️ (a private omen) " + outcome.private})
+
+            else:  # authorized — a fair duel; canonize a duel-death but no wrath.
+                if action == "kill":
+                    session.commit()
+                if outcome.public:
+                    public.append("⚔️ " + outcome.public)
+
+    if changed:
+        meta["pvp"] = pvp_state
+        _set_session_meta(session_id, meta)
+    return public, whispers
 
 
 # =====================  CURSES  ===========================================
@@ -6719,6 +7042,19 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[game context error] {e}")
 
+    # Player-vs-player: surface active sanctioned duels + the consequence rule when a
+    # duel is live OR the scene reads combative between characters. Multiplayer only —
+    # a solo table can't have PvP, so skip the guide there to save tokens.
+    try:
+        pvp_state = (meta or {}).get("pvp") or {}
+        multi = len(_session_members(meta or {})) > 1
+        if multi and (ipvp.active_pacts(pvp_state)
+                      or any(k in _scene_text(message, ctx_obj) for k in _PVP_KEYWORDS)):
+            texts.append(_PVP_GUIDE)
+            texts.append(_format_active_pvp_block(pvp_state))
+    except Exception as e:
+        print(f"[pvp context error] {e}")
+
     # Secret actions: on a private turn (or when the scene reads covert) tell the
     # DM how to whisper the truth and show the table only a sanitized line.
     try:
@@ -7872,6 +8208,29 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             print(f"[game] hook processing failed: {e}")
 
+    # Player-vs-player: apply consequences for unsanctioned violence between PCs
+    # (the victim's god smites the killer, curse + alignment/renown collapse) and
+    # open/close sanctioned duels. Public retribution joins the narration; the
+    # killer's private dread rides the whisper channel.
+    dm_text, pvp_ops = extract_pvp_hooks(dm_text)
+    if pvp_ops:
+        try:
+            p_public, p_whispers = process_pvp_hooks(
+                req.session_id, pvp_ops, meta_now, req.user_id)
+            if p_public:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(p_public)
+            _merge_whispers(whisper_notes, p_whispers)
+        except Exception as e:
+            print(f"[pvp] hook processing failed: {e}")
+
+    # Deity capture: record a PC's patron god learned in play.
+    dm_text, deity_ops = extract_deity_hooks(dm_text)
+    if deity_ops:
+        try:
+            process_deity_hooks(deity_ops)
+        except Exception as e:
+            print(f"[deity] hook processing failed: {e}")
+
     # Whispers: pull explicit [[WHISPER: ...]] notes to the private channel
     # (default recipient = the acting player; [[WHISPER: @Name | ...]] targets one).
     dm_text, w_notes = extract_whisper_hooks(dm_text, meta_now, req.user_id)
@@ -7928,6 +8287,59 @@ def active_session_for_user(user_id: str):
     so a private DM can be routed to the table the player is seated at."""
     sid = _find_active_session_for_user(user_id)
     return {"session_id": sid}
+
+
+class PvpPactRequest(BaseModel):
+    session_id: Optional[str] = None
+    # Either identify the duelists by character name, or by user id (the handshake
+    # resolves each user's seated character name for the pact).
+    a: Optional[str] = None
+    b: Optional[str] = None
+    a_user: Optional[str] = None
+    b_user: Optional[str] = None
+    terms: Optional[str] = None
+    close: bool = False
+
+
+def _pact_name_for(meta: Dict[str, Any], *, name: Optional[str],
+                   user: Optional[str]) -> Optional[str]:
+    if name:
+        return name
+    if user:
+        m = _session_members(meta).get(str(user))
+        if m:
+            return m.get("character_name")
+    return None
+
+
+@app.post("/pvp/pact")
+def pvp_pact(req: PvpPactRequest):
+    """Open (or close) a sanctioned-duel pact — the authoritative consent handshake.
+
+    Resolves the table (explicit session_id, else the challenger's active session),
+    maps each duelist to their seated character, and records the pact in session meta
+    so the DM sees the duel as AUTHORIZED and no divine wrath follows a fair fight."""
+    sid = req.session_id or _find_active_session_for_user(req.a_user or "")
+    if not sid:
+        raise HTTPException(status_code=404, detail="No active table for this player.")
+    state = _load_session_state(sid)
+    meta = dict(state.get("meta", {}) or {})
+    a = _pact_name_for(meta, name=req.a, user=req.a_user)
+    b = _pact_name_for(meta, name=req.b, user=req.b_user)
+    if not a or not b:
+        raise HTTPException(status_code=400, detail="Both duelists must be seated PCs.")
+    pvp_state = dict(meta.get("pvp") or ipvp.new_state())
+    turn = int(state.get("turn_count", 0) or 0)
+    if req.close:
+        ipvp.close_pact(pvp_state, a, b)
+        result = {"status": "closed", "a": a, "b": b}
+    else:
+        terms = ipvp.normalize_terms(req.terms or get_config().pvp.pact_default_terms)
+        pact = ipvp.open_pact(pvp_state, a, b, terms, turn)
+        result = {"status": "open", **pact}
+    meta["pvp"] = pvp_state
+    _set_session_meta(sid, meta)
+    return result
 
 
 @app.post("/reset")

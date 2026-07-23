@@ -165,6 +165,19 @@ class GamesConfig:
 
 
 @dataclass
+class PvpConfig:
+    """Player-vs-player consequences + authorization policy."""
+    # Master switch for divine/curse retribution on unsanctioned PvP.
+    divine_retribution: bool = True
+    # May the worst cases smite the killer to death? Off = heavy but non-lethal.
+    lethal_retribution: bool = True
+    # Added severity per level the victim was BELOW the killer (punching down).
+    punchdown_scaling: int = 4
+    # Default terms when a duel is sanctioned without any stated.
+    pact_default_terms: str = "to-yield"
+
+
+@dataclass
 class DMGuideConfig:
     """AI Dungeon Master guidance + encounter/DC helper tuning."""
     enabled: bool = True
@@ -297,6 +310,7 @@ class GameConfig:
     hazard: HazardConfig = field(default_factory=HazardConfig)
     reputation: ReputationConfig = field(default_factory=ReputationConfig)
     games: GamesConfig = field(default_factory=GamesConfig)
+    pvp: PvpConfig = field(default_factory=PvpConfig)
     dm_guide: DMGuideConfig = field(default_factory=DMGuideConfig)
     session_memory: SessionMemoryConfig = field(default_factory=SessionMemoryConfig)
     imagery: ImageryConfig = field(default_factory=ImageryConfig)
