@@ -12,7 +12,7 @@ root.render(
     className="boot"
     style={{
       display: "flex", alignItems: "center", justifyContent: "center",
-      height: "100vh", fontFamily: "serif", letterSpacing: "0.05em",
+      height: "100%", fontFamily: "serif", letterSpacing: "0.05em",
       opacity: 0.7,
     }}
   >

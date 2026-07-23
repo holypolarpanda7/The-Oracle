@@ -440,7 +440,8 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
 
 /* ---------- item inspector (focused window) ---------- */
 .item-veil { position: absolute; inset: 0; z-index: 30; display: grid; place-items: center;
-  padding: 24px; background: rgba(4, 6, 12, 0.72); backdrop-filter: blur(3px);
+  padding: 24px; background: rgba(4, 6, 12, 0.72);
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
   animation: veil-fade 0.2s ease-out; }
 @keyframes veil-fade { from { opacity: 0; } }
 .item-modal { position: relative; display: grid; grid-template-columns: 208px 1fr; gap: 18px;

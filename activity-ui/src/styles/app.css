@@ -13,7 +13,12 @@ body {
 /* ============ The great frame ============ */
 .table {
   height: 100%;
-  padding: 14px;
+  /* Respect the iPhone notch / home-indicator (viewport-fit=cover). */
+  padding:
+    max(14px, env(safe-area-inset-top))
+    max(14px, env(safe-area-inset-right))
+    max(14px, env(safe-area-inset-bottom))
+    max(14px, env(safe-area-inset-left));
   background:
     radial-gradient(120% 90% at 50% 30%, transparent 38%, rgba(5, 7, 13, 0.9)),
     var(--asset-bg-play) center / cover no-repeat,
@@ -73,7 +78,7 @@ body {
 }
 .landing-title { text-align: center; }
 .landing-title h1 {
-  font-size: 44px;
+  font-size: clamp(30px, 9vw, 44px);
   font-weight: 500;
   letter-spacing: 0.22em;
   text-transform: uppercase;
@@ -466,3 +471,64 @@ body {
 .gear-qty button:hover:not(:disabled) { border-color: var(--brass); color: var(--brass); }
 .gear-qty button:disabled { opacity: 0.35; cursor: default; }
 .gear-qty span { min-width: 14px; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* ============================================================================
+   Phone layout (iPhone / narrow touch screens)
+   This block loads after play.css (imported at the top), so equal-specificity
+   rules here win by source order — no !important needed except to beat the
+   inline px sizes the drag-to-resize panels persist.
+   ========================================================================== */
+@media (max-width: 700px) {
+  /* Reclaim the chrome's padding for the small canvas. */
+  .table {
+    padding:
+      max(8px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom))
+      max(8px, env(safe-area-inset-left));
+  }
+  .frame { grid-template-columns: 1fr; padding: 12px; }
+  .frame::before { inset: 4px; }
+  .corner { width: 24px; height: 24px; }
+
+  /* Never let a focused field trigger iOS auto-zoom (needs >= 16px). These
+     match the base selectors' specificity and come later in source, so they
+     win — without shrinking the intentionally-larger fields (e.g. .cf-name). */
+  .play .promptbar input,
+  .sb-inscribe input,
+  .cw-store select,
+  .cf-input,
+  .ps-desc,
+  .gear-search { font-size: 16px; }
+
+  /* ---- Character creation: 3-column desk → single scrolling column ---- */
+  .create {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: max-content;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .cf-stages { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .cf-stage {
+    border-left: none; border-bottom: 2px solid var(--panel-edge);
+    padding: 6px 10px; font-size: 13px;
+  }
+  .cf-stage.on { border-left-color: transparent; border-bottom-color: var(--brass); }
+  .cf-cancel { margin-top: 0; margin-left: auto; }
+  .cf-main { overflow-y: visible; min-height: 0; }
+  .cf-detail { max-height: 44vh; }
+  .cf-abilities { grid-template-columns: repeat(3, 1fr); max-width: none; }
+
+  /* ---- Play surface ---- */
+  .play { overscroll-behavior: contain; }
+  /* Drag-to-resize is a mouse affordance; a fresh phone has no persisted size,
+     but cap any stale desktop width so a panel can't overflow the viewport. */
+  .play .cframe, .play .scroll, .play .sheet { max-width: 100% !important; }
+}
+
+/* Hide drag-resize grips wherever the primary pointer is touch. */
+@media (pointer: coarse) {
+  .play .grip { display: none; }
+}
