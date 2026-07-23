@@ -26,6 +26,13 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# The Windows console defaults to cp1252, which can't encode the ✓/✗/→ we print.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
 from game_config import get_config
 from .comfy_client import ImageServiceUnavailable, client_from_config
 from .compress import encode_webp
