@@ -13745,6 +13745,20 @@ async def activity_ws(ws: WebSocket, channel: str):
                 continue
 
             # ---- portrait looks: regear from gear, switch look, or delete one ----
+            if msg.get("t") == "set_dnr":
+                cid = _activity_char_id(session_id, user_id) if session_id else None
+                if cid:
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        if ch:
+                            ch.dnr = bool(msg.get("dnr"))
+                            s.add(ch)
+                            s.commit()
+                    refreshed = _activity_sheet(session_id, user_id)
+                    if refreshed:
+                        await ws.send_json({"t": "sheet", "sheet": refreshed})
+                continue
+
             if msg.get("t") == "portrait_action":
                 action = (msg.get("action") or "").strip()
                 cid = _activity_char_id(session_id, user_id) if session_id else None

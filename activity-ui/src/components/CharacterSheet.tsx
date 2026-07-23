@@ -36,12 +36,13 @@ function featIcon(kind?: string): string {
 
 type Tab = "stats" | "inv" | "origin" | "feat";
 
-export function CharacterSheet({ sheet, panel, onInspect, onPortrait }: {
+export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr }: {
   sheet: SheetData | null;
   panel: PanelHandle;
   onInspect: (name: string) => void;
   onPortrait: (action: "regear" | "select" | "delete",
                opts?: { context?: string; replace_context?: string; detail?: string }) => void;
+  onSetDnr?: (dnr: boolean) => void;
 }) {
   const [tab, setTab] = useState<Tab>("stats");
   // Portrait look-switcher state: which look is active + the two transient modes
@@ -260,6 +261,20 @@ export function CharacterSheet({ sheet, panel, onInspect, onPortrait }: {
           <div className="lore">
             {sheet.background && <p><b>Background · {sheet.background}.</b></p>}
             {sheet.deity && <p><b>Faith · devoted to {sheet.deity}.</b></p>}
+            <p className="dnr-row">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={!!sheet.dnr}
+                  onChange={(e) => onSetDnr?.(e.target.checked)}
+                />
+                <b>Do Not Resuscitate</b>
+                <span className="dnr-note">
+                  {sheet.dnr ? "— your soul will refuse to be called back."
+                    : "— allow revival if you fall."}
+                </span>
+              </label>
+            </p>
             <p><b>Skills.</b> {sheet.skills.join(" · ") || "—"}</p>
             {(race || cls) && (
               <p>{[race, cls, sub && `(${sub})`].filter(Boolean).join(" ")}</p>

@@ -185,6 +185,11 @@ export default function App({ session }: { session: Session }) {
     connRef.current?.send({ t: "portrait_action", action, ...opts });
   };
 
+  const setDnr = (dnr: boolean) => {
+    setSheet((s) => (s ? { ...s, dnr } : s));  // optimistic; server confirms via sheet push
+    connRef.current?.send({ t: "set_dnr", dnr });
+  };
+
   const skipAll = () =>
     setBlocks((bs) => bs.map((b) => (b.kind === "oracle" ? { ...b, done: true } : b)));
 
@@ -294,6 +299,7 @@ export default function App({ session }: { session: Session }) {
               onMainMenu={() => setScreen("landing")}
               onInspect={inspectItem}
               onPortrait={portraitAction}
+              onSetDnr={setDnr}
             />
             <ItemInspector
               view={itemView}

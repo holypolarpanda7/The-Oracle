@@ -83,6 +83,7 @@ export interface SheetData {
   char_class?: string | null;
   subclass?: string | null;
   deity?: string | null;         // patron god (drives divine PvP retribution)
+  dnr?: boolean;                 // Do-Not-Resuscitate: don't revive this character
   portrait?: string | null;      // data URL or /path to the stored PC portrait (active look)
   portrait_looks?: PortraitLook[]; // base + saved gear looks the player can switch between
   active_portrait?: string;      // context key of the currently shown look
@@ -206,7 +207,8 @@ export type ClientEvent =
   | { t: "inscribe_spell"; spell: string; book?: string }
   | { t: "item_action"; name: string; action: string; target?: string }
   | { t: "portrait_action"; action: "regear" | "select" | "delete";
-      context?: string; replace_context?: string; detail?: string };
+      context?: string; replace_context?: string; detail?: string }
+  | { t: "set_dnr"; dnr: boolean };
 
 export interface CCPayload {
   name: string;

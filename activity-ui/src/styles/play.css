@@ -400,6 +400,9 @@
 
 .play .lore { font-size: 0.9rem; color: #dfe8ea; line-height: 1.55; text-shadow: 0 1px 3px #000; }
 .play .lore b { color: var(--gold-2); }
+.play .lore .dnr-row label { display: flex; align-items: baseline; gap: 7px; cursor: pointer; }
+.play .lore .dnr-row input { accent-color: #b04a3a; }
+.play .lore .dnr-note { color: #9fb0b3; font-size: 0.82em; font-style: italic; }
 .play .lore p { margin: 0 0 9px; }
 .play .feat { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 9px; }
 .play .feat .fx { font-size: 0.86rem; text-shadow: 0 1px 3px #000; }
