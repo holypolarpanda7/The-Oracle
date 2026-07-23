@@ -280,6 +280,7 @@ async def lifespan(app: FastAPI):
                     ("home_region", "TEXT"),
                     ("background", "TEXT"),
                     ("notes", "TEXT"),
+                    ("active_portrait", "TEXT"),
                     ("created_at", "DATETIME"),
                     ("updated_at", "DATETIME"),
                 ]
@@ -913,6 +914,10 @@ class Character(SQLModel, table=True):
     # Game metadata
     home_region: Optional[str] = Field(default=None, sa_column=Column(String))
     notes: Optional[str] = Field(default=None, sa_column=Column(String))
+    # Which stored portrait "look" is currently shown: the context key of the
+    # active portrait image — ``"portrait"`` (or None) = the base look,
+    # ``"portrait-gear-*"`` = an equipped-gear variant the player rendered.
+    active_portrait: Optional[str] = Field(default=None, sa_column=Column(String))
 
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
@@ -6625,6 +6630,46 @@ def _portrait_base_look(char: Character) -> str:
     return ", ".join(parts)
 
 
+# A character keeps ONE base portrait plus up to this many equipped-gear looks
+# they can switch between without re-rendering (the base is always preserved).
+MAX_PORTRAIT_LOOKS = 3
+
+
+def _equipped_look(char: Character) -> str:
+    """A portrait-prompt fragment naming the character's EQUIPPED / attuned gear.
+
+    Only worn/wielded/attuned items are visible on a portrait, so unequipped
+    backpack loot is ignored. Order-preserving de-dupe keeps the prompt tight.
+    """
+    worn: List[str] = []
+    for it in _inventory_items(char):
+        if it.get("equipped") or it.get("attuned"):
+            nm = str(it.get("name") or "").strip()
+            if nm:
+                worn.append(nm)
+    return ", ".join(dict.fromkeys(worn))
+
+
+def _default_look_label(char: Character) -> str:
+    """A human name for a fresh gear look, derived from the equipped loadout."""
+    gear = _equipped_look(char)
+    return gear if gear else "geared look"
+
+
+def _resolve_active_portrait(char: Character) -> Optional[ImageResult]:
+    """The portrait to SHOW: the character's active gear look, else the base.
+
+    Falls back to the base portrait if the active look was deleted out from
+    under the pointer.
+    """
+    active = (getattr(char, "active_portrait", None) or "").strip()
+    if active and active != image_store.BASE_CONTEXT:
+        res = image_store.get_look(char.name, active)
+        if res is not None:
+            return res
+    return image_store.get_portrait(char.name)
+
+
 def _build_character_sheet(char: Character) -> Dict[str, Any]:
     """Render a D&D-Beyond-style character sheet from stored data (no AI)."""
     stats = char.stats or {}
@@ -10764,8 +10809,14 @@ async def character_sheet(character_id: int):
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
         sheet = _build_character_sheet(char)
-    portrait = image_store.get_portrait(sheet["name"])
+        portrait = _resolve_active_portrait(char)
+        looks = image_store.portrait_looks(char.name)
+        active_ctx = getattr(char, "active_portrait", None) or image_store.BASE_CONTEXT
     sheet["portrait"] = portrait.payload() if portrait else None
+    # Expose the available looks + which is active so the sheet UI can offer a
+    # switcher (base + up to MAX_PORTRAIT_LOOKS gear looks).
+    sheet["portrait_looks"] = looks
+    sheet["active_portrait"] = active_ctx
     return sheet
 
 
@@ -10866,16 +10917,160 @@ async def character_portrait_upload(character_id: int, req: PortraitUploadReques
 
 @app.get("/character/{character_id}/portrait")
 async def character_portrait_get(character_id: int):
-    """Return the character's current portrait, or 404 if none is stored."""
+    """Return the character's ACTIVE portrait, or 404 if none is stored."""
     with Session(engine) as session:
         char = session.get(Character, character_id)
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
-        name = char.name
-    portrait = image_store.get_portrait(name)
+        portrait = _resolve_active_portrait(char)
     if portrait is None:
         raise HTTPException(status_code=404, detail="No portrait stored for this character.")
     return portrait.payload()
+
+
+# ----- Portrait "looks": base + up to MAX_PORTRAIT_LOOKS equipped-gear variants -----
+
+
+def _do_regear(session: Session, char: Character, *,
+               label: Optional[str] = None, extra_desc: str = "",
+               replace_context: Optional[str] = None) -> Dict[str, Any]:
+    """Render a new equipped-gear portrait look for a PC and make it active.
+
+    Shared by the HTTP endpoint and the ``[[PORTRAIT-REGEAR]]`` DM hook. The
+    base portrait is never touched. Enforces ``MAX_PORTRAIT_LOOKS``: producing a
+    NEW look when already at the cap requires ``replace_context`` (an existing
+    gear look to overwrite); otherwise the caller is told to choose one to drop.
+    Returns a status dict — never raises for the expected outcomes.
+    """
+    cfg = get_config().imagery
+    if not cfg.enabled:
+        return {"status": "disabled"}
+    label = (label or _default_look_label(char)).strip() or "geared look"
+    new_ctx = image_store.look_context(label)
+    gear = image_store.gear_looks(char.name)
+    existing = {g["context"] for g in gear}
+    # At the cap and this is a brand-new look → need an explicit victim.
+    if new_ctx not in existing and len(gear) >= MAX_PORTRAIT_LOOKS:
+        if replace_context and replace_context in existing:
+            image_store.delete_look(char.name, replace_context)
+        else:
+            return {"status": "choose_deletion", "looks": gear, "label": label}
+    look = ", ".join(p for p in (_portrait_base_look(char),
+                                 _equipped_look(char), extra_desc) if p)
+    _mark_diffusion_dirty()
+    res = image_store.generate_gear_look(char.name, label, look=look)
+    if res is None:
+        return {"status": "disabled"}
+    if res.offline:
+        return {"status": "offline"}
+    char.active_portrait = new_ctx
+    session.add(char)
+    session.commit()
+    return {
+        "status": "ok",
+        "active": new_ctx,
+        "label": label,
+        "image": res.payload(),
+        "look": {"context": new_ctx, "label": label, "image_id": res.image_id},
+    }
+
+
+class PortraitRegearRequest(BaseModel):
+    label: str = ""                        # name for this look; defaults to loadout
+    description: str = ""                  # extra look details beyond equipped gear
+    replace_context: Optional[str] = None  # existing gear look to overwrite when at cap
+
+
+@app.post("/character/{character_id}/portrait/regear")
+async def character_portrait_regear(character_id: int, req: PortraitRegearRequest):
+    """Render a portrait variant reflecting the character's EQUIPPED gear.
+
+    Keeps the base portrait; adds/updates a switchable gear look (max
+    ``MAX_PORTRAIT_LOOKS``). At the cap, a new look returns 409 with the existing
+    looks so the caller can pick one to replace (pass ``replace_context``)."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        result = _do_regear(session, char, label=req.label or None,
+                            extra_desc=req.description,
+                            replace_context=req.replace_context)
+    status = result.get("status")
+    if status == "disabled":
+        raise HTTPException(status_code=503, detail="Imagery is disabled in config.")
+    if status == "offline":
+        raise HTTPException(status_code=503, detail="Image service is offline.")
+    if status == "choose_deletion":
+        raise HTTPException(status_code=409, detail={
+            "reason": "look_cap_reached",
+            "max_looks": MAX_PORTRAIT_LOOKS,
+            "looks": result["looks"],
+            "message": (f"Already at {MAX_PORTRAIT_LOOKS} gear looks. Choose one to "
+                        "replace and retry with its context in 'replace_context'."),
+        })
+    return result
+
+
+@app.get("/character/{character_id}/portrait/looks")
+async def character_portrait_looks(character_id: int):
+    """List the character's portrait looks (base + gear) and the active one."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        looks = image_store.portrait_looks(char.name)
+        active = getattr(char, "active_portrait", None) or image_store.BASE_CONTEXT
+    return {"active": active, "max_looks": MAX_PORTRAIT_LOOKS, "looks": looks}
+
+
+class PortraitLookSelectRequest(BaseModel):
+    context: str        # "portrait" (base) or a "portrait-gear-*" look context
+
+
+@app.post("/character/{character_id}/portrait/look/select")
+async def character_portrait_look_select(character_id: int, req: PortraitLookSelectRequest):
+    """Switch which stored look is shown — no re-render, instant swap."""
+    ctx = (req.context or "").strip() or image_store.BASE_CONTEXT
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        valid = {image_store.BASE_CONTEXT} | {
+            l["context"] for l in image_store.portrait_looks(char.name)}
+        if ctx not in valid:
+            raise HTTPException(status_code=404, detail="No such stored look.")
+        char.active_portrait = None if ctx == image_store.BASE_CONTEXT else ctx
+        session.add(char)
+        session.commit()
+    return {"status": "ok", "active": ctx}
+
+
+class PortraitLookDeleteRequest(BaseModel):
+    context: str        # a "portrait-gear-*" look context (the base cannot be deleted)
+
+
+@app.post("/character/{character_id}/portrait/look/delete")
+async def character_portrait_look_delete(character_id: int, req: PortraitLookDeleteRequest):
+    """Delete a gear look. The base portrait cannot be deleted here."""
+    ctx = (req.context or "").strip()
+    if ctx == image_store.BASE_CONTEXT or not ctx.startswith(image_store.LOOK_PREFIX):
+        raise HTTPException(status_code=400,
+                            detail="Only gear looks can be deleted (not the base).")
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        removed = image_store.delete_look(char.name, ctx)
+        # If the deleted look was active, fall back to the base portrait.
+        reverted = (getattr(char, "active_portrait", None) or "") == ctx
+        if reverted:
+            char.active_portrait = None
+            session.add(char)
+            session.commit()
+        active = (getattr(char, "active_portrait", None)
+                  or image_store.BASE_CONTEXT)
+    return {"status": "ok", "removed": removed, "reverted_to_base": reverted,
+            "active": active}
 
 
 # ===========================================================================
@@ -11054,9 +11249,14 @@ def _sheet_features(session: Session, char: Character) -> list[dict]:
     return out[:12]
 
 
-def _activity_portrait_url(character_name: str) -> Optional[str]:
+def _activity_portrait_url(character_name: str,
+                           active_context: Optional[str] = None) -> Optional[str]:
     try:
-        portrait = image_store.get_portrait(character_name)
+        portrait = None
+        if active_context and active_context != image_store.BASE_CONTEXT:
+            portrait = image_store.get_look(character_name, active_context)
+        if portrait is None:
+            portrait = image_store.get_portrait(character_name)
         if portrait is None:
             return None
         pl = portrait.payload()
@@ -11459,7 +11659,8 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         spell_slots = _spell_slots_for(char.char_class, char.level,
                                        char.spell_slots_used)
         background = char.background
-        portrait = _activity_portrait_url(char.name)
+        portrait = _activity_portrait_url(char.name,
+                                          getattr(char, "active_portrait", None))
         inventory = _activity_inventory(char)
         ac_val = _compute_ac(char)
     bits = [f"Level {sheet['level']} {sheet['char_class'] or '?'}"]

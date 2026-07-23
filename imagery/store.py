@@ -579,8 +579,85 @@ class ImageStore:
         )
 
     def get_portrait(self, character_name: str) -> Optional[ImageResult]:
-        """Return the current stored portrait for a PC, if any."""
+        """Return the BASE stored portrait for a PC, if any."""
         return self.get_latest(ImageKind.PC, character_name, "portrait")
+
+    # ----- portrait "looks": the base + up to N equipped-gear variants -----
+    #
+    # A PC keeps ONE base portrait (context ``portrait``, never auto-wiped by a
+    # regear) plus several gear looks, each its own single-slot context
+    # ``portrait-gear-<label>``. Players switch between looks with no re-render;
+    # the cap (and which look is "active") is enforced by the caller, which owns
+    # the character record. Mature rules are untouched — portraits are never
+    # mature.
+
+    LOOK_PREFIX = "portrait-gear-"
+    BASE_CONTEXT = "portrait"
+
+    def look_context(self, label: str) -> str:
+        """Stable context key for a named gear look."""
+        return f"{self.LOOK_PREFIX}{slugify(label)}"
+
+    def portrait_looks(self, character_name: str) -> list[dict]:
+        """All stored portrait variants for a PC: base look + gear looks.
+
+        Each entry: ``{context, label, image_id, is_base}``. Base first.
+        """
+        out: list[dict] = []
+        for r in self.list_for(ImageKind.PC, character_name):
+            ctx = r["context"]
+            if ctx == self.BASE_CONTEXT:
+                out.append({"context": ctx, "label": r["caption"] or "Base look",
+                            "image_id": r["image_id"], "is_base": True})
+            elif ctx.startswith(self.LOOK_PREFIX):
+                out.append({"context": ctx, "label": r["caption"] or ctx,
+                            "image_id": r["image_id"], "is_base": False})
+        out.sort(key=lambda e: (not e["is_base"], e["context"]))
+        return out
+
+    def gear_looks(self, character_name: str) -> list[dict]:
+        """Just the equipped-gear looks (excludes the base portrait)."""
+        return [e for e in self.portrait_looks(character_name) if not e["is_base"]]
+
+    def get_look(self, character_name: str, context: str) -> Optional[ImageResult]:
+        """Fetch a specific stored look by its context key (base or gear)."""
+        return self.get_latest(ImageKind.PC, character_name,
+                               context or self.BASE_CONTEXT)
+
+    def generate_gear_look(
+        self, character_name: str, label: str, *,
+        look: str = "", description: str = "",
+    ) -> Optional[ImageResult]:
+        """Render + store an equipped-gear portrait variant (its own slot).
+
+        Single-slot per label: re-rendering the same label replaces it. The
+        ``label`` is stored as the look's caption so the UI can name it. Returns
+        ``None`` when imagery is disabled and an ``offline`` result (nothing
+        stored) when the backend is down. Callers enforce the max-looks cap.
+        """
+        cfg = self._cfg()
+        if not cfg.enabled:
+            return None
+        ctx = self.look_context(label)
+        self.invalidate_context(ImageKind.PC, character_name, ctx)
+        res = self.ensure_image(
+            ImageKind.PC, character_name,
+            look=look or description, context=ctx, force_new=True,
+        )
+        # Stamp the human label as the caption so lists/switchers can name it.
+        if res is not None and res.image_id and not res.offline and label:
+            with Session(self.engine) as s:
+                row = s.get(EntityImage, res.image_id)
+                if row is not None:
+                    row.caption = label
+                    s.add(row)
+                    s.commit()
+            res.caption = label
+        return res
+
+    def delete_look(self, character_name: str, context: str) -> int:
+        """Delete a stored look (base or gear) by context. Returns rows removed."""
+        return self.invalidate_context(ImageKind.PC, character_name, context)
 
     # ----- invalidation / eviction -----
 
