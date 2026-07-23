@@ -200,8 +200,24 @@ def build_positive(look: Dict[str, str], sex: str, style_prompt: str) -> str:
     return ", ".join(p for p in parts if p)
 
 
+_REF_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def _find_reference(ref_dir: Optional[Path], slug: str) -> Optional[Path]:
+    """A real reference image for this species, if the operator supplied one
+    (``<ref_dir>/<slug>.png`` etc.) — used to condition the render via IP-Adapter."""
+    if not ref_dir:
+        return None
+    for ext in _REF_EXTS:
+        p = ref_dir / f"{slug}{ext}"
+        if p.is_file():
+            return p
+    return None
+
+
 def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str]] = None,
-                     *, force: bool = False, dry_run: bool = False) -> int:
+                     *, force: bool = False, dry_run: bool = False,
+                     ref_dir: Optional[Path] = None) -> int:
     cfg = get_config().imagery
     catalog = species_from_db()
     if slugs:
@@ -215,13 +231,16 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
 
     client = None
     made = 0
+    ref_cache: Dict[str, Optional[str]] = {}   # slug -> uploaded ComfyUI filename
     for slug, look in catalog:
+        ref_path = _find_reference(ref_dir, slug)
         for sex in sexes:
             out = _OUT_DIR / f"{slug}-{sex}.webp"
             positive = build_positive(look, sex, style)
             tag = f"{slug}-{sex}"
             if dry_run:
-                print(f"\n=== {tag} ===\n{positive}")
+                ref_note = f"  [ref: {ref_path.name}]" if ref_path else ""
+                print(f"\n=== {tag}{ref_note} ===\n{positive}")
                 continue
             if out.exists() and not force:
                 print(f"· {tag}: exists, skipping (use --force to regenerate)")
@@ -232,10 +251,23 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
                     print("\n⚠ ComfyUI is not reachable at "
                           f"{cfg.base_url}. Start ComfyUI (API mode) and retry.")
                     return made
+            # Upload the operator's reference once per species (IP-Adapter conditioning).
+            ref_files = None
+            if ref_path is not None:
+                if slug not in ref_cache:
+                    try:
+                        ref_cache[slug] = client.upload_image(
+                            ref_path.read_bytes(), f"species-ref-{slug}{ref_path.suffix}")
+                    except Exception as e:
+                        print(f"  (ref upload failed for {slug}: {e})")
+                        ref_cache[slug] = None
+                if ref_cache[slug]:
+                    ref_files = [ref_cache[slug]]
             try:
-                print(f"→ rendering {tag} …", flush=True)
+                print(f"→ rendering {tag}{' [ref]' if ref_files else ''} …", flush=True)
                 raw = client.generate(positive, negative, width=cfg.gen_width,
-                                      height=cfg.gen_height, steps=cfg.steps)
+                                      height=cfg.gen_height, steps=cfg.steps,
+                                      reference_filenames=ref_files)
                 enc = encode_webp(raw, store_width=768, thumb_width=256,
                                   quality=cfg.webp_quality)
                 out.write_bytes(enc.data)
@@ -256,6 +288,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--force", action="store_true", help="regenerate even if a file exists")
     ap.add_argument("--dry-run", action="store_true", help="print prompts, generate nothing")
     ap.add_argument("--list", action="store_true", help="list the species that would be covered")
+    ap.add_argument("--ref-dir", help="folder of reference images (<slug>.png/jpg) to "
+                    "condition each species on via IP-Adapter — 'use real art references'. "
+                    "Requires use_ipadapter enabled + the ComfyUI_IPAdapter_plus nodes.")
     a = ap.parse_args(argv)
 
     if a.list:
@@ -266,7 +301,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     slugs = [s.strip() for s in a.species.split(",")] if a.species else None
     sexes = ["m", "f"] if a.sex == "both" else [a.sex]
-    n = generate_species(slugs, sexes, force=a.force, dry_run=a.dry_run)
+    ref_dir = Path(a.ref_dir).expanduser() if a.ref_dir else None
+    if ref_dir and not ref_dir.is_dir():
+        print(f"⚠ --ref-dir {ref_dir} is not a folder; ignoring.")
+        ref_dir = None
+    n = generate_species(slugs, sexes, force=a.force, dry_run=a.dry_run, ref_dir=ref_dir)
     if not a.dry_run:
         print(f"\nDone — {n} portrait(s) generated into {_OUT_DIR}.")
         print("Review them, then `git add -f` the SRD/PHB ones you want in the repo "
