@@ -12405,6 +12405,9 @@ def _activity_segments(reply: str, rolls: list[dict]) -> list[dict]:
 # session_id -> live sockets; narration/rolls/scenes broadcast to the whole
 # table so a multiplayer session is just several sockets sharing an id.
 _ACTIVITY_SOCKETS: Dict[str, set] = {}
+# socket -> the user_id it belongs to, so a whisper can target ONE player's
+# screen(s) instead of the whole table (secret actions in the Activity).
+_ACTIVITY_SOCKET_USER: "Dict[WebSocket, str]" = {}
 # channel -> the live table session in that channel (channel = table rule).
 _ACTIVITY_TABLES: Dict[str, str] = {}
 # (session_id, user_id) -> [timestamps] for the table-only action rate limit.
@@ -12448,6 +12451,20 @@ async def _activity_broadcast(session_id: Optional[str], ev: dict,
             await sock.send_json(ev)
         except Exception:
             pass
+
+
+async def _activity_whisper(session_id: Optional[str], user_id: str, ev: dict):
+    """Push a private frame to ONE player's socket(s) only — never the table.
+
+    The Activity equivalent of a bot DM: each player has their own user-keyed
+    socket, so a secret note (their hand, a cheat's true result) reaches just them."""
+    uid = str(user_id)
+    for sock in list(_ACTIVITY_SOCKETS.get(session_id or "", ())):
+        if _ACTIVITY_SOCKET_USER.get(sock) == uid:
+            try:
+                await sock.send_json(ev)
+            except Exception:
+                pass
 
 
 def _activity_characters(user_id: str, channel: str) -> list[dict]:
@@ -12609,6 +12626,7 @@ async def activity_ws(ws: WebSocket, channel: str):
             _ACTIVITY_SOCKETS[session_id].discard(ws)
         session_id = sid
         _ACTIVITY_SOCKETS.setdefault(sid, set()).add(ws)
+        _ACTIVITY_SOCKET_USER[ws] = str(user_id)
 
     async def send_state():
         nonlocal sheet
@@ -13171,6 +13189,10 @@ async def activity_ws(ws: WebSocket, channel: str):
             if msg.get("t") != "action" or not (msg.get("text") or "").strip():
                 continue
             text = msg["text"].strip()
+            # A secret action: the player acted covertly (the UI's "secret" toggle).
+            # The input echo and the DM's reply go to THIS player alone; the table
+            # sees only a sanitized [[PUBLIC]] line the DM may add.
+            is_private = bool(msg.get("private"))
 
             # Table-only rate limit: shared narration is a commons; one player
             # can't monopolize it. Solo sessions are never limited.
@@ -13190,15 +13212,21 @@ async def activity_ws(ws: WebSocket, channel: str):
 
             await _activity_broadcast(session_id, {"t": "busy", "on": True},
                                       fallback=ws)
-            await _activity_broadcast(session_id, {
-                "t": "player", "text": text, "who": username}, fallback=ws)
+            # Echo the player's line. A secret action is shown only back to the
+            # actor (marked secret); a normal one is echoed to the whole table.
+            if is_private:
+                await ws.send_json({"t": "player", "text": text, "who": username,
+                                    "secret": True})
+            else:
+                await _activity_broadcast(session_id, {
+                    "t": "player", "text": text, "who": username}, fallback=ws)
 
             rolls: list[dict] = []
             token = _ACTIVITY_ROLLS.set(rolls)
             try:
                 bt = BackgroundTasks()
                 req = ChatRequest(session_id=session_id, user_id=user_id,
-                                  username=username, message=text)
+                                  username=username, message=text, private=is_private)
                 # Sync endpoint with blocking I/O: run in a worker thread
                 # (contextvars propagate, so the roll collector works).
                 resp = await asyncio.to_thread(chat_endpoint, req, bt)
@@ -13226,8 +13254,23 @@ async def activity_ws(ws: WebSocket, channel: str):
                                                        "entries": lex},
                                           fallback=ws)
 
+            # The narration. On a secret turn it's the actor's alone (their own
+            # socket); the table sees only resp.public. Otherwise broadcast it.
             for ev in _activity_segments(resp.reply, rolls):
-                await _activity_broadcast(session_id, ev, fallback=ws)
+                if is_private:
+                    ev = {**ev, "secret": True}
+                    await ws.send_json(ev)
+                else:
+                    await _activity_broadcast(session_id, ev, fallback=ws)
+            if is_private and resp.public:
+                for ev in _activity_segments(resp.public, []):
+                    await _activity_broadcast(session_id, ev, fallback=ws)
+
+            # Whispers: push each private note to only its recipient's screen(s).
+            for note in (resp.whisper or []):
+                await _activity_whisper(
+                    session_id, note.get("user_id", ""),
+                    {"t": "whisper", "text": note.get("text", "")})
 
             for img in resp.images or []:
                 if img.get("b64"):
@@ -13248,6 +13291,7 @@ async def activity_ws(ws: WebSocket, channel: str):
     except WebSocketDisconnect:
         pass
     finally:
+        _ACTIVITY_SOCKET_USER.pop(ws, None)
         if session_id:
             _ACTIVITY_SOCKETS.get(session_id, set()).discard(ws)
             if not _ACTIVITY_SOCKETS.get(session_id):
