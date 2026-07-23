@@ -84,6 +84,37 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
                   "ears, coarse dark hair, battle scars, fierce proud gaze",
         "male": "a burly half-orc man, thick neck, top-knot or shaved head",
         "female": "a strong half-orc woman, high cheekbones, small tusks"},
+    "orc": {
+        "shared": "a full orc, massive and heavily muscled, deep gray-green skin, "
+                  "a broad brutal jaw with large jutting tusks, a low heavy brow, "
+                  "pointed ears, a flat wide nose, coarse black hair, war paint "
+                  "and bone ornaments, a fierce commanding presence",
+        "male": "a huge orc man, jutting tusks, shaved or mohawked head",
+        "female": "a powerful orc woman, strong jaw, prominent tusks, braided hair"},
+    "high-elf": {
+        "shared": "a high elf, tall and refined, pale luminous skin, sharp regal "
+                  "features, long pointed ears, cool jewel-toned eyes, immaculate "
+                  "long hair, arcane scholar's circlet and fine silks",
+        "male": "a poised high-elven man, aristocratic bearing",
+        "female": "an elegant high-elven woman, serene and stately"},
+    "wood-elf": {
+        "shared": "a wood elf, lithe and wild, sun-touched coppery or tawny skin, "
+                  "green and hazel eyes, long pointed ears, tousled earth-toned "
+                  "hair with leaves and beads, weathered forest ranger's leathers",
+        "male": "a rugged wood-elf man, feral grace, light face paint",
+        "female": "a keen wood-elf woman, windswept hair, watchful eyes"},
+    "forest-gnome": {
+        "shared": "a forest gnome, tiny and quick, warm nut-brown skin, oversized "
+                  "bright eyes, a button nose, wild mossy-toned hair with twigs "
+                  "and flowers, woodland clothing, an impish knowing smile",
+        "male": "a forest-gnome man, leafy pointed beard",
+        "female": "a forest-gnome woman, flower-woven wild hair"},
+    "rock-gnome": {
+        "shared": "a rock gnome tinkerer, tiny with an oversized head, huge "
+                  "curious eyes, a big nose, soot-smudged cheeks, brass goggles on "
+                  "the brow, frizzy wild hair, an inventor's leather apron of tools",
+        "male": "a rock-gnome man, singed pointed beard, goggles",
+        "female": "a rock-gnome woman, frizzy voluminous hair, goggles"},
     "tiefling": {
         "shared": "a tiefling: humanlike but clearly fiend-touched, prominent "
                   "curling horns rising from the brow, solid glowing eyes with no "
