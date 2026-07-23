@@ -43,7 +43,7 @@
  .lore{font-size:.9rem;color:#dfe8ea;line-height:1.55;text-shadow:0 1px 3px #000;} .lore b{color:var(--gold-2);} .lore p{margin:0 0 9px;}
  .feat{display:flex;gap:10px;align-items:flex-start;margin-bottom:9px;} .feat .fx{font-size:.86rem;text-shadow:0 1px 3px #000;} .feat .fx b{color:var(--teal);} .feat .fx small{display:block;color:#9fb0bd;font-family:var(--mono);font-size:.62rem;}
  .tile{position:relative;width:38px;height:38px;flex:none;border-radius:9px;display:grid;place-items:center;background:radial-gradient(circle at 42% 30%,#1e2a4e,#0a0e1c 78%);box-shadow:inset 0 0 12px rgba(0,0,0,.75);} .tile::before{content:"";position:absolute;inset:0;border-radius:9px;padding:2px;background:linear-gradient(150deg,var(--gold-2),var(--gold) 45%,#6a5326);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;} .tile .ico{width:22px;height:22px;position:relative;z-index:1;} .tile.t{color:var(--teal);filter:drop-shadow(0 0 6px rgba(36,224,184,.85));} .tile.p{color:var(--amethyst);filter:drop-shadow(0 0 6px rgba(154,107,255,.85));} .tile.e{color:var(--ember);filter:drop-shadow(0 0 7px rgba(245,154,60,.9));}
- .promptbar{display:flex;gap:10px;align-items:center;background:rgba(8,11,20,.78);border:1px solid var(--edge);border-radius:6px;padding:12px 14px;box-shadow:inset 0 0 0 1px rgba(230,188,100,.12),0 8px 22px rgba(0,0,0,.4);} .pfield{flex:1;color:var(--text-dim);font-family:var(--serif);font-style:italic;} .psend{display:grid;place-items:center;width:40px;height:40px;border-radius:5px;background:radial-gradient(circle at 35% 30%,#6bf0d3,var(--teal));color:#04110e;box-shadow:0 0 14px rgba(36,224,184,.4);} .menu{display:flex;gap:10px;margin-top:auto;padding-top:22px;} .mbtn{flex:1;font-family:var(--serif);text-transform:uppercase;letter-spacing:.12em;font-size:.74rem;font-weight:700;color:var(--text);cursor:pointer;padding:12px;border-radius:5px;background:linear-gradient(180deg,#182036,#101627);border:1px solid var(--edge);box-shadow:inset 0 0 0 1px rgba(230,188,100,.14);} .mbtn:hover{border-color:var(--teal);color:#eafffb;} .note{margin-top:24px;text-align:center;color:var(--text-faint);font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;}
+ .promptbar{display:flex;gap:10px;align-items:center;background:rgba(8,11,20,.78);border:1px solid var(--edge);border-radius:6px;padding:12px 14px;box-shadow:inset 0 0 0 1px rgba(230,188,100,.12),0 8px 22px rgba(0,0,0,.4);} .pfield{flex:1;color:var(--text-dim);font-family:var(--serif);font-style:italic;} .psend{display:grid;place-items:center;width:40px;height:40px;border-radius:5px;background:radial-gradient(circle at 35% 30%,#6bf0d3,var(--teal));color:#04110e;box-shadow:0 0 14px rgba(36,224,184,.4);} .menu{display:flex;gap:10px;margin-top:auto;padding-top:22px;} .mbtn{flex:1;font-family:var(--serif);text-transform:uppercase;letter-spacing:.12em;font-size:.74rem;font-weight:700;color:var(--text);cursor:pointer;padding:12px;border-radius:5px;background:linear-gradient(180deg,#182036,#101627);border:1px solid var(--edge);box-shadow:inset 0 0 0 1px rgba(230,188,100,.14);} .mbtn:hover{border-color:var(--teal);color:#eafffb;} .scene,.scroll,.sheet{max-width:100%;} .grip{position:absolute;right:8px;bottom:8px;width:15px;height:15px;z-index:12;cursor:nwse-resize;opacity:.42;transition:opacity .15s;background:repeating-linear-gradient(135deg,transparent 0 2px,var(--gold-2) 2px 3px);border-radius:2px;} .grip:hover{opacity:.95;} body.rez-active{user-select:none;cursor:nwse-resize;} .rez-hint{text-align:center;font-family:var(--mono);font-size:.6rem;letter-spacing:.14em;color:var(--text-faint);text-transform:uppercase;margin-top:8px;} .note{margin-top:24px;text-align:center;color:var(--text-faint);font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;}
 </style>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
  <symbol id="i-str" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="3.5" width="15" height="7" rx="1.6" fill="currentColor" fill-opacity=".16"/><path d="M12 10.5V21"/><path d="M8 7h8"/></g></symbol>
@@ -91,6 +91,29 @@
    </div>
   <div class="menu"><button class="mbtn">⚙ Settings</button><button class="mbtn">☰ Main Menu</button></div></aside>
  </div>
- <div class="note">Your horizontal scroll · L-shaped corners + 4-edge frame · Dragonborn scales · spell slots · tabs</div>
+ <div class="note">Your horizontal scroll · L-shaped corners + 4-edge frame · Dragonborn scales · spell slots · tabs</div><div class="rez-hint">↘ drag the corner grip on any panel to resize it</div>
 </div></div>
 <script>document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));document.querySelectorAll('.tabpane').forEach(x=>x.classList.remove('on'));t.classList.add('on');document.getElementById(t.dataset.t).classList.add('on');}));</script>
+<script>
+(function(){
+ function grip(el,minW,minH,isScroll){
+   if(!el) return;
+   var g=document.createElement('div'); g.className='grip'; g.title='Drag to resize'; el.appendChild(g);
+   g.addEventListener('pointerdown',function(e){
+     e.preventDefault(); e.stopPropagation(); document.body.classList.add('rez-active');
+     var sx=e.clientX, sy=e.clientY, sw=el.offsetWidth, sh=el.offsetHeight;
+     if(isScroll){var im=el.querySelector('img'); if(im){im.style.height='100%'; im.style.objectFit='fill';}}
+     function mv(ev){
+       el.style.width=Math.max(minW, sw+ev.clientX-sx)+'px';
+       el.style.height=Math.max(minH, sh+ev.clientY-sy)+'px';
+     }
+     function up(){document.body.classList.remove('rez-active');
+       document.removeEventListener('pointermove',mv); document.removeEventListener('pointerup',up);}
+     document.addEventListener('pointermove',mv); document.addEventListener('pointerup',up);
+   });
+ }
+ grip(document.querySelector('.scene'),280,160,false);
+ grip(document.querySelector('.scroll'),300,150,true);
+ grip(document.querySelector('.sheet'),260,320,false);
+})();
+</script>
