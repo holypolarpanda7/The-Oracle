@@ -157,6 +157,24 @@ _ALIASES = {"half elf": "half-elf", "halfelf": "half-elf",
             "half orc": "half-orc", "halforc": "half-orc",
             "variant human": "human", "custom lineage": "human"}
 
+# Owned-book species descriptors live in a LOCAL, gitignored override file so the
+# public repo carries only SRD-safe descriptors (same policy as owned_books/*.json).
+# Shape: {"<slug>": {"shared": "...", "male": "...", "female": "..."}}.
+_LOOK_OVERRIDE_FILE = (Path(__file__).resolve().parent.parent
+                       / "owned_books" / "species_looks.json")
+
+
+def _load_look_overrides() -> Dict[str, Dict[str, str]]:
+    try:
+        if _LOOK_OVERRIDE_FILE.is_file():
+            import json
+            with open(_LOOK_OVERRIDE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            return {_norm(k): v for k, v in data.items() if isinstance(v, dict)}
+    except Exception as e:
+        print(f"[species] look-override file error: {e}")
+    return {}
+
 
 def _norm(s: str) -> str:
     return (s or "").strip().lower()
@@ -180,6 +198,7 @@ def species_from_db() -> List[Tuple[str, Dict[str, str]]]:
 
     Curated look when we have one, else a name-based fallback so owned-book
     species are covered too. Returns the curated set if the DB isn't reachable."""
+    overrides = _load_look_overrides()
     try:
         from sqlmodel import Session, select
         from rules.query import RulesLibrary
@@ -190,15 +209,18 @@ def species_from_db() -> List[Tuple[str, Dict[str, str]]]:
             races = s.exec(select(Race)).all()
         for r in races:
             slug = _ALIASES.get(_norm(r.name), r.index_slug)
-            look = SPECIES_LOOKS.get(slug) or SPECIES_LOOKS.get(_norm(r.name)) \
-                or _fallback_look(r.name, r.size, getattr(r, "creature_type", "Humanoid"),
-                                  getattr(r, "traits", None))
+            look = (overrides.get(_norm(r.index_slug)) or overrides.get(_norm(r.name))
+                    or SPECIES_LOOKS.get(slug) or SPECIES_LOOKS.get(_norm(r.name))
+                    or _fallback_look(r.name, r.size,
+                                      getattr(r, "creature_type", "Humanoid"),
+                                      getattr(r, "traits", None)))
             rows.append((r.index_slug, look))
         if rows:
             return rows
     except Exception as e:
         print(f"[species] DB unavailable ({e}); using the built-in curated set.")
-    return [(slug, look) for slug, look in SPECIES_LOOKS.items()]
+    merged = {**SPECIES_LOOKS, **overrides}
+    return [(slug, look) for slug, look in merged.items()]
 
 
 def build_positive(look: Dict[str, str], sex: str, style_prompt: str) -> str:
@@ -301,9 +323,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     a = ap.parse_args(argv)
 
     if a.list:
+        overrides = _load_look_overrides()
         for slug, look in species_from_db():
-            curated = "curated" if slug in SPECIES_LOOKS else "fallback"
-            print(f"{slug:16s} [{curated}] {look.get('shared', '')[:60]}…")
+            src = ("curated" if _norm(slug) in {_norm(k) for k in SPECIES_LOOKS}
+                   else "override" if _norm(slug) in overrides else "fallback")
+            print(f"{slug:18s} [{src}] {look.get('shared', '')[:58]}…")
         return 0
 
     slugs = [s.strip() for s in a.species.split(",")] if a.species else None
