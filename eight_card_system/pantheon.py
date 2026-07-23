@@ -265,6 +265,38 @@ _ROSTER: dict[str, list[dict]] = {
 }
 
 
+def iter_powers():
+    """Yield (family_key, member_dict) for every power in the closed pantheon."""
+    for fam, members in _ROSTER.items():
+        for m in members:
+            yield fam, m
+
+
+def power_by_name(name: str) -> Optional[dict]:
+    """Look a power up by name or 'Name the Title' (case-insensitive).
+
+    Returns a copy of the roster member with its ``family`` key added, or None.
+    """
+    q = (name or "").strip().lower()
+    if not q:
+        return None
+    for fam, m in iter_powers():
+        full = f"{m['name']} {m.get('title', '')}".strip().lower()
+        if q == m["name"].lower() or q == full or (q in full and len(q) > 3):
+            return {**m, "family": fam}
+    return None
+
+
+def worshipable_powers() -> list[dict]:
+    """Powers mortals actually pray to (temple/cult families) — each with ``family``.
+    Used to pick an avenging god for a slain worshipper who named no patron."""
+    out = []
+    for fam, m in iter_powers():
+        if POWER_FAMILIES[fam].get("worship") in ("temples", "cults"):
+            out.append({**m, "family": fam})
+    return out
+
+
 def _power_attrs(fam: str, m: dict) -> dict:
     meta = POWER_FAMILIES[fam]
     attrs = {
