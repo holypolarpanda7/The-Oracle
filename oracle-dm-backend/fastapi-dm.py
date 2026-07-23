@@ -1172,6 +1172,110 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict],
     return payloads
 
 
+# Player-driven PORTRAIT updates (explicit request only). The DM re-renders the
+# player's portrait to reflect newly EQUIPPED gear, keeping the base untouched:
+#   [[PORTRAIT-REGEAR]]                       (just the current equipped loadout)
+#   [[PORTRAIT-REGEAR: soot-streaked, cracked pauldron]]   (+ extra look details)
+# ...or switches which saved look is shown, with no re-render:
+#   [[PORTRAIT-LOOK: base]]     [[PORTRAIT-LOOK: stealth leathers]]
+PORTRAIT_REGEAR_PATTERN = re.compile(r"\[\[PORTRAIT-REGEAR:?(.*?)\]\]", re.IGNORECASE)
+PORTRAIT_LOOK_PATTERN = re.compile(r"\[\[PORTRAIT-LOOK:(.+?)\]\]", re.IGNORECASE)
+
+
+def extract_portrait_hooks(text: str) -> tuple[str, list[str], list[str]]:
+    """Pull portrait regear/switch hooks out of the narration.
+
+    Returns ``(clean_text, regear_extras, look_selections)``. ``regear_extras``
+    holds the optional extra-detail string for each regear request; the hooks
+    are stripped from what the player sees.
+    """
+    regears = [m.group(1).strip() for m in PORTRAIT_REGEAR_PATTERN.finditer(text)]
+    switches = [m.group(1).strip() for m in PORTRAIT_LOOK_PATTERN.finditer(text)]
+    clean = PORTRAIT_LOOK_PATTERN.sub("", PORTRAIT_REGEAR_PATTERN.sub("", text))
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, regears, switches
+
+
+def _match_look_context(char: "Character", sel: str) -> Optional[str]:
+    """Resolve a free-text look selection to a stored context key (or None).
+
+    Accepts ``base``/``default``, an exact context key, an exact/partial label
+    (the equipped-gear description the look was saved under).
+    """
+    s = (sel or "").strip().lower()
+    if s in ("base", "default", "", image_store.BASE_CONTEXT):
+        return image_store.BASE_CONTEXT
+    looks = image_store.portrait_looks(char.name)
+    slug = image_store.look_context(sel)
+    for l in looks:
+        if l["context"].lower() == s or l["context"] == slug \
+                or (l["label"] or "").lower() == s:
+            return l["context"]
+    for l in looks:  # last resort: partial label match
+        if s and s in (l["label"] or "").lower():
+            return l["context"]
+    return None
+
+
+def process_portrait_hooks(session_id: str, user_id: Optional[str],
+                           regears: list[str], switches: list[str],
+                           ) -> tuple[list[dict], list[str]]:
+    """Apply portrait switch/regear hooks for the acting player's character.
+
+    Returns ``(image_payloads, player_notes)``. Switches (no re-render) run
+    first, then at most one regear. Regear renders a new equipped-gear look and
+    makes it active; at the look cap it does NOT auto-delete — it surfaces the
+    saved looks so the player chooses one to replace or switches instead.
+    """
+    if not (regears or switches):
+        return [], []
+    if not get_config().imagery.enabled:
+        return [], []
+    payloads: list[dict] = []
+    notes: list[str] = []
+    # Target the acting player's seated character (meta), falling back to a bind
+    # by user id — the same resolution the condition/trust hooks use.
+    meta = _load_session_state(session_id).get("meta", {}) or {}
+    cid = (_acting_member(meta, user_id) or {}).get("character_id")
+    if not cid and user_id:
+        cid = _resolve_session_character(session_id, user_id)
+    with Session(engine) as session:
+        char = session.get(Character, cid) if cid else None
+        if char is None:
+            return [], []
+        for sel in switches:
+            ctx = _match_look_context(char, sel)
+            if ctx is None:
+                notes.append(f"_(No saved portrait look matches “{sel}”.)_")
+                continue
+            char.active_portrait = None if ctx == image_store.BASE_CONTEXT else ctx
+            session.add(char)
+            session.commit()
+            res = _resolve_active_portrait(char)
+            if res is not None:
+                payloads.append(res.payload())
+            notes.append("_(Portrait set to your base look.)_"
+                         if ctx == image_store.BASE_CONTEXT
+                         else "_(Portrait switched.)_")
+        if regears:
+            _unload_local_llm()
+            _mark_diffusion_dirty()
+            result = _do_regear(session, char, extra_desc=regears[0])
+            status = result.get("status")
+            if status == "ok":
+                payloads.append(result["image"])
+                notes.append("_(Your portrait now reflects your equipped gear — "
+                             "saved as a look you can switch back from.)_")
+            elif status == "choose_deletion":
+                saved = ", ".join(l["label"] for l in result["looks"])
+                notes.append(
+                    f"_(You already have {MAX_PORTRAIT_LOOKS} saved gear looks "
+                    f"({saved}). Tell me which one to replace, or switch to one.)_")
+            elif status == "offline":
+                notes.append("_(The portrait artist is unavailable right now.)_")
+    return payloads, notes
+
+
 # The DM applies or clears a lasting condition on the PLAYER outside the combat
 # tracker (so it persists between encounters):
 #   [[CONDITION: add | poisoned | giant spider venom | until long rest]]
@@ -5726,6 +5830,12 @@ def generate_dm_reply(
             "  emit [[IMAGE-RESET: kind | subject | reason]] so outdated pictures are cleared.\n"
             f"- At most {_img_cfg.max_images_per_reply} image hook(s) per reply. Put each on its own line;\n"
             "  hooks are removed from what the player sees.\n"
+            "- PORTRAIT (only when a PLAYER explicitly asks to update how their character LOOKS with\n"
+            "  their gear): emit [[PORTRAIT-REGEAR]] to re-render their portrait from their equipped\n"
+            "  items — add extra detail after a colon, e.g. [[PORTRAIT-REGEAR: cloak still singed]].\n"
+            "  The base portrait is always kept; they can save up to 3 gear looks and switch between\n"
+            "  them with [[PORTRAIT-LOOK: base]] or [[PORTRAIT-LOOK: <look name>]] (e.g. after they\n"
+            "  take the armor off). Never regear on your own initiative — only on an explicit request.\n"
         )
         # Mature-marker guidance ONLY for tables that have opted into mature
         # content — tables without the opt-in never learn the marker, and even
@@ -7043,6 +7153,21 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     except Exception as e:
         print(f"[imagery] hook processing failed: {e}")
         image_payloads = []
+
+    # Player-driven portrait: re-render to reflect equipped gear, or switch
+    # between saved looks (base + gear variants) with no re-render. Explicit
+    # player request only — the DM emits the hook when the player asks.
+    dm_text, regear_reqs, look_switches = extract_portrait_hooks(dm_text)
+    if regear_reqs or look_switches:
+        try:
+            p_payloads, p_notes = process_portrait_hooks(
+                req.session_id, req.user_id, regear_reqs, look_switches)
+            if p_payloads:
+                image_payloads.extend(p_payloads)
+            if p_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(p_notes)
+        except Exception as e:
+            print(f"[portrait] hook processing failed: {e}")
 
     # Persist any lasting conditions the DM applied/cleared on the PC so they
     # carry into the next encounter.
