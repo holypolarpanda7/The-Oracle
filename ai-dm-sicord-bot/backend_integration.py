@@ -58,20 +58,27 @@ async def register_character_backend(payload: Dict, register_url: str) -> Dict:
             return {"ok": False, "error": str(e)}
 
 
-async def call_backend(message_text: str, session_id: str, user_id: str, username: str, backend_url: str) -> Dict:
+async def call_backend(message_text: str, session_id: str, user_id: str, username: str,
+                       backend_url: str, *, private: bool = False) -> Dict:
     """Call the DM backend for a conversational reply.
 
-    Returns a dict: {"reply": str, "music": Optional[str], "images": Optional[list]}
-    where "music" is the AI-recommended ambient-music search query for the current
-    scene (or None) and "images" is a list of scene-picture payloads (base64 WebP
-    + metadata) for the bot to attach (or None).
+    Returns a dict: {"reply", "music", "images", "memorial", "whisper", "public"}.
+    "music" is the AI-recommended ambient-music query (or None); "images" is a list
+    of scene-picture payloads; "whisper" is a list of {"user_id","text"} private
+    notes to DM to specific players; "public" is the sanitized table-visible line on
+    a secret turn. ``private=True`` marks a covert action (DM-the-bot secret input):
+    the reply comes back private to the sender and only "public" is safe to post.
     """
     payload = {
         "session_id": session_id,
         "user_id": user_id,
         "username": username,
         "message": message_text,
+        "private": private,
     }
+
+    _err = lambda reply: {"reply": reply, "music": None, "images": None,
+                          "memorial": None, "whisper": None, "public": None}
 
     # Generous timeout: the backend may synchronously render a scene image on the
     # local diffusion box, which can take longer than a plain text reply.
@@ -85,18 +92,30 @@ async def call_backend(message_text: str, session_id: str, user_id: str, usernam
                         "music": data.get("music"),
                         "images": data.get("images"),
                         "memorial": data.get("memorial"),
+                        "whisper": data.get("whisper"),
+                        "public": data.get("public"),
                     }
-                else:
-                    return {"reply": f"The Oracle is troubled (HTTP {resp.status})...",
-                            "music": None, "images": None, "memorial": None}
+                return _err(f"The Oracle is troubled (HTTP {resp.status})...")
         except aiohttp.ClientError as e:
             print(f"[call_backend error] {e}")
-            return {"reply": "The Oracle's connection falters...",
-                    "music": None, "images": None, "memorial": None}
+            return _err("The Oracle's connection falters...")
         except Exception as e:
             print(f"[call_backend error] {e}")
-            return {"reply": "The Oracle is silent...",
-                    "music": None, "images": None, "memorial": None}
+            return _err("The Oracle is silent...")
+
+
+async def active_session_for_user(user_id: str, backend_url: str) -> Optional[str]:
+    """Resolve the user's current live table session id (for the DM-the-bot secret
+    path), or None if they aren't seated at a table right now."""
+    url = f"{_api_base(backend_url)}/session/active/{user_id}"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    return (await resp.json()).get("session_id")
+        except Exception as e:
+            print(f"[active_session_for_user error] {e}")
+    return None
 
 
 async def reset_backend_session(session_id: str, reset_url: str) -> str:

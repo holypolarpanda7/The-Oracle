@@ -279,6 +279,56 @@ async def post_memorial(bot, memorial) -> None:
         print(f"[memorial] failed to post: {e}")
 
 
+async def deliver_whispers(bot, whispers) -> None:
+    """DM each private note to its recipient only — the Discord side of the
+    whisper channel (secret cheat results, your own dice/hand)."""
+    for note in (whispers or []):
+        uid, txt = note.get("user_id"), note.get("text")
+        if not uid or not txt:
+            continue
+        try:
+            user = bot.get_user(int(uid)) or await bot.fetch_user(int(uid))
+            if user:
+                await user.send(txt)
+        except Exception as e:
+            print(f"[whisper] deliver to {uid} failed: {e}")
+
+
+async def handle_secret_dm(message: discord.Message, bot) -> None:
+    """A direct message to the bot is a SECRET action, routed to the player's
+    active table so they can cheat or lie without tablemates seeing it.
+
+    The private narration comes back to the DM (here); any [[PUBLIC]] line the DM
+    added is posted to the table channel; whispers go to their recipients."""
+    user_id = str(message.author.id)
+    text = message.content.strip()
+    if not text:
+        return
+    session_id = await backend_integration.active_session_for_user(user_id, bot.backend_url)
+    if not session_id:
+        await message.channel.send(
+            "🔒 You're not seated at a table right now. Start play in your table "
+            "channel, then DM me here to act in secret.")
+        return
+    async with message.channel.typing():
+        result = await backend_integration.call_backend(
+            text, session_id, user_id, message.author.display_name,
+            bot.backend_url, private=True)
+    # The secret narration returns to the actor alone (this DM channel).
+    await send_paced(message.channel, result.get("reply") or "…")
+    await deliver_whispers(bot, result.get("whisper"))
+    # The sanitized, table-visible line (if any) goes to the table channel.
+    public = result.get("public")
+    if public and str(session_id).startswith("dm:"):
+        try:
+            ch_id = int(str(session_id).split(":", 1)[1])
+            channel = bot.get_channel(ch_id) or await bot.fetch_channel(ch_id)
+            if channel:
+                await send_paced(channel, public)
+        except Exception as e:
+            print(f"[secret dm] table post failed: {e}")
+
+
 async def send_paced(channel, text: str, files=None) -> None:
     """Deliver a long narration paragraph-by-paragraph with the typing
     indicator between beats — the Discord approximation of streaming text.
@@ -420,9 +470,14 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
     # Process commands first
     await bot.process_commands(message)
 
-    # The remaining routing is guild-specific. DMs can still invoke commands,
-    # but should not be treated as entry/session/world messages.
+    # The remaining routing is guild-specific. A direct message that isn't a
+    # command is a SECRET action — routed privately to the player's active table.
     if message.guild is None:
+        if not message.content.strip().startswith(bot.command_prefix):
+            try:
+                await handle_secret_dm(message, bot)
+            except Exception as e:
+                print(f"[secret dm] {e}")
         return
 
     # Check if message is in the entry channel
@@ -554,6 +609,10 @@ async def on_message_handler(message: discord.Message, bot, active_dm_channels: 
     # Decode any scene pictures the backend produced into Discord attachments.
     files = _build_scene_files(result.get("images"))
     await send_paced(message.channel, dm_reply, files=files)
+
+    # Any private notes (a secret cheat result, your own hand) are DM'd to their
+    # recipients — never posted in the shared channel.
+    await deliver_whispers(bot, result.get("whisper"))
 
     # A fallen character's life record goes to the memorial channel.
     if result.get("memorial"):

@@ -7894,6 +7894,15 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                         whisper=whisper_notes or None,
                         public=public_out)
 
+
+@app.get("/session/active/{user_id}")
+def active_session_for_user(user_id: str):
+    """The user's current live table session — used by the DM-the-bot secret path
+    so a private DM can be routed to the table the player is seated at."""
+    sid = _find_active_session_for_user(user_id)
+    return {"session_id": sid}
+
+
 @app.post("/reset")
 async def reset_endpoint(req: ResetRequest):
     """
