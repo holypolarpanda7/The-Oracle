@@ -13300,21 +13300,28 @@ def _activity_characters(user_id: str, channel: str) -> list[dict]:
         out = []
         for c in chars:
             alive = True
+            ent = None
+            reclaim = False
             try:
                 ent = world.find_pc(user_id, c.name)
                 alive = ent is None or ent.status != "dead"
+                # Revived while its owner was away → DM-controlled, awaiting reclaim.
+                attrs = (ent.attributes or {}) if ent is not None else {}
+                reclaim = bool(attrs.get("dm_controlled")
+                               and str(attrs.get("revived_await_owner")) == str(user_id))
             except Exception:
                 pass
             out.append({
                 "id": c.id, "name": c.name, "race": c.race,
                 "char_class": c.char_class, "subclass": c.subclass,
                 "level": c.level, "alive": alive,
+                # Revived-while-away: resuming this PC hands control back to the player.
+                "reclaim": reclaim,
                 "resume_session": _activity_find_session(
                     session, user_id, channel, c.name),
                 # Downtime commitment: days until this PC is playable again.
                 "returns_in": _pc_busy_until(
-                    getattr(world.find_pc(user_id, c.name), "slug", None))
-                    if alive else None,
+                    getattr(ent, "slug", None)) if alive else None,
             })
     return out
 

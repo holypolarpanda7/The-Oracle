@@ -172,6 +172,8 @@ export interface CharacterSummary {
   resume_session?: string | null;
   /** Days of downtime commitment left before this PC is playable again. */
   returns_in?: number | null;
+  /** Revived while its owner was away → DM-controlled; entering reclaims it. */
+  reclaim?: boolean;
 }
 
 export type ServerEvent =

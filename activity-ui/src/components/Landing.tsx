@@ -25,10 +25,11 @@ export function Landing({ characters, onEnter, onCreate }: {
           {living.map((c) => (
             <button
               key={c.id}
-              className="char-card"
+              className={`char-card${c.reclaim ? " revived" : ""}`}
               disabled={!!c.returns_in}
               onClick={() => { uiTick(); onEnter(c.name); }}
             >
+              {c.reclaim && <div className="cc-badge">🕯️ revived</div>}
               <div className="cc-name">{c.name}</div>
               <div className="cc-sub">
                 Level {c.level} {c.char_class}
@@ -38,6 +39,7 @@ export function Landing({ characters, onEnter, onCreate }: {
               <div className="cc-go">
                 {c.returns_in
                   ? `returns in ${c.returns_in} day${c.returns_in > 1 ? "s" : ""}…`
+                  : c.reclaim ? "Revived while away — reclaim ➤"
                   : c.resume_session ? "Resume the tale ➤" : "Begin the tale ➤"}
               </div>
             </button>

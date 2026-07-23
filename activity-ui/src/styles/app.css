@@ -106,6 +106,14 @@ body {
   cursor: pointer;
 }
 .char-card:hover { border-color: var(--brass); }
+.char-card.revived { position: relative; border-color: #8a63c4; box-shadow: 0 0 14px rgba(138, 99, 196, 0.28); }
+.char-card.revived .cc-go { color: #c8a8ff; }
+.cc-badge {
+  position: absolute; top: 8px; right: 10px;
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: #d9c4ff; background: rgba(120, 84, 176, 0.28);
+  border: 1px solid #8a63c4; border-radius: 999px; padding: 2px 7px;
+}
 .cc-name { font-size: 18px; color: var(--parchment); }
 .cc-sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
 .cc-go { font-size: 12px; color: var(--brass); margin-top: 10px; letter-spacing: 0.06em; }
