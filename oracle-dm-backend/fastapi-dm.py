@@ -81,6 +81,12 @@ from economy import (
     advance_crafting,
 )
 from economy.models import DowntimeLog, CraftingProject
+import games as ig
+from games import (
+    GAME_GUIDE, GAME_KEYWORDS, CheatAttempt, CheatOutcome, Detectability,
+    SpellComponents, adjudicate as adjudicate_cheat, get_engine as get_game_engine,
+    get_spec as get_game_spec,
+)
 from bastion import (
     can_own_bastion,
     facilities_for_level,
@@ -484,6 +490,10 @@ class ChatRequest(BaseModel):
     # doesn't use them, so keep them optional to avoid 422 rejections.
     channel_id: Optional[str] = None
     guild_id: Optional[str] = None
+    # A private turn: the player acted secretly (they DM'd the bot / used the
+    # Activity's secret input). The public reply is suppressed to the table and
+    # returned only to this user; only an explicit [[PUBLIC: ...]] line is shared.
+    private: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -495,6 +505,13 @@ class ChatResponse(BaseModel):
     # Set once, on the turn a PC's death is confirmed: a one-page life record
     # the bot posts to the memorial channel. {"title": str, "text": str}
     memorial: Optional[Dict[str, Any]] = None
+    # Private notes routed to specific players only (secret cheat results, your
+    # own dice/hand). Each: {"user_id": str, "text": str}. The bot DMs each
+    # recipient; the Activity pushes to that user's socket. Never hits the table.
+    whisper: Optional[List[Dict[str, Any]]] = None
+    # On a PRIVATE turn, the sanitized line tablemates are allowed to see (e.g.
+    # "Kael studies the dice, then makes his bet"). None = nothing shown publicly.
+    public: Optional[str] = None
 
 
 class ResetRequest(BaseModel):
@@ -2726,6 +2743,425 @@ def process_deck_hooks(session_id: str, ops: list[dict]) -> list[str]:
         meta["decks"] = decks
         _set_session_meta(session_id, meta)
     return notes
+
+
+# =====================  WHISPERS (private player↔DM channel)  =============
+# The primitive that lets a player act in SECRET — a lie, a cheat, a hidden roll —
+# without their tablemates (same Discord channel) seeing the action or its result.
+# Two directions, two hooks:
+#   [[WHISPER: text]]            → private note to the acting player only
+#   [[WHISPER: @Name | text]]    → private note to a specific seated player
+#   [[PUBLIC: text]]             → on a PRIVATE turn, the sanitized line the table
+#                                  IS allowed to see (public reply is otherwise
+#                                  suppressed to the sender only).
+# Delivery has two transports (bot DM for Discord chat; a targeted socket push for
+# the Activity), both driven by the same ChatResponse.whisper / .public fields.
+WHISPER_HOOK_PATTERN = re.compile(r"\[\[WHISPER:(.+?)\]\]", re.IGNORECASE)
+PUBLIC_HOOK_PATTERN = re.compile(r"\[\[PUBLIC:(.+?)\]\]", re.IGNORECASE)
+
+_WHISPER_GUIDE = (
+    "SECRET ACTIONS. A player may act in secret — a lie, a cheat, a hidden check — "
+    "and the others at the table must NOT see it. Put the secret truth in "
+    "[[WHISPER: ...]] (goes only to the acting player) or [[WHISPER: @Name | ...]] "
+    "(to one named player). On a SECRET turn (the player acted privately), your "
+    "normal narration is shown to that player ALONE; add [[PUBLIC: ...]] with a "
+    "sanitized, innocent line for what the rest of the table perceives (e.g. 'Kael "
+    "studies the dice, then places his bet') — never reveal the secret in the public line."
+)
+_WHISPER_KEYWORDS = (
+    "secret", "secretly", "quietly", "whisper", "psst", "without", "nobody",
+    "no one notices", "hidden", "sleight", "palm", "under the table", "cheat",
+    "lie", "bluff", "pickpocket", "pocket", "conceal", "slip",
+)
+
+
+def _resolve_whisper_user(meta: Dict[str, Any], acting_user_id: Optional[str],
+                          recipient_ref: Optional[str]) -> Optional[str]:
+    """Resolve a whisper recipient to a user_id: the acting player by default,
+    or a seated player matched by (character) name for [[WHISPER: @Name | ...]]."""
+    ref = (recipient_ref or "").strip().lstrip("@").lower()
+    if ref in ("", "me", "self", "player", "acting"):
+        return acting_user_id
+    members = _session_members(meta or {})
+    for uid, m in members.items():
+        if ref == (m.get("character_name") or "").lower():
+            return uid
+    for uid, m in members.items():
+        if ref and ref in (m.get("character_name") or "").lower():
+            return uid
+    return acting_user_id  # unknown name → keep it private to the sender, not public
+
+
+def extract_whisper_hooks(text: str, meta: Dict[str, Any],
+                          acting_user_id: Optional[str]) -> tuple[str, list[dict]]:
+    """Pull [[WHISPER: ...]] hooks. Returns (clean, [{user_id, text}, ...])."""
+    notes: list[dict] = []
+    for m in WHISPER_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        if len(parts) >= 2 and parts[0].strip().startswith("@"):
+            recipient, body = parts[0], " | ".join(parts[1:])
+        else:
+            recipient, body = None, " | ".join(parts)
+        body = (body or "").strip()
+        if not body:
+            continue
+        uid = _resolve_whisper_user(meta, acting_user_id, recipient)
+        if uid:
+            notes.append({"user_id": str(uid), "text": body})
+    clean = WHISPER_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, notes
+
+
+def extract_public_hooks(text: str) -> tuple[str, Optional[str]]:
+    """Pull [[PUBLIC: ...]] lines out; returns (clean, joined_public_or_None)."""
+    lines: list[str] = []
+    for m in PUBLIC_HOOK_PATTERN.finditer(text):
+        body = m.group(1).strip()
+        if body:
+            lines.append(body)
+    clean = PUBLIC_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ("\n".join(lines) if lines else None)
+
+
+def _merge_whispers(target: list[dict], new: list[dict]) -> None:
+    """Accumulate whisper notes, coalescing multiple lines to the same user_id."""
+    by_user: Dict[str, dict] = {n["user_id"]: n for n in target}
+    for n in new:
+        uid = n["user_id"]
+        if uid in by_user:
+            by_user[uid]["text"] = by_user[uid]["text"].rstrip() + "\n" + n["text"]
+        else:
+            by_user[uid] = {"user_id": uid, "text": n["text"]}
+            target.append(by_user[uid])
+
+
+# =====================  TAVERN GAMES  =====================================
+# In-world games (dice, cards) the players play for fun or coin. The RULES and all
+# randomness run SERVER-SIDE in the games/ engines (seeded RNG), so the model can't
+# fudge a roll or a deal, and each player's hidden hand is WHISPERED only to them.
+# A hidden 'table heat' rises with winning streaks and sloppy cheats and stiffens
+# the DC to cheat unseen. Cheating with a perceptible spell (V/S/M) is auto-caught.
+#   [[GAME: start | liars_dice|grid_dice|card_bet | opp1, opp2 | wager: 10 | friendly]]
+#   [[GAME: move | who | the move]]
+#   [[GAME: cheat | method | Sleight of Hand 18 OR spell:Detect Thoughts | subtle|risky|brazen]]
+#   [[GAME: end]]        (friendly, no payout)   [[GAME: settle]] (pay out the pot)
+GAME_HOOK_PATTERN = re.compile(r"\[\[GAME:(.+?)\]\]", re.IGNORECASE)
+_GAME_ACTIONS = {"start", "move", "cheat", "end", "settle"}
+
+
+def _game_rng(session_id: str, gsess: dict) -> random.Random:
+    """A fresh seeded RNG per use, so draws/rolls are fair and reproducible."""
+    step = int(gsess.get("rng_step", 0) or 0)
+    gsess["rng_step"] = step + 1
+    return random.Random(f"{session_id}:game:{gsess.get('seed','')}:{step}")
+
+
+def _spell_components_for(name: str) -> SpellComponents:
+    """Read a spell's perceptible components from the rules DB (V/S/M).
+
+    A spell NOT found in the library defaults to perceptible (verbal + somatic) —
+    the overwhelming majority of spells are, so 'cheat with a spell' is assumed to
+    be seen at the table unless the DM marks the casting subtle. Erring this way
+    keeps players from sneaking an unknown spell past everyone for free."""
+    try:
+        sp = rules_lib.get_spell(name)
+    except Exception:
+        sp = None
+    if not sp:
+        return SpellComponents(verbal=True, somatic=True)
+    comps = sp.components or []
+    if isinstance(comps, str):
+        comps = [c.strip() for c in re.split(r"[,\s]+", comps) if c.strip()]
+    codes = {str(c).upper()[:1] for c in comps}
+    return SpellComponents(
+        verbal="V" in codes,
+        somatic="S" in codes,
+        material=("M" in codes) or bool(getattr(sp, "material", None)))
+
+
+def _parse_detectability(raw: str) -> Detectability:
+    r = (raw or "").strip().lower()
+    for d in Detectability:
+        if d.value in r:
+            return d
+    if "brazen" in r or "obvious" in r or "bold" in r:
+        return Detectability.BRAZEN
+    if "subtle" in r or "quiet" in r or "sleight" in r:
+        return Detectability.SUBTLE
+    return Detectability.RISKY
+
+
+def _format_active_game_block(gsess: dict) -> str:
+    """DM-eyes-only view of the live game: board, whose turn, legal moves, heat."""
+    engine = get_game_engine(gsess.get("game", ""))
+    if engine is None:
+        return ""
+    state = gsess.get("state") or {}
+    actor = engine.current_actor(state)
+    heat = int((gsess.get("suspicion") or {}).get("heat", 0))
+    lines = [
+        f"# Active game — {gsess.get('name', engine.name)} (DM eyes only)",
+        engine.public_view(state),
+        f"Stakes: {'friendly (no coin)' if gsess.get('friendly') else str(gsess.get('wager', 0)) + ' gp each'}.",
+        f"Table temperature (hidden — narrate the feel, never the number): "
+        f"{ig.suspicion.describe(heat)}",
+    ]
+    if not engine.is_over(state) and actor:
+        moves = engine.legal_moves(state, actor)
+        lines.append(f"It is **{actor}**'s turn. Legal moves: "
+                     + ("; ".join(moves) if moves else "—"))
+        lines.append("Emit the chosen play as [[GAME: move | " + actor + " | <move>]]; "
+                     "the game resolves it. Each player privately knows their own hand.")
+    elif engine.is_over(state):
+        lines.append("The game is OVER — settle with [[GAME: settle]] (or [[GAME: end]] "
+                     "for friendly play).")
+    return "\n".join(lines)
+
+
+def extract_game_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull [[GAME: ...]] hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in GAME_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").strip().lower()
+        if action not in _GAME_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = GAME_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def _game_private_whispers(engine, gsess: dict) -> list[dict]:
+    """Whisper each HUMAN player their private view, but only when it changed
+    (dice re-rolled, hand dealt) — so we don't spam identical hands each turn."""
+    state = gsess.get("state") or {}
+    users = gsess.get("player_users") or {}
+    last = gsess.setdefault("last_private", {})
+    out: list[dict] = []
+    for name, uid in users.items():
+        if not uid:
+            continue  # NPC — no one to whisper to
+        pv = engine.private_view(state, name)
+        if pv and pv != last.get(name):
+            last[name] = pv
+            out.append({"user_id": str(uid), "text": f"🎲 (secret) {pv}"})
+    return out
+
+
+def _settle_game(gsess: dict) -> str:
+    """Pay out the pot to the winner across human PCs' purses (best-effort)."""
+    g_engine = get_game_engine(gsess.get("game", ""))
+    if g_engine is None:
+        return ""
+    state = gsess.get("state") or {}
+    winner = g_engine.result(state).get("winner")
+    wager = int(gsess.get("wager", 0) or 0)
+    players = gsess.get("players") or []
+    pot = int(state.get("pot", wager * len(players)) or 0)
+    if gsess.get("friendly") or wager <= 0:
+        return (f"🎲 Friendly game over — **{winner}** wins (no coin changes hands)."
+                if winner else "🎲 Friendly game over — a draw.")
+    # Net gp per player: the winner scoops the pot (minus their own stake); each
+    # other player is out their wager. Only HUMAN PCs' purses actually move.
+    net = {p: (pot - wager if p == winner else -wager) for p in players}
+    _apply_game_payout(gsess.get("player_users") or {}, net)
+    if winner:
+        return f"🎲 **{winner}** takes the pot of {pot} gp."
+    return "🎲 The game ends in a draw; wagers are returned."
+
+
+def _apply_game_payout(users: dict, net: dict) -> None:
+    """Best-effort purse adjustment for human players (guarded — never breaks play)."""
+    with Session(engine) as session:
+        for name, delta in net.items():
+            uid = users.get(name)
+            if not uid or not delta:
+                continue
+            try:
+                char = session.exec(select(Character).where(
+                    func.lower(Character.name) == name.lower())).first()
+                if not char:
+                    continue
+                purse = _purse_of(char)
+                if delta >= 0:
+                    _write_purse(char, add_coins(purse, {"gp": int(delta)}))
+                else:
+                    cost = gp_to_cp(min(gp_value(purse), abs(delta)))
+                    _write_purse(char, subtract_cost(purse, cost))
+                session.add(char)
+            except Exception as e:
+                print(f"[game] payout for {name} failed: {e}")
+        session.commit()
+
+
+def process_game_hooks(session_id: str, ops: list[dict], meta: Dict[str, Any],
+                       acting_user_id: Optional[str],
+                       ) -> tuple[list[str], list[dict]]:
+    """Apply GAME ops. Returns (public_notes, whisper_notes[{user_id,text}])."""
+    if not ops:
+        return [], []
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    gsess = dict(meta.get("game_session") or {})
+    public: list[str] = []
+    whispers: list[dict] = []
+    changed = False
+    cfg = get_config()
+    gcfg = getattr(cfg, "games", None)
+
+    for op in ops:
+        action = op["action"]
+        args = op.get("args", [])
+        if action == "start":
+            spec = get_game_spec(args[0] if args else "")
+            if not spec:
+                public.append("🎲 (Unknown game — pick liars_dice, grid_dice, or card_bet.)")
+                continue
+            opponents = [p.strip() for p in re.split(r"[,;]", args[1] if len(args) > 1 else "")
+                         if p.strip()]
+            wager, friendly = _parse_wager(args[2:] if len(args) > 2 else [], gcfg)
+            me = _acting_member(meta, acting_user_id) or {}
+            my_name = me.get("character_name") or "You"
+            players = [my_name] + [o for o in opponents if o.lower() != my_name.lower()]
+            players = players[:spec.max_players]
+            if len(players) < spec.min_players:
+                public.append(f"🎲 ({spec.name} needs at least {spec.min_players} players.)")
+                continue
+            # Map player names to seated user_ids (NPCs map to None).
+            name_to_uid = {(m.get("character_name") or "").lower(): uid
+                           for uid, m in _session_members(meta).items()}
+            player_users = {p: name_to_uid.get(p.lower()) for p in players}
+            if acting_user_id and my_name in player_users:
+                player_users[my_name] = str(acting_user_id)
+            engine = spec.factory()
+            gsess = {
+                "game": spec.id, "name": spec.name, "players": players,
+                "player_users": player_users, "wager": wager, "friendly": friendly,
+                "suspicion": ig.suspicion.new_suspicion(), "seed": slugify(spec.id),
+                "rng_step": 0, "last_private": {},
+            }
+            gsess["state"] = engine.start(players, _game_rng(session_id, gsess),
+                                          wager=wager)
+            changed = True
+            stake = "for fun" if friendly else f"for {wager} gp each"
+            public.append(f"🎲 **{spec.name}** begins — {', '.join(players)} play {stake}.")
+            whispers.extend(_game_private_whispers(engine, gsess))
+            try:
+                world.add_event(f"A game of {spec.name} begins at the table.",
+                                session_id=session_id)
+            except Exception:
+                pass
+        elif action == "move":
+            engine = get_game_engine(gsess.get("game", "")) if gsess else None
+            if not engine or not gsess.get("state"):
+                public.append("🎲 (No game is in play — start one first.)")
+                continue
+            who = args[0] if args else ""
+            move = args[1] if len(args) > 1 else ""
+            who = _match_player(who, gsess.get("players") or [])
+            res = engine.apply_move(gsess["state"], who, move,
+                                    _game_rng(session_id, gsess))
+            if not res.ok:
+                public.append(f"🎲 (Illegal move for {who}: {res.error})")
+                continue
+            changed = True
+            public.extend(res.public)
+            # Engine-declared private lines (rare) + changed hands → whispers.
+            for pname, lines in (res.private or {}).items():
+                uid = (gsess.get("player_users") or {}).get(pname)
+                if uid and lines:
+                    whispers.append({"user_id": str(uid),
+                                     "text": "🎲 (secret) " + " ".join(lines)})
+            whispers.extend(_game_private_whispers(engine, gsess))
+            if engine.is_over(gsess["state"]):
+                # Log a win for the suspicion model (a run of wins heats the table).
+                win = engine.result(gsess["state"]).get("winner")
+                ig.suspicion.record_win(gsess["suspicion"], win or "")
+        elif action == "cheat":
+            engine = get_game_engine(gsess.get("game", "")) if gsess else None
+            if not engine or not gsess.get("state"):
+                public.append("🎲 (No game in play to cheat at.)")
+                continue
+            method = args[0] if args else "a ploy"
+            means = args[1] if len(args) > 1 else ""
+            detect = _parse_detectability(args[2] if len(args) > 2 else "")
+            spell = None
+            mspell = re.match(r"\s*spell\s*[:=]\s*(.+)", means, re.IGNORECASE)
+            if mspell:
+                # Strip any trailing '(subtle)'/'silent' marker from the spell name.
+                sname = re.sub(r"\b(subtle|silent|no components?)\b.*$", "",
+                               mspell.group(1), flags=re.IGNORECASE).strip(" ()")
+                spell = _spell_components_for(sname)
+                if re.search(r"subtle|silent|no components?|soundless",
+                             means + " " + method, re.IGNORECASE):
+                    spell.subtle = True  # cast with Subtle Spell → no V/S tell
+            num = re.search(r"(\d+)", means)
+            skill_total = int(num.group(1)) if num else 12
+            heat = int((gsess.get("suspicion") or {}).get("heat", 0))
+            ruling = adjudicate_cheat(
+                CheatAttempt(method=method, detectability=detect,
+                             skill_total=skill_total, spell=spell), heat)
+            ig.suspicion.rise(gsess["suspicion"], ruling.suspicion_delta)
+            changed = True
+            if ruling.public:
+                public.append(ruling.public)
+            # The truth is whispered to the acting player (never to the table).
+            if acting_user_id:
+                whispers.append({"user_id": str(acting_user_id),
+                                 "text": "🃏 (secret) " + ruling.private})
+        elif action == "settle":
+            if not gsess:
+                continue
+            public.append(_settle_game(gsess))
+            meta.pop("game_session", None)
+            changed = True
+            gsess = {}
+            continue
+        elif action == "end":
+            if gsess:
+                public.append("🎲 The game breaks up.")
+                meta.pop("game_session", None)
+                changed = True
+                gsess = {}
+                continue
+
+    if gsess:
+        meta["game_session"] = gsess
+    if changed:
+        _set_session_meta(session_id, meta)
+    return public, whispers
+
+
+def _parse_wager(tokens: list[str], gcfg) -> tuple[int, bool]:
+    """Parse the wager tail: 'wager: 10' / '10 gp' / 'friendly'. Returns (gp, friendly)."""
+    blob = " ".join(tokens).lower()
+    if "friendly" in blob or "for fun" in blob or "no stake" in blob:
+        return 0, True
+    m = re.search(r"(\d+)", blob)
+    wager = int(m.group(1)) if m else 0
+    if gcfg is not None:
+        if not getattr(gcfg, "gambling_enabled", True):
+            return 0, True
+        wager = min(wager, int(getattr(gcfg, "max_wager_gp", 1000)))
+    return wager, wager <= 0
+
+
+def _match_player(ref: str, players: list[str]) -> str:
+    r = (ref or "").strip().lower()
+    for p in players:
+        if p.lower() == r:
+            return p
+    for p in players:
+        if r and r in p.lower():
+            return p
+    return ref
 
 
 # =====================  CURSES  ===========================================
@@ -5164,6 +5600,28 @@ def _session_members(meta: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return members
 
 
+def _find_active_session_for_user(user_id: str) -> Optional[str]:
+    """The most recent live table session where ``user_id`` is seated.
+
+    Used for the DM-the-bot secret-action path: a player DMs the bot with no
+    session context, so we find the table they're at by scanning recent session
+    meta for one whose members (or legacy owner) include them. Newest wins."""
+    if not user_id:
+        return None
+    uid = str(user_id)
+    with Session(engine) as session:
+        rows = session.exec(select(SessionMemory).order_by(
+            SessionMemory.updated_at.desc()).limit(200)).all()
+    for r in rows:
+        try:
+            meta = json.loads(r.meta_json or "{}")
+        except Exception:
+            continue
+        if uid in _session_members(meta):
+            return r.session_id
+    return None
+
+
 def _acting_member(meta: Dict[str, Any], user_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Resolve the ACTING player's seat at the table (falls back to the
     session owner for legacy/solo sessions)."""
@@ -5941,9 +6399,13 @@ def _scene_text(message: str, ctx_obj) -> str:
     return " ".join(parts).lower()
 
 
-def assemble_context(session_id: str, message: str, user_id: Optional[str] = None):
+def assemble_context(session_id: str, message: str, user_id: Optional[str] = None,
+                     private: bool = False):
 
     """Build grounding context for a turn: the local world slice + referenced rules.
+
+    ``private`` marks a secret turn (the player acted covertly) so the whisper/
+    public guide is always injected.
 
     Returns ``(world_context_or_None, [text_blocks])``.
     """
@@ -6218,6 +6680,33 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
             texts.append(cblock)
     except Exception as e:
         print(f"[circle context error] {e}")
+
+    # Tavern games: if one is live, feed the DM the board + whose turn + legal
+    # moves + the (hidden) table temperature. The GUIDE is gated — a live game or
+    # scene keywords — so mundane turns carry none of it.
+    try:
+        gsess = (meta or {}).get("game_session")
+        if gsess or any(k in _scene_text(message, ctx_obj) for k in GAME_KEYWORDS):
+            texts.append(GAME_GUIDE)
+        gblock = _format_active_game_block(gsess) if gsess else ""
+        if gblock:
+            texts.append(gblock)
+    except Exception as e:
+        print(f"[game context error] {e}")
+
+    # Secret actions: on a private turn (or when the scene reads covert) tell the
+    # DM how to whisper the truth and show the table only a sanitized line.
+    try:
+        if private or any(k in _scene_text(message, ctx_obj) for k in _WHISPER_KEYWORDS):
+            texts.append(_WHISPER_GUIDE)
+        if private:
+            texts.append(
+                "# THIS IS A SECRET TURN. The player acted privately; the others at "
+                "the table cannot see it. Your narration goes to THIS player alone. "
+                "Reveal the true outcome here (and/or via [[WHISPER: ...]]); add a "
+                "[[PUBLIC: ...]] line with only the innocent, table-visible version.")
+    except Exception as e:
+        print(f"[whisper context error] {e}")
 
     return ctx_obj, texts
 
@@ -7082,7 +7571,8 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         _free_diffusion_vram()
         # Ground the turn in the local world slice, referenced rules, and — if a
         # fight is underway — the live initiative/HP board.
-        ctx_obj, ctx_texts = assemble_context(req.session_id, req.message, user_id=req.user_id)
+        ctx_obj, ctx_texts = assemble_context(req.session_id, req.message,
+                                              user_id=req.user_id, private=req.private)
         active_enc = combat.get_active(req.session_id)
         if active_enc:
             # Deterministic path: resolve the player's declared acts through
@@ -7339,7 +7829,42 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             print(f"[combat] hook processing failed: {e}")
 
-    # Store DM turn
+    # Tavern games: apply GAME hooks (start/move/cheat/settle/end). Public notes
+    # join the narration; secret notes (each player's hand, a cheat's true result)
+    # are collected as WHISPERS and never shown to the table.
+    whisper_notes: list[dict] = []
+    meta_now = _load_session_state(req.session_id).get("meta", {}) or {}
+    dm_text, game_ops = extract_game_hooks(dm_text)
+    if game_ops:
+        try:
+            g_public, g_whispers = process_game_hooks(
+                req.session_id, game_ops, meta_now, req.user_id)
+            if g_public:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(g_public)
+            _merge_whispers(whisper_notes, g_whispers)
+        except Exception as e:
+            print(f"[game] hook processing failed: {e}")
+
+    # Whispers: pull explicit [[WHISPER: ...]] notes to the private channel
+    # (default recipient = the acting player; [[WHISPER: @Name | ...]] targets one).
+    dm_text, w_notes = extract_whisper_hooks(dm_text, meta_now, req.user_id)
+    _merge_whispers(whisper_notes, w_notes)
+
+    # Public: on a secret turn, the sanitized line the table is allowed to see.
+    dm_text, public_line = extract_public_hooks(dm_text)
+
+    # Delivery rule. On a PRIVATE turn the narration is the sender's alone (the bot
+    # DMs it / the Activity pushes it to their socket only); the table sees just the
+    # [[PUBLIC: ...]] line. On a normal turn everything in the reply is public and
+    # any whispers ride the side-channel to their recipients.
+    if req.private:
+        public_out = public_line
+    else:
+        if public_line:
+            dm_text = (dm_text.rstrip() + "\n\n" + public_line).strip()
+        public_out = None
+
+    # Store DM turn (the DM's canonical turn — the private narration on secret turns)
     state = _append_turn(req.session_id, Turn(role="dm", user="Oracle DM", content=dm_text))
     if len(state.get("recent_turns", [])) > get_config().session_memory.compaction_threshold:
         _schedule_session_compaction(background_tasks, req.session_id)
@@ -7365,7 +7890,9 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
 
     return ChatResponse(reply=dm_text, music=music_query,
                         images=image_payloads or None,
-                        memorial=memorial_payload)
+                        memorial=memorial_payload,
+                        whisper=whisper_notes or None,
+                        public=public_out)
 
 @app.post("/reset")
 async def reset_endpoint(req: ResetRequest):

@@ -153,6 +153,18 @@ class ReputationConfig:
 
 
 @dataclass
+class GamesConfig:
+    """In-world tavern games (dice/cards) and gambling policy."""
+    # Master switch for real-coin gambling. When False, all games run 'friendly'
+    # (no gold moves) — players can still play, just never for stakes.
+    gambling_enabled: bool = True
+    # Hard cap on any single wager (gp), regardless of what the DM proposes.
+    max_wager_gp: int = 1000
+    # Table 'heat' bled off per turn while no cheating/streak stokes it.
+    suspicion_decay: int = 2
+
+
+@dataclass
 class DMGuideConfig:
     """AI Dungeon Master guidance + encounter/DC helper tuning."""
     enabled: bool = True
@@ -284,6 +296,7 @@ class GameConfig:
     survival: SurvivalConfig = field(default_factory=SurvivalConfig)
     hazard: HazardConfig = field(default_factory=HazardConfig)
     reputation: ReputationConfig = field(default_factory=ReputationConfig)
+    games: GamesConfig = field(default_factory=GamesConfig)
     dm_guide: DMGuideConfig = field(default_factory=DMGuideConfig)
     session_memory: SessionMemoryConfig = field(default_factory=SessionMemoryConfig)
     imagery: ImageryConfig = field(default_factory=ImageryConfig)
