@@ -285,6 +285,7 @@ async def lifespan(app: FastAPI):
                     ("approved", "INTEGER DEFAULT 0"),
                     ("home_region", "TEXT"),
                     ("background", "TEXT"),
+                    ("deity", "TEXT"),
                     ("notes", "TEXT"),
                     ("active_portrait", "TEXT"),
                     ("created_at", "DATETIME"),
@@ -548,6 +549,8 @@ class RegisterCharacterRequest(BaseModel):
     level: int = 1
     stats: Optional[Dict[str, int]] = None
     background: Optional[str] = None
+    # Patron deity / worshipped power (esp. clerics/paladins/warlocks).
+    deity: Optional[str] = None
     ddb_url: Optional[str] = None
     avrae_import_text: Optional[str] = None
     approve: Optional[bool] = False
@@ -930,6 +933,10 @@ class Character(SQLModel, table=True):
 
     # Game metadata
     home_region: Optional[str] = Field(default=None, sa_column=Column(String))
+    # Patron deity / worshipped power (esp. clerics, paladins, warlocks). Drives
+    # divine PvP retribution — the god that avenges this PC if they're murdered.
+    # Mirrored as a WORSHIPS edge on the PC's world entity when set.
+    deity: Optional[str] = Field(default=None, sa_column=Column(String))
     notes: Optional[str] = Field(default=None, sa_column=Column(String))
     # Which stored portrait "look" is currently shown: the context key of the
     # active portrait image — ``"portrait"`` (or None) = the base look,
@@ -1428,6 +1435,24 @@ def _purse_of(char: Character) -> Dict[str, int]:
 def _write_purse(char: Character, purse: Dict[str, int]) -> None:
     char.cp, char.sp, char.ep = purse.get("cp", 0), purse.get("sp", 0), purse.get("ep", 0)
     char.gp, char.pp = purse.get("gp", 0), purse.get("pp", 0)
+
+
+def _mirror_deity_worship(char: Character) -> None:
+    """Best-effort: reflect a PC's patron deity as a WORSHIPS edge on their world
+    entity, using the canonical pantheon name. Cosmetic (PvP retribution reads
+    Character.deity directly), so a missing PC/god entity just no-ops."""
+    if not char or not getattr(char, "deity", None):
+        return
+    try:
+        from eight_card_system import pantheon as _pan
+        pc = world.find_pc(char.discord_user_id, char.name)
+        if pc is None:
+            return
+        power = _pan.power_by_name(char.deity)
+        dst = power["name"] if power else char.deity
+        world.add_relation(pc.slug, RelationType.WORSHIPS, dst)
+    except Exception as e:
+        print(f"[deity] worship mirror failed: {e}")
 
 
 def process_trade_hooks(trade_ops: list[dict], session_id: str,
@@ -7300,6 +7325,8 @@ def _build_character_sheet(char: Character) -> Dict[str, Any]:
         "immunities": getattr(char, "immunities", None) or [],
         "char_class": char.char_class,
         "subclass": char.subclass,
+        "background": char.background,
+        "deity": getattr(char, "deity", None),
         "level": char.level,
         "xp": char.xp,
         "proficiency_bonus": pb,
@@ -7996,6 +8023,8 @@ async def enter_world(req: EnterRequest):
         )
         if pc_ent is not None and getattr(pc_ent, "slug", None):
             pc_slug = pc_ent.slug
+        # Reflect a patron deity as a WORSHIPS edge now that the PC entity exists.
+        _mirror_deity_worship(chosen)
     except Exception as e:
         print(f"[enterworld place_pc error] {e}")
     _set_session_meta(session_id, {
@@ -8409,6 +8438,7 @@ async def register_character(req: RegisterCharacterRequest):
             avrae_import_text=req.avrae_import_text,
             approved=approved_flag,
             home_region=req.home_region,
+            deity=(req.deity or None),
             max_hp=start_hp,
             current_hp=start_hp,
             hit_die=hit_die,
@@ -8792,6 +8822,7 @@ def import_ddb_endpoint(req: DDBImportRequest):
             ddb_url=req.url,
             approved=True,
             home_region=req.home_region,
+            deity=(parsed.get("deity") or None),
             max_hp=start_hp, current_hp=start_hp,
             hit_die=hit_die, hit_dice_total=1, hit_dice_remaining=1,
             rations=surv.starting_rations, water=surv.starting_water,
@@ -12350,6 +12381,7 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "char_class": sheet.get("char_class"),
         "subclass": sheet.get("subclass"),
         "background": background,
+        "deity": getattr(char, "deity", None),
         "portrait": portrait,
         "portrait_looks": portrait_looks,
         "active_portrait": active_portrait,
