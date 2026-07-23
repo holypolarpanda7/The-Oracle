@@ -88,6 +88,7 @@ from games import (
     get_spec as get_game_spec,
 )
 import pvp as ipvp
+import revival as irevival
 from bastion import (
     can_own_bastion,
     facilities_for_level,
@@ -287,6 +288,7 @@ async def lifespan(app: FastAPI):
                     ("home_region", "TEXT"),
                     ("background", "TEXT"),
                     ("deity", "TEXT"),
+                    ("dnr", "INTEGER DEFAULT 0"),
                     ("notes", "TEXT"),
                     ("active_portrait", "TEXT"),
                     ("created_at", "DATETIME"),
@@ -938,6 +940,10 @@ class Character(SQLModel, table=True):
     # divine PvP retribution — the god that avenges this PC if they're murdered.
     # Mirrored as a WORSHIPS edge on the PC's world entity when set.
     deity: Optional[str] = Field(default=None, sa_column=Column(String))
+    # Do-Not-Resuscitate: this character does not wish to be revived. A revival
+    # spell that needs a willing soul fails against it; one that doesn't drags them
+    # back FURIOUS at the reviver. See the REVIVE hook + revival/ package.
+    dnr: bool = Field(default=False)
     notes: Optional[str] = Field(default=None, sa_column=Column(String))
     # Which stored portrait "look" is currently shown: the context key of the
     # active portrait image — ``"portrait"`` (or None) = the base look,
@@ -3510,6 +3516,301 @@ def process_pvp_hooks(session_id: str, ops: list[dict], meta: Dict[str, Any],
         meta["pvp"] = pvp_state
         _set_session_meta(session_id, meta)
     return public, whispers
+
+
+# =====================  REVIVAL & DNR  ====================================
+# Death is reversible. A [[REVIVE]] hook brings a fallen PC back per the spell used
+# (revival/ package): HP restored, maybe a fading Return Sickness penalty. If the
+# owning player isn't at the table, the revived PC becomes DM-CONTROLLED and retreats
+# to their bastion or the nearest town until the owner returns and reclaims them
+# (in enter_world). A DNR wish makes a willing-soul spell FAIL (the soul refuses); a
+# no-consent spell (Revivify) forces them back FURIOUS at the reviver.
+#   [[REVIVE: dead-pc | reviver | spell | hp:N?]]
+#   [[DNR: pc | on|off]]
+REVIVE_HOOK_PATTERN = re.compile(r"\[\[REVIVE:(.+?)\]\]", re.IGNORECASE)
+DNR_HOOK_PATTERN = re.compile(r"\[\[DNR:(.+?)\]\]", re.IGNORECASE)
+
+_REVIVE_GUIDE = (
+    "DEATH IS REVERSIBLE. When a revival spell is cast on a dead PC, mark it: "
+    "[[REVIVE: dead-pc | reviver | spell | hp:N?]] — spell is revivify / raise dead / "
+    "resurrection / true resurrection / reincarnate (add hp:N to override the HP restored). "
+    "The GAME restores them per the spell and reports the result — narrate it, don't invent "
+    "the HP. If the dead PC set a DO-NOT-RESUSCITATE wish, a spell needing a willing soul "
+    "FAILS (their soul refuses to return); Revivify forces them back FURIOUS at the reviver. "
+    "If the revived player is NOT at the table, their character becomes DM-RUN and retreats to "
+    "their bastion or the nearest town until the player returns — play them as an NPC until "
+    "then. A character can declare the wish in the fiction: [[DNR: pc-name | on]] (or off)."
+)
+_REVIVE_KEYWORDS = (
+    "revive", "revived", "revivify", "raise dead", "raise the dead", "resurrect",
+    "resurrection", "reincarnate", "true resurrection", "bring back", "back from the dead",
+    "return to life", "restore .* to life", "cheat death", "raise them", "not truly dead",
+    "do not resuscitate", "dnr", "let me die", "let me rest",
+)
+
+
+def _pc_is_dead(char: Character, pc_entity) -> bool:
+    if pc_entity is not None and pc_entity.status == "dead":
+        return True
+    return bool((char.death_save_failures or 0) >= 3 and (char.current_hp or 0) <= 0
+                and not char.stable)
+
+
+def _owner_present(meta: Dict[str, Any], char: Character) -> bool:
+    """Is the character's OWNER seated at this table right now?"""
+    return str(char.discord_user_id) in _session_members(meta or {})
+
+
+def _enclosing_settlement(pc):
+    """The nearest town/city/village enclosing the PC's location (walks PART_OF)."""
+    from eight_card_system.models import (Entity as _WE, Relation as _WR,
+                                          RelationType as _RT, EntityType as _ET)
+    try:
+        cur = world.location_of(pc)
+        with Session(world.engine) as s:
+            for _ in range(5):
+                if cur is None:
+                    return None
+                scale = str((cur.attributes or {}).get("scale") or cur.subtype or "").lower()
+                if cur.type == _ET.SETTLEMENT or scale in ("village", "town", "city", "settlement"):
+                    return cur
+                rel = s.exec(select(_WR).where(
+                    _WR.src_id == cur.id, _WR.rel_type == _RT.PART_OF,
+                    _WR.valid_to == None)).first()  # noqa: E711
+                cur = s.get(_WE, rel.dst_id) if rel else None
+    except Exception as e:
+        print(f"[revive] settlement walk failed: {e}")
+    return None
+
+
+def _place_revived(pc) -> str:
+    """Move a DM-controlled revived PC to the nearest town (bastion is handled by the
+    caller). Returns a human place name for the narration. World-graph only."""
+    town = _enclosing_settlement(pc) if pc is not None else None
+    if town is not None:
+        try:
+            world.move_entity(pc.slug, town.slug)
+        except Exception:
+            pass
+        return town.name
+    try:
+        loc = world.location_of(pc) if pc is not None else None
+        if loc is not None:
+            return loc.name
+    except Exception:
+        pass
+    return "the nearest town"
+
+
+def _sour_revival_bond(reviver_name: str, target_name: str, target_owner_uid: Optional[str],
+                       session_id: str) -> None:
+    """A forced-against-DNR revival: the returned soul resents the reviver (a betrayal)."""
+    try:
+        from eight_card_system.relationships import record_deed
+        tgt = world.find_pc(target_owner_uid or "", target_name)
+        rev = world.get_entity(slugify(reviver_name))
+        if tgt is not None and rev is not None:
+            record_deed(world, rev.slug, tgt.slug, tag="betrayal",
+                        text="forced them back from death against their dying wish",
+                        session_id=session_id)
+    except Exception as e:
+        print(f"[revive] bond souring failed: {e}")
+
+
+def extract_revive_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull [[REVIVE: ...]] hooks. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in REVIVE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if parts and parts[0]:
+            ops.append({"args": [p.strip() for p in parts]})
+    clean = REVIVE_HOOK_PATTERN.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", clean).strip(), ops
+
+
+def extract_dnr_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull [[DNR: pc | on|off]] hooks. Returns (clean, [{pc, on}])."""
+    ops: list[dict] = []
+    for m in DNR_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts or not parts[0]:
+            continue
+        val = (parts[1] if len(parts) > 1 else "on").strip().lower()
+        ops.append({"pc": parts[0].strip(),
+                    "on": val not in ("off", "false", "no", "0", "cancel", "clear")})
+    clean = DNR_HOOK_PATTERN.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", clean).strip(), ops
+
+
+def process_dnr_hooks(ops: list[dict]) -> list[str]:
+    """Record a PC's do-not-resuscitate wish. Returns player-facing notes."""
+    notes: list[str] = []
+    if not ops:
+        return notes
+    with Session(engine) as session:
+        for op in ops:
+            char = _resolve_pc_char(session, op["pc"])
+            if not char:
+                continue
+            char.dnr = bool(op["on"])
+            session.add(char)
+            session.commit()
+            notes.append(f"🕯️ *{char.name} {'sets' if char.dnr else 'lifts'} a "
+                         f"Do-Not-Resuscitate wish.*")
+    return notes
+
+
+def process_revive_hooks(session_id: str, ops: list[dict], meta: Dict[str, Any],
+                         acting_user_id: Optional[str],
+                         ) -> tuple[list[str], list[dict]]:
+    """Bring a dead PC back per the spell used. Returns (public_notes, whispers)."""
+    if not ops:
+        return [], []
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    cfg = get_config().revival
+    public: list[str] = []
+    whispers: list[dict] = []
+    for op in ops:
+        args = op.get("args", [])
+        if not args:
+            continue
+        target_name = args[0]
+        reviver_name = args[1] if len(args) > 1 else ""
+        spell = args[2] if len(args) > 2 else ""
+        hp_override = None
+        for a in args[2:]:
+            mnum = re.search(r"hp\s*[:=]?\s*(\d+)", a, re.IGNORECASE)
+            if mnum:
+                hp_override = int(mnum.group(1))
+        # --- Phase 1: all Character DB mutations in one committed session (closed
+        # BEFORE any world-graph write, so the two SQLite writers never deadlock). ---
+        reviver_uid = None
+        bastion_name = None
+        owner_uid = None
+        with Session(engine) as session:
+            target = _resolve_pc_char(session, target_name)
+            if not target:
+                continue
+            pc = world.find_pc(target.discord_user_id, target.name)
+            if not _pc_is_dead(target, pc):
+                public.append(f"✨ *({target.name} is not dead — there is nothing to call back.)*")
+                continue
+            owner_uid = str(target.discord_user_id)
+            target_display = target.name
+
+            plan = irevival.resolve(spell, bool(target.dnr), target.max_hp)
+            refuses = plan.refuses and cfg.dnr_can_refuse
+            # If refusal is disabled, a would-be refusal becomes a furious forced return.
+            forced_anger = plan.forced_anger or (plan.refuses and not cfg.dnr_can_refuse)
+
+            if refuses:
+                public.append(
+                    f"🕯️ **{reviver_name or 'The magic'}** reaches for {target.name}'s soul — "
+                    f"but it turns away. {target.name} laid a Do-Not-Resuscitate wish, and will "
+                    f"not be called back. They remain at peace.")
+                continue
+
+            hp = hp_override if hp_override else plan.hp
+            target.current_hp = max(1, min(int(target.max_hp or hp), int(hp)))
+            target.death_save_failures = 0
+            target.death_save_successes = 0
+            target.stable = True
+            restored_hp = target.current_hp
+
+            if plan.penalty and cfg.revival_penalties:
+                amt, fade = plan.penalty
+                day = world.current_day()
+                if not next((a for a in _active_curses(session, target.id)
+                             if (a.name or "").lower() == "return sickness"), None):
+                    session.add(Affliction(
+                        character_id=target.id, kind="curse", name="Return Sickness",
+                        description=(f"penalty={amt} the chill of the grave still clings — a "
+                                     f"pall on every effort"),
+                        notes=f"fades on its own after about {fade} days back among the living",
+                        onset_day=day, ends_day=day + fade, active=True))
+
+            present = _owner_present(meta, target)
+            target.controller = "player" if present else "dm"
+            if not present:
+                b = session.exec(select(Bastion).where(
+                    Bastion.character_id == target.id)).first()
+                bastion_name = f"their bastion, {b.name}" if b else None
+
+            if forced_anger:
+                rev = _resolve_pc_char(session, reviver_name)
+                reviver_uid = str(rev.discord_user_id) if rev else None
+
+            session.add(target)
+            session.commit()
+
+        # --- Phase 2: world-graph writes (session above is now closed). ---
+        if pc is not None:
+            world.upsert_entity(pc.name, pc.type, slug=pc.slug, status="active",
+                                attributes={"memorialized": False,
+                                            "revived_day": world.current_day()})
+        place = ""
+        if not present:
+            place = bastion_name or _place_revived(pc)
+            if pc is not None:
+                world.upsert_entity(
+                    pc.name, pc.type, slug=pc.slug, status="active",
+                    attributes={"dm_controlled": True, "revived_await_owner": owner_uid,
+                                "dm_activity": f"recovering at {place}" if place else "recovering"})
+        if forced_anger:
+            _sour_revival_bond(reviver_name, target_display, owner_uid, session_id)
+            if reviver_uid:
+                whispers.append({"user_id": reviver_uid,
+                                 "text": (f"🕯️ (privately) {target_display} did NOT want this. "
+                                          f"They resent you for dragging them back.")})
+
+        reinc = " — in an unfamiliar new body" if plan.reincarnate else ""
+        back = (f"✨ **{target_display}** is pulled back from death by "
+                f"{reviver_name or 'the magic'} ({plan.spell}){reinc}, restored to "
+                f"{restored_hp} HP.")
+        if forced_anger:
+            back += (f" But they are FURIOUS — they had no wish to return, and their fury "
+                     f"falls on {reviver_name or 'their reviver'}.")
+        if not present:
+            back += (f" With their companion away, {target_display} is now in the DM's hands — "
+                     + (f"they make for **{place}** to recover and wait." if place
+                        else "they wander off to recover until their return."))
+        public.append(back)
+        try:
+            world.add_event(
+                f"{target_display} was revived by {reviver_name or 'magic'} ({plan.spell}).",
+                session_id=session_id)
+        except Exception:
+            pass
+    return public, whispers
+
+
+def _reclaim_revived_pc(char: Character, user_id: str) -> Optional[str]:
+    """If this PC was revived to DM-control while its owner was away, hand it back.
+    Returns a welcome-back line for the intro, or None."""
+    try:
+        pc = world.find_pc(user_id, char.name)
+        if pc is None:
+            return None
+        attrs = pc.attributes or {}
+        if not attrs.get("dm_controlled") or str(attrs.get("revived_await_owner")) != str(user_id):
+            return None
+        where = attrs.get("dm_activity") or "recovering nearby"
+        world.upsert_entity(pc.name, pc.type, slug=pc.slug, status=pc.status,
+                            attributes={"dm_controlled": False, "revived_await_owner": None})
+        with Session(engine) as s:
+            row = s.exec(select(Character).where(
+                Character.discord_user_id == user_id,
+                func.lower(Character.name) == char.name.lower())).first()
+            if row:
+                row.controller = "player"
+                s.add(row)
+                s.commit()
+        return (f"While you were away, **{char.name}** was revived from death and has been "
+                f"{where}. You take up their thread once more.")
+    except Exception as e:
+        print(f"[revive] reclaim failed: {e}")
+        return None
 
 
 # =====================  CURSES  ===========================================
@@ -7055,6 +7356,14 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
     except Exception as e:
         print(f"[pvp context error] {e}")
 
+    # Revival & DNR: inject the how-to only when a revival/death scene reads that way,
+    # so ordinary turns carry none of it.
+    try:
+        if any(re.search(k, _scene_text(message, ctx_obj)) for k in _REVIVE_KEYWORDS):
+            texts.append(_REVIVE_GUIDE)
+    except Exception as e:
+        print(f"[revive context error] {e}")
+
     # Secret actions: on a private turn (or when the scene reads covert) tell the
     # DM how to whisper the truth and show the table only a sanitized line.
     try:
@@ -7663,6 +7972,7 @@ def _build_character_sheet(char: Character) -> Dict[str, Any]:
         "subclass": char.subclass,
         "background": char.background,
         "deity": getattr(char, "deity", None),
+        "dnr": bool(getattr(char, "dnr", False)),
         "level": char.level,
         "xp": char.xp,
         "proficiency_bonus": pb,
@@ -8231,6 +8541,30 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             print(f"[deity] hook processing failed: {e}")
 
+    # Revival: a dead PC is brought back per the spell used — HP restored, maybe a
+    # fading penalty, DNR honored, and DM-control handoff if the owner is away. The
+    # forced-against-DNR reviver gets a private resentment whisper.
+    dm_text, revive_ops = extract_revive_hooks(dm_text)
+    if revive_ops:
+        try:
+            r_public, r_whispers = process_revive_hooks(
+                req.session_id, revive_ops, meta_now, req.user_id)
+            if r_public:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(r_public)
+            _merge_whispers(whisper_notes, r_whispers)
+        except Exception as e:
+            print(f"[revive] hook processing failed: {e}")
+
+    # DNR: record a character's do-not-resuscitate wish declared in the fiction.
+    dm_text, dnr_ops = extract_dnr_hooks(dm_text)
+    if dnr_ops:
+        try:
+            dnr_notes = process_dnr_hooks(dnr_ops)
+            if dnr_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(dnr_notes)
+        except Exception as e:
+            print(f"[dnr] hook processing failed: {e}")
+
     # Whispers: pull explicit [[WHISPER: ...]] notes to the private channel
     # (default recipient = the acting player; [[WHISPER: @Name | ...]] targets one).
     dm_text, w_notes = extract_whisper_hooks(dm_text, meta_now, req.user_id)
@@ -8287,6 +8621,23 @@ def active_session_for_user(user_id: str):
     so a private DM can be routed to the table the player is seated at."""
     sid = _find_active_session_for_user(user_id)
     return {"session_id": sid}
+
+
+class DnrRequest(BaseModel):
+    dnr: bool = True
+
+
+@app.post("/character/{character_id}/dnr")
+def set_character_dnr(character_id: int, req: DnrRequest):
+    """Set/clear a character's Do-Not-Resuscitate wish (bot command + Activity)."""
+    with Session(engine) as session:
+        char = session.get(Character, character_id)
+        if not char:
+            raise HTTPException(status_code=404, detail="Character not found.")
+        char.dnr = bool(req.dnr)
+        session.add(char)
+        session.commit()
+        return {"status": "ok", "character_id": character_id, "dnr": char.dnr}
 
 
 class PvpPactRequest(BaseModel):
@@ -8418,6 +8769,14 @@ async def enter_world(req: EnterRequest):
     except Exception as e:
         print(f"[enterworld permadeath check error] {e}")
 
+    # Reclaim: if this PC was revived to DM-control while its owner was away, hand
+    # control back now that the owner has returned (prepended to the opening intro).
+    reclaim_note = None
+    try:
+        reclaim_note = _reclaim_revived_pc(chosen, req.user_id)
+    except Exception as e:
+        print(f"[enterworld reclaim error] {e}")
+
     # Create a new session id (guild-based namespace)
     session_id = f"{req.guild_id}:{uuid.uuid4().hex}"
 
@@ -8491,6 +8850,10 @@ async def enter_world(req: EnterRequest):
         )
     except Exception as e:
         print(f"[enterworld imagery error] {e}")
+
+    # A reclaimed-from-DM revived PC gets a welcome-back line ahead of the scene.
+    if reclaim_note:
+        intro = f"*{reclaim_note}*\n\n{intro}"
 
     # Store the DM turn in the session history
     _append_turn(session_id, Turn(role="dm", user="Oracle DM", content=intro))
@@ -12794,6 +13157,7 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "subclass": sheet.get("subclass"),
         "background": background,
         "deity": getattr(char, "deity", None),
+        "dnr": bool(getattr(char, "dnr", False)),
         "portrait": portrait,
         "portrait_looks": portrait_looks,
         "active_portrait": active_portrait,

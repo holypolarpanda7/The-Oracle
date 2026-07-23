@@ -178,6 +178,16 @@ class PvpConfig:
 
 
 @dataclass
+class RevivalConfig:
+    """Death-reversal (revive) + DNR policy."""
+    # Apply the fading return-penalty a Raise Dead / Resurrection leaves behind.
+    revival_penalties: bool = True
+    # Honor a DNR by letting a willing-soul spell fail (the soul refuses). Off =
+    # a DNR never blocks revival (it only makes the character angry).
+    dnr_can_refuse: bool = True
+
+
+@dataclass
 class DMGuideConfig:
     """AI Dungeon Master guidance + encounter/DC helper tuning."""
     enabled: bool = True
@@ -311,6 +321,7 @@ class GameConfig:
     reputation: ReputationConfig = field(default_factory=ReputationConfig)
     games: GamesConfig = field(default_factory=GamesConfig)
     pvp: PvpConfig = field(default_factory=PvpConfig)
+    revival: RevivalConfig = field(default_factory=RevivalConfig)
     dm_guide: DMGuideConfig = field(default_factory=DMGuideConfig)
     session_memory: SessionMemoryConfig = field(default_factory=SessionMemoryConfig)
     imagery: ImageryConfig = field(default_factory=ImageryConfig)

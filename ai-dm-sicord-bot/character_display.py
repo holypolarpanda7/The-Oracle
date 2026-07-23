@@ -52,6 +52,8 @@ def build_sheet_embed(sheet: dict) -> Tuple[discord.Embed, Optional[discord.File
     header = f"Level {sheet.get('level', 1)} {sheet.get('race', '')} {class_line}".strip()
     if sheet.get("deity"):
         header += f"\n*Devoted to {sheet['deity']}*"
+    if sheet.get("dnr"):
+        header += "\n🕯️ *Do Not Resuscitate*"
 
     embed = discord.Embed(title=f"📜 {name}", description=header, color=_SHEET_COLOR)
 
