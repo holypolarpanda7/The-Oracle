@@ -1,6 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CCOptions, CCPayload } from "../lib/types";
 import { uiTick } from "../lib/sound";
+import { speciesPortraitFor } from "../lib/assets";
+
+/** Male+female species portraits for a race card. Each image hides itself if the
+ * art hasn't been generated yet, so the strip simply collapses when absent. */
+function SpeciesPortrait({ slug }: { slug: string }) {
+  const [ok, setOk] = useState<{ m: boolean; f: boolean }>({ m: true, f: true });
+  const p = speciesPortraitFor(slug);
+  if (!ok.m && !ok.f) return null;
+  return (
+    <div className="cf-portrait">
+      {ok.m && <img src={p.m} alt="" loading="lazy"
+                    onError={() => setOk((s) => ({ ...s, m: false }))} />}
+      {ok.f && <img src={p.f} alt="" loading="lazy"
+                    onError={() => setOk((s) => ({ ...s, f: false }))} />}
+    </div>
+  );
+}
 
 const ABILITIES = ["STR", "DEX", "CON", "INT", "WIS", "CHA"] as const;
 type Ability = (typeof ABILITIES)[number];
@@ -253,6 +270,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                     setDetail(r.slug);
                   }}
                 >
+                  <SpeciesPortrait slug={r.slug} />
                   <div className="cf-card-name">{r.name}</div>
                   <div className="cf-card-sub">
                     {r.creature_type && r.creature_type !== "Humanoid"

@@ -46,3 +46,16 @@ voice-service/*.log
 
 # Local-only owned-book extraction workspace (never commit book content)
 owned_books/
+
+# Design references (external inspiration art) + generated art proofs —
+# never commit the source images or the diffusion examples; the README + the
+# HTML mockup (self-contained, no external assets) may still be committed.
+docs/design/references/*.jpg
+docs/design/references/*.jpeg
+docs/design/references/*.png
+docs/design/references/*.webp
+docs/design/proofs/
+
+# Generated species portraits (owned-book species must stay local; SRD/PHB ones
+# can be force-added: git add -f activity-ui/public/assets/species/<slug>-*.webp)
+activity-ui/public/assets/species/
