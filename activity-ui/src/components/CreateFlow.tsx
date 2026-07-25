@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CCOptions, CCPayload } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
@@ -114,11 +114,20 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   const [stage, setStage] = useState<Stage>("race");
   const [d, setD] = useState<Draft>(freshDraft());
   const [detail, setDetail] = useState<string | null>(null);
+  // Bring the racial-features + lineage panel into view when a species is
+  // picked — on a phone it sits below the card grid and is easy to miss.
+  const raceDetailRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/cc/options").then((r) => r.json()).then(setOpts)
       .catch(() => setOpts(null));
   }, []);
+
+  useEffect(() => {
+    if (d.race && raceDetailRef.current) {
+      raceDetailRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [d.race]);
 
   const race = opts?.races.find((r) => r.slug === d.race);
   const cls = opts?.classes.find((c) => c.slug === d.cls);
@@ -286,29 +295,49 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
               ))}
             </div>
 
-            {race?.lineages?.length ? (
-              <>
-                <div className="cf-sub-label" style={{ marginTop: 18 }}>
-                  {race.lineage_label ?? "Lineage"} — pick your{" "}
-                  {race.name.toLowerCase()} heritage
+            {race && (
+              <div className="cf-race-detail" ref={raceDetailRef}>
+                {/* Full racial features. Shown inline on phones, where the side
+                    description column is stacked far below the card grid. */}
+                <div className="cf-inline-detail">
+                  <div className="cf-sub-label" style={{ marginTop: 18 }}>
+                    {race.name} — racial features
+                  </div>
+                  <p className="cf-detail-meta">
+                    {(race.creature_type ?? "Humanoid")} · {race.size} · {race.speed} ft
+                    {race.darkvision ? " · darkvision" : ""}
+                  </p>
+                  {race.languages && <p className="cf-detail-meta">{race.languages}</p>}
+                  <ul className="cf-trait-list">
+                    {race.traits.map((t, i) => <li key={i}>{t}</li>)}
+                  </ul>
                 </div>
-                <div className="cf-grid">
-                  {race.lineages.map((l) => (
-                    <button
-                      key={l.slug}
-                      className={`cf-card ${d.lineage === l.slug ? "picked" : ""}`}
-                      onClick={() => { uiTick(); setD({ ...d, lineage: l.slug }); }}
-                    >
-                      <div className="cf-card-name">{l.name}</div>
-                      <div className="cf-card-sub">
-                        {(l.traits[0] ?? "").slice(0, 60)}
-                        {(l.traits[0]?.length ?? 0) > 60 ? "…" : ""}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : null}
+
+                {race.lineages?.length ? (
+                  <>
+                    <div className="cf-sub-label" style={{ marginTop: 18 }}>
+                      {race.lineage_label ?? "Lineage"} — choose your{" "}
+                      {race.name.toLowerCase()} heritage
+                      {!d.lineage && <span className="cf-req"> · required</span>}
+                    </div>
+                    <div className="cf-grid">
+                      {race.lineages.map((l) => (
+                        <button
+                          key={l.slug}
+                          className={`cf-card ${d.lineage === l.slug ? "picked" : ""}`}
+                          onClick={() => { uiTick(); setD({ ...d, lineage: l.slug }); }}
+                        >
+                          <div className="cf-card-name">{l.name}</div>
+                          <div className="cf-card-sub">
+                            {l.traits.length ? l.traits.join(" · ") : "—"}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            )}
           </>
         )}
 

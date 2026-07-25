@@ -225,6 +225,8 @@ body {
   text-transform: uppercase;
   color: var(--text-dim);
   margin-bottom: 8px;
+  /* Stays legible where CC content floats over the bright cavern art. */
+  text-shadow: 0 1px 5px rgba(5, 8, 15, 0.85);
 }
 .cf-bonus-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
 .cf-faith { grid-column: 1 / -1; margin-top: 12px; }
@@ -308,6 +310,21 @@ body {
 .cf-detail-meta { color: var(--text-dim); font-size: 12px; margin: 0 0 8px; }
 .cf-detail-body ul { padding-left: 16px; margin: 6px 0; }
 .cf-detail-body li { margin-bottom: 5px; }
+
+/* Inline racial-features + lineage panel (race stage). The full trait list is
+   desktop-hidden here because the side description column already carries it;
+   on phones (where that column is stacked far below) it's shown — see the
+   phone media block. */
+.cf-inline-detail {
+  display: none;
+  margin-top: 12px; padding: 4px 14px 10px;
+  background: rgba(9, 12, 21, 0.62);
+  border: 1px solid var(--edge); border-radius: var(--radius);
+}
+.cf-trait-list { margin: 6px 0 2px; padding-left: 18px; font-size: 13px;
+  line-height: 1.5; color: var(--text); }
+.cf-trait-list li { margin-bottom: 5px; }
+.cf-req { color: var(--brass); font-style: italic; font-size: 0.85em; letter-spacing: 0.04em; }
 .cf-foot { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
 
 /* ============ Level-up overlay ============ */
@@ -520,6 +537,9 @@ body {
   .cf-cancel { margin-top: 0; margin-left: auto; }
   .cf-main { overflow-y: visible; min-height: 0; }
   .cf-detail { max-height: 44vh; }
+  /* Phones: the side description column is buried at the bottom, so show the
+     full racial features inline right under the species cards instead. */
+  .cf-inline-detail { display: block; }
   .cf-abilities { grid-template-columns: repeat(3, 1fr); max-width: none; }
 
   /* ---- Play surface ---- */
