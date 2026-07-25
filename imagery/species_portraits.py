@@ -40,11 +40,35 @@ from .compress import encode_webp
 _OUT_DIR = Path(__file__).resolve().parent.parent / "activity-ui" / "public" / "assets" / "species"
 
 # Framing shared by every species portrait so the CC cards read as one set.
-_FRAMING = ("head and shoulders character portrait bust, facing the viewer, "
-            "neutral expression, plain dark stone background, even studio lighting, "
-            "fantasy character concept art, single figure, no text")
+# Tuned to the reference art: a soft three-quarter bust against a blurred
+# natural outdoor backdrop, warm gentle light.
+_FRAMING = ("head and shoulders character portrait, three-quarter view facing "
+            "the viewer, calm curious expression, softly blurred natural outdoor "
+            "background with shallow depth of field, warm gentle rim light, "
+            "single figure, no text")
+# Species house style — matches the reference: a soft, warm, semi-realistic
+# painterly illustration (NOT the bold graphic-novel scene style). Used in place
+# of the global style_prompt for portraits so scenes/items keep their own look.
+_SPECIES_STYLE = ("soft painterly digital painting, semi-realistic stylized "
+                  "fantasy character portrait, warm naturalistic lighting, "
+                  "appealing expressive face with large lively eyes, smooth "
+                  "confident brushwork with fine detail, muted warm earthy "
+                  "palette, gentle atmosphere, high-quality fantasy character art")
+# Light grounding so faces stay characterful rather than airbrushed. Males and
+# non-small females get a touch of natural realism; the SMALL folk females read
+# cuter (a weathered look is wrong on the little peoples).
+_GRIT = "grounded semi-realism, natural skin texture, characterful weathered look"
+_GRIT_FEM = ("cute and pretty, endearing charming face, soft rounded youthful "
+             "features, large expressive eyes, smooth complexion, adorable")
 _NEG_EXTRA = ("full body, multiple people, crowd, nudity, nsfw, modern clothing, "
-              "photograph, low detail")
+              "photograph, low detail, plastic skin, airbrushed, harsh, ugly, "
+              "grimdark, horror")
+
+# Species art is only ever shown small in the CC menu (cards ~100px, the detail
+# preview ~250px), so we store it far smaller than scene art — big space saving
+# across the whole set with no visible loss on the cards.
+_STORE_WIDTH = 512
+_WEBP_QUALITY = 80
 
 # Canon-accurate looks for the common SRD/PHB species. Each entry: shared traits
 # plus a male/female cue. These are generic fantasy-species descriptions (own
@@ -157,6 +181,96 @@ _ALIASES = {"half elf": "half-elf", "halfelf": "half-elf",
             "half orc": "half-orc", "halforc": "half-orc",
             "variant human": "human", "custom lineage": "human"}
 
+# ---- lineage art -----------------------------------------------------------
+# Only lineages that actually LOOK different from their base species get their
+# own portrait; mechanical-only lineages (Goliath giant ancestries, Tiefling
+# fiendish legacies) are omitted on purpose — they read as their base species,
+# so the CC UI falls back to the base portrait and we store no near-duplicate
+# art. Lineage files are namespaced "<race>-<lineage>-<sex>.webp".
+_DRAGON_SCALES = {
+    "black": "glossy jet-black scales", "blue": "deep cobalt-blue scales",
+    "brass": "warm brass-yellow scales", "bronze": "burnished bronze scales",
+    "copper": "ruddy copper-red scales", "gold": "gleaming golden scales, regal",
+    "green": "mottled forest-green scales", "red": "fierce crimson-red scales, ember-lit",
+    "silver": "bright silver scales, frost-touched", "white": "pale icy-white scales, frostbitten",
+}
+_SHIFTER_ASPECTS = {
+    "beasthide": "bear-like beasthide shifter, heavy brow, thick shaggy mane, "
+                 "broad rugged features, small blunt claws",
+    "longtooth": "wolfish longtooth shifter, prominent jutting fangs, lean "
+                 "predatory face, pointed ears, feral yellow eyes",
+    "swiftstride": "cat-like swiftstride shifter, sleek fine fur, slit-pupil eyes, "
+                   "high graceful cheekbones, alert pointed ears",
+    "wildhunt": "stag-like wildhunt shifter, calm watchful eyes, faint antler nubs, "
+                "earthy mottled fur, serene wild features",
+}
+
+
+def _dragon_look(color: str, scales: str) -> Dict[str, str]:
+    base = SPECIES_LOOKS["dragonborn"]
+    return {"shared": (f"a {color}-scaled dragonborn, proud draconic humanoid, full "
+                       f"reptilian dragon head with a blunt snout and no ears, {scales}, "
+                       "reptilian slit-pupil eyes, small horns or frill, no hair, "
+                       "muscular scaled neck, ornate warrior's armor"),
+            "male": base["male"], "female": base["female"]}
+
+
+# Keyed by the DB lineage slug. Elf/gnome sub-looks reuse the curated species
+# descriptors; drow, dragonborn colours and shifter aspects are defined here.
+LINEAGE_LOOKS: Dict[str, Dict[str, str]] = {
+    "high-elf": SPECIES_LOOKS["high-elf"],
+    "wood-elf": SPECIES_LOOKS["wood-elf"],
+    "forest-gnome": SPECIES_LOOKS["forest-gnome"],
+    "rock-gnome": SPECIES_LOOKS["rock-gnome"],
+    "drow": {
+        "shared": "a drow (dark elf), obsidian to dusky-charcoal skin, stark white "
+                  "or silver hair, long pointed ears, sharp angular features, pale "
+                  "lavender or red eyes adapted to darkness, elegant dark attire",
+        "male": "a drow man, cold refined features",
+        "female": "a drow woman, imperious elegant features"},
+    **{c: _dragon_look(c, s) for c, s in _DRAGON_SCALES.items()},
+    **{slug: {"shared": desc, "male": f"a male {slug} shifter",
+              "female": f"a female {slug} shifter"}
+       for slug, desc in _SHIFTER_ASPECTS.items()},
+}
+
+
+def small_race_slugs() -> set:
+    """Race slugs whose size is Small — their females get the cuter treatment."""
+    try:
+        from sqlmodel import Session, select
+        from rules.query import RulesLibrary
+        from rules.models import Race
+        lib = RulesLibrary()
+        with Session(lib.engine) as s:
+            return {r.index_slug for r in s.exec(select(Race)).all()
+                    if _norm(getattr(r, "size", "")) == "small"}
+    except Exception:
+        # Fallback to the known SRD small folk if the DB isn't reachable.
+        return {"halfling", "gnome", "goblin", "kobold"}
+
+
+def lineages_from_db() -> List[Tuple[str, str, Dict[str, str]]]:
+    """(race_slug, lineage_slug, look) for every DB lineage we have curated art
+    for. Lineages without a look are skipped — the UI falls back to base art."""
+    try:
+        from sqlmodel import Session, select
+        from rules.query import RulesLibrary
+        from rules.models import Race
+        lib = RulesLibrary()
+        out: List[Tuple[str, str, Dict[str, str]]] = []
+        with Session(lib.engine) as s:
+            for r in s.exec(select(Race)).all():
+                for lin in (getattr(r, "lineages", None) or []):
+                    slug = _norm(lin.get("slug") or "")
+                    look = LINEAGE_LOOKS.get(slug)
+                    if slug and look:
+                        out.append((r.index_slug, slug, look))
+        return out
+    except Exception as e:
+        print(f"[species] lineage DB unavailable ({e}); skipping lineages.")
+        return []
+
 # Owned-book species descriptors live in a LOCAL, gitignored override file so the
 # public repo carries only SRD-safe descriptors (same policy as owned_books/*.json).
 # Shape: {"<slug>": {"shared": "...", "male": "...", "female": "..."}}.
@@ -223,9 +337,12 @@ def species_from_db() -> List[Tuple[str, Dict[str, str]]]:
     return [(slug, look) for slug, look in merged.items()]
 
 
-def build_positive(look: Dict[str, str], sex: str, style_prompt: str) -> str:
+def build_positive(look: Dict[str, str], sex: str, style_prompt: str,
+                   cute: bool = False, skip_grit: bool = False) -> str:
     sexed = look.get("male" if sex == "m" else "female", "")
     parts = [look.get("shared", ""), sexed, _FRAMING, style_prompt]
+    if not skip_grit:   # a style reference (IP-Adapter) defines the mood instead
+        parts.append(_GRIT_FEM if (sex == "f" and cute) else _GRIT)
     return ", ".join(p for p in parts if p)
 
 
@@ -251,72 +368,139 @@ def _find_reference(ref_dir: Optional[Path], slug: str,
 def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str]] = None,
                      *, force: bool = False, dry_run: bool = False,
                      ref_dir: Optional[Path] = None, ipadapter: bool = False,
-                     ip_weight: Optional[float] = None) -> int:
+                     ip_weight: Optional[float] = None,
+                     lineages: bool = False, base: bool = True,
+                     style_ref: Optional[Path] = None,
+                     style_preset: str = "STANDARD (medium strength)") -> int:
     cfg = get_config().imagery
+    want = ({_ALIASES.get(_norm(s), _norm(s)) for s in slugs} if slugs else None)
+
     catalog = species_from_db()
-    if slugs:
-        want = {_ALIASES.get(_norm(s), _norm(s)) for s in slugs}
+    if want is not None:
         catalog = [(sl, lk) for sl, lk in catalog if _norm(sl) in want]
+    lin_catalog = lineages_from_db() if lineages else []
+    if want is not None:
+        lin_catalog = [(r, l, lk) for (r, l, lk) in lin_catalog
+                       if _norm(r) in want or _norm(l) in want]
     sexes = sexes or ["m", "f"]
 
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
-    style = cfg.style_prompt
+    style = _SPECIES_STYLE   # portrait-specific look (not the global scene style)
     negative = f"{cfg.negative_prompt}, {_NEG_EXTRA}"
+    small = small_race_slugs()   # their females render cuter
+    # A style reference (IP-Adapter style-transfer) defines the whole set's look
+    # from one image; drop the grit descriptors so the reference's mood leads.
+    use_style_ref = style_ref is not None
+    skip_grit = use_style_ref
 
-    client = None
+    state: Dict[str, object] = {"client": None, "style_ref_name": None}
     made = 0
     ref_cache: Dict[str, Optional[str]] = {}   # ref path -> uploaded ComfyUI filename
-    for slug, look in catalog:
-        for sex in sexes:
-            ref_path = _find_reference(ref_dir, slug, sex)
-            out = _OUT_DIR / f"{slug}-{sex}.webp"
-            positive = build_positive(look, sex, style)
-            tag = f"{slug}-{sex}"
-            if dry_run:
-                ref_note = f"  [ref: {ref_path.name}]" if ref_path else ""
-                print(f"\n=== {tag}{ref_note} ===\n{positive}")
-                continue
-            if out.exists() and not force:
-                print(f"· {tag}: exists, skipping (use --force to regenerate)")
-                continue
-            if client is None:
-                client = client_from_config(cfg)
-                if ipadapter:
-                    client.use_ipadapter = True
-                    if ip_weight is not None:
-                        client.ipadapter_weight = float(ip_weight)
-                if not client.is_available():
-                    print("\n⚠ ComfyUI is not reachable at "
-                          f"{cfg.base_url}. Start ComfyUI (API mode) and retry.")
+
+    def ensure_client():
+        if state["client"] is None:
+            c = client_from_config(cfg)
+            if ipadapter or use_style_ref:
+                c.use_ipadapter = True
+                if use_style_ref:
+                    c.ipadapter_preset = style_preset
+                if ip_weight is not None:
+                    c.ipadapter_weight = float(ip_weight)
+            if not c.is_available():
+                return None
+            state["client"] = c
+        return state["client"]
+
+    def style_ref_files():
+        """Uploaded filename of the global style reference, once, or None."""
+        if not use_style_ref:
+            return None
+        c = ensure_client()
+        if c is None:
+            return None
+        if state["style_ref_name"] is None:
+            state["style_ref_name"] = c.upload_image(
+                style_ref.read_bytes(), f"style-ref-{style_ref.stem}{style_ref.suffix}")
+        n = state["style_ref_name"]
+        return [n] if n else None
+
+    def render(out: Path, positive: str, tag: str, ref_files=None) -> bool:
+        """Render one portrait. Returns False only on a fatal backend outage
+        (stops the batch); a per-image failure is logged and skipped."""
+        nonlocal made
+        if dry_run:
+            print(f"\n=== {tag} ===\n{positive}")
+            return True
+        if out.exists() and not force:
+            print(f"· {tag}: exists, skipping (use --force to regenerate)")
+            return True
+        client = ensure_client()
+        if client is None:
+            print(f"\n⚠ ComfyUI is not reachable at {cfg.base_url}. "
+                  "Start ComfyUI (API mode) and retry.")
+            return False
+        try:
+            print(f"→ rendering {tag}{' [ref]' if ref_files else ''} …", flush=True)
+            raw = client.generate(positive, negative, width=cfg.gen_width,
+                                  height=cfg.gen_height, steps=cfg.steps,
+                                  reference_filenames=ref_files)
+            enc = encode_webp(raw, store_width=_STORE_WIDTH, thumb_width=256,
+                              quality=_WEBP_QUALITY)
+            out.write_bytes(enc.data)
+            made += 1
+            print(f"  ✓ wrote {out.relative_to(_OUT_DIR.parents[3])} "
+                  f"({len(enc.data) // 1024} KB)")
+        except ImageServiceUnavailable as e:
+            print(f"  ✗ service offline: {e}")
+            return False
+        except Exception as e:
+            print(f"  ✗ {tag} failed: {e}")
+        return True
+
+    if base:
+        for slug, look in catalog:
+            for sex in sexes:
+                out = _OUT_DIR / f"{slug}-{sex}.webp"
+                if not dry_run and out.exists() and not force:
+                    print(f"· {slug}-{sex}: exists, skipping (use --force to regenerate)")
+                    continue
+                # Reference conditioning: a global style ref (applied to all)
+                # takes precedence over an optional per-species identity ref.
+                ref_files = None
+                if use_style_ref:
+                    ref_files = None if dry_run else style_ref_files()
+                else:
+                    ref_path = _find_reference(ref_dir, slug, sex)
+                    if ref_path is not None and not dry_run:
+                        if ensure_client() is None:
+                            print(f"\n⚠ ComfyUI is not reachable at {cfg.base_url}.")
+                            return made
+                        key = str(ref_path)
+                        if key not in ref_cache:
+                            try:
+                                ref_cache[key] = state["client"].upload_image(  # type: ignore[attr-defined]
+                                    ref_path.read_bytes(),
+                                    f"species-ref-{ref_path.stem}{ref_path.suffix}")
+                            except Exception as e:
+                                print(f"  (ref upload failed for {ref_path.name}: {e})")
+                                ref_cache[key] = None
+                        if ref_cache[key]:
+                            ref_files = [ref_cache[key]]
+                cute = sex == "f" and _norm(slug) in small
+                if not render(out, build_positive(look, sex, style, cute, skip_grit),
+                              f"{slug}-{sex}", ref_files):
                     return made
-            # Upload the operator's reference once per file (IP-Adapter conditioning).
-            ref_files = None
-            if ref_path is not None:
-                key = str(ref_path)
-                if key not in ref_cache:
-                    try:
-                        ref_cache[key] = client.upload_image(
-                            ref_path.read_bytes(), f"species-ref-{ref_path.stem}{ref_path.suffix}")
-                    except Exception as e:
-                        print(f"  (ref upload failed for {ref_path.name}: {e})")
-                        ref_cache[key] = None
-                if ref_cache[key]:
-                    ref_files = [ref_cache[key]]
-            try:
-                print(f"→ rendering {tag}{' [ref]' if ref_files else ''} …", flush=True)
-                raw = client.generate(positive, negative, width=cfg.gen_width,
-                                      height=cfg.gen_height, steps=cfg.steps,
-                                      reference_filenames=ref_files)
-                enc = encode_webp(raw, store_width=768, thumb_width=256,
-                                  quality=cfg.webp_quality)
-                out.write_bytes(enc.data)
-                made += 1
-                print(f"  ✓ wrote {out.relative_to(_OUT_DIR.parents[3])}")
-            except ImageServiceUnavailable as e:
-                print(f"  ✗ service offline: {e}")
+
+    # Lineage portraits, namespaced "<race>-<lineage>-<sex>.webp".
+    for race_slug, lin_slug, look in lin_catalog:
+        for sex in sexes:
+            cute = sex == "f" and _norm(race_slug) in small
+            ref_files = style_ref_files() if (use_style_ref and not dry_run) else None
+            if not render(_OUT_DIR / f"{race_slug}-{lin_slug}-{sex}.webp",
+                          build_positive(look, sex, style, cute, skip_grit),
+                          f"{race_slug}-{lin_slug}-{sex}", ref_files):
                 return made
-            except Exception as e:
-                print(f"  ✗ {tag} failed: {e}")
+
     return made
 
 
@@ -334,6 +518,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="force IP-Adapter on for this run (use with --ref-dir)")
     ap.add_argument("--ip-weight", type=float, default=None,
                     help="IP-Adapter identity strength 0..1 (default from config, ~0.65)")
+    ap.add_argument("--lineages", action="store_true",
+                    help="also render per-lineage portraits for the visually-distinct "
+                    "lineages (elf high/wood/drow, gnome forest/rock, dragonborn scale "
+                    "colours, shifter aspects) as <race>-<lineage>-<sex>.webp")
+    ap.add_argument("--skip-base", action="store_true",
+                    help="skip the base-species pass (use with --lineages for lineages only)")
+    ap.add_argument("--style-ref", help="one image whose ART STYLE every portrait should "
+                    "match (IP-Adapter style-transfer). Grit descriptors are dropped so the "
+                    "reference's look leads. Pair with --ip-weight (~0.8-1.0).")
     a = ap.parse_args(argv)
 
     if a.list:
@@ -350,8 +543,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if ref_dir and not ref_dir.is_dir():
         print(f"⚠ --ref-dir {ref_dir} is not a folder; ignoring.")
         ref_dir = None
+    style_ref = Path(a.style_ref).expanduser() if a.style_ref else None
+    if style_ref and not style_ref.is_file():
+        print(f"⚠ --style-ref {style_ref} is not a file; ignoring.")
+        style_ref = None
     n = generate_species(slugs, sexes, force=a.force, dry_run=a.dry_run, ref_dir=ref_dir,
-                         ipadapter=a.ipadapter or bool(ref_dir), ip_weight=a.ip_weight)
+                         ipadapter=a.ipadapter or bool(ref_dir), ip_weight=a.ip_weight,
+                         lineages=a.lineages, base=not a.skip_base, style_ref=style_ref)
     if not a.dry_run:
         print(f"\nDone — {n} portrait(s) generated into {_OUT_DIR}.")
         print("Review them, then `git add -f` the SRD/PHB ones you want in the repo "

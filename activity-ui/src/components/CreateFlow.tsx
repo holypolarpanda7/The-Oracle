@@ -3,19 +3,25 @@ import type { CCOptions, CCPayload } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
 
-/** Male+female species portraits for a race card. Each image hides itself if the
- * art hasn't been generated yet, so the strip simply collapses when absent. */
-function SpeciesPortrait({ slug, large }: { slug: string; large?: boolean }) {
-  const [ok, setOk] = useState<{ m: boolean; f: boolean }>({ m: true, f: true });
-  useEffect(() => { setOk({ m: true, f: true }); }, [slug]);
-  const p = speciesPortraitFor(slug);
-  if (!ok.m && !ok.f) return null;
+/** Male+female species portraits for a race/lineage card. Each image walks a
+ * candidate list (lineage art → base species art) and hides itself only when
+ * every candidate 404s, so the strip degrades gracefully when art is absent. */
+function SpeciesPortrait({ slug, lineageSlug, large }: {
+  slug: string; lineageSlug?: string; large?: boolean;
+}) {
+  const p = speciesPortraitFor(slug, lineageSlug);
+  const [mi, setMi] = useState(0);
+  const [fi, setFi] = useState(0);
+  useEffect(() => { setMi(0); setFi(0); }, [slug, lineageSlug]);
+  const mDone = mi >= p.m.length;
+  const fDone = fi >= p.f.length;
+  if (mDone && fDone) return null;
   return (
     <div className={`cf-portrait${large ? " cf-portrait-lg" : ""}`}>
-      {ok.m && <img src={p.m} alt="" loading="lazy"
-                    onError={() => setOk((s) => ({ ...s, m: false }))} />}
-      {ok.f && <img src={p.f} alt="" loading="lazy"
-                    onError={() => setOk((s) => ({ ...s, f: false }))} />}
+      {!mDone && <img key={p.m[mi]} src={p.m[mi]} alt="" loading="lazy"
+                      onError={() => setMi((i) => i + 1)} />}
+      {!fDone && <img key={p.f[fi]} src={p.f[fi]} alt="" loading="lazy"
+                      onError={() => setFi((i) => i + 1)} />}
     </div>
   );
 }
@@ -303,6 +309,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                   <div className="cf-sub-label" style={{ marginTop: 18 }}>
                     {race.name} — racial features
                   </div>
+                  <SpeciesPortrait slug={race.slug} lineageSlug={d.lineage} large />
                   <p className="cf-detail-meta">
                     {(race.creature_type ?? "Humanoid")} · {race.size} · {race.speed} ft
                     {race.darkvision ? " · darkvision" : ""}
@@ -327,6 +334,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                           className={`cf-card ${d.lineage === l.slug ? "picked" : ""}`}
                           onClick={() => { uiTick(); setD({ ...d, lineage: l.slug }); }}
                         >
+                          <SpeciesPortrait slug={race.slug} lineageSlug={l.slug} />
                           <div className="cf-card-name">{l.name}</div>
                           <div className="cf-card-sub">
                             {l.traits.length ? l.traits.join(" · ") : "—"}
@@ -841,7 +849,7 @@ function DetailPanel({ opts, stage, raceSlug, clsSlug, lineageSlug, hovered }: {
       return (
         <div className="cf-detail-body">
           <h3>{r.name}{lin ? ` · ${lin.name}` : ""}</h3>
-          <SpeciesPortrait slug={r.slug} large />
+          <SpeciesPortrait slug={r.slug} lineageSlug={lin ? lineageSlug : undefined} large />
           <p className="cf-detail-meta">
             {(r.creature_type ?? "Humanoid")} · {r.size} · {(lin?.speed ?? r.speed)} ft speed
             {(lin?.darkvision ?? r.darkvision) ? " · darkvision" : ""}
