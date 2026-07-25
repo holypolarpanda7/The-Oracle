@@ -435,6 +435,7 @@ body {
 .ps-upload.disabled { opacity: 0.5; pointer-events: none; }
 .ps-note { color: var(--text-dim); font-size: 0.8rem; font-style: italic; margin: 0; }
 .ps-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.ps-enter-err { text-align: center; margin: 4px 0 0; }
 @media (max-width: 560px) {
   .ps-body { grid-template-columns: 1fr; }
   .ps-frame { max-width: 240px; margin: 0 auto; }

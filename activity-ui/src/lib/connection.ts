@@ -4,6 +4,9 @@ import { demoScript } from "./demo";
 export interface Connection {
   send(ev: ClientEvent): void;
   close(): void;
+  /** True when a send will actually be delivered (open socket, or demo feed).
+   *  Lets callers fail fast instead of no-op'ing into a silent dead-end. */
+  isOpen(): boolean;
 }
 
 /** Connect to the backend session socket; if unreachable, fall back to the
@@ -43,6 +46,7 @@ export function connect(
       }
     },
     close() { ws.close(); },
+    isOpen() { return demo || ws.readyState === WebSocket.OPEN; },
   };
 }
 

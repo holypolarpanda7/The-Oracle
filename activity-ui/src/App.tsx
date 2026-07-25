@@ -38,6 +38,11 @@ export default function App({ session }: { session: Session }) {
   const [levelUp, setLevelUp] = useState<LevelUpData | null>(null);
   const [busy, setBusy] = useState(false);
   const [ccError, setCcError] = useState<string | null>(null);
+  // Portrait-step → world entry: the enter round-trip runs an LLM intro + scene
+  // render and can take a while (or fail), so the portrait step needs its own
+  // progress + error feedback — otherwise the button looks like it does nothing.
+  const [entering, setEntering] = useState(false);
+  const [enterError, setEnterError] = useState<string | null>(null);
   const [notice, setNotice] = useState<
     | { kind: "join_blocked"; reason: string; charName: string }
     | { kind: "invite"; place: string; channel: string }
@@ -50,8 +55,38 @@ export default function App({ session }: { session: Session }) {
   const lexRef = useRef<LexEntry[]>([]);
   const connRef = useRef<Connection | null>(null);
   const pendingEnterRef = useRef<string | null>(null);
+  const enterTimerRef = useRef<number | null>(null);
   const screenRef = useRef<Screen>("landing");
   screenRef.current = screen;
+
+  const clearEnterTimer = () => {
+    if (enterTimerRef.current) {
+      window.clearTimeout(enterTimerRef.current);
+      enterTimerRef.current = null;
+    }
+  };
+
+  /** Fire an `enter`, with progress + a failsafe timeout so the world-entry
+   *  button never dead-ends (the round-trip runs an LLM intro + scene render). */
+  const beginEnter = (opts: { character_name: string; solo?: boolean }) => {
+    lastEnterRef.current = opts.character_name;
+    // A socket that dropped during creation would swallow this send silently —
+    // fail fast with an actionable message instead of a dead button.
+    if (connRef.current && !connRef.current.isOpen()) {
+      setEnterError("Lost the link to the Oracle — reload the Activity to reconnect.");
+      setEntering(false);
+      return;
+    }
+    setEnterError(null);
+    setEntering(true);
+    clearEnterTimer();
+    enterTimerRef.current = window.setTimeout(() => {
+      enterTimerRef.current = null;
+      setEntering(false);
+      setEnterError("The world is slow to open — the Oracle may be busy.");
+    }, 90000);
+    connRef.current?.send({ t: "enter", ...opts });
+  };
 
   useEffect(() => {
     const channel = session.channel;
@@ -69,7 +104,9 @@ export default function App({ session }: { session: Session }) {
           }
           break;
         case "entered":
+          clearEnterTimer();
           setScreen("play");
+          setEntering(false);
           break;
         case "cc_done": {
           // Detour through the portrait step before entering the world. We do
@@ -82,9 +119,19 @@ export default function App({ session }: { session: Session }) {
           break;
         }
         case "cc_error":
-          setCcError(ev.detail);
+          // On the portrait step this event means the *enter* failed, not CC —
+          // surface it there (CreateFlow isn't mounted to show ccError).
+          if (screenRef.current === "portrait") {
+            clearEnterTimer();
+            setEnterError(ev.detail);
+            setEntering(false);
+          } else {
+            setCcError(ev.detail);
+          }
           break;
         case "join_blocked":
+          clearEnterTimer();
+          setEntering(false);
           setNotice({ kind: "join_blocked", reason: ev.reason,
                       charName: lastEnterRef.current });
           break;
@@ -204,10 +251,7 @@ export default function App({ session }: { session: Session }) {
         {screen === "landing" && (
           <Landing
             characters={characters}
-            onEnter={(name) => {
-              lastEnterRef.current = name;
-              connRef.current?.send({ t: "enter", character_name: name });
-            }}
+            onEnter={(name) => beginEnter({ character_name: name })}
             onCreate={() => { setCcError(null); setScreen("create"); }}
           />
         )}
@@ -224,8 +268,7 @@ export default function App({ session }: { session: Session }) {
                   <div className="lu-actions" style={{ gap: 10 }}>
                     <button className="lu-confirm" onClick={() => {
                       setNotice(null);
-                      connRef.current?.send({
-                        t: "enter", character_name: notice.charName, solo: true });
+                      beginEnter({ character_name: notice.charName, solo: true });
                     }}>Travel on your own tale</button>
                     <button className="lu-confirm" onClick={() => setNotice(null)}>
                       Back
@@ -267,10 +310,9 @@ export default function App({ session }: { session: Session }) {
           <PortraitStep
             name={newChar.name}
             characterId={newChar.id}
-            onDone={() => {
-              lastEnterRef.current = newChar.name;
-              connRef.current?.send({ t: "enter", character_name: newChar.name });
-            }}
+            entering={entering}
+            enterError={enterError}
+            onDone={() => beginEnter({ character_name: newChar.name })}
           />
         )}
 

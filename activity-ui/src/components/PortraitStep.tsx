@@ -4,10 +4,14 @@ import { uiTick } from "../lib/sound";
 /** Post-creation portrait step: summon a likeness from a description (diffusion)
  *  or upload one, then enter the world. Fully skippable — a portrait can be set
  *  in-world later, and it's optional if the imagery backend is offline. */
-export function PortraitStep({ name, characterId, onDone }: {
+export function PortraitStep({ name, characterId, onDone, entering, enterError }: {
   name: string;
   characterId: number | null;
   onDone: () => void;
+  /** True while the world-entry round-trip is in flight (LLM intro + scene). */
+  entering?: boolean;
+  /** Set if the entry attempt failed — shown with the buttons still usable. */
+  enterError?: string | null;
 }) {
   const [desc, setDesc] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
@@ -104,12 +108,20 @@ export function PortraitStep({ name, characterId, onDone }: {
         </div>
       </div>
 
+      {enterError && (
+        <p className="cf-error ps-enter-err">
+          ⚠ {enterError} — the Oracle stumbled. Try entering again.
+        </p>
+      )}
+
       <footer className="cf-foot ps-foot">
-        <button className="cf-cancel" onClick={() => { uiTick(); onDone(); }}>
+        <button className="cf-cancel" disabled={entering || busy}
+                onClick={() => { uiTick(); onDone(); }}>
           Skip for now
         </button>
-        <button className="lu-confirm" onClick={() => { uiTick(); onDone(); }}>
-          Enter the world ➤
+        <button className="lu-confirm" disabled={entering || busy}
+                onClick={() => { uiTick(); onDone(); }}>
+          {entering ? "Entering the world…" : "Enter the world ➤"}
         </button>
       </footer>
     </div>
