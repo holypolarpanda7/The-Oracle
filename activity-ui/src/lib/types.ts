@@ -226,6 +226,37 @@ export interface CCPayload {
   wondrous_item?: string;
   deity?: string;
   gender?: string;
+  // Spell slugs chosen at creation (class list + Magic Initiate). cantrips =
+  // level-0 picks, spells = level-1 picks.
+  cantrips?: string[];
+  spells?: string[];
+}
+
+/** Level-1 spellcasting info for a class (null for non-casters). */
+export interface Spellcasting {
+  ability: string; cantrips: number; spells: number;
+  mode: "known" | "prepared" | "spellbook";
+}
+
+/** A feat's creation-time choice (null when the feat needs none). */
+export interface FeatChoice {
+  kind: "skills" | "magic_initiate";
+  n?: number; cantrips?: number; spells?: number;
+  classes?: string[]; hint?: string;
+}
+
+/** One spell in a pick list (GET /cc/spells/{class}). */
+export interface SpellBrief {
+  slug: string; name: string; level: number; school?: string | null;
+  concentration?: boolean; ritual?: boolean; brief?: string;
+}
+
+/** GET /cc/spells/{class} response. */
+export interface CCSpells {
+  caster: boolean; class: string;
+  cantrips_n: number; spells_n: number;
+  ability?: string | null; mode?: string | null;
+  cantrips: SpellBrief[]; spells: SpellBrief[];
 }
 
 /** GET /cc/options response (deterministic CC data from the rules DB). */
@@ -249,9 +280,11 @@ export interface CCOptions {
     spellcasting_ability?: string | null;
     saving_throws: string[];
     skill_choices_n: number; skill_options: string[];
+    spellcasting?: Spellcasting | null;
   }[];
   feats: { slug: string; name: string; category?: string;
-           prerequisite?: string | null; min_level?: number; brief: string }[];
+           prerequisite?: string | null; min_level?: number; brief: string;
+           choices?: FeatChoice | null }[];
   backgrounds: {
     slug: string; name: string; skills: string[];
     feature?: string | null; abilities?: string[];

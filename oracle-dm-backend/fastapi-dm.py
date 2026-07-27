@@ -572,6 +572,11 @@ class RegisterCharacterRequest(BaseModel):
     bought_items: Optional[List[Dict[str, Any]]] = None
     # A free common wondrous item chosen at creation (rules_item slug).
     wondrous_item: Optional[str] = None
+    # Spells chosen at creation — spell slugs. `cantrips` = level-0 picks,
+    # `spells` = level-1 picks (both from the class list and/or Magic Initiate).
+    # Resolved to display names and stored on Character.spells.
+    cantrips: Optional[List[str]] = None
+    spells: Optional[List[str]] = None
 
 
 class CheckCharacterRequest(BaseModel):
@@ -9271,6 +9276,16 @@ async def register_character(req: RegisterCharacterRequest):
                     tags.append(t)
             char.tags = tags
 
+        # Spells chosen at creation (class cantrips/spells + Magic Initiate).
+        # Stored as display names to match the inscribe flow's format.
+        spell_slugs = list(dict.fromkeys((req.cantrips or []) + (req.spells or [])))
+        if spell_slugs:
+            names: List[str] = []
+            for sl in spell_slugs:
+                sp = rules_lib.get_spell(sl)
+                names.append(sp.name if sp else sl)
+            char.spells = list(dict.fromkeys(names))
+
         # Starting gear: either the class/background package, or buy-your-own.
         buy_mode = (req.gear_mode or "kit").strip().lower() == "buy"
         purchase = None
@@ -9383,6 +9398,35 @@ def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
     return True, None
 
 
+# Level-1 spellcasting per class: how many cantrips + first-level spells the
+# player PICKS at creation, plus the casting ability and a mode label for the
+# UI. Numbers are the 2024 PHB level-1 counts (editable game facts, not text).
+# Classes absent here are non-casters and get no spell stage.
+CC_SPELLCASTING: Dict[str, Dict[str, Any]] = {
+    "bard":      {"ability": "CHA", "cantrips": 2, "spells": 4, "mode": "known"},
+    "cleric":    {"ability": "WIS", "cantrips": 3, "spells": 4, "mode": "prepared"},
+    "druid":     {"ability": "WIS", "cantrips": 2, "spells": 4, "mode": "prepared"},
+    "paladin":   {"ability": "CHA", "cantrips": 0, "spells": 2, "mode": "prepared"},
+    "ranger":    {"ability": "WIS", "cantrips": 0, "spells": 2, "mode": "known"},
+    "sorcerer":  {"ability": "CHA", "cantrips": 4, "spells": 2, "mode": "known"},
+    "warlock":   {"ability": "CHA", "cantrips": 2, "spells": 2, "mode": "known"},
+    "wizard":    {"ability": "INT", "cantrips": 3, "spells": 6, "mode": "spellbook"},
+    "artificer": {"ability": "INT", "cantrips": 2, "spells": 2, "mode": "prepared"},
+}
+
+# Origin-feat choices resolved at creation. The client folds the picks into the
+# normal payload (skills into `skills`, spells into `cantrips`/`spells`), so no
+# extra registration plumbing is needed. SRD-safe feats only; owned-book feat
+# schemas can be added to a local override later.
+FEAT_CHOICES: Dict[str, Dict[str, Any]] = {
+    "skilled": {"kind": "skills", "n": 3,
+                "hint": "Choose 3 skill proficiencies."},
+    "magic-initiate": {"kind": "magic_initiate", "cantrips": 2, "spells": 1,
+                       "classes": ["cleric", "druid", "wizard"],
+                       "hint": "Choose a class, then 2 cantrips + 1 level-1 spell."},
+}
+
+
 @app.get("/cc/options")
 def cc_options():
     """Everything the deterministic CC wizard needs: races, classes (with
@@ -9438,11 +9482,15 @@ def cc_options():
             "saving_throws": c.saving_throws or [],
             "skill_choices_n": c.skill_choices_n or 2,
             "skill_options": c.skill_options or [],
+            # Level-1 spell picks (None for non-casters) — drives the spell stage.
+            "spellcasting": CC_SPELLCASTING.get(c.index_slug),
         } for c in classes],
         "feats": [{
             "slug": f.index_slug, "name": f.name, "category": f.category,
             "prerequisite": f.prerequisite, "min_level": f.min_level,
             "brief": (f.benefit or "")[:160],
+            # A choice the player must resolve when taking this feat (or None).
+            "choices": FEAT_CHOICES.get(f.index_slug),
         } for f in feats],
         "backgrounds": [{
             "slug": bg, "name": bg.title(),
@@ -9484,6 +9532,35 @@ def cc_roll_abilities():
     rolls = [dice_roll("4d6kh3") for _ in range(6)]
     return {"rolls": [{"total": r.total, "kept": r.rolls, "dropped": r.dropped,
                        "detail": r.detail} for r in rolls]}
+
+
+@app.get("/cc/spells/{class_slug}")
+def cc_spells(class_slug: str):
+    """Level-1 cantrip + first-level spell lists a class may pick from, plus the
+    pick counts / casting ability. Powers the CC spell stage and the Magic
+    Initiate origin feat. Non-casters return caster=false with empty lists."""
+    slug = (class_slug or "").strip().lower()
+    sc = CC_SPELLCASTING.get(slug)
+    from rules.models import DndClass as _Cls
+    with Session(rules_lib.engine) as s:
+        row = s.exec(select(_Cls).where(_Cls.index_slug == slug)).first()
+    cls_name = row.name if row else slug
+
+    def _brief(sp):
+        first = (sp.desc or "").split(". ")[0]
+        return {"slug": sp.index_slug, "name": sp.name, "level": sp.level,
+                "school": sp.school, "concentration": bool(sp.concentration),
+                "ritual": bool(sp.ritual), "brief": first[:140]}
+
+    cantrips = [_brief(sp) for sp in
+                rules_lib.legal_spells_for(cls_name, max_level=0)]
+    lvl1 = [_brief(sp) for sp in
+            rules_lib.legal_spells_for(cls_name, max_level=1, include_cantrips=False)]
+    return {"caster": sc is not None, "class": slug,
+            "cantrips_n": (sc or {}).get("cantrips", 0),
+            "spells_n": (sc or {}).get("spells", 0),
+            "ability": (sc or {}).get("ability"), "mode": (sc or {}).get("mode"),
+            "cantrips": cantrips, "spells": lvl1}
 
 
 class DDBImportRequest(BaseModel):

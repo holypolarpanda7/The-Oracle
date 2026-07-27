@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CCOptions, CCPayload } from "../lib/types";
+import type { CCOptions, CCPayload, CCSpells, SpellBrief } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
 
@@ -34,18 +34,19 @@ const ABILITY_FULL: Record<Ability, string> = {
 };
 
 type Stage = "race" | "class" | "background" | "abilities" | "skills"
-  | "gear" | "wondrous" | "review";
+  | "spells" | "gear" | "wondrous" | "review";
 const STAGES: { id: Stage; label: string }[] = [
   { id: "race", label: "Origin" },
   { id: "class", label: "Class" },
   { id: "background", label: "Background" },
   { id: "abilities", label: "Abilities" },
   { id: "skills", label: "Skills" },
+  { id: "spells", label: "Spells" },   // shown only for spellcasters / Magic Initiate
   { id: "gear", label: "Gear" },
   { id: "wondrous", label: "Wonder" },
   { id: "review", label: "Name & Seal" },
 ];
-const NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
+const NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX"];
 
 interface Draft {
   race?: string;
@@ -64,6 +65,12 @@ interface Draft {
   skills: string[];
   featBg?: string;    // the background's Origin feat
   featRace?: string;  // a species-granted feat (Human origin, Custom Lineage any)
+  featSkills: string[];   // skills granted by a chosen feat (e.g. Skilled)
+  cantrips: string[];     // class cantrip slugs
+  spells: string[];       // class level-1 spell slugs
+  miClass?: string;       // Magic Initiate: chosen class list
+  miCantrips: string[];   // Magic Initiate cantrip slugs
+  miSpells: string[];     // Magic Initiate level-1 spell slug
   gearMode: "kit" | "buy";
   cart: Record<string, number>;   // buyable item name -> quantity
   wondrous?: string;              // rules_item slug
@@ -75,13 +82,62 @@ interface Draft {
 const freshDraft = (): Draft => ({
   boostMode: "two-one", method: "standard_array", pool: [], assigned: {},
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
-  skills: [], gearMode: "kit", cart: {}, name: "",
+  skills: [], featSkills: [], cantrips: [], spells: [],
+  miCantrips: [], miSpells: [], gearMode: "kit", cart: {}, name: "",
 });
 
 const CASTER_CLASSES = new Set([
   "bard", "cleric", "druid", "paladin", "ranger", "sorcerer", "warlock",
   "wizard", "artificer",
 ]);
+
+// The 18 standard skills — the pool for choice-feats like Skilled.
+const ALL_SKILLS = [
+  "Acrobatics", "Animal Handling", "Arcana", "Athletics", "Deception",
+  "History", "Insight", "Intimidation", "Investigation", "Medicine", "Nature",
+  "Perception", "Performance", "Persuasion", "Religion", "Sleight of Hand",
+  "Stealth", "Survival",
+];
+
+/** A "choose N spells" grid (cantrips or level-1). Cards toggle; the grid locks
+ *  once N are picked. Shared by class spellcasting and Magic Initiate. */
+function SpellPicker({ title, list, chosen, n, onToggle }: {
+  title: string; list: SpellBrief[]; chosen: string[]; n: number;
+  onToggle: (slug: string) => void;
+}) {
+  const left = n - chosen.length;
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div className="cf-sub-label">
+        {title}{left > 0 ? <span className="cf-req"> · {left} left</span> : null}
+      </div>
+      {list.length === 0
+        ? <p className="cf-hint">No spells available — check the rules import.</p>
+        : (
+          <div className="cf-grid">
+            {list.map((sp) => {
+              const on = chosen.includes(sp.slug);
+              return (
+                <button
+                  key={sp.slug}
+                  className={`cf-card ${on ? "picked" : ""}`}
+                  disabled={!on && chosen.length >= n}
+                  onClick={() => { uiTick(); onToggle(sp.slug); }}
+                >
+                  <div className="cf-card-name">{sp.name}</div>
+                  <div className="cf-card-sub">
+                    {[sp.school, sp.concentration ? "conc." : null,
+                      sp.ritual ? "ritual" : null].filter(Boolean).join(" · ")}
+                    {sp.brief ? ` — ${sp.brief}` : ""}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+    </div>
+  );
+}
 
 /** Client-side mirror of the backend feat-prerequisite check (level minimum,
     ability minimums, spellcasting). Returns null when met, else the reason. */
@@ -120,6 +176,10 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   const [stage, setStage] = useState<Stage>("race");
   const [d, setD] = useState<Draft>(freshDraft());
   const [detail, setDetail] = useState<string | null>(null);
+  // Spell lists (fetched lazily): the class's own list, and — for Magic
+  // Initiate — the feat's chosen-class list. Keyed by slug so we don't refetch.
+  const [spellData, setSpellData] = useState<CCSpells | null>(null);
+  const [miData, setMiData] = useState<CCSpells | null>(null);
   // Bring the racial-features + lineage panel into view when a species is
   // picked — on a phone it sits below the card grid and is easy to miss.
   const raceDetailRef = useRef<HTMLDivElement>(null);
@@ -128,6 +188,26 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     fetch("/cc/options").then((r) => r.json()).then(setOpts)
       .catch(() => setOpts(null));
   }, []);
+
+  // Fetch the class spell list when a caster class is (re)chosen.
+  useEffect(() => {
+    if (!d.cls) { setSpellData(null); return; }
+    let live = true;
+    fetch(`/cc/spells/${d.cls}`).then((r) => r.json())
+      .then((j: CCSpells) => { if (live) setSpellData(j.caster ? j : null); })
+      .catch(() => { if (live) setSpellData(null); });
+    return () => { live = false; };
+  }, [d.cls]);
+
+  // Fetch the Magic Initiate class list when its class is chosen.
+  useEffect(() => {
+    if (!d.miClass) { setMiData(null); return; }
+    let live = true;
+    fetch(`/cc/spells/${d.miClass}`).then((r) => r.json())
+      .then((j: CCSpells) => { if (live) setMiData(j); })
+      .catch(() => { if (live) setMiData(null); });
+    return () => { live = false; };
+  }, [d.miClass]);
 
   useEffect(() => {
     if (d.race && raceDetailRef.current) {
@@ -208,6 +288,26 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     return sum + (it ? it.cost_gp * qty : 0);
   }, 0), [d.cart, opts]);
 
+  // ----- feat & spell choices -----
+  // Choices carried by the chosen origin feats (Skilled → skills, Magic
+  // Initiate → a class + cantrips + a spell).
+  const chosenFeats = [d.featBg, d.featRace].filter(Boolean) as string[];
+  const featChoices = chosenFeats
+    .map((slug) => opts?.feats.find((f) => f.slug === slug)?.choices)
+    .filter(Boolean) as NonNullable<CCOptions["feats"][number]["choices"]>[];
+  const skilledChoice = featChoices.find((c) => c.kind === "skills");
+  const miChoice = featChoices.find((c) => c.kind === "magic_initiate");
+  const featSkillsDone = !skilledChoice || d.featSkills.length === (skilledChoice.n ?? 3);
+
+  // The Spells stage appears when the class casts OR Magic Initiate was taken.
+  const needsSpells = !!spellData || !!miChoice;
+  const classCantripsDone = !spellData || d.cantrips.length === spellData.cantrips_n;
+  const classSpellsDone = !spellData || d.spells.length === spellData.spells_n;
+  const miDone = !miChoice
+    || (!!d.miClass && d.miCantrips.length === (miChoice.cantrips ?? 2)
+        && d.miSpells.length === (miChoice.spells ?? 1));
+  const spellsDone = classCantripsDone && classSpellsDone && miDone;
+
   const stageDone: Record<Stage, boolean> = {
     race: !!d.race && (!(race?.lineages?.length) || !!d.lineage),
     class: !!d.cls,
@@ -215,12 +315,16 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     abilities: abilitiesDone,
     skills: d.skills.length === skillsNeeded
       && (!needsBgFeat || !!d.featBg)
-      && (!raceFeat || !!d.featRace),
+      && (!raceFeat || !!d.featRace)
+      && featSkillsDone,
+    spells: !needsSpells || spellsDone,
     gear: d.gearMode === "kit" || cartCost <= budget,  // buy is fine even empty
     wondrous: true,                                     // optional — always ok
     review: d.name.trim().length >= 2,
   };
-  const stageIdx = STAGES.findIndex((s) => s.id === stage);
+  // The Spells stage is hidden for non-casters without Magic Initiate.
+  const visibleStages = STAGES.filter((s) => s.id !== "spells" || needsSpells);
+  const visIdx = visibleStages.findIndex((s) => s.id === stage);
   const canNext = stageDone[stage];
 
   const next = () => {
@@ -230,13 +334,19 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
       for (const a of ABILITIES) stats[ABILITY_FULL[a]] = finalScore(a) ?? 10;
       const feats = [d.featBg, d.featRace].filter(Boolean) as string[];
       const lineageName = race?.lineages?.find((l) => l.slug === d.lineage)?.name;
+      const allCantrips = [...d.cantrips, ...d.miCantrips];
+      const allSpells = [...d.spells, ...d.miSpells];
       onDone({
         name: d.name.trim(),
         race: lineageName ? `${race!.name} (${lineageName})` : race!.name,
         char_class: cls!.name, background: bg!.slug,
         deity: d.deity?.trim() || undefined,
         gender: d.gender?.trim() || undefined,
-        stats, skills: d.skills, feats: feats.length ? feats : undefined,
+        // Feat-granted skills (Skilled) fold into the skill list.
+        stats, skills: [...d.skills, ...d.featSkills],
+        feats: feats.length ? feats : undefined,
+        cantrips: allCantrips.length ? allCantrips : undefined,
+        spells: allSpells.length ? allSpells : undefined,
         gear_mode: d.gearMode,
         bought_items: d.gearMode === "buy"
           ? Object.entries(d.cart).map(([name, quantity]) => ({ name, quantity }))
@@ -245,7 +355,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
       });
       return;
     }
-    setStage(STAGES[stageIdx + 1].id);
+    setStage(visibleStages[visIdx + 1].id);
   };
 
   if (!opts) {
@@ -255,11 +365,11 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   return (
     <div className="create">
       <nav className="cf-stages">
-        {STAGES.map((s, i) => (
+        {visibleStages.map((s, i) => (
           <button
             key={s.id}
             className={`cf-stage ${stage === s.id ? "on" : ""} ${stageDone[s.id] ? "done" : ""}`}
-            disabled={i > 0 && !STAGES.slice(0, i).every((p) => stageDone[p.id])}
+            disabled={i > 0 && !visibleStages.slice(0, i).every((p) => stageDone[p.id])}
             onClick={() => { uiTick(); setStage(s.id); }}
           >
             <span className="cf-stage-n">{NUMERALS[i]}</span>
@@ -355,7 +465,10 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
               <button
                 key={c.slug}
                 className={`cf-card ${d.cls === c.slug ? "picked" : ""}`}
-                onClick={() => { uiTick(); setD({ ...d, cls: c.slug, skills: [] }); setDetail(c.slug); }}
+                onClick={() => { uiTick();
+                  // Changing class invalidates class skills + spell picks.
+                  setD({ ...d, cls: c.slug, skills: [], cantrips: [], spells: [] });
+                  setDetail(c.slug); }}
               >
                 <div className="cf-card-name">{c.name}</div>
                 <div className="cf-card-sub">
@@ -452,7 +565,8 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                   .replace("grantS", "grants")}
                 feats={originFeats} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featBg}
-                onPick={(slug) => setD({ ...d, featBg: slug })} />
+                onPick={(slug) => setD({ ...d, featBg: slug,
+                  featSkills: [], miClass: undefined, miCantrips: [], miSpells: [] })} />
             )}
             {raceFeat && (
               <FeatPicker
@@ -461,7 +575,96 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                   : `${race?.name} grants an Origin feat`}
                 feats={raceFeatPool} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featRace}
-                onPick={(slug) => setD({ ...d, featRace: slug })} />
+                onPick={(slug) => setD({ ...d, featRace: slug,
+                  featSkills: [], miClass: undefined, miCantrips: [], miSpells: [] })} />
+            )}
+            {skilledChoice && (
+              <div style={{ marginTop: 14 }}>
+                <div className="cf-sub-label">
+                  Your feat grants {skilledChoice.n ?? 3} skill proficiencies
+                  {!featSkillsDone && (
+                    <span className="cf-req">
+                      {" "}· {(skilledChoice.n ?? 3) - d.featSkills.length} left
+                    </span>
+                  )}
+                </div>
+                <div className="cf-chips">
+                  {ALL_SKILLS.map((s) => {
+                    const on = d.featSkills.includes(s);
+                    const already = d.skills.includes(s) || !!bg?.skills.includes(s);
+                    return (
+                      <button
+                        key={s}
+                        className={`cf-chip ${on ? "picked" : ""} ${already ? "granted" : ""}`}
+                        disabled={already
+                          || (!on && d.featSkills.length >= (skilledChoice.n ?? 3))}
+                        onClick={() => {
+                          uiTick();
+                          setD({ ...d, featSkills: on
+                            ? d.featSkills.filter((x) => x !== s)
+                            : [...d.featSkills, s] });
+                        }}
+                      >{s}</button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {stage === "spells" && (
+          <>
+            {spellData && (
+              <>
+                <div className="cf-sub-label">
+                  {cls?.name} spellcasting — {spellData.ability} · {spellData.mode}
+                </div>
+                {spellData.cantrips_n > 0 && (
+                  <SpellPicker
+                    title={`Cantrips (choose ${spellData.cantrips_n})`}
+                    list={spellData.cantrips} chosen={d.cantrips}
+                    n={spellData.cantrips_n}
+                    onToggle={(slug) => setD({ ...d, cantrips: d.cantrips.includes(slug)
+                      ? d.cantrips.filter((x) => x !== slug) : [...d.cantrips, slug] })} />
+                )}
+                <SpellPicker
+                  title={`${spellData.mode === "spellbook" ? "Spellbook"
+                    : "1st-level spells"} (choose ${spellData.spells_n})`}
+                  list={spellData.spells} chosen={d.spells} n={spellData.spells_n}
+                  onToggle={(slug) => setD({ ...d, spells: d.spells.includes(slug)
+                    ? d.spells.filter((x) => x !== slug) : [...d.spells, slug] })} />
+              </>
+            )}
+            {miChoice && (
+              <div style={{ marginTop: spellData ? 20 : 0 }}>
+                <div className="cf-sub-label">Magic Initiate — choose a spell class</div>
+                <div className="cf-chips" style={{ marginBottom: 12 }}>
+                  {(miChoice.classes ?? []).map((c) => (
+                    <button
+                      key={c}
+                      className={`cf-chip big ${d.miClass === c ? "picked" : ""}`}
+                      onClick={() => { uiTick();
+                        setD({ ...d, miClass: c, miCantrips: [], miSpells: [] }); }}
+                    >{c[0].toUpperCase() + c.slice(1)}</button>
+                  ))}
+                </div>
+                {d.miClass && miData && (
+                  <>
+                    <SpellPicker
+                      title={`${d.miClass} cantrips (choose ${miChoice.cantrips ?? 2})`}
+                      list={miData.cantrips} chosen={d.miCantrips}
+                      n={miChoice.cantrips ?? 2}
+                      onToggle={(slug) => setD({ ...d, miCantrips: d.miCantrips.includes(slug)
+                        ? d.miCantrips.filter((x) => x !== slug) : [...d.miCantrips, slug] })} />
+                    <SpellPicker
+                      title={`1st-level spell (choose ${miChoice.spells ?? 1})`}
+                      list={miData.spells} chosen={d.miSpells} n={miChoice.spells ?? 1}
+                      onToggle={(slug) => setD({ ...d, miSpells: d.miSpells.includes(slug)
+                        ? d.miSpells.filter((x) => x !== slug) : [...d.miSpells, slug] })} />
+                  </>
+                )}
+              </div>
             )}
           </>
         )}
