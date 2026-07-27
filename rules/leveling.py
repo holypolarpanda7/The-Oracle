@@ -76,18 +76,20 @@ _CANTRIPS_KNOWN = {
     "artificer": [(1, 2), (10, 3), (14, 4)],
 }
 
-# Leveled spells the character has by level (index = level-1). 2024 uses fixed
-# per-level counts (no ability-mod term) for KNOWN and PREPARED alike — the
-# wizard is the exception (spellbook, computed below). All EDITABLE game facts.
+# Leveled spells the character has by level (index = level-1). Values verified
+# against the 2024 SRD 5.2 class tables (5e-bits/5e-database src/2024, the
+# `prepared_spells` column — 2024 uses fixed per-level counts, no ability-mod
+# term). The wizard is the exception (spellbook, computed below). Artificer is
+# NOT in the 2024 SRD (owned book) — kept as a half-caster mirror of paladin.
 _SPELLS_BY_LEVEL = {
     # memorized / known lists
-    "bard":     [4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 15, 16, 18, 19, 19, 20, 22, 22, 22],
-    "sorcerer": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12, 13, 13, 14, 14, 15, 15, 15, 15],
+    "bard":     [4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22],
+    "sorcerer": [2, 4, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22],
     "warlock":  [2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15],
     "ranger":   [2, 3, 4, 5, 6, 6, 7, 7, 9, 9, 10, 10, 11, 11, 12, 12, 14, 14, 15, 15],
     # prepared counts (full: cleric/druid; half: paladin/artificer)
-    "cleric":   [4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 18, 19, 21, 22, 23, 24, 25],
-    "druid":    [4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 18, 19, 21, 22, 23, 24, 25],
+    "cleric":   [4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22],
+    "druid":    [4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 17, 18, 18, 19, 20, 21, 22],
     "paladin":  [2, 3, 4, 5, 6, 6, 7, 7, 9, 9, 10, 10, 11, 11, 12, 12, 14, 14, 15, 15],
     "artificer":[2, 3, 4, 5, 6, 6, 7, 7, 9, 9, 10, 10, 11, 11, 12, 12, 14, 14, 15, 15],
 }
