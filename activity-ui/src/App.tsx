@@ -201,7 +201,8 @@ export default function App({ session }: { session: Session }) {
           break;
         case "reprepare_data":
           setRepData({ count: ev.count, max_spell_level: ev.max_spell_level,
-            class: ev.class, current: ev.current, options: ev.options });
+            class: ev.class, current: ev.current, options: ev.options,
+            source: ev.source, no_spellbook: ev.no_spellbook });
           break;
         case "busy":
           setBusy(ev.on);

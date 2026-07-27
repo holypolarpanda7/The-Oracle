@@ -280,6 +280,7 @@ async def lifespan(app: FastAPI):
                     ("tags", "JSON"),
                     ("stats", "JSON"),
                     ("spells", "JSON"),
+                    ("prepared_spells", "JSON"),
                     ("inventory", "JSON"),
                     ("conditions", "JSON"),
                     ("ddb_url", "TEXT"),
@@ -928,6 +929,9 @@ class Character(SQLModel, table=True):
     tags: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     stats: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     spells: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Wizards' daily-prepared subset, chosen from their spellbook (`spells`).
+    # Other prepared casters prepare directly into `spells`; this stays None.
+    prepared_spells: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     inventory: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     # Expended spell slots since the last rest: {"1": 2, "3": 1} (slot level ->
     # used count). Cleared on a long rest; warlock pact slots clear on short.
@@ -9616,6 +9620,24 @@ def _character_leveled_slugs(char: Character) -> list[str]:
     return out
 
 
+def _names_to_slugs(names) -> list[str]:
+    out: list[str] = []
+    for n in (names or []):
+        nm = n if isinstance(n, str) else (n.get("name") if isinstance(n, dict) else None)
+        sp = rules_lib.get_spell(nm) if nm else None
+        if sp:
+            out.append(sp.index_slug)
+    return out
+
+
+def _has_spellbook_item(char: Character) -> bool:
+    """True if the character carries a spellbook (wizards prepare only from one)."""
+    for it in _inventory_items(char):
+        if _item_is_spellbook(it.get("name"), None):
+            return True
+    return False
+
+
 def _set_prepared_spells(char: Character, slugs: List[str]) -> None:
     """Replace the character's LEVELED (prepared) spells with the chosen slugs,
     keeping cantrips. Stored as names to match the flat char.spells format."""
@@ -13924,23 +13946,48 @@ async def activity_ws(ws: WebSocket, channel: str):
                     await send_levelup()  # subclass still required
                 continue
 
-            # ---- prepared caster: re-prepare spells (on a long rest) ----
+            # ---- caster: re-prepare spells (on a long rest) ----
+            # Prepared casters (cleric/druid/paladin/artificer) prepare from the
+            # whole class list; a WIZARD prepares from the spells IN THEIR
+            # SPELLBOOK — and with no spellbook item, has nothing to prepare.
             if msg.get("t") == "reprepare":
                 cid = _activity_char_id(session_id, user_id)
                 if not cid:
                     continue
+                payload = None
                 with Session(engine) as s:
                     ch = s.get(Character, cid)
-                    if not ch or leveling.caster_mode(ch.char_class) != "prepared":
+                    if not ch:
                         continue
-                    count = leveling.spells_count(ch.char_class, ch.level)
+                    mode = leveling.caster_mode(ch.char_class)
+                    if mode not in ("prepared", "spellbook"):
+                        continue
                     max_lvl = _max_spell_level(ch.char_class, ch.level)
-                    current = _character_leveled_slugs(ch)
-                    options = [_spell_brief_dict(sp) for sp in rules_lib.legal_spells_for(
-                        ch.char_class, max_level=max(1, max_lvl), include_cantrips=False)]
-                await ws.send_json({
-                    "t": "reprepare_data", "count": count, "max_spell_level": max_lvl,
-                    "class": ch.char_class, "current": current, "options": options})
+                    if mode == "spellbook":   # wizard
+                        has_book = _has_spellbook_item(ch)
+                        options = []
+                        if has_book:
+                            for sl in _character_leveled_slugs(ch):  # spellbook contents
+                                sp = rules_lib.get_spell(sl)
+                                if sp:
+                                    options.append(_spell_brief_dict(sp))
+                        count = min(leveling.prepared_count(ch.char_class, ch.level),
+                                    len(options))
+                        current = _names_to_slugs(ch.prepared_spells)
+                        payload = {"count": count, "max_spell_level": max_lvl,
+                                   "class": ch.char_class, "current": current,
+                                   "options": options, "no_spellbook": not has_book,
+                                   "source": "spellbook"}
+                    else:                     # prepared: whole class list
+                        count = leveling.spells_count(ch.char_class, ch.level)
+                        options = [_spell_brief_dict(sp) for sp in rules_lib.legal_spells_for(
+                            ch.char_class, max_level=max(1, max_lvl), include_cantrips=False)]
+                        payload = {"count": count, "max_spell_level": max_lvl,
+                                   "class": ch.char_class,
+                                   "current": _character_leveled_slugs(ch),
+                                   "options": options, "no_spellbook": False,
+                                   "source": "class"}
+                await ws.send_json({"t": "reprepare_data", **payload})
                 continue
 
             if msg.get("t") == "reprepare_apply":
@@ -13948,16 +13995,29 @@ async def activity_ws(ws: WebSocket, channel: str):
                 if not cid:
                     continue
                 picks = [str(x) for x in (msg.get("spells") or [])]
+                applied = False
                 with Session(engine) as s:
                     ch = s.get(Character, cid)
-                    if not ch or leveling.caster_mode(ch.char_class) != "prepared":
+                    if not ch:
                         continue
-                    count = leveling.spells_count(ch.char_class, ch.level)
-                    if len(picks) != count:
-                        continue  # client enforces the count; ignore malformed
-                    _set_prepared_spells(ch, picks)
-                    s.add(ch)
-                    s.commit()
+                    mode = leveling.caster_mode(ch.char_class)
+                    if mode == "spellbook":   # wizard prepares a subset of the book
+                        book = set(_character_leveled_slugs(ch))
+                        picks = [p for p in picks if p in book]
+                        count = min(leveling.prepared_count(ch.char_class, ch.level), len(book))
+                        if len(picks) != count:
+                            continue
+                        ch.prepared_spells = [(rules_lib.get_spell(p).name
+                                               if rules_lib.get_spell(p) else p) for p in picks]
+                        s.add(ch); s.commit(); applied = True
+                    elif mode == "prepared":
+                        count = leveling.spells_count(ch.char_class, ch.level)
+                        if len(picks) != count:
+                            continue
+                        _set_prepared_spells(ch, picks)
+                        s.add(ch); s.commit(); applied = True
+                if not applied:
+                    continue
                 await ws.send_json({"t": "narration",
                                     "text": f"*{ch.name} prepares a fresh set of spells.*"})
                 sheet = _activity_sheet(session_id, user_id)

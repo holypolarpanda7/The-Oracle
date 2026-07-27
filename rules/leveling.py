@@ -132,6 +132,17 @@ def spells_count(class_name: Optional[str], level: int) -> int:
     return table[level - 1] if table else 0
 
 
+def prepared_count(class_name: Optional[str], level: int) -> int:
+    """How many spells a caster PREPARES for the day. Same as spells_count for
+    the prepared classes; for the wizard it's the full-caster prepared table
+    (NOT the spellbook size) — they prepare a subset of their spellbook."""
+    cls = (class_name or "").strip().lower()
+    if cls == "wizard":
+        level = max(1, min(MAX_LEVEL, int(level or 1)))
+        return _SPELLS_BY_LEVEL["cleric"][level - 1]   # 2024 wizard == full-caster table
+    return spells_count(class_name, level)
+
+
 def spell_progression(class_name: Optional[str], level: int) -> Optional[dict]:
     """{mode, cantrips_known, spells_count} at a level, or None for non-casters."""
     if not is_caster(class_name):

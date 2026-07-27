@@ -58,7 +58,7 @@ const sheet: ServerEvent = {
       { level: 2, total: 3, used: 1 },
       { level: 3, total: 2, used: 1 },
     ],
-    caster_mode: "prepared",   // 2024 bard prepares — shows the Prepare Spells button
+    caster_mode: "spellbook",   // demo the wizard-style prepare-from-spellbook flow
     resources: [{ name: "Bardic Insp.", total: 3, used: 0, die: "d8" }],
     features: [
       { name: "Breath Weapon", note: "2d10 fire · recharge on rest", kind: "fire" },

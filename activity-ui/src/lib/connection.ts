@@ -166,14 +166,16 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
   }
   if (ev.t === "reprepare") {
     const sp = (slug: string, name: string) => ({ slug, name, level: 1, school: "Evocation" });
+    // Demo the wizard path: prepare a subset FROM the spellbook (limited list).
     onEvent({
-      t: "reprepare_data", count: 4, max_spell_level: 3, class: "Bard",
-      current: ["cure-wounds", "faerie-fire", "healing-word", "dissonant-whispers"],
+      t: "reprepare_data", count: 4, max_spell_level: 3, class: "Wizard",
+      source: "spellbook", no_spellbook: false,
+      current: ["magic-missile", "shield", "detect-magic", "mage-armor"],
       options: [
-        sp("cure-wounds", "Cure Wounds"), sp("faerie-fire", "Faerie Fire"),
-        sp("healing-word", "Healing Word"), sp("dissonant-whispers", "Dissonant Whispers"),
-        sp("charm-person", "Charm Person"), sp("thunderwave", "Thunderwave"),
-        sp("sleep", "Sleep"), sp("heroism", "Heroism"),
+        sp("magic-missile", "Magic Missile"), sp("shield", "Shield"),
+        sp("detect-magic", "Detect Magic"), sp("mage-armor", "Mage Armor"),
+        sp("burning-hands", "Burning Hands"), sp("sleep", "Sleep"),
+        sp("thunderwave", "Thunderwave"),
       ],
     });
     return;

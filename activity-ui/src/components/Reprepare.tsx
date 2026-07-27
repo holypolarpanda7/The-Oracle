@@ -23,34 +23,53 @@ export function ReprepareOverlay({ data, onApply, onClose }: {
           <span className="lu-arc">{data.class} · choose {data.count}</span>
         </div>
         <ul className="lu-notes">
-          <li>On a long rest you may change the spells you have prepared.</li>
+          <li>
+            {data.source === "spellbook"
+              ? "On a long rest you prepare spells from your spellbook."
+              : "On a long rest you may change the spells you have prepared."}
+          </li>
         </ul>
-        <div className="lu-pick-label">
-          Prepared spells{left > 0 ? ` · ${left} left` : " · ✓"}
-        </div>
-        <div className="lu-options">
-          {data.options.map((sp) => {
-            const on = chosen.includes(sp.slug);
-            return (
-              <button
-                key={sp.slug}
-                className={`lu-option ${on ? "picked" : ""}`}
-                disabled={!on && chosen.length >= data.count}
-                onClick={() => toggle(sp.slug)}
-              >
-                <div className="lu-opt-name">{sp.name}</div>
-                <div className="lu-opt-feats">
-                  {[sp.school, sp.concentration ? "conc." : null,
-                    sp.ritual ? "ritual" : null].filter(Boolean).join(" · ")}
-                </div>
-              </button>
-            );
-          })}
-        </div>
+
+        {data.no_spellbook ? (
+          <p className="cf-error" style={{ margin: "6px 0 12px" }}>
+            ⚠ You have no spellbook — a wizard prepares spells from one. Acquire or
+            inscribe a spellbook, then prepare.
+          </p>
+        ) : (
+          <>
+            <div className="lu-pick-label">
+              Prepared spells{left > 0 ? ` · ${left} left` : " · ✓"}
+            </div>
+            <div className="lu-options">
+              {data.options.map((sp) => {
+                const on = chosen.includes(sp.slug);
+                return (
+                  <button
+                    key={sp.slug}
+                    className={`lu-option ${on ? "picked" : ""}`}
+                    disabled={!on && chosen.length >= data.count}
+                    onClick={() => toggle(sp.slug)}
+                  >
+                    <div className="lu-opt-name">{sp.name}</div>
+                    <div className="lu-opt-feats">
+                      {[sp.school, sp.concentration ? "conc." : null,
+                        sp.ritual ? "ritual" : null].filter(Boolean).join(" · ")}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+
         <div className="lu-actions" style={{ gap: 10 }}>
-          <button className="lu-confirm" onClick={onClose}>Cancel</button>
-          <button className="lu-confirm" disabled={chosen.length !== data.count}
-                  onClick={() => onApply(chosen)}>Prepare</button>
+          <button className="lu-confirm" onClick={onClose}>
+            {data.no_spellbook ? "Close" : "Cancel"}
+          </button>
+          {!data.no_spellbook && (
+            <button className="lu-confirm" disabled={chosen.length !== data.count}
+                    onClick={() => onApply(chosen)}>Prepare</button>
+          )}
         </div>
       </div>
     </div>

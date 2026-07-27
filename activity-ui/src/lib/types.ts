@@ -100,6 +100,8 @@ export interface RepData {
   count: number; max_spell_level?: number; class: string;
   current: string[];          // currently-prepared spell slugs (pre-selected)
   options: SpellBrief[];
+  source?: "class" | "spellbook";
+  no_spellbook?: boolean;     // wizard with no spellbook item — nothing to prepare
 }
 
 export interface Ally {
