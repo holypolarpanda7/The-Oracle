@@ -164,6 +164,24 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
     });
     return;
   }
+  if (ev.t === "reprepare") {
+    const sp = (slug: string, name: string) => ({ slug, name, level: 1, school: "Evocation" });
+    onEvent({
+      t: "reprepare_data", count: 4, max_spell_level: 3, class: "Bard",
+      current: ["cure-wounds", "faerie-fire", "healing-word", "dissonant-whispers"],
+      options: [
+        sp("cure-wounds", "Cure Wounds"), sp("faerie-fire", "Faerie Fire"),
+        sp("healing-word", "Healing Word"), sp("dissonant-whispers", "Dissonant Whispers"),
+        sp("charm-person", "Charm Person"), sp("thunderwave", "Thunderwave"),
+        sp("sleep", "Sleep"), sp("heroism", "Heroism"),
+      ],
+    });
+    return;
+  }
+  if (ev.t === "reprepare_apply") {
+    onEvent({ t: "narration", text: "*Kara prepares a fresh set of spells.*" });
+    return;
+  }
   if (ev.t === "cc_register") {
     onEvent({ t: "cc_done", name: ev.payload.name });
     onEvent({ t: "hello", channel: "demo", characters: [

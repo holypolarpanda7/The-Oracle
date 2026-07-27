@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { connect, type Connection } from "./lib/connection";
 import type {
-  Ally, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry,
+  Ally, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry, RepData,
   ServerEvent, SheetData,
 } from "./lib/types";
 import { Block, makeOracleBlock } from "./components/Narration";
@@ -9,6 +9,7 @@ import { CreateFlow } from "./components/CreateFlow";
 import { PortraitStep } from "./components/PortraitStep";
 import { Landing } from "./components/Landing";
 import { LevelUpOverlay } from "./components/LevelUp";
+import { ReprepareOverlay } from "./components/Reprepare";
 import { PlaySurface } from "./components/PlaySurface";
 import { ItemInspector, type ItemView } from "./components/ItemInspector";
 import { levelChime, rollThunk } from "./lib/sound";
@@ -36,6 +37,7 @@ export default function App({ session }: { session: Session }) {
   const [combat, setCombat] = useState<CombatState | null>(null);
   const [sceneUrl, setSceneUrl] = useState<string | null>(null);
   const [levelUp, setLevelUp] = useState<LevelUpData | null>(null);
+  const [repData, setRepData] = useState<RepData | null>(null);
   const [busy, setBusy] = useState(false);
   const [ccError, setCcError] = useState<string | null>(null);
   // Portrait-step → world entry: the enter round-trip runs an LLM intro + scene
@@ -197,6 +199,10 @@ export default function App({ session }: { session: Session }) {
           if (ev.data) levelChime();
           setLevelUp(ev.data);
           break;
+        case "reprepare_data":
+          setRepData({ count: ev.count, max_spell_level: ev.max_spell_level,
+            class: ev.class, current: ev.current, options: ev.options });
+          break;
         case "busy":
           setBusy(ev.on);
           break;
@@ -343,7 +349,18 @@ export default function App({ session }: { session: Session }) {
               onInspect={inspectItem}
               onPortrait={portraitAction}
               onSetDnr={setDnr}
+              onReprepare={() => connRef.current?.send({ t: "reprepare" })}
             />
+            {repData && (
+              <ReprepareOverlay
+                data={repData}
+                onClose={() => setRepData(null)}
+                onApply={(spells) => {
+                  connRef.current?.send({ t: "reprepare_apply", spells });
+                  setRepData(null);
+                }}
+              />
+            )}
             <ItemInspector
               view={itemView}
               onClose={() => setItemView(null)}

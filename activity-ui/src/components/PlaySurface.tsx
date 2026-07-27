@@ -69,6 +69,7 @@ export interface PlayProps {
   onPortrait: (action: "regear" | "select" | "delete",
                opts?: { context?: string; replace_context?: string; detail?: string }) => void;
   onSetDnr: (dnr: boolean) => void;
+  onReprepare: () => void;
 }
 
 export function PlaySurface(p: PlayProps) {
@@ -147,7 +148,8 @@ export function PlaySurface(p: PlayProps) {
 
         <aside>
           <CharacterSheet sheet={p.sheet} panel={sheetR} onInspect={p.onInspect}
-                          onPortrait={p.onPortrait} onSetDnr={p.onSetDnr} />
+                          onPortrait={p.onPortrait} onSetDnr={p.onSetDnr}
+                          onReprepare={p.onReprepare} />
           <div className="menu">
             <button className="mbtn" onClick={resetAllPanels}>⟲ Reset Layout</button>
             <button className="mbtn" onClick={p.onMainMenu}>☰ Main Menu</button>

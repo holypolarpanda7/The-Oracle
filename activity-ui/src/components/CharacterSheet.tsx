@@ -36,13 +36,14 @@ function featIcon(kind?: string): string {
 
 type Tab = "stats" | "inv" | "origin" | "feat";
 
-export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr }: {
+export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr, onReprepare }: {
   sheet: SheetData | null;
   panel: PanelHandle;
   onInspect: (name: string) => void;
   onPortrait: (action: "regear" | "select" | "delete",
                opts?: { context?: string; replace_context?: string; detail?: string }) => void;
   onSetDnr?: (dnr: boolean) => void;
+  onReprepare?: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("stats");
   // Portrait look-switcher state: which look is active + the two transient modes
@@ -203,6 +204,12 @@ export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr }
             ))}
           </div>
         ) : null}
+
+        {sheet.caster_mode === "prepared" && onReprepare && (
+          <button className="sheet-prep" onClick={onReprepare}>
+            ⟳ Prepare Spells
+          </button>
+        )}
 
         <div className="tabs">
           {(["stats", "inv", "origin", "feat"] as Tab[]).map((t) => (

@@ -90,8 +90,16 @@ export interface SheetData {
   active_portrait?: string;      // context key of the currently shown look
   background?: string | null;    // origin / background name for the Origin tab
   spell_slots?: SpellSlotRow[];
+  caster_mode?: string | null;   // "known" | "prepared" | "spellbook" | null
   resources?: ResourceRow[];     // class resources (Bardic Inspiration, Ki, …)
   features?: SheetFeature[];
+}
+
+/** GET reprepare_data — a prepared caster re-choosing spells on a long rest. */
+export interface RepData {
+  count: number; max_spell_level?: number; class: string;
+  current: string[];          // currently-prepared spell slugs (pre-selected)
+  options: SpellBrief[];
 }
 
 export interface Ally {
@@ -196,6 +204,7 @@ export type ServerEvent =
   | { t: "whisper"; text: string }
   | { t: "roll"; roll: RollResult }
   | { t: "sheet"; sheet: SheetData }
+  | ({ t: "reprepare_data" } & RepData)
   | { t: "party"; members: Ally[] }
   | { t: "combat"; encounter: CombatState | null }
   | { t: "scene"; url: string }
@@ -216,6 +225,8 @@ export type ClientEvent =
   | { t: "action"; text: string; private?: boolean }
   | { t: "levelup_apply"; subclass?: string; cantrips?: string[]; spells?: string[];
       swap_out?: string; swap_in?: string }
+  | { t: "reprepare" }
+  | { t: "reprepare_apply"; spells: string[] }
   | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload }
   | { t: "inspect_item"; name: string }

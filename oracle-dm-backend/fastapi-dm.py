@@ -9605,6 +9605,35 @@ def _swap_character_spell(char: Character, out_name: str, in_slug: str) -> bool:
     return True
 
 
+def _character_leveled_slugs(char: Character) -> list[str]:
+    """Slugs of the character's currently-known LEVELED spells (level > 0)."""
+    out: list[str] = []
+    for n in (char.spells or []):
+        nm = n if isinstance(n, str) else (n.get("name") if isinstance(n, dict) else "")
+        sp = rules_lib.get_spell(nm) if nm else None
+        if sp and (sp.level or 0) > 0:
+            out.append(sp.index_slug)
+    return out
+
+
+def _set_prepared_spells(char: Character, slugs: List[str]) -> None:
+    """Replace the character's LEVELED (prepared) spells with the chosen slugs,
+    keeping cantrips. Stored as names to match the flat char.spells format."""
+    keep = [n for n in (char.spells or [])
+            if (lambda sp: sp is not None and (sp.level or 0) == 0)(
+                rules_lib.get_spell(n if isinstance(n, str)
+                                    else (n.get("name") if isinstance(n, dict) else "")))]
+    names = list(keep)
+    seen = {_normalize_item_name(k if isinstance(k, str) else k.get("name", "")) for k in keep}
+    for sl in slugs:
+        sp = rules_lib.get_spell(sl)
+        nm = sp.name if sp else sl
+        if _normalize_item_name(nm) not in seen:
+            names.append(nm)
+            seen.add(_normalize_item_name(nm))
+    char.spells = names
+
+
 @app.get("/cc/spells/{class_slug}")
 def cc_spells(class_slug: str):
     """Level-1 cantrip + first-level spell lists a class may pick from, plus the
@@ -13359,6 +13388,8 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "portrait_looks": portrait_looks,
         "active_portrait": active_portrait,
         "spell_slots": spell_slots,
+        # "prepared" casters can re-prepare their spells on a long rest.
+        "caster_mode": leveling.caster_mode(char.char_class),
         "resources": resources,
         "features": features,
     }
@@ -13891,6 +13922,47 @@ async def activity_ws(ws: WebSocket, channel: str):
                         await ws.send_json({"t": "sheet", "sheet": sheet})
                 else:
                     await send_levelup()  # subclass still required
+                continue
+
+            # ---- prepared caster: re-prepare spells (on a long rest) ----
+            if msg.get("t") == "reprepare":
+                cid = _activity_char_id(session_id, user_id)
+                if not cid:
+                    continue
+                with Session(engine) as s:
+                    ch = s.get(Character, cid)
+                    if not ch or leveling.caster_mode(ch.char_class) != "prepared":
+                        continue
+                    count = leveling.spells_count(ch.char_class, ch.level)
+                    max_lvl = _max_spell_level(ch.char_class, ch.level)
+                    current = _character_leveled_slugs(ch)
+                    options = [_spell_brief_dict(sp) for sp in rules_lib.legal_spells_for(
+                        ch.char_class, max_level=max(1, max_lvl), include_cantrips=False)]
+                await ws.send_json({
+                    "t": "reprepare_data", "count": count, "max_spell_level": max_lvl,
+                    "class": ch.char_class, "current": current, "options": options})
+                continue
+
+            if msg.get("t") == "reprepare_apply":
+                cid = _activity_char_id(session_id, user_id)
+                if not cid:
+                    continue
+                picks = [str(x) for x in (msg.get("spells") or [])]
+                with Session(engine) as s:
+                    ch = s.get(Character, cid)
+                    if not ch or leveling.caster_mode(ch.char_class) != "prepared":
+                        continue
+                    count = leveling.spells_count(ch.char_class, ch.level)
+                    if len(picks) != count:
+                        continue  # client enforces the count; ignore malformed
+                    _set_prepared_spells(ch, picks)
+                    s.add(ch)
+                    s.commit()
+                await ws.send_json({"t": "narration",
+                                    "text": f"*{ch.name} prepares a fresh set of spells.*"})
+                sheet = _activity_sheet(session_id, user_id)
+                if sheet:
+                    await ws.send_json({"t": "sheet", "sheet": sheet})
                 continue
 
             # ---- inspect an inventory item (focused window: detail + art) ----

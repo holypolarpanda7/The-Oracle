@@ -359,6 +359,12 @@
 .play .bar .t { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center;
   font-family: var(--mono); font-size: 0.66rem; color: #fff; text-shadow: 0 1px 2px #000; }
 
+.play .sheet-prep { display: block; width: 100%; margin: 8px 0 2px; padding: 6px;
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--amethyst); background: rgba(154, 107, 255, 0.12); cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--amethyst) 40%, var(--edge)); border-radius: 5px; }
+.play .sheet-prep:hover { background: rgba(154, 107, 255, 0.22); color: #e7dcff; }
+
 .play .res { margin-bottom: 9px; }
 .play .rrow { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
 .play .rrow .rl { width: 74px; font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.1em;
