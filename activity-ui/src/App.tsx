@@ -321,8 +321,8 @@ export default function App({ session }: { session: Session }) {
             {levelUp && (
               <LevelUpOverlay
                 data={levelUp}
-                onApply={(subclass) =>
-                  connRef.current?.send({ t: "levelup_apply", subclass })}
+                onApply={({ subclass, cantrips, spells }) =>
+                  connRef.current?.send({ t: "levelup_apply", subclass, cantrips, spells })}
               />
             )}
             <PlaySurface

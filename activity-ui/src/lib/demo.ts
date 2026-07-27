@@ -184,6 +184,16 @@ export const demoScript = {
                 ],
               },
             ],
+            spells_due: {
+              cantrips: 0, spells: 1, mode: "known", max_spell_level: 1,
+              cantrip_options: [],
+              spell_options: [
+                { slug: "cure-wounds", name: "Cure Wounds", level: 1, school: "Abjuration" },
+                { slug: "hunters-mark", name: "Hunter's Mark", level: 1, school: "Divination", concentration: true },
+                { slug: "goodberry", name: "Goodberry", level: 1, school: "Conjuration" },
+                { slug: "ensnaring-strike", name: "Ensnaring Strike", level: 1, school: "Conjuration", concentration: true },
+              ],
+            },
           },
         },
       ];

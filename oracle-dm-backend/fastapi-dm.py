@@ -63,6 +63,7 @@ from rules import (
     scale_monster,
     monster_to_dict,
 )
+from rules import leveling
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import CombatTracker, CombatEngine, PCProfile, PCWeapon, Condition
 from combat.models import CombatLog
@@ -9398,20 +9399,29 @@ def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
     return True, None
 
 
-# Level-1 spellcasting per class: how many cantrips + first-level spells the
-# player PICKS at creation, plus the casting ability and a mode label for the
-# UI. Numbers are the 2024 PHB level-1 counts (editable game facts, not text).
-# Classes absent here are non-casters and get no spell stage.
+# Spellcasting ability per caster class. The cantrip/spell PICK COUNTS come from
+# rules.leveling (single source of truth shared with level-up), so CC and
+# level-up never drift; `mode` ("known"/"prepared"/"spellbook") is from there.
+_SPELL_ABILITY = {
+    "bard": "CHA", "cleric": "WIS", "druid": "WIS", "paladin": "CHA",
+    "ranger": "WIS", "sorcerer": "CHA", "warlock": "CHA", "wizard": "INT",
+    "artificer": "INT",
+}
+
+
+def _cc_spellcasting(class_slug: str, level: int = 1) -> Optional[Dict[str, Any]]:
+    """Level-N spell pick counts + ability/mode for a class (None = non-caster)."""
+    prog = leveling.spell_progression(class_slug, level)
+    if not prog:
+        return None
+    return {"ability": _SPELL_ABILITY.get(class_slug), "mode": prog["mode"],
+            "cantrips": prog["cantrips_known"], "spells": prog["spells_count"]}
+
+
+# Convenience map (level-1) for /cc/options + gating which classes cast.
 CC_SPELLCASTING: Dict[str, Dict[str, Any]] = {
-    "bard":      {"ability": "CHA", "cantrips": 2, "spells": 4, "mode": "known"},
-    "cleric":    {"ability": "WIS", "cantrips": 3, "spells": 4, "mode": "prepared"},
-    "druid":     {"ability": "WIS", "cantrips": 2, "spells": 4, "mode": "prepared"},
-    "paladin":   {"ability": "CHA", "cantrips": 0, "spells": 2, "mode": "prepared"},
-    "ranger":    {"ability": "WIS", "cantrips": 0, "spells": 2, "mode": "known"},
-    "sorcerer":  {"ability": "CHA", "cantrips": 4, "spells": 2, "mode": "known"},
-    "warlock":   {"ability": "CHA", "cantrips": 2, "spells": 2, "mode": "known"},
-    "wizard":    {"ability": "INT", "cantrips": 3, "spells": 6, "mode": "spellbook"},
-    "artificer": {"ability": "INT", "cantrips": 2, "spells": 2, "mode": "prepared"},
+    slug: sc for slug in _SPELL_ABILITY
+    if (sc := _cc_spellcasting(slug, 1)) is not None
 }
 
 # Origin-feat choices resolved at creation. The client folds the picks into the
@@ -9534,6 +9544,44 @@ def cc_roll_abilities():
                        "detail": r.detail} for r in rolls]}
 
 
+def _spell_brief_dict(sp) -> Dict[str, Any]:
+    first = (sp.desc or "").split(". ")[0]
+    return {"slug": sp.index_slug, "name": sp.name, "level": sp.level,
+            "school": sp.school, "concentration": bool(sp.concentration),
+            "ritual": bool(sp.ritual), "brief": first[:140]}
+
+
+def _class_display_name(slug: str) -> str:
+    from rules.models import DndClass as _Cls
+    with Session(rules_lib.engine) as s:
+        row = s.exec(select(_Cls).where(_Cls.index_slug == slug.lower())).first()
+    return row.name if row else slug
+
+
+def _max_spell_level(class_name: Optional[str], level: int) -> int:
+    """Highest spell level this class can cast at a character level (0 if none)."""
+    slots = _spell_slots_for(class_name, level, None)
+    return max((s["level"] for s in slots), default=0)
+
+
+def _add_spells_to_character(char: Character, slugs: List[str]) -> list[str]:
+    """Resolve spell slugs to display names and add them to char.spells (dedup,
+    case-insensitive). Returns the names actually added."""
+    have = {_normalize_item_name(n) for n in _character_spell_names(char)}
+    names = list(char.spells or [])
+    added: list[str] = []
+    for sl in slugs:
+        sp = rules_lib.get_spell(sl)
+        nm = sp.name if sp else sl
+        if _normalize_item_name(nm) not in have:
+            names.append(nm)
+            have.add(_normalize_item_name(nm))
+            added.append(nm)
+    if added:
+        char.spells = names
+    return added
+
+
 @app.get("/cc/spells/{class_slug}")
 def cc_spells(class_slug: str):
     """Level-1 cantrip + first-level spell lists a class may pick from, plus the
@@ -9541,20 +9589,10 @@ def cc_spells(class_slug: str):
     Initiate origin feat. Non-casters return caster=false with empty lists."""
     slug = (class_slug or "").strip().lower()
     sc = CC_SPELLCASTING.get(slug)
-    from rules.models import DndClass as _Cls
-    with Session(rules_lib.engine) as s:
-        row = s.exec(select(_Cls).where(_Cls.index_slug == slug)).first()
-    cls_name = row.name if row else slug
-
-    def _brief(sp):
-        first = (sp.desc or "").split(". ")[0]
-        return {"slug": sp.index_slug, "name": sp.name, "level": sp.level,
-                "school": sp.school, "concentration": bool(sp.concentration),
-                "ritual": bool(sp.ritual), "brief": first[:140]}
-
-    cantrips = [_brief(sp) for sp in
+    cls_name = _class_display_name(slug)
+    cantrips = [_spell_brief_dict(sp) for sp in
                 rules_lib.legal_spells_for(cls_name, max_level=0)]
-    lvl1 = [_brief(sp) for sp in
+    lvl1 = [_spell_brief_dict(sp) for sp in
             rules_lib.legal_spells_for(cls_name, max_level=1, include_cantrips=False)]
     return {"caster": sc is not None, "class": slug,
             "cantrips_n": (sc or {}).get("cantrips", 0),
@@ -12687,6 +12725,33 @@ def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
     except Exception as e:
         print(f"[activity] level-up enrichment failed: {e}")
         class_feats, options = [], prog.get("subclass_options") or []
+
+    # New cantrips / leveled spells to choose this level (known + prepared both
+    # grow). Offer only spells the character doesn't already have, up to the
+    # spell level newly castable.
+    spells_due = None
+    try:
+        cls_name = prog["class"]   # leveling / slots lowercase this internally
+        gained = leveling.spells_gained(cls_name, prog["current_level"], new_level)
+        if gained["cantrips"] or gained["spells"]:
+            have = {_normalize_item_name(n)
+                    for n in _character_spell_names(char)} if char else set()
+            max_lvl = _max_spell_level(cls_name, new_level)
+            cantrip_opts = [_spell_brief_dict(sp)
+                            for sp in rules_lib.legal_spells_for(cls_name, max_level=0)
+                            if _normalize_item_name(sp.name) not in have]
+            spell_opts = [_spell_brief_dict(sp)
+                          for sp in rules_lib.legal_spells_for(
+                              cls_name, max_level=max(1, max_lvl), include_cantrips=False)
+                          if _normalize_item_name(sp.name) not in have]
+            spells_due = {
+                "cantrips": gained["cantrips"], "spells": gained["spells"],
+                "mode": leveling.caster_mode(cls_name), "max_spell_level": max_lvl,
+                "cantrip_options": cantrip_opts, "spell_options": spell_opts,
+            }
+    except Exception as e:
+        print(f"[activity] level-up spell enrichment failed: {e}")
+
     return {
         "character_id": char_id,
         "current_level": prog["current_level"],
@@ -12699,6 +12764,7 @@ def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
         "class_features": class_feats,
         "race_features": race_feats,
         "subclass_options": options,
+        "spells_due": spells_due,
     }
 
 
@@ -13745,6 +13811,15 @@ async def activity_ws(ws: WebSocket, channel: str):
                 char_id = _activity_char_id(session_id, user_id)
                 if not char_id:
                     continue
+                pick_cantrips = [str(s) for s in (msg.get("cantrips") or [])]
+                pick_spells = [str(s) for s in (msg.get("spells") or [])]
+                # Gate on required spell picks (like the subclass gate) so the
+                # level isn't applied until the player has chosen their spells.
+                due = (_activity_levelup(session_id, user_id) or {}).get("spells_due")
+                if due and (len(pick_cantrips) < due["cantrips"]
+                            or len(pick_spells) < due["spells"]):
+                    await send_levelup()
+                    continue
                 try:
                     result = await level_up(LevelUpRequest(
                         character_id=char_id, subclass=msg.get("subclass")))
@@ -13753,6 +13828,14 @@ async def activity_ws(ws: WebSocket, channel: str):
                     await send_levelup()
                     continue
                 if result.get("applied"):
+                    # Learn/prepare the newly chosen spells.
+                    if pick_cantrips or pick_spells:
+                        with Session(engine) as s:
+                            ch = s.get(Character, char_id)
+                            if ch:
+                                _add_spells_to_character(ch, pick_cantrips + pick_spells)
+                                s.add(ch)
+                                s.commit()
                     sub = f" — {result['subclass']}" if result.get("subclass") else ""
                     await _activity_broadcast(session_id, {
                         "t": "narration",

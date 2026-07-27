@@ -52,6 +52,105 @@ def hp_roll_expr(hit_die: Optional[int], con_mod: int) -> str:
     return f"1d{die}"
 
 
+# ===================== spellcasting progression =============================
+# Single source of truth for how many cantrips + leveled spells a caster
+# knows/prepares at a level — used by both character creation and level-up so
+# the two never drift. SRD-safe counts (mechanical facts, not book prose).
+#
+# Two paradigms the game (and the user) distinguish:
+#   * "memorized"/KNOWN casters (bard, sorcerer, warlock, ranger) learn a fixed
+#     set of spells that grows on a per-class table; the wizard is a variant
+#     that learns into a SPELLBOOK (+2/level).
+#   * PREPARED casters (cleric, druid, paladin, artificer) prepare a number of
+#     spells = spellcasting modifier + a level factor, re-choosable on a rest.
+
+# Cantrips known: (min_level, count) tiers — the count is the last tier at or
+# below the level. Classes absent here have no cantrips (paladin, ranger).
+_CANTRIPS_KNOWN = {
+    "bard":      [(1, 2), (4, 3), (10, 4)],
+    "cleric":    [(1, 3), (4, 4), (10, 5)],
+    "druid":     [(1, 2), (4, 3), (10, 4)],
+    "sorcerer":  [(1, 4), (4, 5), (10, 6)],
+    "warlock":   [(1, 2), (4, 3), (10, 4)],
+    "wizard":    [(1, 3), (4, 4), (10, 5)],
+    "artificer": [(1, 2), (10, 3), (14, 4)],
+}
+
+# Leveled spells the character has by level (index = level-1). 2024 uses fixed
+# per-level counts (no ability-mod term) for KNOWN and PREPARED alike — the
+# wizard is the exception (spellbook, computed below). All EDITABLE game facts.
+_SPELLS_BY_LEVEL = {
+    # memorized / known lists
+    "bard":     [4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 15, 16, 18, 19, 19, 20, 22, 22, 22],
+    "sorcerer": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12, 13, 13, 14, 14, 15, 15, 15, 15],
+    "warlock":  [2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15],
+    "ranger":   [2, 3, 4, 5, 6, 6, 7, 7, 9, 9, 10, 10, 11, 11, 12, 12, 14, 14, 15, 15],
+    # prepared counts (full: cleric/druid; half: paladin/artificer)
+    "cleric":   [4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 18, 19, 21, 22, 23, 24, 25],
+    "druid":    [4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 16, 17, 18, 19, 21, 22, 23, 24, 25],
+    "paladin":  [2, 3, 4, 5, 6, 6, 7, 7, 9, 9, 10, 10, 11, 11, 12, 12, 14, 14, 15, 15],
+    "artificer":[2, 3, 4, 5, 6, 6, 7, 7, 9, 9, 10, 10, 11, 11, 12, 12, 14, 14, 15, 15],
+}
+
+# How each caster manages its leveled spells (drives the picker's wording).
+CASTER_MODE = {
+    "bard": "known", "sorcerer": "known", "warlock": "known", "ranger": "known",
+    "cleric": "prepared", "druid": "prepared", "paladin": "prepared",
+    "artificer": "prepared", "wizard": "spellbook",
+}
+
+
+def is_caster(class_name: Optional[str]) -> bool:
+    return (class_name or "").strip().lower() in CASTER_MODE
+
+
+def caster_mode(class_name: Optional[str]) -> Optional[str]:
+    return CASTER_MODE.get((class_name or "").strip().lower())
+
+
+def cantrips_known(class_name: Optional[str], level: int) -> int:
+    tiers = _CANTRIPS_KNOWN.get((class_name or "").strip().lower())
+    if not tiers:
+        return 0
+    n = 0
+    for lv, cnt in tiers:
+        if level >= lv:
+            n = cnt
+    return n
+
+
+def spells_count(class_name: Optional[str], level: int) -> int:
+    """Leveled spells the character knows/prepares at this level (fixed per-class
+    per-level; wizard = spellbook size)."""
+    cls = (class_name or "").strip().lower()
+    level = max(1, min(MAX_LEVEL, int(level or 1)))
+    if cls == "wizard":
+        return 6 + 2 * (level - 1)            # spellbook size
+    table = _SPELLS_BY_LEVEL.get(cls)
+    return table[level - 1] if table else 0
+
+
+def spell_progression(class_name: Optional[str], level: int) -> Optional[dict]:
+    """{mode, cantrips_known, spells_count} at a level, or None for non-casters."""
+    if not is_caster(class_name):
+        return None
+    return {"mode": caster_mode(class_name),
+            "cantrips_known": cantrips_known(class_name, level),
+            "spells_count": spells_count(class_name, level)}
+
+
+def spells_gained(class_name: Optional[str], old_level: int, new_level: int) -> dict:
+    """How many NEW cantrips + leveled spells to pick when advancing a level.
+    Prepared casters re-prepare freely, but a growing prepared count still means
+    the player adds (new-old) more prepared spells."""
+    return {
+        "cantrips": max(0, cantrips_known(class_name, new_level)
+                        - cantrips_known(class_name, old_level)),
+        "spells": max(0, spells_count(class_name, new_level)
+                      - spells_count(class_name, old_level)),
+    }
+
+
 def features_gained_at(subclass_features: Optional[list], level: int) -> list[dict]:
     """Subclass features (from a Subclass row's ``features`` JSON) unlocked at ``level``."""
     if not subclass_features:

@@ -148,6 +148,13 @@ export interface SubclassOption {
   features?: SubclassFeature[];
 }
 
+/** New cantrips/spells to pick when a caster gains a level (or null). */
+export interface SpellsDue {
+  cantrips: number; spells: number;
+  mode?: string | null; max_spell_level?: number;
+  cantrip_options: SpellBrief[]; spell_options: SpellBrief[];
+}
+
 export interface LevelUpData {
   character_id: number;
   current_level: number;
@@ -160,6 +167,7 @@ export interface LevelUpData {
   class_features: { name: string; summary?: string }[];
   race_features?: { name: string; summary?: string }[];
   subclass_options: SubclassOption[];
+  spells_due?: SpellsDue | null;
 }
 
 export interface CharacterSummary {
@@ -203,7 +211,7 @@ export type ServerEvent =
 
 export type ClientEvent =
   | { t: "action"; text: string; private?: boolean }
-  | { t: "levelup_apply"; subclass?: string }
+  | { t: "levelup_apply"; subclass?: string; cantrips?: string[]; spells?: string[] }
   | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload }
   | { t: "inspect_item"; name: string }
