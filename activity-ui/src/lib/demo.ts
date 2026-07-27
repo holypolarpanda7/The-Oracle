@@ -193,6 +193,11 @@ export const demoScript = {
                 { slug: "goodberry", name: "Goodberry", level: 1, school: "Conjuration" },
                 { slug: "ensnaring-strike", name: "Ensnaring Strike", level: 1, school: "Conjuration", concentration: true },
               ],
+              can_swap: true,
+              current_spells: [
+                { slug: "fog-cloud", name: "Fog Cloud" },
+                { slug: "speak-with-animals", name: "Speak with Animals" },
+              ],
             },
           },
         },

@@ -9582,6 +9582,29 @@ def _add_spells_to_character(char: Character, slugs: List[str]) -> list[str]:
     return added
 
 
+def _swap_character_spell(char: Character, out_name: str, in_slug: str) -> bool:
+    """Replace one known spell (out_name) with another (in_slug's spell).
+    Preserves the flat char.spells name list. Returns True if a swap happened."""
+    out_norm = _normalize_item_name(out_name)
+    sp_in = rules_lib.get_spell(in_slug)
+    in_name = sp_in.name if sp_in else in_slug
+    names = list(char.spells or [])
+    kept, removed = [], False
+    for n in names:
+        nm = n if isinstance(n, str) else (n.get("name") if isinstance(n, dict) else "")
+        if not removed and _normalize_item_name(str(nm)) == out_norm:
+            removed = True
+            continue
+        kept.append(n)
+    if not removed:
+        return False
+    if not any(_normalize_item_name(str(n if isinstance(n, str) else n.get("name", ""))) ==
+               _normalize_item_name(in_name) for n in kept):
+        kept.append(in_name)
+    char.spells = kept
+    return True
+
+
 @app.get("/cc/spells/{class_slug}")
 def cc_spells(class_slug: str):
     """Level-1 cantrip + first-level spell lists a class may pick from, plus the
@@ -12733,7 +12756,10 @@ def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
     try:
         cls_name = prog["class"]   # leveling / slots lowercase this internally
         gained = leveling.spells_gained(cls_name, prog["current_level"], new_level)
-        if gained["cantrips"] or gained["spells"]:
+        mode = leveling.caster_mode(cls_name)
+        # Known/"memorized" casters may also REPLACE one known spell each level.
+        can_swap = mode == "known" and leveling.is_caster(cls_name)
+        if gained["cantrips"] or gained["spells"] or can_swap:
             have = {_normalize_item_name(n)
                     for n in _character_spell_names(char)} if char else set()
             max_lvl = _max_spell_level(cls_name, new_level)
@@ -12744,10 +12770,21 @@ def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
                           for sp in rules_lib.legal_spells_for(
                               cls_name, max_level=max(1, max_lvl), include_cantrips=False)
                           if _normalize_item_name(sp.name) not in have]
+            # Current leveled spells the player could swap out.
+            current_leveled: list = []
+            if can_swap and char:
+                for nm in (char.spells or []):
+                    nm_s = nm if isinstance(nm, str) else (nm.get("name") if isinstance(nm, dict) else None)
+                    if not nm_s:
+                        continue
+                    sp = rules_lib.get_spell(nm_s)
+                    if sp and (sp.level or 0) > 0:
+                        current_leveled.append({"name": sp.name, "slug": sp.index_slug})
             spells_due = {
                 "cantrips": gained["cantrips"], "spells": gained["spells"],
-                "mode": leveling.caster_mode(cls_name), "max_spell_level": max_lvl,
+                "mode": mode, "max_spell_level": max_lvl,
                 "cantrip_options": cantrip_opts, "spell_options": spell_opts,
+                "can_swap": can_swap, "current_spells": current_leveled,
             }
     except Exception as e:
         print(f"[activity] level-up spell enrichment failed: {e}")
@@ -13813,6 +13850,8 @@ async def activity_ws(ws: WebSocket, channel: str):
                     continue
                 pick_cantrips = [str(s) for s in (msg.get("cantrips") or [])]
                 pick_spells = [str(s) for s in (msg.get("spells") or [])]
+                swap_out = (msg.get("swap_out") or "").strip()
+                swap_in = (msg.get("swap_in") or "").strip()
                 # Gate on required spell picks (like the subclass gate) so the
                 # level isn't applied until the player has chosen their spells.
                 due = (_activity_levelup(session_id, user_id) or {}).get("spells_due")
@@ -13828,12 +13867,15 @@ async def activity_ws(ws: WebSocket, channel: str):
                     await send_levelup()
                     continue
                 if result.get("applied"):
-                    # Learn/prepare the newly chosen spells.
-                    if pick_cantrips or pick_spells:
+                    # Learn/prepare the newly chosen spells + apply an optional swap.
+                    if pick_cantrips or pick_spells or (swap_out and swap_in):
                         with Session(engine) as s:
                             ch = s.get(Character, char_id)
                             if ch:
-                                _add_spells_to_character(ch, pick_cantrips + pick_spells)
+                                if pick_cantrips or pick_spells:
+                                    _add_spells_to_character(ch, pick_cantrips + pick_spells)
+                                if swap_out and swap_in:
+                                    _swap_character_spell(ch, swap_out, swap_in)
                                 s.add(ch)
                                 s.commit()
                     sub = f" — {result['subclass']}" if result.get("subclass") else ""

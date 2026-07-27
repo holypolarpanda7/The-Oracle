@@ -37,20 +37,27 @@ function LuSpellPick({ label, list, chosen, n, onToggle }: {
 
 export function LevelUpOverlay({ data, onApply }: {
   data: LevelUpData;
-  onApply: (opts: { subclass?: string; cantrips?: string[]; spells?: string[] }) => void;
+  onApply: (opts: { subclass?: string; cantrips?: string[]; spells?: string[];
+    swap_out?: string; swap_in?: string }) => void;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [cantrips, setCantrips] = useState<string[]>([]);
   const [spells, setSpells] = useState<string[]>([]);
+  // Optional level-up swap (known casters): replace one spell with another.
+  const [swapOut, setSwapOut] = useState<string | null>(null);   // current spell NAME
+  const [swapIn, setSwapIn] = useState<string | null>(null);     // replacement SLUG
   const needsPick = !!data.subclass_required;
   const due = data.spells_due || null;
+  const canSwap = !!due?.can_swap && (due.current_spells?.length ?? 0) > 0;
   const toggle = (set: React.Dispatch<React.SetStateAction<string[]>>) =>
     (slug: string) =>
       set((cur) => cur.includes(slug) ? cur.filter((x) => x !== slug) : [...cur, slug]);
 
   const spellsOk = !due
     || (cantrips.length === due.cantrips && spells.length === due.spells);
-  const canConfirm = (!needsPick || picked !== null) && spellsOk;
+  // A swap is optional, but if started it must be completed (both ends chosen).
+  const swapOk = !swapOut === !swapIn;
+  const canConfirm = (!needsPick || picked !== null) && spellsOk && swapOk;
 
   return (
     <div className="levelup-veil">
@@ -116,6 +123,35 @@ export function LevelUpOverlay({ data, onApply }: {
             onToggle={toggle(setSpells)} />
         )}
 
+        {canSwap && (
+          <>
+            <div className="lu-pick-label">
+              Replace a known spell (optional){swapOut ? " · pick a replacement ↓" : ""}
+              {swapOut && (
+                <button className="lu-swap-clear"
+                  onClick={() => { setSwapOut(null); setSwapIn(null); }}>✕ clear</button>
+              )}
+            </div>
+            <div className="lu-options">
+              {(due!.current_spells ?? []).map((s) => (
+                <button
+                  key={s.slug}
+                  className={`lu-option ${swapOut === s.name ? "picked" : ""}`}
+                  onClick={() => { setSwapOut(s.name); setSwapIn(null); }}
+                >
+                  <div className="lu-opt-name">{s.name}</div>
+                  <div className="lu-opt-feats">drop this</div>
+                </button>
+              ))}
+            </div>
+            {swapOut && (
+              <LuSpellPick label={`Replace “${swapOut}” with`} list={due!.spell_options}
+                chosen={swapIn ? [swapIn] : []} n={1}
+                onToggle={(slug) => setSwapIn((cur) => cur === slug ? null : slug)} />
+            )}
+          </>
+        )}
+
         <div className="lu-actions">
           <button
             className="lu-confirm"
@@ -124,6 +160,8 @@ export function LevelUpOverlay({ data, onApply }: {
               subclass: picked ?? undefined,
               cantrips: cantrips.length ? cantrips : undefined,
               spells: spells.length ? spells : undefined,
+              swap_out: swapOut ?? undefined,
+              swap_in: swapIn ?? undefined,
             })}
           >
             {!canConfirm ? "choose above…" : "Take the level"}

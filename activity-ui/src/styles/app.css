@@ -387,6 +387,9 @@ body {
 .lu-opt-name { font-size: 15px; color: var(--parchment); }
 .lu-opt-tag { font-size: 9px; letter-spacing: 0.14em; color: var(--brass); margin-top: 2px; }
 .lu-opt-feats { font-size: 11px; color: var(--text-dim); margin-top: 5px; line-height: 1.45; }
+.lu-swap-clear { margin-left: 8px; background: none; border: none;
+  color: var(--text-dim); font-size: 0.7rem; cursor: pointer; }
+.lu-swap-clear:hover { color: var(--oxblood); }
 .lu-actions { display: flex; justify-content: flex-end; }
 .lu-confirm {
   background: transparent;

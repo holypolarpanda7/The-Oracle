@@ -153,6 +153,9 @@ export interface SpellsDue {
   cantrips: number; spells: number;
   mode?: string | null; max_spell_level?: number;
   cantrip_options: SpellBrief[]; spell_options: SpellBrief[];
+  // Known casters may replace one known spell each level.
+  can_swap?: boolean;
+  current_spells?: { name: string; slug: string }[];
 }
 
 export interface LevelUpData {
@@ -211,7 +214,8 @@ export type ServerEvent =
 
 export type ClientEvent =
   | { t: "action"; text: string; private?: boolean }
-  | { t: "levelup_apply"; subclass?: string; cantrips?: string[]; spells?: string[] }
+  | { t: "levelup_apply"; subclass?: string; cantrips?: string[]; spells?: string[];
+      swap_out?: string; swap_in?: string }
   | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload }
   | { t: "inspect_item"; name: string }
