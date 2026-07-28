@@ -73,8 +73,9 @@ The rules-facing math, all pure functions:
   switch. Measured footprint-to-footprint, so two adjacent creatures are 5 ft
   apart and a Large creature threatens from its near edge.
 * **Movement** — A* for a route, Dijkstra for "everywhere I could go", both
-  charging difficult terrain, refusing to cut a diagonal between two walls, and
-  respecting flying/swimming modes.
+  charging difficult terrain, charging a climb the feet it climbs, refusing to
+  cut a diagonal between two walls, and respecting flying/swimming modes. A step
+  down of 10 ft or more comes back as a reported fall for the DM to charge.
 * **Line of sight** — corner rays, inset slightly inside their own square so a
   ray sliding along a wall face can't see through a solid wall (the classic
   grid-VTT failure) while genuine sight lines past a corner still work.
@@ -200,8 +201,9 @@ cd activity-ui && npm run build && node vtt-shot.mjs   # screenshot the overlay
 
 ## Known gaps
 
-* **Elevation is stored, not enforced** — tokens carry `elevation_ft` and maps a
-  sparse elevation map, but nothing charges climbing or applies high ground yet.
+* **High ground is not mechanised.** Climbing costs the feet climbed and
+  stepping off a ledge reports the drop, but nothing grants advantage from
+  above — that stays a DM call, since it isn't RAW.
 * **Fog is party-wide**, not per-player; there is no per-viewer vision.
 * **Doors are stateful but not interactive from the overlay** — the DM opens
   them with a hook.

@@ -5533,7 +5533,7 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
 
 VTT_HOOK_PATTERN = re.compile(r"\[\[VTT:(.+?)\]\]", re.IGNORECASE)
 _VTT_HOOK_ACTIONS = {"open", "close", "place", "move", "remove", "effect",
-                     "clear", "terrain", "door", "reveal", "ping"}
+                     "clear", "terrain", "door", "reveal", "ping", "elevation"}
 
 # Bare words a hook may carry instead of key=value, e.g. "difficult".
 _VTT_FLAGS = {"difficult", "blocking", "obscuring", "permanent", "hidden",
@@ -5579,6 +5579,8 @@ _VTT_HOOKS_ACTIVE = (
     "    [[VTT: clear | Web]]                 the effect ends\n"
     "    [[VTT: terrain | 4,7 5,7 | rubble]]  the ground changes (collapse, fire, ice)\n"
     "    [[VTT: door | 12,3 | open]]          open | closed | locked\n"
+    "    [[VTT: elevation | 8,9 9,9 | 10]]    a ledge 10 ft up (climbing costs the\n"
+    "                                         extra feet; stepping off is a fall)\n"
     "    [[VTT: reveal | 8,8 | 30]]           light up fog of war from a point\n"
     "    [[VTT: close]]                       the moment has passed — put the board away\n"
     "shape: sphere | cone | line | cube | emanation. 'at' is the origin square; 'size' is the\n"
@@ -5798,10 +5800,14 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                     enforce_speed=bool(getattr(_vtt_cfg(), "enforce_movement", True)))
                 if not res.get("ok"):
                     notes.append(f"🗺 {tok.name} cannot move there — {res.get('reason')}")
-                elif res.get("opportunity") and getattr(_vtt_cfg(), "warn_opportunity", True):
-                    who = ", ".join(o["name"] for o in res["opportunity"])
-                    notes.append(f"🗺 {tok.name} leaves the reach of {who} — "
-                                 "an opportunity attack is provoked.")
+                else:
+                    if res.get("opportunity") and getattr(_vtt_cfg(), "warn_opportunity", True):
+                        who = ", ".join(o["name"] for o in res["opportunity"])
+                        notes.append(f"🗺 {tok.name} leaves the reach of {who} — "
+                                     "an opportunity attack is provoked.")
+                    if res.get("fall_ft"):
+                        notes.append(f"🗺 {tok.name} drops {res['fall_ft']} ft "
+                                     "— falling damage applies.")
                 continue
 
             if action == "remove":
@@ -5869,6 +5875,17 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                     (positional[1] if len(positional) > 1 else "").strip().lower())
                 if squares and code:
                     vtt_engine.set_terrain(scene.id, squares, code)
+                continue
+
+            if action == "elevation":
+                squares = _vtt_squares(positional[0] if positional else "")
+                try:
+                    ft = int(re.sub(r"[^\d-]", "",
+                                    (positional[1] if len(positional) > 1 else "0")) or 0)
+                except ValueError:
+                    ft = 0
+                if squares:
+                    vtt_engine.set_elevation(scene.id, squares, ft)
                 continue
 
             if action == "door":
@@ -15685,6 +15702,11 @@ async def activity_ws(ws: WebSocket, channel: str):
                             "t": "narration",
                             "text": (f"*{tok.name} breaks away from {who} — "
                                      "an opportunity attack follows.*")}, fallback=ws)
+                    if res.get("fall_ft"):
+                        await _activity_broadcast(session_id, {
+                            "t": "narration",
+                            "text": (f"*{tok.name} drops {res['fall_ft']} ft from "
+                                     "the ledge.*")}, fallback=ws)
                     for hz in res.get("hazards") or []:
                         await ws.send_json({
                             "t": "narration",

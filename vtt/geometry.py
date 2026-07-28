@@ -416,7 +416,7 @@ def visible_squares(grid: Grid, origin: Square, radius_ft: int, *,
 
 def _step_cost(grid: Grid, frm: Square, to: Square, *, mode: str,
                diagonal_rule: str, diag_count: int,
-               extra_cost: Optional[Callable[[int, int], int]] = None,
+               extra_cost: Optional[Callable[[Square, Square], int]] = None,
                square_ft: int = 5,
                allow_corner_cutting: bool = False) -> Optional[int]:
     """Feet to step between adjacent squares, or ``None`` if illegal."""
@@ -431,7 +431,7 @@ def _step_cost(grid: Grid, frm: Square, to: Square, *, mode: str,
             return None
     cost = base
     if extra_cost is not None:
-        cost += max(0, int(extra_cost(to[0], to[1])))
+        cost += max(0, int(extra_cost(frm, to)))
     if dx and dy and diagonal_rule == ALTERNATING and diag_count % 2 == 1:
         cost += square_ft
     return cost
@@ -442,10 +442,12 @@ def reachable_costs(grid: Grid, start: Square, budget_ft: int, *,
                     diagonal_rule: str = CHEBYSHEV,
                     blocked: Optional[set[Square]] = None,
                     soft_blocked: Optional[set[Square]] = None,
-                    extra_cost: Optional[Callable[[int, int], int]] = None,
+                    extra_cost: Optional[Callable[[Square, Square], int]] = None,
                     square_ft: int = 5) -> dict[Square, int]:
     """Dijkstra flood-fill: every square reachable within a movement budget.
 
+    ``extra_cost(from_square, to_square)`` adds feet to a step — difficult-terrain
+    effects and climbing a ledge both ride it.
     ``blocked`` squares can't be entered at all (enemies, closed doors).
     ``soft_blocked`` squares can be moved *through* but not stopped in (allies) —
     they're returned with their cost but flagged by the caller as no-stop.
@@ -499,7 +501,7 @@ def _fits(grid: Grid, sq: Square, size: int, *, mode: str,
 def find_path(grid: Grid, start: Square, goal: Square, *, size: int = 1,
               mode: str = "walk", diagonal_rule: str = CHEBYSHEV,
               blocked: Optional[set[Square]] = None,
-              extra_cost: Optional[Callable[[int, int], int]] = None,
+              extra_cost: Optional[Callable[[Square, Square], int]] = None,
               square_ft: int = 5,
               max_ft: Optional[int] = None) -> tuple[list[Square], int]:
     """A* from ``start`` to ``goal``. Returns ``(path, feet)``; ``([], 0)`` when
@@ -572,7 +574,7 @@ def nearest_free(grid: Grid, target: Square, *, size: int = 1,
 
 def path_cost_ft(grid: Grid, path: Sequence[Square], *, mode: str = "walk",
                  diagonal_rule: str = CHEBYSHEV, square_ft: int = 5,
-                 extra_cost: Optional[Callable[[int, int], int]] = None) -> Optional[int]:
+                 extra_cost: Optional[Callable[[Square, Square], int]] = None) -> Optional[int]:
     """Total feet for an explicit path, or ``None`` if a step is illegal."""
     total, diag = 0, 0
     for a, b in zip(path, path[1:]):

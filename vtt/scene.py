@@ -297,6 +297,27 @@ class VttEngine:
                       payload={"code": code})
         return n
 
+    def set_elevation(self, map_id: int, squares: Iterable[Square], feet: int) -> int:
+        """Raise (or level, with 0) squares. Climbing them costs the extra feet."""
+        row = self.get_scene(map_id)
+        if row is None:
+            return 0
+        elev = dict(row.elevation or {})
+        n = 0
+        for x, y in squares:
+            key = f"{x},{y}"
+            if feet:
+                elev[key] = int(feet)
+            else:
+                elev.pop(key, None)
+            n += 1
+        if n:
+            self._set_fields(map_id, elevation=elev or None)
+            self._log(map_id, row.session_id, "terrain",
+                      summary=f"{n} square(s) set to {feet} ft elevation",
+                      payload={"feet": feet})
+        return n
+
     def set_door(self, map_id: int, x: int, y: int, state: str) -> bool:
         """Open/close/lock a door — the grid code follows the state."""
         row = self.get_scene(map_id)
@@ -510,7 +531,7 @@ class VttEngine:
         costs = geo.reachable_costs(
             g, (tok.x, tok.y), budget, size=size_squares(tok.size),
             mode=tok.movement_mode, blocked=blocked,
-            extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode),
+            extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode, row),
             square_ft=row.square_ft)
         return {
             "token_id": token_id,
@@ -533,7 +554,7 @@ class VttEngine:
         path, cost = geo.find_path(
             g, (tok.x, tok.y), (int(x), int(y)), size=size_squares(tok.size),
             mode=tok.movement_mode, blocked=blocked,
-            extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode),
+            extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode, row),
             square_ft=row.square_ft)
         if not path:
             return {"ok": False, "reason": "no route to that square"}
@@ -583,7 +604,7 @@ class VttEngine:
             path, cost = geo.find_path(
                 g, (tok.x, tok.y), dest, size=n, mode=tok.movement_mode,
                 blocked=soft_blocked,
-                extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode),
+                extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode, row),
                 square_ft=row.square_ft)
             if not path:
                 return {"ok": False,
@@ -621,10 +642,16 @@ class VttEngine:
 
         remaining = max(0, tok.speed_ft + max(0, int(bonus_ft))
                         - (tok.moved_ft + (0 if free or teleport else cost)))
-        return {"ok": True, "path": [list(p) for p in path], "cost_ft": cost,
-                "x": dest[0], "y": dest[1], "remaining_ft": remaining,
-                "opportunity": oa, "hazards": hazards,
-                "entered": [e["name"] for e in entered]}
+        out = {"ok": True, "path": [list(p) for p in path], "cost_ft": cost,
+               "x": dest[0], "y": dest[1], "remaining_ft": remaining,
+               "opportunity": oa, "hazards": hazards,
+               "entered": [e["name"] for e in entered]}
+        # Stepping off a ledge is a fact the DM should narrate (and charge for);
+        # the board reports the drop rather than silently applying damage.
+        drop = self._drop_ft(row, (tok.x, tok.y), dest)
+        if drop >= 10 and tok.movement_mode != "fly":
+            out["fall_ft"] = drop
+        return out
 
     def start_turn(self, map_id: int, token_id: Optional[int] = None,
                    combatant_id: Optional[int] = None) -> Optional[MapToken]:
@@ -657,6 +684,14 @@ class VttEngine:
             square_ft=row.square_ft)
         return [{"token_id": i, "name": names.get(i, "?")} for i in ids]
 
+    @staticmethod
+    def _height_at(row: TacticalMap, sq: Square) -> int:
+        return int((row.elevation or {}).get(f"{sq[0]},{sq[1]}", 0) or 0)
+
+    def _drop_ft(self, row: TacticalMap, frm: Square, to: Square) -> int:
+        """How far down a step goes (0 when level or climbing)."""
+        return max(0, self._height_at(row, frm) - self._height_at(row, to))
+
     def _hazards_on(self, row: TacticalMap, g: Grid,
                     squares: Iterable[Square]) -> list[dict]:
         """Dangerous ground crossed by a move (tiles + hazard effects)."""
@@ -680,17 +715,35 @@ class VttEngine:
                             "save_ability": eff.save_ability})
         return out
 
-    def _effect_cost_fn(self, map_id: int, mode: str):
-        """Extra movement cost from difficult-terrain effects (grease, webs)."""
-        if mode in ("fly", "swim"):
+    def _effect_cost_fn(self, map_id: int, mode: str, row=None):
+        """Extra feet a step costs beyond the tile itself.
+
+        Two sources: difficult-terrain effects laid on the ground (grease, webs,
+        spike growth), and climbing — going UP a ledge costs an extra foot per
+        foot climbed, as the SRD has it. Coming back down is free (and may be a
+        fall, which :meth:`move_token` reports).
+        """
+        if mode == "fly":
             return None
         rough: set[Square] = set()
-        for eff in self.effects(map_id):
-            if eff.difficult_terrain:
-                rough.update(tuple(p) for p in (eff.squares or []))
-        if not rough:
+        if mode != "swim":
+            for eff in self.effects(map_id):
+                if eff.difficult_terrain:
+                    rough.update(tuple(p) for p in (eff.squares or []))
+        row = row or self.get_scene(map_id)
+        elev: dict = dict((row.elevation or {}) if row else {})
+        if not rough and not elev:
             return None
-        return lambda x, y: 5 if (x, y) in rough else 0
+
+        def _height(sq: Square) -> int:
+            return int(elev.get(f"{sq[0]},{sq[1]}", 0) or 0)
+
+        def cost(frm: Square, to: Square) -> int:
+            extra = 5 if to in rough else 0
+            climb = _height(to) - _height(frm)
+            return extra + (climb if climb > 0 else 0)
+
+        return cost
 
     # =============================================================== effects
 
@@ -1071,8 +1124,10 @@ class VttEngine:
                 extras.append("prone")
             if t.hidden:
                 extras.append("hidden")
-            if t.elevation_ft:
-                extras.append(f"{t.elevation_ft} ft up")
+            ground = self._height_at(row, (t.x, t.y))
+            height = t.elevation_ft or ground
+            if height:
+                extras.append(f"{height} ft up")
             standing = g.tile_at(t.x, t.y).name
             if standing not in ("floor", "grass", "road", "sand"):
                 extras.append(f"in {standing}")

@@ -273,6 +273,22 @@ def test_engine() -> None:
           bool(in_zone) and all(s["cost"] >= 10 for s in in_zone),
           str(in_zone[:3]))
 
+    # Elevation: a climb costs the feet climbed; stepping off is a fall.
+    v.start_turn(scene.id, token_id=kara.id)
+    here = v.get_token(kara.id)
+    ledge = (here.x + 1, here.y)
+    flat = v.path_preview(kara.id, ledge[0], ledge[1]).get("cost_ft")
+    v.set_elevation(scene.id, [ledge], 10)
+    climb = v.path_preview(kara.id, ledge[0], ledge[1]).get("cost_ft")
+    eq("climbing a 10-ft ledge costs 10 ft more than walking there",
+       (climb or 0) - (flat or 0), 10)
+    up = v.move_token(kara.id, ledge[0], ledge[1])
+    check("the climb is applied", up["ok"], str(up))
+    v.start_turn(scene.id, token_id=kara.id)
+    down = v.move_token(kara.id, here.x, here.y)
+    eq("stepping off reports the drop", down.get("fall_ft"), 10)
+    v.set_elevation(scene.id, [ledge], 0)
+
     aura = v.add_effect(scene.id, "Torch", kind="light", shape="emanation",
                         radius_ft=20, source_token_id=kara.id, x=kara.x, y=kara.y,
                         permanent=True)
