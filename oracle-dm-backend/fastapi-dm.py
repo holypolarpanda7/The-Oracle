@@ -6174,8 +6174,13 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         mod = mods["dex"] if (ranged or (finesse and mods["dex"] > mods["str"])) \
             else mods["str"]
         dmg = row.damage_dice + (f"{mod:+d}" if mod else "")
-        weapons.append(PCWeapon(name=row.name, attack_bonus=pb + mod,
-                                damage=dmg, ranged=ranged, finesse=finesse))
+        # Range bands matter only when a board gives the engine exact distance;
+        # they're carried always and simply ignored in theater of the mind.
+        weapons.append(PCWeapon(
+            name=row.name, attack_bonus=pb + mod, damage=dmg, ranged=ranged,
+            finesse=finesse,
+            range_normal=(getattr(row, "range_normal", None) if ranged else None),
+            range_long=(getattr(row, "range_long", None) if ranged else None)))
     cls = (char.char_class or "").strip().lower()
     lvl = char.level
     if cls == "fighter":

@@ -393,12 +393,84 @@ def test_bridge() -> None:
     eq("the creature outside it is untouched",
        ct.get_combatant(ogre.id).current_hp, ogre_before)
 
+    # Weapon ranges only bind when the board can say how far away the target is.
+    from combat import PCProfile, PCWeapon
+    archer = PCProfile(
+        character_id=1, name="Kara", level=5, prof=3,
+        ability_mods={"str": 0, "dex": 4, "con": 2, "int": 0, "wis": 1, "cha": 0},
+        weapons=[PCWeapon(name="Shortbow", attack_bonus=7, damage="1d6+4",
+                          ranged=True, range_normal=40, range_long=90)])
+    ct.heal(kara.id, 99)          # the wall of fire above nearly killed her
+    ct.heal(ogre.id, 99)
+    shot = {"verb": "attack", "actor": "Kara", "target": "Ogre", "arg": "shortbow"}
+
+    def _fire():
+        """Put Kara back on her feet, on her turn, and loose one arrow."""
+        ct.heal(kara.id, 99)
+        ct.heal(ogre.id, 99)
+        for _ in range(8):
+            if ct.current_combatant(enc.id).id == kara.id:
+                break
+            ct.next_turn(enc.id)
+        ct.begin_turn(kara.id)
+        return eng.resolve(enc.id, [shot], profiles={1: archer})
+
+    def _attacked(rep) -> bool:
+        return any(e.get("kind") == "attack" for e in rep.events)
+
+    # Line them up on a clear row so the distances are exact, not incidental.
+    grid = v.grid(scene.id)
+    row_y = next((y for y in range(scene.height - 1)
+                  if all(grid.passable(x, yy)
+                         for yy in (y, y + 1)
+                         for x in (2, 6, 7, 16, 17, 22, 23))), None)
+    kara_tok = v.find_token(scene.id, "Kara")
+    ogre_tok = v.find_token(scene.id, "Ogre")
+    if row_y is None:
+        check("a clear firing line exists on the test board", False)
+    else:
+        v.move_token(kara_tok.id, 2, row_y, teleport=True)
+        v.move_token(ogre_tok.id, 16, row_y, teleport=True)   # 70 ft
+        eng.spatial = BoardSpatial(v, scene.id)
+        eq("the firing line is 70 ft",
+           eng.spatial.distance_ft(ct.get_combatant(kara.id),
+                                   ct.get_combatant(ogre.id)), 70)
+        rep = _fire()
+        check("a shot past normal range takes disadvantage",
+              _attacked(rep) and any(
+                  "long range" in n for e in rep.events for n in e.get("notes", [])),
+              str(rep.rejections or [n for e in rep.events for n in e.get("notes", [])]))
+
+        v.move_token(ogre_tok.id, 22, row_y, teleport=True)   # 100 ft
+        eng.spatial = BoardSpatial(v, scene.id)
+        rep = _fire()
+        check("a shot beyond maximum range is refused",
+              bool(rep.rejections) and "maximum range" in rep.rejections[0]["reason"],
+              str(rep.rejections))
+
+        v.move_token(ogre_tok.id, 6, row_y, teleport=True)    # 20 ft
+        eng.spatial = BoardSpatial(v, scene.id)
+        rep = _fire()
+        check("a shot inside normal range is clean",
+              _attacked(rep) and not any(
+                  "long range" in n for e in rep.events for n in e.get("notes", [])),
+              str(rep.rejections or rep.events))
+
+    eng.spatial = None
+    rep = _fire()
+    check("with no board, ranges aren't policed at all",
+          _attacked(rep) and not any(
+              "long range" in n for e in rep.events for n in e.get("notes", [])),
+          str(rep.rejections or rep.events))
+
     sync_bands(v, scene.id, tracker=ct)
     bands = {c.name: c.position for c in ct.order(enc.id)}
     check("grid positions are written back as bands",
           bands.get("Kara") in ("near", "far"), str(bands))
 
-    v.set_terrain(scene.id, [(10, 9), (10, 10)], "O")     # a pillar between them
+    ka, og = v.find_token(scene.id, "Kara"), v.find_token(scene.id, "Ogre")
+    mid_x = (ka.x + og.x) // 2
+    v.set_terrain(scene.id, [(mid_x, ka.y), (mid_x, ka.y + 1)], "O")
     sync_cover(v, scene.id, tracker=ct)
     covers = {c.name: c.cover for c in ct.order(enc.id)}
     check("cover from the grid reaches the tracker",

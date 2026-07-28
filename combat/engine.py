@@ -51,6 +51,11 @@ class PCWeapon:
     damage: str                  # e.g. "1d8+3"
     ranged: bool = False
     finesse: bool = False        # Sneak Attack qualifies on finesse or ranged
+    # Normal / long range in feet (a longbow is 150/600). Only meaningful with a
+    # board out — without exact distance the engine can't police them, so they
+    # are simply ignored.
+    range_normal: Optional[int] = None
+    range_long: Optional[int] = None
 
 
 @dataclass
@@ -301,11 +306,17 @@ class CombatEngine:
             if not dmg:
                 continue
             desc = (a.get("desc") or "").lower()
+            # Stat blocks spell the bands out: "range 80/320 ft." (or "reach 10 ft.").
+            rng = re.search(r"range\s+(\d+)\s*/\s*(\d+)", desc)
+            reach = re.search(r"reach\s+(\d+)\s*(?:ft|feet)", desc)
             out.append({"name": a.get("name") or "attack",
                         "attack_bonus": int(a["attack_bonus"]),
                         "damage": dmg,
                         "ranged": desc.startswith("ranged")
-                                  or "ranged weapon attack" in desc})
+                                  or "ranged weapon attack" in desc,
+                        "range_normal": int(rng.group(1)) if rng else None,
+                        "range_long": int(rng.group(2)) if rng else None,
+                        "reach_ft": int(reach.group(1)) if reach else None})
         return out
 
     def _multiattack_count(self, c: Combatant) -> int:
@@ -396,7 +407,9 @@ class CombatEngine:
             def as_dict(cand: PCWeapon) -> dict:
                 return {"name": cand.name, "attack_bonus": cand.attack_bonus,
                         "damage": cand.damage, "ranged": cand.ranged,
-                        "finesse": cand.finesse}
+                        "finesse": cand.finesse,
+                        "range_normal": cand.range_normal,
+                        "range_long": cand.range_long}
 
             for cand in pool:
                 if w and w in cand.name.lower():
@@ -969,6 +982,25 @@ class CombatEngine:
             rep.rejections.append({"intent": intent,
                                    "reason": f"{actor.name} has no attack to make."})
             return
+        # With a board out we know the exact gap, so a ranged weapon's bands
+        # mean something: past normal range is disadvantage, past long range is
+        # not a shot at all. Without a board (or without range data) this is
+        # skipped entirely and the band model rules as before.
+        long_shot = False
+        gap = self._spatial_gap(actor, target)
+        if gap is not None and prof.get("ranged"):
+            dist = gap[0]
+            r_long = prof.get("range_long")
+            r_norm = prof.get("range_normal")
+            if r_long and dist > int(r_long):
+                rep.rejections.append({
+                    "intent": intent,
+                    "reason": (f"{target.name} is {dist} ft away — beyond "
+                               f"{prof['name']}'s maximum range of {r_long} ft.")})
+                return
+            if r_norm and dist > int(r_norm):
+                long_shot = True
+
         steps = self._steps_between(actor, target)
         if not prof["ranged"] and steps > 0:
             hint = ("move into melee first — a move can close the gap"
@@ -1017,6 +1049,9 @@ class CombatEngine:
             return
 
         adv, dis, notes = self._attack_advantage(actor, target, prof["ranged"], encounter_id)
+        if long_shot:
+            dis = True
+            notes.append(f"long range ({prof.get('range_normal')} ft): disadvantage")
         if bonus_note:
             notes = [bonus_note, *notes]
         # Bless / Bane ride the attack roll as a d4 swing.
