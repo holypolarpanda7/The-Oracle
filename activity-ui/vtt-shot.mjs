@@ -29,6 +29,13 @@ await page.waitForTimeout(4000);
 await page.evaluate(() => { const el = document.querySelector(".play"); if (el) el.scrollTop = 0; });
 await page.waitForTimeout(400);
 await page.screenshot({ path: `${OUT}/02-board.png` });
+// A second attack advances the demo fight to the stage where a foe has cover.
+await input.fill("I strike again");
+await input.press("Enter");
+await page.waitForTimeout(3500);
+await page.evaluate(() => { const el = document.querySelector(".play"); if (el) el.scrollTop = 0; });
+await page.waitForTimeout(400);
+await page.locator(".vtt").screenshot({ path: `${OUT}/02c-cover.png` });
 await page.locator(".vtt").screenshot({ path: `${OUT}/02b-board-only.png` });
 console.log("vtt present:", await page.locator(".vtt").count());
 console.log("tokens:", await page.locator(".vtt-token").count());

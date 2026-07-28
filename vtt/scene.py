@@ -102,7 +102,8 @@ class VttEngine:
                    seed: Optional[int] = None, encounter_id: Optional[int] = None,
                    biome: Optional[str] = None, lighting: Optional[str] = None,
                    fog: bool = False, render_art: bool = True,
-                   reuse_place: bool = True) -> TacticalMap:
+                   reuse_place: bool = True,
+                   auto_close: bool = True) -> TacticalMap:
         """Open a tactical board for a session, closing any board already out.
 
         ``archetype`` may be a generator name or loose DM language ("a smoky
@@ -110,6 +111,11 @@ class VttEngine:
         ``reuse_place`` is on and this place already had a board, its layout and
         art come back instead of being regenerated, so a room the party fought
         in last week looks the same today.
+
+        ``auto_close`` marks a board the *system* put out (a fight started), so
+        the system may take it away again when the reason passes. A board the DM
+        opened by hand is theirs until they close it — nothing tidies it up
+        underneath them.
         """
         kind = kind if kind in SceneKind.ALL else SceneKind.COMBAT
         arch = archetype_for(archetype or place_hint or "", default="open")
@@ -136,6 +142,7 @@ class VttEngine:
             fog=self._blank_fog(gen.width, gen.height) if fog else None,
             seed=seed, active=True, revision=1,
             notes={"description": gen.description,
+                   "auto_close": bool(auto_close),
                    "spawn_party": [list(s) for s in gen.spawn_party[:60]],
                    "spawn_foes": [list(s) for s in gen.spawn_foes[:60]]},
         )
@@ -296,6 +303,28 @@ class VttEngine:
                       summary=f"{n} square(s) -> {tile(code).name}",
                       payload={"code": code})
         return n
+
+    def set_cover_override(self, map_id: int, combatant_id: int,
+                           cover: Optional[str]) -> None:
+        """Remember a cover ruling the DM made by hand.
+
+        The board can only see what the terrain grants. When the DM says a
+        creature has cover for a reason the grid doesn't know — hunkered behind
+        a barricade, half-buried in the rubble, shooting from a murder hole —
+        that ruling is kept here and used as a floor when cover is recomputed
+        each turn, so the DM's call never gets quietly overwritten.
+        """
+        row = self.get_scene(map_id)
+        if row is None:
+            return
+        notes = dict(row.notes or {})
+        overrides = dict(notes.get("cover_override") or {})
+        if cover and cover != "none":
+            overrides[str(combatant_id)] = cover
+        else:
+            overrides.pop(str(combatant_id), None)
+        notes["cover_override"] = overrides
+        self._set_fields(map_id, notes=notes)
 
     def set_elevation(self, map_id: int, squares: Iterable[Square], feet: int) -> int:
         """Raise (or level, with 0) squares. Climbing them costs the extra feet."""
@@ -1075,6 +1104,7 @@ class VttEngine:
             return ""
         g = self.grid_of(row)
         toks = [t for t in self.tokens(map_id) if not t.defeated][:max_tokens]
+        cur_token_id = self._current_token_id(row, toks)
         marks: dict[Square, str] = {}
         letters: list[tuple[str, MapToken]] = []
         alphabet = "abcdefghijklmnopqrstuvwxyz"
@@ -1101,25 +1131,39 @@ class VttEngine:
         if legend:
             lines.append(f"terrain: {legend}")
 
-        lines.append("creatures (x,y = column,row from top-left):")
+        # Cover is a fact about a target and ONE attacker, so the board reports
+        # it from the acting creature's point of view: on Gruk's turn, every
+        # line reads "how hard is this to hit, for Gruk".
+        actor = next((t for t in toks if t.id == cur_token_id), None) if cur_token_id else None
+        if actor is not None:
+            lines.append(f"creatures (x,y = column,row from top-left) — "
+                         f"distances and cover are from {actor.name}, who is acting:")
+        else:
+            lines.append("creatures (x,y = column,row from top-left):")
         for ch, t in letters:
-            foes = [o for o in toks if o.team != t.team and not o.defeated]
             near = ""
-            if foes:
-                closest = min(
+            ref = actor if (actor is not None and actor.id != t.id) else None
+            if ref is None and actor is None:
+                foes = [o for o in toks if o.team != t.team and not o.defeated]
+                ref = min(
                     foes, key=lambda o: geo.token_distance_ft(
                         geo.footprint(t.x, t.y, size_squares(t.size)),
                         geo.footprint(o.x, o.y, size_squares(o.size)),
-                        row.square_ft))
+                        row.square_ft)) if foes else None
+            if ref is not None:
                 d = geo.token_distance_ft(
                     geo.footprint(t.x, t.y, size_squares(t.size)),
-                    geo.footprint(closest.x, closest.y, size_squares(closest.size)),
+                    geo.footprint(ref.x, ref.y, size_squares(ref.size)),
                     row.square_ft)
-                cov = self.cover_for(map_id, closest.name, t.name)
-                near = f", {d} ft from {closest.name}"
-                if cov != "none":
+                cov = self.cover_for(map_id, ref.name, t.name)
+                near = f", {d} ft from {ref.name}"
+                if cov == "total":
+                    near += " (TOTAL cover from them — cannot be targeted)"
+                elif cov != "none":
                     near += f" ({cov} cover from them)"
             extras = []
+            if actor is not None and actor.id == t.id:
+                extras.append("ACTING NOW")
             if t.prone:
                 extras.append("prone")
             if t.hidden:
@@ -1127,7 +1171,9 @@ class VttEngine:
             ground = self._height_at(row, (t.x, t.y))
             height = t.elevation_ft or ground
             if height:
-                extras.append(f"{height} ft up")
+                # High ground isn't advantage in this game — it's a reason to
+                # consider granting cover against anything shooting up at them.
+                extras.append(f"{height} ft up — consider cover from attackers below")
             standing = g.tile_at(t.x, t.y).name
             if standing not in ("floor", "grass", "road", "sand"):
                 extras.append(f"in {standing}")

@@ -119,6 +119,19 @@
   background: linear-gradient(180deg, rgba(224, 69, 123, 0.6), rgba(224, 69, 123, 0.25));
 }
 .play .vtt-disc { position: relative; }
+/* Cover badge: "hard to hit, for whoever is acting right now". */
+.play .vtt-cover {
+  position: absolute; left: -3px; top: -3px;
+  display: grid; place-items: center; min-width: 14px; height: 14px;
+  padding: 0 2px; border-radius: 7px;
+  font-size: 0.5rem; line-height: 1;
+  color: #cfe3ff; background: rgba(8, 14, 28, 0.94);
+  border: 1px solid color-mix(in srgb, #7cc0ff 55%, var(--edge));
+  pointer-events: none;
+}
+.play .vtt-cover.c-threequarters { border-color: #7cc0ff; color: #eaf4ff; }
+.play .vtt-cover.c-total { border-color: var(--crimson); color: #ffd9de; }
+
 .play .vtt-pips {
   position: absolute; top: -2px; right: -2px; display: flex; gap: 1px;
   pointer-events: none;

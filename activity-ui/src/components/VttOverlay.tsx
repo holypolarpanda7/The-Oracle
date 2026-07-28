@@ -31,6 +31,12 @@ function monogram(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
+/** Cover -> its badge. The value is always "cover from whoever is acting", so a
+ *  shield on a token reads as "hard to hit, for the creature whose turn it is". */
+const COVER_BADGE: Record<string, string> = {
+  half: "½", "three-quarters": "¾", total: "✖",
+};
+
 /** Condition -> the pip drawn on a token. Kept short; the carousel spells them out. */
 const COND_PIP: Record<string, string> = {
   poisoned: "☣", prone: "⤓", grappled: "✊", restrained: "⛓", stunned: "✷",
@@ -290,11 +296,15 @@ export function VttOverlay(p: VttProps) {
 
   /** Tokens borrow their HP and conditions from the initiative tracker. */
   const vitals = useMemo(() => {
-    const m = new Map<number, { hp: number; max: number; temp: number; conds: string[] }>();
+    const m = new Map<number, { hp: number; max: number; temp: number;
+                                conds: string[]; cover?: string }>();
     for (const c of p.combat?.combatants ?? []) {
       m.set(c.id, {
         hp: c.current_hp, max: Math.max(1, c.max_hp), temp: c.temp_hp || 0,
         conds: c.conditions || [],
+        // The server keeps this pinned to the acting creature's line of attack,
+        // so it always means "cover from the one who can hit you right now".
+        cover: c.cover && c.cover !== "none" ? c.cover : undefined,
       });
     }
     return m;
@@ -341,6 +351,12 @@ export function VttOverlay(p: VttProps) {
               style={{ height: `${hpPct}%` }} />
           )}
         </div>
+        {vit?.cover && !active && (
+          <span className={`vtt-cover c-${vit.cover.replace(/\W/g, "")}`}
+            title={`${vit.cover} cover from the creature whose turn it is`}>
+            {COVER_BADGE[vit.cover] ?? "●"}
+          </span>
+        )}
         {pips.length > 0 && (
           <span className="vtt-pips">{pips.map((c, i) => <i key={i}>{c}</i>)}</span>
         )}
@@ -363,6 +379,9 @@ export function VttOverlay(p: VttProps) {
       </div>
     );
   }
+
+  const selectedCover = selectedToken?.combatant_id != null
+    ? vitals.get(selectedToken.combatant_id)?.cover : undefined;
 
   const remaining = selectedToken
     ? Math.max(0, selectedToken.speed_ft * (dash ? 2 : 1) - selectedToken.moved_ft)
@@ -441,6 +460,7 @@ export function VttOverlay(p: VttProps) {
                 {selectedToken.team === "party" ? "an ally" : "a foe"} ·
                 {" "}{selectedToken.size} · speed {selectedToken.speed_ft} ft
                 {selectedToken.reach_ft > 5 ? ` · reach ${selectedToken.reach_ft} ft` : ""}
+                {selectedCover ? ` · ${selectedCover} cover from the creature acting` : ""}
               </span>
             )}
           </>

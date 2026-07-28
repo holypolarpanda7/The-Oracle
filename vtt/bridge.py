@@ -278,26 +278,55 @@ class BoardSpatial:
 
 
 def sync_cover(vtt: VttEngine, map_id: int, *, tracker: Any = None) -> None:
-    """Write each combatant's cover from its nearest enemy's line of attack.
+    """Write every creature's cover **as seen from whoever's turn it is**.
 
-    The tracker carries one cover value per creature, not one per attacker
-    pair, so this is an approximation — but "the cultist is behind the altar"
-    is the fact that matters in practice, and it beats the DM guessing.
+    Cover is only ever a fact about a target and a particular attacker, so the
+    single value the tracker carries per creature is pinned to the one attacker
+    that matters right now: the creature acting. On Gruk's turn, everyone else's
+    cover is their cover *from Gruk* — which is exactly what the engine needs
+    when Gruk swings, and what the DM needs when deciding whether the shot is
+    worth taking.
+
+    The acting creature's own cover is measured from its nearest enemy instead,
+    since the only attacks it faces on its own turn are reactions from whoever
+    it is standing next to.
+
+    A cover value the DM set by hand (``[[COMBAT: cover | X | half]]`` — for
+    something the terrain can't know, like a creature hunkered behind a
+    barricade) is kept as a floor, so recomputing never erases their ruling.
     """
     tracker = tracker or vtt.tracker
     row = vtt.get_scene(map_id)
     if tracker is None or row is None:
         return
     toks = [t for t in vtt.tokens(map_id, include_defeated=False) if t.combatant_id]
-    for t in toks:
-        foes = [o for o in toks if o.team != t.team]
-        if not foes:
-            continue
-        nearest = min(foes, key=lambda o: geo.token_distance_ft(
-            geo.footprint(t.x, t.y, size_squares(t.size)),
-            geo.footprint(o.x, o.y, size_squares(o.size)), row.square_ft))
+    if not toks:
+        return
+    actor = None
+    if row.encounter_id:
         try:
-            cover = vtt.cover_for(map_id, nearest.name, t.name)
+            cur = tracker.current_combatant(row.encounter_id)
+            actor = next((t for t in toks if t.combatant_id == (cur.id if cur else None)),
+                         None)
+        except Exception:
+            actor = None
+    overrides = ((row.notes or {}).get("cover_override") or {})
+
+    for t in toks:
+        try:
+            if actor is not None and t.id != actor.id:
+                cover = vtt.cover_for(map_id, actor.name, t.name)
+            else:
+                foes = [o for o in toks if o.team != t.team]
+                if not foes:
+                    continue
+                nearest = min(foes, key=lambda o: geo.token_distance_ft(
+                    geo.footprint(t.x, t.y, size_squares(t.size)),
+                    geo.footprint(o.x, o.y, size_squares(o.size)), row.square_ft))
+                cover = vtt.cover_for(map_id, nearest.name, t.name)
+            manual = overrides.get(str(t.combatant_id))
+            if manual and geo.COVER_ORDER.get(manual, 0) > geo.COVER_ORDER.get(cover, 0):
+                cover = manual
             tracker.set_cover(t.combatant_id, cover)
         except Exception as e:
             print(f"[vtt.bridge] cover sync failed for {t.name}: {e}")

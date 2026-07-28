@@ -5498,6 +5498,17 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                 level = _COVER_LEVELS.get((args[1] or "").strip().lower())
                 if c and level:
                     combat.set_cover(c.id, level)
+                    # With a board out, cover is recomputed from the grid every
+                    # turn — remember the DM's ruling so it survives as a floor
+                    # (they know things the terrain doesn't: a barricade, a
+                    # murder hole, a creature shooting down from a ledge).
+                    if _vtt_on():
+                        try:
+                            scene = vtt_engine.active_scene(session_id)
+                            if scene is not None:
+                                vtt_engine.set_cover_override(scene.id, c.id, level)
+                        except Exception as e:
+                            print(f"[vtt] cover override failed: {e}")
             elif action == "move":
                 if not args:
                     continue
@@ -5593,6 +5604,11 @@ _VTT_HOOKS_ACTIVE = (
     "radius (sphere/emanation) or length (cone/line/cube) in feet; 'dir' is degrees\n"
     "(0 = east, 90 = south) for cones and lines. Flags: difficult, blocking, obscuring,\n"
     "permanent, concentration.\n"
+    "The board lists distance and cover FROM the creature whose turn it is — that is the\n"
+    "attacker you are adjudicating, so read those numbers straight.\n"
+    "High ground grants no advantage in this game. When a creature holds a ledge or a\n"
+    "rooftop, consider granting it cover from the attackers below instead:\n"
+    "    [[COMBAT: cover | Sable | half]]   (the board remembers your ruling)\n"
     "Honour what the board shows: cover listed against a creature applies to attacks on it,\n"
     "distances gate reach and range, and a creature in an effect's squares is in the effect.\n"
     "Never invent a position that contradicts the board — move the token instead.\n"
@@ -5677,7 +5693,8 @@ def _vtt_place_context(ctx_obj) -> tuple[Optional[str], Optional[str], Optional[
 def _vtt_open(session_id: str, *, kind: str = "combat",
               archetype: Optional[str] = None, name: Optional[str] = None,
               ctx_obj=None, encounter_id: Optional[int] = None,
-              background_tasks: Optional[BackgroundTasks] = None):
+              background_tasks: Optional[BackgroundTasks] = None,
+              auto_close: bool = True):
     """Open a board for this table, generating the layout now and the art later.
 
     The diffusion render takes tens of seconds on a busy GPU, so it never sits
@@ -5700,6 +5717,7 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
         fog=bool(getattr(cfg, "fog_of_war", False)) or kind == "explore",
         reuse_place=bool(getattr(cfg, "reuse_place_art", True)),
         render_art=False,
+        auto_close=auto_close,
     )
     if scene and encounter_id:
         try:
@@ -5755,7 +5773,8 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                 scene = _vtt_open(session_id, kind=vtt_scene_kind_for(kind),
                                   archetype=arch, name=nm, ctx_obj=ctx_obj,
                                   encounter_id=enc.id if enc else None,
-                                  background_tasks=background_tasks)
+                                  background_tasks=background_tasks,
+                                  auto_close=False)
                 if scene:
                     notes.append(f"🗺 A board is laid out: {scene.name}.")
                 continue
@@ -5950,8 +5969,10 @@ def _vtt_autosync(session_id: str, ctx_obj=None, *,
         enc = combat.get_active(session_id)
         scene = vtt_engine.active_scene(session_id)
 
-        # A board outlives only the thing that justified it.
-        if scene is not None and scene.kind != "combat":
+        # A board the SYSTEM put out outlives only the thing that justified it.
+        # One the DM opened by hand is theirs until they close it.
+        auto = bool(((scene.notes or {}) if scene else {}).get("auto_close", True))
+        if scene is not None and auto and scene.kind != "combat":
             meta = _load_session_state(session_id).get("meta", {}) or {}
             if vtt_should_close(scene.kind,
                                 combat_active=enc is not None,
@@ -5961,7 +5982,10 @@ def _vtt_autosync(session_id: str, ctx_obj=None, *,
                 scene = None
 
         if enc is None:
-            if scene is not None and scene.kind == "combat":
+            # A combat board goes away when its fight does — including a manual
+            # one, once the fight it was hosting has ended.
+            if scene is not None and scene.kind == "combat" and (
+                    auto or scene.encounter_id is not None):
                 vtt_engine.close_scene(scene.id)
             return
 

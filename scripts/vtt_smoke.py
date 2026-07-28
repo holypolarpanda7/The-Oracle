@@ -129,29 +129,21 @@ def main() -> int:
     check("and the hook guidance", "[[VTT:" in prompt)
 
     # ---- 3. the DM's board verbs are applied ---------------------------
-    print("\n\033[1m3. the DM's [[VTT]] hooks move the world\033[0m")
+    # Effects are position-independent, so they're safe to assert mid-fight.
+    # Movement is checked in step 6 on a board with no combat engine running:
+    # during a fight the engine may legitimately walk a monster (its AI closing
+    # to melee) between the hook being written and being applied, which is
+    # correct behaviour and would make a coordinate assertion here a lie.
+    print("\n\033[1m3. the DM's [[VTT]] hooks land on the board\033[0m")
     tok = m.vtt_engine.find_token(scene.id, "Bandit 1")
-    before = (tok.x, tok.y) if tok else None
-    target = None
-    if tok:
-        opts = m.vtt_engine.movement_options(tok.id)["squares"]
-        target = next((s for s in opts if (s["x"], s["y"]) != before
-                       and s["cost"] <= 15), None)
-    if target:
-        say("I wait.",
-            f"The bandit circles.\n[[VTT: move | Bandit 1 | {target['x']},{target['y']}]]\n"
-            "[[VTT: effect | Caltrops | shape=cube | at="
-            f"{target['x']},{target['y']} | size=10 | difficult]]")
-        moved = m.vtt_engine.get_token(tok.id)
-        check("the token moved where the DM said",
-              (moved.x, moved.y) == (target["x"], target["y"]),
-              f"{(moved.x, moved.y)} vs {(target['x'], target['y'])}")
-        eff = m.vtt_engine.find_effect(scene.id, "Caltrops")
-        check("the effect landed with resolved squares",
-              eff is not None and len(eff.squares or []) > 0)
-        check("and it is difficult ground", bool(eff and eff.difficult_terrain))
-    else:
-        check("a reachable square exists for the move test", False)
+    at = (tok.x, tok.y) if tok else (5, 5)
+    say("I wait.",
+        f"Caltrops scatter across the floor.\n[[VTT: effect | Caltrops | shape=cube | "
+        f"at={at[0]},{at[1]} | size=10 | difficult]]")
+    eff = m.vtt_engine.find_effect(scene.id, "Caltrops")
+    check("the effect landed with resolved squares",
+          eff is not None and len(eff.squares or []) > 0)
+    check("and it is difficult ground", bool(eff and eff.difficult_terrain))
 
     # ---- 4. an illegal move is refused, out loud ------------------------
     print("\n\033[1m4. an illegal move comes back as a correction\033[0m")
@@ -166,6 +158,36 @@ def main() -> int:
     say("I finish them.", "The last bandit drops.\n[[COMBAT: end]]")
     check("no board is out", m.vtt_engine.active_scene(session_id) is None)
     check("the scene left a replay log", len(m.vtt_engine.events(scene.id)) > 0)
+
+    # ---- 6. a board the DM opens by hand, with nothing else moving -------
+    print("\n\033[1m6. the DM opens a board and moves a piece on it\033[0m")
+    say("I study the mechanism.",
+        "Glyphs wake across the flagstones.\n"
+        "[[VTT: open | puzzle | crypt | The Glyph Floor]]\n"
+        "[[VTT: place | Stone Guardian | 5,5 | team=neutral]]")
+    puzzle = m.vtt_engine.active_scene(session_id)
+    check("the DM's own board opened", puzzle is not None
+          and puzzle.kind == "puzzle", str(puzzle and puzzle.kind))
+    if puzzle is not None:
+        guard = m.vtt_engine.find_token(puzzle.id, "Stone Guardian")
+        check("the placed piece is on it", guard is not None)
+        if guard is not None:
+            # One step, chosen now, on a board with no engine to disturb it.
+            step = next((s for s in m.vtt_engine.movement_options(guard.id)["squares"]
+                         if s["cost"] == 5), None)
+            if step:
+                say("I step back.",
+                    "The guardian grinds one pace forward.\n"
+                    f"[[VTT: move | Stone Guardian | {step['x']},{step['y']}]]")
+                moved = m.vtt_engine.get_token(guard.id)
+                check("the piece moved exactly where the DM said",
+                      (moved.x, moved.y) == (step["x"], step["y"]),
+                      f"{(moved.x, moved.y)} vs {(step['x'], step['y'])}")
+            else:
+                check("a one-step square exists for the move test", False)
+        say("I leave it be.", "The glyphs dim.\n[[VTT: close]]")
+        check("the DM can put the board away",
+              m.vtt_engine.active_scene(session_id) is None)
 
     print()
     if FAILS:

@@ -468,13 +468,30 @@ def test_bridge() -> None:
     check("grid positions are written back as bands",
           bands.get("Kara") in ("near", "far"), str(bands))
 
+    # Cover is a fact about a target and ONE attacker: the one whose turn it is.
     ka, og = v.find_token(scene.id, "Kara"), v.find_token(scene.id, "Ogre")
     mid_x = (ka.x + og.x) // 2
     v.set_terrain(scene.id, [(mid_x, ka.y), (mid_x, ka.y + 1)], "O")
+    for _ in range(8):
+        if ct.current_combatant(enc.id).id == ogre.id:
+            break
+        ct.next_turn(enc.id)
     sync_cover(v, scene.id, tracker=ct)
     covers = {c.name: c.cover for c in ct.order(enc.id)}
-    check("cover from the grid reaches the tracker",
+    check("on the ogre's turn, Kara's cover is measured from the ogre",
           covers.get("Kara") not in (None, "none"), str(covers))
+
+    # A DM ruling the terrain can't know is kept as a floor across recomputes.
+    v.set_cover_override(scene.id, ogre.id, "three-quarters")
+    sync_cover(v, scene.id, tracker=ct)
+    eq("a DM's cover ruling survives the next recompute",
+       ct.get_combatant(ogre.id).cover, "three-quarters")
+    v.set_cover_override(scene.id, ogre.id, None)
+
+    # And the board reports it from the actor's point of view.
+    board = v.render(scene.id)
+    check("the DM board says whose eyes the cover is measured through",
+          "who is acting" in board and "Ogre" in board, board.splitlines()[-6:])
     ct.end_encounter(enc.id)
     v.close_scene(scene.id)
 

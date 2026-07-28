@@ -82,7 +82,12 @@ The rules-facing math, all pure functions:
 * **Cover** — the PHB corner rule, best case for the attacker: 1–2 blocked lines
   is half, 3 is three-quarters, 4 is total. Tiles that grant cover (a low wall, a
   crate) count at their own rating, and creatures in the way count as half cover
-  (the DMG option).
+  (the DMG option). Cover is only ever a fact about a target *and one attacker*,
+  so the value written to the tracker and shown on the board is always measured
+  **from whoever's turn it is**; the acting creature's own cover is measured from
+  its nearest enemy, since reactions are the only attacks it faces on its turn.
+  A ruling the DM makes by hand (`[[COMBAT: cover | X | half]]`) is kept as a
+  floor, so recomputing never erases it.
 * **Templates** — sphere, cone, line, cube, emanation, resolved to the exact set
   of squares, clipped by line of effect so a fireball doesn't leak through a
   wall. Cones and lines start at the *edge* of the caster's space, so nobody is
@@ -193,6 +198,13 @@ and only on their turn.
 A fight opened with `[[COMBAT: start]]` gets its board automatically; the DM
 doesn't ask twice.
 
+### Whose board is it
+
+A board the *system* put out (a fight started) is the system's to take away when
+the fight ends. A board the DM opened with `[[VTT: open]]` is theirs until they
+close it — nothing tidies it up underneath them. That distinction lives in the
+scene's `auto_close` flag.
+
 ## Running it
 
 ```bash
@@ -204,9 +216,10 @@ cd activity-ui && npm run build && node vtt-shot.mjs   # screenshot the overlay
 
 ## Known gaps
 
-* **High ground is not mechanised.** Climbing costs the feet climbed and
-  stepping off a ledge reports the drop, but nothing grants advantage from
-  above — that stays a DM call, since it isn't RAW.
+* **High ground is a prompt, not a rule.** Climbing costs the feet climbed and
+  stepping off a ledge reports the drop. Holding a ledge grants no advantage;
+  the board instead tells the DM "consider cover from attackers below", and
+  their ruling sticks via the cover override.
 * **Fog is party-wide**, not per-player; there is no per-viewer vision.
 * **Doors are stateful but not interactive from the overlay** — the DM opens
   them with a hook.
