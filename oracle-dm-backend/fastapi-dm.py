@@ -14423,6 +14423,8 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
     if sheet.get("race"):
         bits.append(sheet["race"])
     return {
+        # The tactical board needs to know which token on the grid is yours.
+        "character_id": char_id,
         "name": sheet["name"],
         "subtitle": " · ".join(bits),
         "hp": sheet["combat"]["current_hp"],

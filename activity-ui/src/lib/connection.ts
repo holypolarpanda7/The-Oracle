@@ -1,5 +1,5 @@
 import type { ClientEvent, ItemDetail, ServerEvent } from "./types";
-import { demoScript } from "./demo";
+import { demoScript, demoVttApi } from "./demo";
 
 export interface Connection {
   send(ev: ClientEvent): void;
@@ -120,6 +120,25 @@ function demoItemDetail(name: string): ItemDetail {
 }
 
 function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
+  // ---- tactical board (offline): the same contract the backend implements ----
+  if (ev.t === "vtt_options") {
+    onEvent({ t: "vtt_options", ...demoVttApi.options(ev.token_id, !!ev.dash) });
+    return;
+  }
+  if (ev.t === "vtt_move") {
+    const res = demoVttApi.move(ev.token_id, ev.x, ev.y);
+    if (!res.ok) onEvent({ t: "vtt_error", detail: res.reason ?? "You can't move there." });
+    else {
+      onEvent({ t: "vtt", scene: demoVttApi.scene() });
+      onEvent({ t: "vtt_options", ...demoVttApi.options(ev.token_id, false) });
+    }
+    return;
+  }
+  if (ev.t === "vtt_ping") {
+    onEvent({ t: "vtt_ping", x: ev.x, y: ev.y, label: ev.label ?? "here" });
+    return;
+  }
+  if (ev.t === "vtt_preview") return;   // the overlay previews from the cost map
   if (ev.t === "inspect_item") {
     onEvent({ t: "item_detail", item: demoItemDetail(ev.name) });
     return;

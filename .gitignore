@@ -59,3 +59,6 @@ docs/design/proofs/
 # Generated species portraits (owned-book species must stay local; SRD/PHB ones
 # can be force-added: git add -f activity-ui/public/assets/species/<slug>-*.webp)
 activity-ui/public/assets/species/
+
+# VTT overlay screenshots (local verification only)
+activity-ui/vtt-shots/

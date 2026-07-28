@@ -66,6 +66,8 @@ export interface PortraitLook {
 }
 
 export interface SheetData {
+  /** Which character this sheet is — identifies your token on the board. */
+  character_id?: number | null;
   name: string;
   subtitle: string; // "Level 3 Ranger (Gloom Stalker) · Custom Lineage"
   hp: number;
@@ -146,6 +148,99 @@ export interface CombatState {
   combatants: CombatantView[];
 }
 
+/* ---------------- tactical board (the vtt/ package) ---------------- */
+
+/** A creature or object standing on the grid. */
+export interface VttToken {
+  id: number;
+  name: string;
+  kind: string;            // pc | npc | monster | object | marker
+  team: string;            // party | foe | neutral
+  x: number;               // top-left square of the footprint
+  y: number;
+  size: string;            // tiny…gargantuan
+  squares: number;         // footprint side, in squares
+  combatant_id?: number | null;
+  character_id?: number | null;
+  monster_slug?: string | null;
+  image_id?: number | null;   // token art via /imagery/image/{id}?thumb=true
+  color?: string | null;
+  label?: string | null;
+  speed_ft: number;
+  reach_ft: number;
+  moved_ft: number;
+  movement_mode: string;   // walk | fly | swim
+  elevation_ft: number;
+  hidden: boolean;
+  prone: boolean;
+  defeated: boolean;
+}
+
+/** A spell area, aura, zone, wall, light or marker — squares are authoritative. */
+export interface VttEffect {
+  id: number;
+  name: string;
+  kind: string;            // area | zone | aura | wall | light | hazard | marker
+  shape: string;
+  x: number;
+  y: number;
+  radius_ft: number;
+  length_ft: number;
+  width_ft: number;
+  direction_deg: number;
+  squares: [number, number][];
+  color?: string | null;
+  opacity: number;
+  icon?: string | null;
+  difficult_terrain: boolean;
+  blocks_sight: boolean;
+  obscured?: string | null;
+  damage?: string | null;
+  save_ability?: string | null;
+  save_dc?: number | null;
+  trigger?: string | null;
+  source_token_id?: number | null;
+  concentration: boolean;
+  expires_round?: number | null;
+}
+
+export interface VttDoor { x: number; y: number; state: string; name?: string; dc?: number | null; }
+
+/** The whole board, as the overlay draws it. */
+export interface VttScene {
+  id: number;
+  session_id: string;
+  encounter_id?: number | null;
+  name: string;
+  kind: string;            // combat | puzzle | chase | hazard | explore | social
+  archetype: string;
+  width: number;           // squares
+  height: number;
+  square_ft: number;
+  lighting: string;        // bright | dim | dark
+  revision: number;
+  active: boolean;
+  round: number;
+  current_token_id?: number | null;
+  terrain: string[];       // one string per row, one tile code per square
+  fog?: string[] | null;   // "1" seen / "0" unseen, or null for no fog
+  doors: VttDoor[];
+  elevation: Record<string, number>;
+  background_image_id?: number | null;
+  art_status: string;      // none | pending | ready | offline
+  description?: string;
+  tokens: VttToken[];
+  effects: VttEffect[];
+  legend?: string;
+}
+
+/** Reachable squares for the selected token (server-costed). */
+export interface VttOptions {
+  token_id: number;
+  budget_ft: number;
+  squares: { x: number; y: number; cost: number }[];
+}
+
 export interface SubclassFeature {
   level: number;
   name: string;
@@ -210,6 +305,13 @@ export type ServerEvent =
   | ({ t: "reprepare_data" } & RepData)
   | { t: "party"; members: Ally[] }
   | { t: "combat"; encounter: CombatState | null }
+  | { t: "vtt"; scene: VttScene | null }
+  | ({ t: "vtt_options" } & VttOptions)
+  | { t: "vtt_preview"; token_id: number; ok: boolean; path?: [number, number][];
+      cost_ft?: number; remaining_ft?: number; within_budget?: boolean;
+      opportunity?: string[]; reason?: string }
+  | { t: "vtt_ping"; x: number; y: number; label?: string }
+  | { t: "vtt_error"; detail: string }
   | { t: "scene"; url: string }
   | { t: "item_detail"; item: ItemDetail }
   | { t: "item_image"; name: string; url: string }
@@ -237,7 +339,12 @@ export type ClientEvent =
   | { t: "item_action"; name: string; action: string; target?: string }
   | { t: "portrait_action"; action: "regear" | "select" | "delete";
       context?: string; replace_context?: string; detail?: string }
-  | { t: "set_dnr"; dnr: boolean };
+  | { t: "set_dnr"; dnr: boolean }
+  // ---- tactical board ----
+  | { t: "vtt_options"; token_id: number; dash?: boolean }
+  | { t: "vtt_preview"; token_id: number; x: number; y: number }
+  | { t: "vtt_move"; token_id: number; x: number; y: number }
+  | { t: "vtt_ping"; x: number; y: number; label?: string };
 
 export interface CCPayload {
   name: string;

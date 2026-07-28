@@ -1,4 +1,4 @@
-import type { CombatState, ServerEvent } from "./types";
+import type { CombatState, ServerEvent, VttEffect, VttScene } from "./types";
 
 /** Standalone demo feed — lets the whole UI run with no backend, and doubles
     as living documentation of the event protocol. */
@@ -20,6 +20,7 @@ const lexicon: ServerEvent = {
 const sheet: ServerEvent = {
   t: "sheet",
   sheet: {
+    character_id: 1,
     name: "Kara Emberfall",
     subtitle: "Level 5 · Dragonborn Bard",
     hp: 32,
@@ -112,6 +113,200 @@ function demoEncounter(stage: number): CombatState {
     ],
   };
 }
+
+/* Demo tactical board: the same skirmish, seen from above. Mirrors the
+   backend's {t:"vtt"} frames — one string per row of tile codes (see
+   vtt/terrain.py), tokens carrying their footprint and movement, and effects
+   whose squares are already resolved. */
+const DEMO_TERRAIN = [
+  "####################",
+  "#..................#",
+  "#...oo........~~~..#",
+  "/...oo........~~~..#",
+  "#.............~~~..#",
+  "#.....OO......~~~..#",
+  "#.....OO...........#",
+  "#..................#",
+  "#.......,,,........#",
+  "#.......,,,........#",
+  "#..........o.......#",
+  "#...n..............#",
+  "#..................#",
+  "####################",
+];
+
+function ring(cx: number, cy: number, r: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (let y = cy - r; y <= cy + r; y++) {
+    for (let x = cx - r; x <= cx + r; x++) {
+      if (x < 1 || y < 1 || x > 18 || y > 12) continue;
+      if (Math.hypot(x - cx, y - cy) <= r + 0.2) out.push([x, y]);
+    }
+  }
+  return out;
+}
+
+function demoVtt(stage: number): VttScene {
+  const warriorDown = stage >= 2;
+  return {
+    id: 1,
+    session_id: "demo:1",
+    encounter_id: 1,
+    name: "The Wispering Mill",
+    kind: "combat",
+    archetype: "dungeon-room",
+    width: 20,
+    height: 14,
+    square_ft: 5,
+    lighting: "dim",
+    revision: stage + 1,
+    active: true,
+    round: stage >= 2 ? 2 : 1,
+    current_token_id: stage >= 2 ? 11 : 10,
+    terrain: DEMO_TERRAIN,
+    fog: null,
+    doors: [{ x: 0, y: 3, state: "open", name: "mill door" }],
+    elevation: {},
+    background_image_id: null,
+    art_status: "offline",
+    description: "the millhouse floor — grain sacks, a dead millstone, water in the race",
+    tokens: [
+      { id: 10, name: "Goblin Warrior", kind: "monster", team: "foe",
+        x: 6, y: 8, size: "small", squares: 1, combatant_id: 3,
+        speed_ft: 30, reach_ft: 5, moved_ft: 0, movement_mode: "walk",
+        elevation_ft: 0, hidden: false, prone: false, defeated: warriorDown,
+        color: "#ff5a5a" },
+      { id: 11, name: "Kara", kind: "pc", team: "party",
+        x: 5, y: 8, size: "medium", squares: 1, combatant_id: 2, character_id: 1,
+        speed_ft: 30, reach_ft: 5, moved_ft: stage >= 2 ? 15 : 0,
+        movement_mode: "walk", elevation_ft: 0, hidden: false, prone: false,
+        defeated: false, color: "#4fa3ff" },
+      { id: 12, name: "Brother Aldous", kind: "pc", team: "party",
+        x: 3, y: 9, size: "medium", squares: 1, combatant_id: 4,
+        speed_ft: 30, reach_ft: 5, moved_ft: 0, movement_mode: "walk",
+        elevation_ft: 0, hidden: false, prone: false, defeated: false,
+        color: "#4fa3ff" },
+      { id: 13, name: "Pip", kind: "pc", team: "party",
+        x: 2, y: 11, size: "small", squares: 1, combatant_id: 6,
+        speed_ft: 25, reach_ft: 5, moved_ft: 0, movement_mode: "walk",
+        elevation_ft: 0, hidden: false, prone: false, defeated: false,
+        color: "#4fa3ff" },
+      { id: 14, name: "Goblin Skulker", kind: "monster", team: "foe",
+        x: 14, y: 4, size: "small", squares: 1, combatant_id: 5,
+        speed_ft: 30, reach_ft: 5, moved_ft: 0, movement_mode: "walk",
+        elevation_ft: 0, hidden: false, prone: false, defeated: false,
+        color: "#ff5a5a" },
+    ],
+    effects: [
+      { id: 1, name: "Bless", kind: "aura", shape: "emanation", x: 3, y: 9,
+        radius_ft: 15, length_ft: 0, width_ft: 5, direction_deg: 0,
+        squares: ring(3, 9, 3), color: "#ffe8a3", opacity: 0.16,
+        difficult_terrain: false, blocks_sight: false, concentration: true,
+        source_token_id: 12, expires_round: null },
+      ...(stage >= 2
+        ? [{
+            id: 2, name: "Faerie Fire", kind: "area", shape: "cube",
+            x: 14, y: 4, radius_ft: 0, length_ft: 20, width_ft: 5,
+            direction_deg: 0, squares: ring(14, 4, 2), color: "#7fd7ff",
+            opacity: 0.28, difficult_terrain: false, blocks_sight: false,
+            concentration: true, source_token_id: 11, expires_round: 12,
+          } as VttEffect]
+        : []),
+      { id: 3, name: "spilled grain", kind: "zone", shape: "path", x: 8, y: 8,
+        radius_ft: 0, length_ft: 0, width_ft: 5, direction_deg: 0,
+        squares: [[8, 8], [9, 8], [10, 8], [8, 9], [9, 9], [10, 9]],
+        color: "#b58b3c", opacity: 0.22, difficult_terrain: true,
+        blocks_sight: false, concentration: false, expires_round: null },
+    ],
+    legend: "# wall, o crates, O pillar, ~ shallow water, , rubble",
+  };
+}
+
+/* The demo board is interactive: positions the player pushes around live here,
+   and movement options are costed with the same rules the server uses (5 ft a
+   square, 10 through rough ground, no cutting a diagonal between two walls). */
+const demoTokenPos = new Map<number, [number, number]>();
+const demoMoved = new Map<number, number>();
+
+function demoScene(): VttScene {
+  const scene = demoVtt(demoCombatStage);
+  scene.tokens = scene.tokens.map((t) => {
+    const pos = demoTokenPos.get(t.id);
+    const moved = demoMoved.get(t.id);
+    return pos ? { ...t, x: pos[0], y: pos[1], moved_ft: moved ?? t.moved_ft } : t;
+  });
+  return scene;
+}
+
+const DEMO_COST: Record<string, number | null> = {
+  "#": null, o: null, O: null, n: null, W: null, "+": null,
+  "~": 10, ",": 10, '"': 10,
+};
+
+function demoTileCost(x: number, y: number): number | null {
+  const row = DEMO_TERRAIN[y];
+  if (!row || x < 0 || x >= row.length) return null;
+  const code = row[x];
+  return code in DEMO_COST ? DEMO_COST[code] : 5;
+}
+
+/** Dijkstra over the demo grid — the client-side stand-in for the server's
+    reachable_costs, so the movement wash and path preview behave identically. */
+function demoReach(tokenId: number, dash: boolean) {
+  const scene = demoScene();
+  const me = scene.tokens.find((t) => t.id === tokenId);
+  if (!me) return { token_id: tokenId, budget_ft: 0, squares: [] };
+  const blocked = new Set(
+    scene.tokens.filter((t) => t.id !== tokenId && !t.defeated)
+      .map((t) => `${t.x},${t.y}`));
+  const budget = Math.max(0, me.speed_ft * (dash ? 2 : 1) - me.moved_ft);
+  const best = new Map<string, number>([[`${me.x},${me.y}`, 0]]);
+  const queue: [number, number, number][] = [[0, me.x, me.y]];
+  while (queue.length) {
+    queue.sort((a, b) => a[0] - b[0]);
+    const [cost, x, y] = queue.shift()!;
+    if (cost > (best.get(`${x},${y}`) ?? Infinity)) continue;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (!dx && !dy) continue;
+        const nx = x + dx;
+        const ny = y + dy;
+        const step = demoTileCost(nx, ny);
+        if (step == null || blocked.has(`${nx},${ny}`)) continue;
+        if (dx && dy && demoTileCost(x + dx, y) == null && demoTileCost(x, y + dy) == null) continue;
+        const total = cost + step;
+        if (total > budget) continue;
+        if (total < (best.get(`${nx},${ny}`) ?? Infinity)) {
+          best.set(`${nx},${ny}`, total);
+          queue.push([total, nx, ny]);
+        }
+      }
+    }
+  }
+  return {
+    token_id: tokenId,
+    budget_ft: budget,
+    squares: [...best].map(([k, cost]) => {
+      const [x, y] = k.split(",").map(Number);
+      return { x, y, cost };
+    }),
+  };
+}
+
+export const demoVttApi = {
+  scene: demoScene,
+  options: demoReach,
+  move(tokenId: number, x: number, y: number) {
+    const reach = demoReach(tokenId, false);
+    const hit = reach.squares.find((s) => s.x === x && s.y === y);
+    if (!hit) return { ok: false, reason: "You can't reach that square." };
+    demoTokenPos.set(tokenId, [x, y]);
+    const scene = demoScene();
+    const me = scene.tokens.find((t) => t.id === tokenId);
+    demoMoved.set(tokenId, (me?.moved_ft ?? 0) + hit.cost);
+    return { ok: true };
+  },
+};
 
 export const demoScript = {
   hello: {
@@ -246,6 +441,7 @@ export const demoScript = {
               "Goblin Skulker 8, Pip 6",
           },
           { t: "combat", encounter: demoEncounter(1) },
+          { t: "vtt", scene: demoVtt(1) },
           { t: "sheet", sheet: { ...(sheet as any).sheet, hp: 17 } },
           {
             t: "party",
@@ -275,6 +471,7 @@ export const demoScript = {
               "millstone, blade shaking.",
           },
           { t: "combat", encounter: demoEncounter(2) },
+          { t: "vtt", scene: demoVtt(2) },
         ];
       }
       demoCombatStage = 0;
@@ -286,6 +483,7 @@ export const demoScript = {
             "into the dark. The wheel creaks on, indifferent.\n\n⚔ The fight is over.",
         },
         { t: "combat", encounter: null },
+        { t: "vtt", scene: null },
       ];
     }
     return [

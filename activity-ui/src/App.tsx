@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { connect, type Connection } from "./lib/connection";
 import type {
   Ally, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry, RepData,
-  ServerEvent, SheetData,
+  ServerEvent, SheetData, VttOptions, VttScene,
 } from "./lib/types";
 import { Block, makeOracleBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
@@ -35,6 +35,11 @@ export default function App({ session }: { session: Session }) {
   const [sheet, setSheet] = useState<SheetData | null>(null);
   const [party, setParty] = useState<Ally[]>([]);
   const [combat, setCombat] = useState<CombatState | null>(null);
+  // The tactical board: present only while the Oracle has one out.
+  const [vtt, setVtt] = useState<VttScene | null>(null);
+  const [vttOptions, setVttOptions] = useState<VttOptions | null>(null);
+  const [vttPing, setVttPing] = useState<{ x: number; y: number; label?: string; at: number } | null>(null);
+  const [vttError, setVttError] = useState<string | null>(null);
   const [sceneUrl, setSceneUrl] = useState<string | null>(null);
   const [levelUp, setLevelUp] = useState<LevelUpData | null>(null);
   const [repData, setRepData] = useState<RepData | null>(null);
@@ -169,6 +174,21 @@ export default function App({ session }: { session: Session }) {
           break;
         case "combat":
           setCombat(ev.encounter);
+          break;
+        case "vtt":
+          setVtt(ev.scene);
+          if (!ev.scene) { setVttOptions(null); setVttError(null); }
+          break;
+        case "vtt_options":
+          setVttOptions({ token_id: ev.token_id, budget_ft: ev.budget_ft,
+                          squares: ev.squares });
+          break;
+        case "vtt_ping":
+          setVttPing({ x: ev.x, y: ev.y, label: ev.label, at: Date.now() });
+          break;
+        case "vtt_error":
+          setVttError(ev.detail);
+          window.setTimeout(() => setVttError(null), 4000);
           break;
         case "scene":
           setSceneUrl(ev.url);
@@ -339,6 +359,16 @@ export default function App({ session }: { session: Session }) {
               sceneUrl={sceneUrl}
               party={party}
               combat={combat}
+              vtt={vtt}
+              vttOptions={vttOptions}
+              vttPing={vttPing}
+              vttError={vttError}
+              onVttOptions={(token_id, dash) =>
+                connRef.current?.send({ t: "vtt_options", token_id, dash })}
+              onVttMove={(token_id, x, y) =>
+                connRef.current?.send({ t: "vtt_move", token_id, x, y })}
+              onVttPing={(x, y) => connRef.current?.send({ t: "vtt_ping", x, y })}
+              onVttDismissError={() => setVttError(null)}
               input={input}
               setInput={setInput}
               submit={submit}

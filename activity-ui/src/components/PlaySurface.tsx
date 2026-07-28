@@ -5,7 +5,10 @@ import { IconDefs } from "./icons";
 import { RevealedSpans, type Block } from "./Narration";
 import { useResizable, resetAllPanels } from "../lib/useResizable";
 import { InitiativeCarousel } from "./InitiativeCarousel";
-import type { Ally, CombatState, SheetData } from "../lib/types";
+import { VttOverlay } from "./VttOverlay";
+import type {
+  Ally, CombatState, SheetData, VttOptions, VttScene,
+} from "../lib/types";
 
 const SCROLL = "/assets/scrolls/parchment.webp";
 
@@ -57,6 +60,15 @@ export interface PlayProps {
   sceneUrl: string | null;
   party: Ally[];
   combat: CombatState | null;
+  /** The tactical board — non-null only while the Oracle has one out. */
+  vtt: VttScene | null;
+  vttOptions: VttOptions | null;
+  vttPing: { x: number; y: number; label?: string; at: number } | null;
+  vttError: string | null;
+  onVttOptions: (tokenId: number, dash: boolean) => void;
+  onVttMove: (tokenId: number, x: number, y: number) => void;
+  onVttPing: (x: number, y: number) => void;
+  onVttDismissError: () => void;
   input: string;
   setInput: (v: string) => void;
   submit: (secret?: boolean) => void;
@@ -93,10 +105,27 @@ export function PlaySurface(p: PlayProps) {
       {p.combat && <InitiativeCarousel combat={p.combat} />}
       <div className="play-surface">
         <div className="stage">
-          <Frame className="scene" panel={scene}>
-            <div className="in">{p.sceneUrl && <img src={p.sceneUrl} alt="Scene" />}</div>
-            <span className="tag">Scene{p.sceneUrl ? " · rendered" : ""}</span>
-          </Frame>
+          {/* While a board is out it IS the picture of the moment; the rendered
+              scene art returns the instant the Oracle puts the grid away. */}
+          {p.vtt ? (
+            <VttOverlay
+              scene={p.vtt}
+              combat={p.combat}
+              myCharacterId={p.sheet?.character_id ?? null}
+              options={p.vttOptions}
+              ping={p.vttPing}
+              error={p.vttError}
+              onRequestOptions={p.onVttOptions}
+              onMove={p.onVttMove}
+              onPing={p.onVttPing}
+              onDismissError={p.onVttDismissError}
+            />
+          ) : (
+            <Frame className="scene" panel={scene}>
+              <div className="in">{p.sceneUrl && <img src={p.sceneUrl} alt="Scene" />}</div>
+              <span className="tag">Scene{p.sceneUrl ? " · rendered" : ""}</span>
+            </Frame>
+          )}
 
           <div className="scroll" ref={scroll.ref}>
             <img src={SCROLL} alt="" />
