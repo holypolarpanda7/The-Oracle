@@ -36,7 +36,7 @@ export const TILE_STYLES: Record<string, TileStyle> = {
   n: { fill: "#42311f", edge: "#7a5c30", family: "solid" },
   w: { fill: "#242a3d", edge: "#4a5478", family: "solid" },
   W: { fill: "#10293b", family: "water" },
-  x: { fill: "#05070d", edge: "#2a2f45", family: "hazard" },
+  x: { fill: "#06080e", edge: "#38406a", family: "hazard" },
   l: { fill: "#5a1c0c", edge: "#ff7a33", family: "hazard" },
   f: { fill: "#4a2410", edge: "#ff9a4a", family: "hazard" },
   A: { fill: "#3a3159", edge: "#8878c0", family: "solid" },
@@ -186,13 +186,17 @@ export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: P
       const color = eff.color || "#a86bff";
       // An aura or a light source is a glow, not a slab of paint.
       const soft = eff.kind === "aura" || eff.kind === "light";
-      ctx.globalAlpha = soft
-        ? Math.min(0.18, Math.max(0.06, (eff.opacity ?? 0.2) * 0.6))
-        : Math.min(0.8, Math.max(0.10, eff.opacity ?? 0.35));
-      ctx.fillStyle = color;
-      for (const [x, y] of eff.squares) {
-        const [sx, sy] = toScreen(v, x, y);
-        ctx.fillRect(sx, sy, cell, cell);
+      // A marker is an annotation — outline it, never paint over the ground.
+      const marker = eff.kind === "marker";
+      if (!marker) {
+        ctx.globalAlpha = soft
+          ? Math.min(0.18, Math.max(0.06, (eff.opacity ?? 0.2) * 0.6))
+          : Math.min(0.8, Math.max(0.10, eff.opacity ?? 0.35));
+        ctx.fillStyle = color;
+        for (const [x, y] of eff.squares) {
+          const [sx, sy] = toScreen(v, x, y);
+          ctx.fillRect(sx, sy, cell, cell);
+        }
       }
       // Outline the footprint so overlapping areas stay legible.
       ctx.globalAlpha = soft ? 0.5 : 0.9;

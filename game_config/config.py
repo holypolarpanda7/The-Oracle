@@ -333,6 +333,10 @@ class VttConfig:
     art_budget_px: int = 1_100_000    # render canvas size (aspect-matched)
     art_store_width: int = 1280       # stored battlemap width (tiles stay crisp)
     reuse_place_art: bool = True      # the same room looks the same next visit
+    # Post the board as a PNG attachment for tables playing in plain Discord
+    # (a table in the Activity watches it live and is never sent one).
+    post_board_to_chat: bool = True
+    board_image_cell_px: int = 46     # square size in the posted picture
     # ----- prompt -----
     inject_board: bool = True         # feed the DM the compact ASCII board
     inject_hook_guidance: bool = True # teach the DM the [[VTT]] hook

@@ -5991,6 +5991,48 @@ def _vtt_maybe_open(session_id: str, ctx_obj=None, *, puzzle_started: bool = Fal
         print(f"[vtt] auto-open ({kind}) failed: {e}")
 
 
+# session_id -> the board revision last posted to chat, so a Discord table gets
+# a fresh picture when something actually moved and not once per turn.
+_VTT_POSTED_REV: Dict[str, int] = {}
+
+
+def _vtt_board_image_payload(session_id: str) -> Optional[dict]:
+    """The board as a PNG attachment for tables that aren't in the Activity.
+
+    The web overlay draws the board live, so a table with a socket open gets
+    nothing here. A Discord-only table gets a picture whenever the board has
+    changed since the last one — which is what makes the tactical layer usable
+    at all outside the browser.
+    """
+    if not _vtt_on() or not getattr(_vtt_cfg(), "post_board_to_chat", True):
+        return None
+    if _ACTIVITY_SOCKETS.get(session_id):
+        return None
+    scene = vtt_engine.active_scene(session_id)
+    if scene is None:
+        _VTT_POSTED_REV.pop(session_id, None)
+        return None
+    if _VTT_POSTED_REV.get(session_id) == scene.revision:
+        return None
+    try:
+        from vtt.render_image import render_board_png
+        png = render_board_png(vtt_engine.state(scene.id))
+    except Exception as e:
+        print(f"[vtt] board render failed: {e}")
+        return None
+    _VTT_POSTED_REV[session_id] = scene.revision
+    return {
+        "b64": base64.b64encode(png).decode("ascii"),
+        "mime": "image/png",
+        "caption": scene.name or "the board",
+        "kind": "map",
+        "ref": f"vtt-{scene.id}",
+        "context": scene.archetype,
+        "width": scene.width, "height": scene.height,
+        "generated": True, "temp": True,
+    }
+
+
 def _vtt_board_block(session_id: str) -> Optional[str]:
     """The compact ASCII board for the DM prompt (None when no board is out)."""
     if not _vtt_on() or not getattr(_vtt_cfg(), "inject_board", True):
@@ -9298,6 +9340,14 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             puzzle_started=any(op.get("action") == "start" for op in (puzzle_ops or [])),
             chase_started=any(op.get("action") == "start" for op in (chase_ops or [])),
             narration=dm_text, background_tasks=background_tasks)
+        # Discord-only tables get the board as a picture when it changes; a
+        # table in the Activity is already watching it live.
+        try:
+            board_img = _vtt_board_image_payload(req.session_id)
+            if board_img:
+                image_payloads = (image_payloads or []) + [board_img]
+        except Exception as e:
+            print(f"[vtt] board attachment failed: {e}")
 
     # Tavern games: apply GAME hooks (start/move/cheat/settle/end). Public notes
     # join the narration; secret notes (each player's hand, a cheat's true result)
@@ -11578,6 +11628,18 @@ async def vtt_area(map_id: int, shape: str, x: int, y: int, size: int = 20,
                                        direction_deg=direction)
     return {"squares": [list(s) for s in squares],
             "tokens": [{"id": t.id, "name": t.name, "team": t.team} for t in caught]}
+
+
+@app.get("/vtt/{map_id}/image.png")
+async def vtt_board_image(map_id: int, cell: int = 0):
+    """The board as a picture — for the bot, a browser tab, or a bug report."""
+    state = vtt_engine.state(map_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="No such board.")
+    from vtt.render_image import render_board_png
+    png = render_board_png(
+        state, cell=int(cell or getattr(_vtt_cfg(), "board_image_cell_px", 46)))
+    return Response(content=png, media_type="image/png")
 
 
 @app.post("/vtt/{map_id}/art")

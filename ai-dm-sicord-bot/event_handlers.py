@@ -371,7 +371,11 @@ def _build_scene_files(images) -> list:
         caption = (img.get("caption") or "scene")
         safe = "".join(c for c in caption if c.isalnum() or c in ("_", "-", " ")).strip()
         safe = safe.replace(" ", "_")[:60] or "scene"
-        files.append(discord.File(io.BytesIO(data), filename=f"{safe}_{idx}.webp"))
+        # Scene art is WebP; a tactical board comes through as PNG. Name the
+        # file after what it actually is so Discord previews it correctly.
+        ext = {"image/png": "png", "image/jpeg": "jpg",
+               "image/webp": "webp"}.get(img.get("mime") or "", "webp")
+        files.append(discord.File(io.BytesIO(data), filename=f"{safe}_{idx}.{ext}"))
         # Discord allows up to 10 attachments per message.
         if len(files) >= 10:
             break

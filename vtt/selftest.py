@@ -290,6 +290,16 @@ def test_engine() -> None:
     check("the UI state carries terrain, tokens and effects",
           state["terrain"] and state["tokens"] and state["effects"] is not None)
 
+    # The picture Discord tables get must render from the same state dict.
+    try:
+        from .render_image import render_board_png
+        png = render_board_png(v.state(scene.id), cell=24)
+        check("the board renders to a PNG for chat",
+              png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 1000,
+              f"{len(png)} bytes")
+    except Exception as e:
+        check("the board renders to a PNG for chat", False, str(e))
+
     v.close_scene(scene.id)
     eq("closing the board clears it for the table",
        v.active_scene("selftest:table"), None)
