@@ -42,7 +42,7 @@ if (await mine.count()) {
   await page.locator(".vtt").screenshot({ path: `${OUT}/03-selected.png` });
   const box = await page.locator(".vtt-board").boundingBox();
   await page.mouse.move(box.x + box.width * 0.42, box.y + box.height * 0.35);
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(900);
   await page.locator(".vtt").screenshot({ path: `${OUT}/04-path.png` });
   await page.mouse.click(box.x + box.width * 0.42, box.y + box.height * 0.35);
   await page.waitForTimeout(900);
