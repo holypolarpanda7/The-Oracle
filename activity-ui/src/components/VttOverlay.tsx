@@ -422,6 +422,28 @@ export function VttOverlay(p: VttProps) {
           </span>
         )}
       </footer>
+
+      {/* What the coloured patches mean. Without this the board is pretty and
+          unreadable — a player shouldn't have to ask what the orange is. */}
+      {scene.effects.length > 0 && (
+        <div className="vtt-legend">
+          {scene.effects.map((e) => (
+            <span className="vtt-leg" key={e.id}
+              title={[
+                e.damage ? `${e.damage}` : null,
+                e.save_dc ? `${(e.save_ability || "").toUpperCase()} DC ${e.save_dc}` : null,
+                e.difficult_terrain ? "difficult terrain" : null,
+                e.blocks_sight ? "blocks sight" : null,
+                e.concentration ? "concentration" : null,
+              ].filter(Boolean).join(" · ") || e.kind}>
+              <i style={{ background: e.color || "#a86bff" }} />
+              {e.name}
+              {e.difficult_terrain && <b>⤓</b>}
+              {e.damage && <b>✸</b>}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

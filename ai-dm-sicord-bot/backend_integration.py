@@ -118,6 +118,33 @@ async def active_session_for_user(user_id: str, backend_url: str) -> Optional[st
     return None
 
 
+async def get_board_image(session_id: str, backend_url: str) -> Optional[tuple]:
+    """The table's tactical board as (png_bytes, scene_name), or None.
+
+    Two hops: find the live board for this session, then fetch its picture. The
+    Oracle posts one automatically whenever the board changes; this is the "show
+    me it again" path for a player who has scrolled past it.
+    """
+    base = _api_base(backend_url)
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{base}/vtt/active/{session_id}",
+                                   timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return None
+                scene = (await resp.json()).get("scene")
+            if not scene:
+                return None
+            async with session.get(f"{base}/vtt/{scene['id']}/image.png",
+                                   timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    return None
+                return await resp.read(), (scene.get("name") or "the board")
+        except Exception as e:
+            print(f"[get_board_image error] {e}")
+            return None
+
+
 async def set_character_dnr(character_id: int, dnr: bool, backend_url: str) -> Dict:
     """Set/clear a character's Do-Not-Resuscitate wish."""
     url = f"{_api_base(backend_url)}/character/{character_id}/dnr"

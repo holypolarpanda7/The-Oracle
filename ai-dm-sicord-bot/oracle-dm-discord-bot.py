@@ -245,6 +245,30 @@ async def dnr(ctx: commands.Context, setting: str = "on", *, character_name: str
         await ctx.send(f"🕯️ **{chosen['name']}**'s Do-Not-Resuscitate wish is lifted.")
 
 
+@bot.command(name="board", aliases=["map", "vtt"])
+async def board(ctx: commands.Context):
+    """Show the tactical board, if one is out.
+
+    The Oracle posts it automatically whenever it changes; this is for when the
+    channel has scrolled past and someone wants another look before their turn."""
+    session_id = f"dm:{ctx.channel.id}"
+    async with ctx.typing():
+        got = await backend_integration.get_board_image(session_id, BACKEND_URL)
+        if not got:
+            # The player may be seated at a table in another channel.
+            alt = await backend_integration.active_session_for_user(
+                str(ctx.author.id), BACKEND_URL)
+            if alt and alt != session_id:
+                got = await backend_integration.get_board_image(alt, BACKEND_URL)
+    if not got:
+        await ctx.send("🗺️ No board is out — the tale is in the telling, not on a grid.")
+        return
+    png, name = got
+    import io as _io
+    await ctx.send(f"🗺️ **{name}**",
+                   file=discord.File(_io.BytesIO(png), filename="board.png"))
+
+
 @bot.command(name="sheet")
 async def sheet(ctx: commands.Context, *, character_name: str = None):
     """Show your character sheet (rendered from your live character record)."""
