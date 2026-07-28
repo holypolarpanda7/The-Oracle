@@ -80,6 +80,8 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Tactical board demo: `uv run python -m vtt.demo`
 - Tactical board self-test: `uv run python -m vtt.selftest` (asserts the rules
   math — run it after touching `vtt/geometry.py` or `vtt/mapgen.py`)
+- Tactical board wiring smoke test: `uv run python scripts/vtt_smoke.py` (drives
+  the real chat path with a stubbed LLM: fight → board → hooks → prompt → close)
 
 ## Key facts & constraints
 - **D&D Beyond has NO public write API.** You cannot create/store a character on a

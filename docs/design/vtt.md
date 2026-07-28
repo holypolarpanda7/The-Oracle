@@ -197,7 +197,8 @@ doesn't ask twice.
 
 ```bash
 uv run python -m vtt.demo       # end-to-end walkthrough, temp DB, no GPU needed
-uv run python -m vtt.selftest   # 89 assertions over the rules-facing behaviour
+uv run python -m vtt.selftest   # 110 assertions over the rules-facing behaviour
+uv run python scripts/vtt_smoke.py   # the whole chat loop, LLM stubbed, offline
 cd activity-ui && npm run build && node vtt-shot.mjs   # screenshot the overlay
 ```
 
