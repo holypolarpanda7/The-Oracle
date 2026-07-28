@@ -1045,6 +1045,41 @@ def resolve_roll_hooks(text: str) -> str:
     return ROLL_HOOK_PATTERN.sub(repl, text)
 
 
+CAST_HOOK_PATTERN = re.compile(r"\[\[CAST:(.+?)\]\]", re.IGNORECASE)
+_ORDINALS = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th",
+             6: "6th", 7: "7th", 8: "8th", 9: "9th"}
+
+
+def resolve_cast_hooks(text: str, char: "Character") -> str:
+    """Resolve [[CAST: Spell | slot level]] hooks: enforce that the PC actually
+    has the spell prepared/known and an open slot, EXPEND the slot (mutating
+    char.spell_slots_used — the caller persists), and substitute the outcome.
+    A cast the PC can't make is turned into a visible failure."""
+    def repl(match: re.Match) -> str:
+        parts = [p.strip() for p in match.group(1).split("|")]
+        name = parts[0] if parts else ""
+        at_level = None
+        if len(parts) > 1:
+            lm = re.search(r"\d+", parts[1])
+            if lm:
+                at_level = int(lm.group())
+        sp = rules_lib.get_spell(name)
+        disp = sp.name if sp else name
+        spell_level = sp.level if sp else None
+        if not _can_cast(char, name):
+            return f"✨ {disp} won't answer — it isn't prepared."
+        if (spell_level or 0) == 0:
+            return f"✨ {disp}"                      # cantrip: no slot
+        need = max(int(spell_level or 1), int(at_level or 0), 1)
+        spent = _expend_slot(char, min_level=need)
+        if spent is None:
+            ord_need = _ORDINALS.get(need, f"{need}th")
+            return f"✨ {disp} sputters out — no {ord_need}-level (or higher) slot remains."
+        return f"✨ {disp} ({_ORDINALS.get(spent, str(spent))}-level slot)"
+
+    return CAST_HOOK_PATTERN.sub(repl, text)
+
+
 MUSIC_HOOK_PATTERN = re.compile(r"\[\[MUSIC:(.+?)\]\]", re.IGNORECASE)
 
 
@@ -7501,6 +7536,47 @@ def _has_spell(char: Character, name: str) -> bool:
     return False
 
 
+def _castable_lists(char: Character) -> tuple[list[str], list[str]]:
+    """(cantrip_names, leveled_castable_names) — what the PC may ACTUALLY cast.
+    Cantrips are the known level-0 spells. Leveled: a WIZARD casts only its
+    PREPARED subset (falling back to the spellbook until it has prepared once);
+    every other caster casts from its known/prepared list (char.spells)."""
+    def _nm(raw) -> str:
+        return raw if isinstance(raw, str) else (raw.get("name") if isinstance(raw, dict) else "")
+    cantrips: list[str] = []
+    leveled_book: list[str] = []
+    for raw in (char.spells or []):
+        nm = _nm(raw)
+        if not nm:
+            continue
+        sp = rules_lib.get_spell(nm)
+        if sp and (sp.level or 0) == 0:
+            cantrips.append(sp.name)
+        else:
+            leveled_book.append(sp.name if sp else nm)
+    mode = leveling.caster_mode(char.char_class)
+    if mode == "spellbook" and char.prepared_spells:
+        leveled = [(rules_lib.get_spell(_nm(r)).name if rules_lib.get_spell(_nm(r)) else _nm(r))
+                   for r in char.prepared_spells if _nm(r)]
+    else:
+        leveled = leveled_book
+    return cantrips, leveled
+
+
+def _can_cast(char: Character, name: str) -> bool:
+    """Enforcement: True only if the PC may cast this spell right now (a known
+    cantrip, or a prepared/known leveled spell). Slot availability is separate."""
+    needle = _normalize_item_name(name)
+    if not needle:
+        return False
+    cantrips, leveled = _castable_lists(char)
+    for nm in cantrips + leveled:
+        n = _normalize_item_name(nm)
+        if n == needle or needle in n or n in needle:
+            return True
+    return False
+
+
 # Spells/effects that can end a disease or similar affliction in 5e.
 _DISEASE_CURE_SPELLS = {
     "lesser restoration",
@@ -8177,6 +8253,35 @@ def _character_resource_block(character_id: int) -> str:
                 lines.append(f"Species features — {char.race}: {rendered}")
         except Exception as e:
             print(f"[features block] {e}")
+
+        # Spellcasting (ENFORCED): exactly what the PC may cast + open slots. The
+        # DM must gate casting on this and emit [[CAST]] so the system expends the
+        # slot; casting anything else fails.
+        try:
+            if _is_caster(char):
+                from collections import Counter
+                cantrips, leveled = _castable_lists(char)
+                slots = _pc_open_slots(char)
+                slot_txt = ", ".join(f"L{lv}×{n}" for lv, n in sorted(Counter(slots).items())) \
+                    or "none left"
+                mode = leveling.caster_mode(char.char_class) or ""
+                label = "Prepared" if mode in ("prepared", "spellbook") else "Known"
+                lines.append("")
+                lines.append("# Spellcasting (ENFORCED)")
+                if cantrips:
+                    lines.append("Cantrips (at will): " + ", ".join(cantrips))
+                lines.append(f"{label} spells: " + (", ".join(leveled) if leveled else "none"))
+                lines.append(f"Open spell slots: {slot_txt}")
+                lines.append(
+                    "The PC may cast ONLY the cantrips/spells listed here, and a "
+                    "leveled spell only while an open slot of its level or higher "
+                    "remains. When the PC casts, emit [[CAST: Spell Name | slot "
+                    "level]] (the spell's level, or higher to upcast) — the system "
+                    "expends the slot. If they try a spell not listed, or have no "
+                    "slot left, narrate that it fails (not prepared / out of "
+                    "slots); do NOT let it succeed.")
+        except Exception as e:
+            print(f"[spellcasting block] {e}")
         return "\n".join(lines)
 
 
@@ -8380,6 +8485,26 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             apply_trust_hooks(character_id, trust_ops)
         except Exception as e:
             print(f"[trust] hook processing failed: {e}")
+
+    # Spellcasting enforcement: expend the PC's spell slot for a [[CAST]] and
+    # block casts of spells they don't have prepared / have no slot for.
+    if re.search(r"\[\[CAST:", dm_text, re.IGNORECASE):
+        try:
+            state = _load_session_state(req.session_id)
+            cid = (_acting_member(state.get("meta", {}) or {}, req.user_id) or {}).get("character_id") \
+                or _resolve_session_character(req.session_id, req.user_id)
+            if cid:
+                with Session(engine) as s:
+                    ch = s.get(Character, cid)
+                    if ch:
+                        dm_text = resolve_cast_hooks(dm_text, ch)
+                        s.add(ch)
+                        s.commit()
+            else:
+                dm_text = CAST_HOOK_PATTERN.sub("", dm_text)
+        except Exception as e:
+            print(f"[cast] hook processing failed: {e}")
+            dm_text = CAST_HOOK_PATTERN.sub("", dm_text)
 
     # Puzzles: present a puzzle the DM armed, dispense the next graded hint, or
     # record a solve/abandon. The solution stays server-side (fed only to the DM
