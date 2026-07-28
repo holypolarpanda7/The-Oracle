@@ -239,6 +239,10 @@ class VttEngine:
                 )
             ).first()
 
+    def update_scene_encounter(self, map_id: int, encounter_id: Optional[int]) -> None:
+        """Re-point a board at a (new) fight — a second wave in the same room."""
+        self._set_fields(map_id, encounter_id=encounter_id)
+
     def close_scene(self, map_id: Optional[int] = None, *,
                     session_id: Optional[str] = None) -> Optional[TacticalMap]:
         """Put the board away. Tokens and effects are kept for the replay log."""
@@ -484,11 +488,12 @@ class VttEngine:
 
     # ---- movement ----------------------------------------------------------
 
-    def movement_options(self, token_id: int,
-                         budget_ft: Optional[int] = None) -> dict:
+    def movement_options(self, token_id: int, budget_ft: Optional[int] = None,
+                         *, dash: bool = False) -> dict:
         """Every square this token could reach with its remaining movement.
 
         Feeds the overlay's blue "where can I go" wash and its path preview.
+        ``dash`` adds the creature's speed again, for previewing the Dash action.
         """
         tok = self.get_token(token_id)
         if not tok:
@@ -498,7 +503,7 @@ class VttEngine:
             return {}
         g = self.grid_of(row)
         budget = int(budget_ft if budget_ft is not None
-                     else max(0, tok.speed_ft - tok.moved_ft))
+                     else max(0, tok.speed_ft * (2 if dash else 1) - tok.moved_ft))
         blocked = self._occupied(tok.map_id, exclude=token_id,
                                  ignore_teams=(tok.team,) if tok.team else ())
         hard = self._occupied(tok.map_id, exclude=token_id)
@@ -539,7 +544,8 @@ class VttEngine:
                                 self._opportunity(tok, path, row)]}
 
     def move_token(self, token_id: int, x: int, y: int, *, teleport: bool = False,
-                   enforce_speed: bool = True, free: bool = False) -> dict:
+                   enforce_speed: bool = True, free: bool = False,
+                   bonus_ft: int = 0) -> dict:
         """Move a token, pathing around walls and charging for the ground.
 
         Returns a result dict the caller narrates:
@@ -547,6 +553,10 @@ class VttEngine:
         Rejections come back with ``ok=False`` and a player-facing ``reason`` —
         the same contract the combat engine uses, so an illegal move is a
         correction, not a silently-applied cheat.
+
+        ``bonus_ft`` widens the budget for this move alone (a Dash adds the
+        creature's speed); ``free`` doesn't charge the board at all, for moves
+        the combat engine has already paid for in its own economy.
         """
         tok = self.get_token(token_id)
         if not tok:
@@ -578,7 +588,7 @@ class VttEngine:
             if not path:
                 return {"ok": False,
                         "reason": f"there's no way through to that square"}
-            remaining = max(0, tok.speed_ft - tok.moved_ft)
+            remaining = max(0, tok.speed_ft + max(0, int(bonus_ft)) - tok.moved_ft)
             if enforce_speed and not free and cost > remaining:
                 return {"ok": False, "cost_ft": cost, "remaining_ft": remaining,
                         "reason": (f"that's {cost} ft and {tok.name} has "
@@ -609,7 +619,8 @@ class VttEngine:
                   payload={"token_id": token_id, "path": [list(p) for p in path],
                            "cost_ft": cost})
 
-        remaining = max(0, tok.speed_ft - (tok.moved_ft + (0 if free or teleport else cost)))
+        remaining = max(0, tok.speed_ft + max(0, int(bonus_ft))
+                        - (tok.moved_ft + (0 if free or teleport else cost)))
         return {"ok": True, "path": [list(p) for p in path], "cost_ft": cost,
                 "x": dest[0], "y": dest[1], "remaining_ft": remaining,
                 "opportunity": oa, "hazards": hazards,

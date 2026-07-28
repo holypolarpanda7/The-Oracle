@@ -234,8 +234,70 @@ def apply_band_move(vtt: VttEngine, map_id: int, combatant_id: int,
                           enforce_speed=False)
 
 
+def board_band(vtt: VttEngine, map_id: int, tok, *, square_ft: int = 5) -> str:
+    """The band the *board* implies for a token — the inverse of a band move."""
+    foes = [o for o in vtt.tokens(map_id, include_defeated=False)
+            if o.team != tok.team and o.kind not in (TokenKind.MARKER,)]
+    if not foes:
+        return "near"
+    fp = geo.footprint(tok.x, tok.y, size_squares(tok.size))
+    nearest = min(foes, key=lambda o: geo.token_distance_ft(
+        fp, geo.footprint(o.x, o.y, size_squares(o.size)), square_ft))
+    d = geo.token_distance_ft(
+        fp, geo.footprint(nearest.x, nearest.y, size_squares(nearest.size)),
+        square_ft)
+    engaged = d <= max(tok.reach_ft or 5, nearest.reach_ft or 5)
+    return geo.band_for_distance(d, nearest.name if engaged else None)
+
+
+def _band_rank(band: Optional[str]) -> tuple[int, str]:
+    """(rank, engaged-with) — rank 0 melee, 1 near, 2 far."""
+    b = (band or "near").strip().lower()
+    m = _MELEE_RE.match(b)
+    if m:
+        return 0, m.group(1).strip().lower()
+    return (2, "") if b == "far" else (1, "")
+
+
+def reconcile_bands(vtt: VttEngine, map_id: int, *, tracker: Any = None) -> int:
+    """Walk tokens to match bands the *engine* changed without touching the board.
+
+    A monster's default AI closes to melee in the gridless model; nothing moved
+    on the grid. Left alone, the next :func:`sync_bands` would simply overwrite
+    that decision and the creature would teleport back to where its token stood.
+    So before writing bands out, any combatant whose tracker band disagrees with
+    its token's position gets its token moved to match the fiction.
+
+    Returns how many tokens were repositioned.
+    """
+    tracker = tracker or vtt.tracker
+    row = vtt.get_scene(map_id)
+    if tracker is None or row is None or not row.encounter_id:
+        return 0
+    moved = 0
+    try:
+        combatants = {c.id: c for c in tracker.order(row.encounter_id)}
+    except Exception:
+        return 0
+    for tok in vtt.tokens(map_id, include_defeated=False):
+        c = combatants.get(tok.combatant_id or -1)
+        if c is None or not c.position:
+            continue
+        want_rank, want_target = _band_rank(c.position)
+        have_rank, have_target = _band_rank(
+            board_band(vtt, map_id, tok, square_ft=row.square_ft))
+        if want_rank == have_rank and want_target == have_target:
+            continue
+        if apply_band_move(vtt, map_id, c.id, c.position, tracker=tracker):
+            moved += 1
+    return moved
+
+
 def sync_after_turn(vtt: VttEngine, map_id: int, *, tracker: Any = None) -> None:
     """One call to make the board agree with the tracker after a resolved turn."""
     mirror_from_tracker(vtt, map_id, tracker=tracker)
+    # Fiction first (the engine may have moved someone by band), then write the
+    # exact bands back from the grid.
+    reconcile_bands(vtt, map_id, tracker=tracker)
     sync_bands(vtt, map_id, tracker=tracker)
     vtt.recompute_auras(map_id)

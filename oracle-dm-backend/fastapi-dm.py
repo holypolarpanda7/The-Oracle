@@ -139,6 +139,11 @@ from dm_guide import (
     build_encounter,
 )
 from imagery import ImageStore, ImageResult
+from vtt import VttEngine
+from vtt import bridge as vtt_bridge
+from vtt.triggers import should_open_scene as vtt_should_open
+from vtt.triggers import scene_kind_for as vtt_scene_kind_for
+from vtt.triggers import should_close_scene as vtt_should_close
 # ----- Env loading -----
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -215,6 +220,15 @@ async def lifespan(app: FastAPI):
     # Startup: Create DB tables if they do not exist
     SQLModel.metadata.create_all(engine)
     print("[Startup] Database tables created/verified")
+
+    # Remember the serving loop so off-thread work (battlemap renders) can push
+    # a frame to the Activity sockets when it finishes.
+    global _MAIN_LOOP
+    try:
+        import asyncio as _aio
+        _MAIN_LOOP = _aio.get_running_loop()
+    except Exception:
+        _MAIN_LOOP = None
 
     # Lightweight schema self-heal for older SQLite DBs. SQLModel create_all()
     # does not ALTER existing tables, so add known-missing world columns needed
@@ -677,6 +691,10 @@ combat_engine = CombatEngine(combat)
 # Self-hosted scene imagery (diffusion-backed, offline-tolerant). World-day aware
 # so stored pictures are tagged with the in-world day they were made.
 image_store = ImageStore(engine=engine, world_day_fn=world.current_day)
+# The tactical board: a square grid that opens only for moments where position
+# decides the outcome. It reads the combat tracker (whose turn, who is down) and
+# writes spacing bands back to it, so combat/ never has to know it exists.
+vtt_engine = VttEngine(engine=engine, tracker=combat, image_store=image_store)
 
 # Per-session metadata (which PC is playing) alongside the in-memory history.
 
@@ -5503,6 +5521,492 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
 
 
 # ======================================================================
+# Tactical board (the vtt/ package). Most play stays theater-of-the-mind;
+# when a moment turns on position and timing — a fight, a spatial puzzle,
+# the terrain leg of a chase — a square grid comes out, tokens are seated
+# from the initiative tracker, and spell areas become exact squares.
+#
+# Division of labour, same as everywhere else in this file: the LLM decides
+# FICTION (a board opens here, the fireball lands on the altar), the code
+# decides MECHANICS (the layout, the path, the squares, the cover).
+# ======================================================================
+
+VTT_HOOK_PATTERN = re.compile(r"\[\[VTT:(.+?)\]\]", re.IGNORECASE)
+_VTT_HOOK_ACTIONS = {"open", "close", "place", "move", "remove", "effect",
+                     "clear", "terrain", "door", "reveal", "ping"}
+
+# Bare words a hook may carry instead of key=value, e.g. "difficult".
+_VTT_FLAGS = {"difficult", "blocking", "obscuring", "permanent", "hidden",
+              "concentration", "fly", "swim", "prone", "dash", "teleport"}
+
+
+def _vtt_cfg():
+    try:
+        return get_config().vtt
+    except Exception:
+        class _F:
+            enabled = False
+        return _F()
+
+
+def _vtt_on() -> bool:
+    return bool(getattr(_vtt_cfg(), "enabled", False))
+
+
+_VTT_HOOKS_IDLE = (
+    "# Tactical board\n"
+    "Play is theater-of-the-mind by default. When — and ONLY when — position and timing\n"
+    "decide the outcome (a fight in a room with cover, a trapped chamber, a puzzle solved\n"
+    "by standing somewhere), put a board out:\n"
+    "    [[VTT: open | combat | cave | The Sunken Shrine]]   kind | place type | name\n"
+    "kind: combat | puzzle | chase | hazard | explore. Place type is plain language —\n"
+    "'a smoky taproom', 'sewer tunnel', 'forest' — and a matching map is generated.\n"
+    "A fight you open with [[COMBAT: start]] gets its board automatically; don't ask twice.\n"
+)
+
+_VTT_HOOKS_ACTIVE = (
+    "# Tactical board (a board is out — the grid is the truth)\n"
+    "The board below is authoritative for WHERE everyone is. Squares are 5 ft; coordinates\n"
+    "are x,y counting from the top-left. Narrate what the board says, and move things with:\n"
+    "    [[VTT: move | Gruk | 9,5]]           walk a creature to a square (pathed + costed;\n"
+    "                                         an illegal move is rejected and reported)\n"
+    "    [[VTT: move | Gruk | 14,5 | dash]]   the same, spending the Dash action\n"
+    "    [[VTT: place | Wight | 3,12]]        put a NEW creature/object on the board\n"
+    "    [[VTT: remove | Rat]]                it leaves the board entirely\n"
+    "    [[VTT: effect | Fireball | shape=sphere | at=9,5 | size=20 | damage=8d6 fire |\n"
+    "         save=dex 15 | rounds=1]]        a spell area — squares are resolved for you\n"
+    "    [[VTT: effect | Web | shape=cube | at=6,4 | size=20 | rounds=10 | difficult]]\n"
+    "    [[VTT: clear | Web]]                 the effect ends\n"
+    "    [[VTT: terrain | 4,7 5,7 | rubble]]  the ground changes (collapse, fire, ice)\n"
+    "    [[VTT: door | 12,3 | open]]          open | closed | locked\n"
+    "    [[VTT: reveal | 8,8 | 30]]           light up fog of war from a point\n"
+    "    [[VTT: close]]                       the moment has passed — put the board away\n"
+    "shape: sphere | cone | line | cube | emanation. 'at' is the origin square; 'size' is the\n"
+    "radius (sphere/emanation) or length (cone/line/cube) in feet; 'dir' is degrees\n"
+    "(0 = east, 90 = south) for cones and lines. Flags: difficult, blocking, obscuring,\n"
+    "permanent, concentration.\n"
+    "Honour what the board shows: cover listed against a creature applies to attacks on it,\n"
+    "distances gate reach and range, and a creature in an effect's squares is in the effect.\n"
+    "Never invent a position that contradicts the board — move the token instead.\n"
+)
+
+
+def extract_vtt_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull [[VTT: ...]] hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in VTT_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").lower()
+        if action not in _VTT_HOOK_ACTIONS:
+            continue
+        ops.append({"action": action, "args": parts[1:]})
+    clean = VTT_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def _vtt_args(args: list[str]) -> tuple[list[str], dict, set]:
+    """Split hook args into positional values, key=value pairs, and bare flags."""
+    positional: list[str] = []
+    kv: dict[str, str] = {}
+    flags: set[str] = set()
+    for raw in args:
+        a = (raw or "").strip()
+        if not a:
+            continue
+        if "=" in a:
+            k, v = a.split("=", 1)
+            kv[k.strip().lower()] = v.strip()
+        elif a.lower() in _VTT_FLAGS:
+            flags.add(a.lower())
+        else:
+            positional.append(a)
+    return positional, kv, flags
+
+
+def _vtt_square(text: Optional[str]) -> Optional[tuple[int, int]]:
+    """Parse '9,5' / '9 5' / '(9, 5)' into a square."""
+    if not text:
+        return None
+    m = re.search(r"(-?\d+)\s*[,: ]\s*(-?\d+)", str(text))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _vtt_squares(text: Optional[str]) -> list[tuple[int, int]]:
+    return [(int(a), int(b)) for a, b in
+            re.findall(r"(-?\d+)\s*[,:]\s*(-?\d+)", str(text or ""))]
+
+
+def _vtt_token_image(c) -> Optional[int]:
+    """Token art: a PC's active portrait, or stored creature art for a monster."""
+    try:
+        if getattr(c, "kind", "") == "pc":
+            res = image_store.get_portrait(c.name)
+            return res.image_id if res else None
+        if getattr(c, "monster_slug", None):
+            res = image_store.get_any_latest("creature", c.monster_slug)
+            return res.image_id if res else None
+    except Exception:
+        pass
+    return None
+
+
+def _vtt_place_context(ctx_obj) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """(place_slug, place_name, biome) for the party's current location."""
+    try:
+        loc = getattr(ctx_obj, "location", None) if ctx_obj else None
+        if loc is None:
+            return None, None, None
+        attrs = getattr(loc, "attributes", None) or {}
+        biome = attrs.get("biome") or attrs.get("terrain") or getattr(loc, "subtype", None)
+        return getattr(loc, "slug", None), getattr(loc, "name", None), biome
+    except Exception:
+        return None, None, None
+
+
+def _vtt_open(session_id: str, *, kind: str = "combat",
+              archetype: Optional[str] = None, name: Optional[str] = None,
+              ctx_obj=None, encounter_id: Optional[int] = None,
+              background_tasks: Optional[BackgroundTasks] = None):
+    """Open a board for this table, generating the layout now and the art later.
+
+    The diffusion render takes tens of seconds on a busy GPU, so it never sits
+    on the reply path: the board ships as tiles immediately and the painted
+    version arrives on a later push.
+    """
+    cfg = _vtt_cfg()
+    place_slug, place_name, biome = _vtt_place_context(ctx_obj)
+    hint = archetype or place_name or ""
+    scene = vtt_engine.open_scene(
+        session_id, kind=kind,
+        name=(name or place_name or None),
+        archetype=(archetype or None),
+        place_hint=hint or None,
+        place_slug=place_slug,
+        biome=biome,
+        width=getattr(cfg, "default_width", 24),
+        height=getattr(cfg, "default_height", 18),
+        encounter_id=encounter_id,
+        fog=bool(getattr(cfg, "fog_of_war", False)) or kind == "explore",
+        reuse_place=bool(getattr(cfg, "reuse_place_art", True)),
+        render_art=False,
+    )
+    if scene and encounter_id:
+        try:
+            vtt_engine.sync_from_encounter(scene.id, encounter_id,
+                                           rules_lib=rules_lib,
+                                           portrait_lookup=_vtt_token_image)
+        except Exception as e:
+            print(f"[vtt] seating the encounter failed: {e}")
+    if scene and getattr(cfg, "render_art", True):
+        if background_tasks is not None:
+            background_tasks.add_task(_vtt_render_art, scene.id)
+        else:
+            _vtt_render_art(scene.id)
+    return scene
+
+
+def _vtt_render_art(map_id: int) -> None:
+    """Background job: paint the battlemap, then push it to the Activity."""
+    try:
+        _unload_local_llm()
+        _mark_diffusion_dirty()
+        vtt_engine.render_art(map_id)
+    except Exception as e:
+        print(f"[vtt] battlemap render failed: {e}")
+        return
+    try:
+        row = vtt_engine.get_scene(map_id)
+        if row:
+            _push_vtt_state(row.session_id)
+    except Exception as e:
+        print(f"[vtt] art push failed: {e}")
+
+
+def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
+                      background_tasks: Optional[BackgroundTasks] = None) -> list[str]:
+    """Apply VTT hooks. Returns short notes appended to the narration."""
+    if not ops or not _vtt_on():
+        return []
+    notes: list[str] = []
+    scene = vtt_engine.active_scene(session_id)
+    for op in ops:
+        action = op["action"]
+        args = op.get("args") or []
+        positional, kv, flags = _vtt_args(args)
+        try:
+            if action == "open":
+                if scene is not None:
+                    continue  # a board is already out
+                kind = (positional[0] if positional else "combat").lower()
+                arch = positional[1] if len(positional) > 1 else kv.get("place")
+                nm = positional[2] if len(positional) > 2 else kv.get("name")
+                enc = combat.get_active(session_id)
+                scene = _vtt_open(session_id, kind=vtt_scene_kind_for(kind),
+                                  archetype=arch, name=nm, ctx_obj=ctx_obj,
+                                  encounter_id=enc.id if enc else None,
+                                  background_tasks=background_tasks)
+                if scene:
+                    notes.append(f"🗺 A board is laid out: {scene.name}.")
+                continue
+            if scene is None:
+                continue  # every other verb needs a live board
+
+            if action == "close":
+                vtt_engine.close_scene(scene.id)
+                scene = None
+                continue
+
+            if action == "place":
+                if not positional:
+                    continue
+                nm = positional[0]
+                sq = _vtt_square(positional[1] if len(positional) > 1 else kv.get("at"))
+                existing = vtt_engine.find_token(scene.id, nm)
+                if existing is not None and sq:
+                    vtt_engine.move_token(existing.id, sq[0], sq[1], teleport=True)
+                    continue
+                team = (kv.get("team") or "foe").lower()
+                vtt_engine.add_token(
+                    scene.id, nm,
+                    kind=(kv.get("kind") or "monster").lower(),
+                    team=team if team in ("party", "foe", "neutral") else "foe",
+                    x=sq[0] if sq else None, y=sq[1] if sq else None,
+                    size=(kv.get("size") or "medium").lower(),
+                    speed_ft=int(kv.get("speed") or 30),
+                    reach_ft=int(kv.get("reach") or 5),
+                    hidden="hidden" in flags,
+                    movement_mode=("fly" if "fly" in flags
+                                   else "swim" if "swim" in flags else "walk"),
+                )
+                continue
+
+            if action == "move":
+                if len(positional) < 1:
+                    continue
+                tok = vtt_engine.find_token(scene.id, positional[0])
+                sq = _vtt_square(positional[1] if len(positional) > 1 else kv.get("to"))
+                if not tok or not sq:
+                    continue
+                res = vtt_engine.move_token(
+                    tok.id, sq[0], sq[1],
+                    teleport=("teleport" in kv or "teleport" in flags),
+                    # A Dash buys a second helping of speed for this move.
+                    bonus_ft=(tok.speed_ft if "dash" in flags else 0),
+                    enforce_speed=bool(getattr(_vtt_cfg(), "enforce_movement", True)))
+                if not res.get("ok"):
+                    notes.append(f"🗺 {tok.name} cannot move there — {res.get('reason')}")
+                elif res.get("opportunity") and getattr(_vtt_cfg(), "warn_opportunity", True):
+                    who = ", ".join(o["name"] for o in res["opportunity"])
+                    notes.append(f"🗺 {tok.name} leaves the reach of {who} — "
+                                 "an opportunity attack is provoked.")
+                continue
+
+            if action == "remove":
+                tok = vtt_engine.find_token(scene.id, positional[0]) if positional else None
+                if tok:
+                    vtt_engine.remove_token(tok.id)
+                continue
+
+            if action == "effect":
+                if not positional:
+                    continue
+                nm = positional[0]
+                sq = _vtt_square(kv.get("at") or (positional[1] if len(positional) > 1 else None))
+                shape = (kv.get("shape") or "sphere").lower()
+                size = _iv(kv, "size", 0) or _iv(kv, "radius", 0) or _iv(kv, "length", 0)
+                dmg = kv.get("damage")
+                save_ab, save_dc = None, None
+                if kv.get("save"):
+                    sm = re.match(r"([a-z]+)\s*(\d+)?", kv["save"].strip().lower())
+                    if sm:
+                        save_ab = sm.group(1)[:3]
+                        save_dc = int(sm.group(2)) if sm.group(2) else None
+                src = None
+                if kv.get("source"):
+                    stok = vtt_engine.find_token(scene.id, kv["source"])
+                    src = stok.id if stok else None
+                    if stok and not sq:
+                        sq = (stok.x, stok.y)
+                if not sq:
+                    continue
+                eff = vtt_engine.add_effect(
+                    scene.id, nm,
+                    kind=(kv.get("kind") or ("zone" if "difficult" in flags else "area")),
+                    shape=shape, x=sq[0], y=sq[1],
+                    radius_ft=(size if shape in ("sphere", "circle", "emanation") else 0),
+                    length_ft=(size if shape in ("cone", "line", "cube", "square") else 0),
+                    width_ft=_iv(kv, "width", 5),
+                    direction_deg=float(kv.get("dir") or kv.get("direction") or 0),
+                    duration_rounds=(_iv(kv, "rounds", 0) or None),
+                    source_token_id=src,
+                    concentration="concentration" in flags,
+                    difficult_terrain="difficult" in flags,
+                    blocks_sight="obscuring" in flags,
+                    blocks_movement="blocking" in flags,
+                    damage=dmg, save_ability=save_ab, save_dc=save_dc,
+                    trigger=kv.get("trigger"),
+                    color=kv.get("color"),
+                    permanent="permanent" in flags,
+                )
+                if eff:
+                    caught = [t.name for t in vtt_engine.tokens_in_effect(eff.id)]
+                    if caught:
+                        notes.append(f"🗺 {nm} covers {', '.join(caught)}.")
+                continue
+
+            if action == "clear":
+                eff = vtt_engine.find_effect(scene.id, positional[0]) if positional else None
+                if eff:
+                    vtt_engine.remove_effect(eff.id)
+                continue
+
+            if action == "terrain":
+                squares = _vtt_squares(positional[0] if positional else "")
+                code = _VTT_TERRAIN_WORDS.get(
+                    (positional[1] if len(positional) > 1 else "").strip().lower())
+                if squares and code:
+                    vtt_engine.set_terrain(scene.id, squares, code)
+                continue
+
+            if action == "door":
+                sq = _vtt_square(positional[0] if positional else None)
+                st = (positional[1] if len(positional) > 1 else "open").strip().lower()
+                if sq and st in ("open", "closed", "locked"):
+                    vtt_engine.set_door(scene.id, sq[0], sq[1], st)
+                continue
+
+            if action == "reveal":
+                sq = _vtt_square(positional[0] if positional else None)
+                radius = int(positional[1]) if len(positional) > 1 and \
+                    str(positional[1]).strip().isdigit() else 30
+                if sq:
+                    vtt_engine.reveal(scene.id, sq[0], sq[1], radius)
+                continue
+
+            if action == "ping":
+                sq = _vtt_square(positional[0] if positional else None)
+                if sq:
+                    vtt_engine.add_effect(
+                        scene.id, (positional[1] if len(positional) > 1 else "here"),
+                        kind="marker", shape="sphere", x=sq[0], y=sq[1],
+                        radius_ft=5, duration_rounds=1)
+                continue
+        except Exception as e:
+            print(f"[vtt] hook {action!r} failed: {e}")
+    return notes
+
+
+#: Plain words the DM may use for a terrain change -> tile codes (vtt/terrain.py).
+_VTT_TERRAIN_WORDS = {
+    "floor": ".", "clear": ".", "ground": ".", "grass": "g", "sand": "s",
+    "road": "=", "bridge": "b", "rubble": ",", "debris": ",",
+    "undergrowth": "\"", "brush": "\"", "water": "~", "shallow water": "~",
+    "deep water": "W", "mud": "m", "ice": "i", "web": "%", "webs": "%",
+    "stairs": "u", "wall": "#", "rock": "R", "tree": "T", "pillar": "O",
+    "crates": "o", "furniture": "n", "low wall": "w", "chasm": "x", "pit": "x",
+    "lava": "l", "fire": "f", "altar": "A", "door": "+", "open door": "/",
+    "rocks": "R", "collapse": "#", "hole": "x",
+}
+
+
+def _vtt_autosync(session_id: str, ctx_obj=None, *,
+                  started_combat: bool = False,
+                  background_tasks: Optional[BackgroundTasks] = None) -> None:
+    """Keep the board in step with the fight without the DM asking.
+
+    Opens one when a fight starts (config-gated), seats any newcomers, mirrors
+    defeat/prone from the tracker, rewrites the spacing bands from real
+    distance, and closes the board when the encounter ends.
+    """
+    if not _vtt_on():
+        return
+    try:
+        enc = combat.get_active(session_id)
+        scene = vtt_engine.active_scene(session_id)
+
+        # A board outlives only the thing that justified it.
+        if scene is not None and scene.kind != "combat":
+            meta = _load_session_state(session_id).get("meta", {}) or {}
+            if vtt_should_close(scene.kind,
+                                combat_active=enc is not None,
+                                puzzle_active=bool(meta.get("active_puzzle")),
+                                chase_active=bool(meta.get("active_chase"))):
+                vtt_engine.close_scene(scene.id)
+                scene = None
+
+        if enc is None:
+            if scene is not None and scene.kind == "combat":
+                vtt_engine.close_scene(scene.id)
+            return
+
+        if scene is None:
+            kind = vtt_should_open(combat_started=bool(started_combat or enc),
+                                   config=_vtt_cfg())
+            if not kind:
+                return
+            scene = _vtt_open(session_id, kind=kind, ctx_obj=ctx_obj,
+                              encounter_id=enc.id,
+                              background_tasks=background_tasks)
+            if scene is None:
+                return
+        elif scene.encounter_id != enc.id:
+            vtt_engine.update_scene_encounter(scene.id, enc.id)
+
+        # Reinforcements that arrived through [[COMBAT: add]] need tokens too.
+        vtt_engine.sync_from_encounter(scene.id, enc.id, rules_lib=rules_lib,
+                                       portrait_lookup=_vtt_token_image)
+        vtt_bridge.sync_after_turn(vtt_engine, scene.id, tracker=combat)
+        cur = combat.current_combatant(enc.id)
+        if cur is not None:
+            vtt_engine.start_turn(scene.id, combatant_id=cur.id)
+        vtt_engine.advance_round(scene.id)
+    except Exception as e:
+        print(f"[vtt] autosync failed: {e}")
+
+
+def _vtt_maybe_open(session_id: str, ctx_obj=None, *, puzzle_started: bool = False,
+                    chase_started: bool = False, hazard_triggered: bool = False,
+                    narration: str = "",
+                    background_tasks: Optional[BackgroundTasks] = None) -> None:
+    """Non-combat triggers: a spatial puzzle, a chase reaching real terrain.
+
+    ``vtt.triggers`` holds the policy (including the "is this puzzle actually
+    spatial?" read of the narration); this just carries out its verdict.
+    """
+    if not _vtt_on() or vtt_engine.active_scene(session_id) is not None:
+        return
+    kind = vtt_should_open(puzzle_started=puzzle_started,
+                           chase_started=chase_started,
+                           hazard_triggered=hazard_triggered,
+                           narration=narration, config=_vtt_cfg())
+    if not kind:
+        return
+    try:
+        _vtt_open(session_id, kind=kind, ctx_obj=ctx_obj,
+                  background_tasks=background_tasks)
+    except Exception as e:
+        print(f"[vtt] auto-open ({kind}) failed: {e}")
+
+
+def _vtt_board_block(session_id: str) -> Optional[str]:
+    """The compact ASCII board for the DM prompt (None when no board is out)."""
+    if not _vtt_on() or not getattr(_vtt_cfg(), "inject_board", True):
+        return None
+    try:
+        scene = vtt_engine.active_scene(session_id)
+        if scene is None:
+            return None
+        return vtt_engine.render(
+            scene.id, max_tokens=int(getattr(_vtt_cfg(), "max_board_tokens", 24)))
+    except Exception as e:
+        print(f"[vtt] board render failed: {e}")
+        return None
+
+
+# ======================================================================
 # Deterministic combat turns: the LLM proposes INTENTS, combat/engine.py
 # validates + resolves them with real dice, and the narration call renders
 # the certified log. Illegal requests bounce back to the player with the
@@ -8498,6 +9002,20 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 ctx_texts.append(_COMBAT_HOOKS_ACTIVE)
         else:
             ctx_texts.append(_COMBAT_HOOKS_IDLE)
+
+        # Tactical board: open one if this turn's fight warrants it, keep it in
+        # step with the tracker, then show the DM exactly where everyone stands.
+        if _vtt_on():
+            _vtt_autosync(req.session_id, ctx_obj,
+                          started_combat=bool(active_enc),
+                          background_tasks=background_tasks)
+            _vtt_board = _vtt_board_block(req.session_id)
+            if _vtt_board:
+                ctx_texts.append(_vtt_board)
+                if getattr(_vtt_cfg(), "inject_hook_guidance", True):
+                    ctx_texts.append(_VTT_HOOKS_ACTIVE)
+            elif getattr(_vtt_cfg(), "inject_hook_guidance", True):
+                ctx_texts.append(_VTT_HOOKS_IDLE)
         dm_text = generate_dm_reply(
             session_id=req.session_id,
             username=req.username,
@@ -8755,6 +9273,31 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(combat_notes)
         except Exception as e:
             print(f"[combat] hook processing failed: {e}")
+
+    # Tactical board: the DM's own board verbs (open/close, move a token, drop a
+    # spell area, change the ground). Applied AFTER the combat hooks so a fight
+    # that just started already has its encounter to seat, and rejections
+    # ("that's 40 ft and you have 30") come back to the players as notes.
+    dm_text, vtt_ops = extract_vtt_hooks(dm_text)
+    if vtt_ops:
+        try:
+            vtt_notes = process_vtt_hooks(req.session_id, vtt_ops, ctx_obj=ctx_obj,
+                                          background_tasks=background_tasks)
+            if vtt_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(vtt_notes)
+        except Exception as e:
+            print(f"[vtt] hook processing failed: {e}")
+    if _vtt_on():
+        # Reinforcements, deaths and band moves from this turn's hooks land on
+        # the board before the reply goes out.
+        _vtt_autosync(req.session_id, ctx_obj, background_tasks=background_tasks)
+        # A spatial puzzle or a chase that just reached real terrain earns a
+        # board too, even though no initiative was rolled.
+        _vtt_maybe_open(
+            req.session_id, ctx_obj,
+            puzzle_started=any(op.get("action") == "start" for op in (puzzle_ops or [])),
+            chase_started=any(op.get("action") == "start" for op in (chase_ops or [])),
+            narration=dm_text, background_tasks=background_tasks)
 
     # Tavern games: apply GAME hooks (start/move/cheat/settle/end). Public notes
     # join the narration; secret notes (each player's hand, a cheat's true result)
@@ -10866,6 +11409,184 @@ async def combat_end(encounter_id: int):
     if not enc:
         raise HTTPException(status_code=404, detail="Encounter not found.")
     return {"status": "ok", "encounter": combat.state(encounter_id)}
+
+
+# ========================= Tactical board (vtt/) ==========================
+# The Activity drives the board over its WebSocket; these routes exist for the
+# bot, for tooling, and for anyone driving a table without the web UI.
+
+class VttOpenRequest(BaseModel):
+    session_id: str
+    kind: str = "combat"
+    archetype: Optional[str] = None       # "cave", "a smoky taproom", ...
+    name: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    seed: Optional[int] = None
+    fog: Optional[bool] = None
+    render_art: bool = True
+
+
+class VttMoveRequest(BaseModel):
+    token_id: int
+    x: int
+    y: int
+    teleport: bool = False
+    enforce_speed: bool = True
+
+
+class VttTokenRequest(BaseModel):
+    name: str
+    kind: str = "monster"
+    team: str = "foe"
+    x: Optional[int] = None
+    y: Optional[int] = None
+    size: str = "medium"
+    speed_ft: int = 30
+    reach_ft: int = 5
+    hidden: bool = False
+
+
+@app.get("/vtt/active/{session_id}")
+async def vtt_active(session_id: str):
+    """The live board for a table (``scene: null`` when play is in prose)."""
+    return {"scene": _vtt_scene_payload(session_id)}
+
+
+@app.get("/vtt/{map_id}/state")
+async def vtt_state(map_id: int):
+    state = vtt_engine.state(map_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="No such board.")
+    return {"scene": state, "board": vtt_engine.render(map_id)}
+
+
+@app.post("/vtt/open")
+async def vtt_open(req: VttOpenRequest, background_tasks: BackgroundTasks):
+    if not _vtt_on():
+        raise HTTPException(status_code=400, detail="The tactical board is disabled.")
+    enc = combat.get_active(req.session_id)
+    scene = vtt_engine.open_scene(
+        req.session_id, kind=vtt_scene_kind_for(req.kind),
+        archetype=req.archetype, name=req.name,
+        width=req.width or getattr(_vtt_cfg(), "default_width", 24),
+        height=req.height or getattr(_vtt_cfg(), "default_height", 18),
+        seed=req.seed, encounter_id=enc.id if enc else None,
+        fog=bool(req.fog) if req.fog is not None else bool(getattr(_vtt_cfg(), "fog_of_war", False)),
+        render_art=False)
+    if enc:
+        vtt_engine.sync_from_encounter(scene.id, enc.id, rules_lib=rules_lib,
+                                       portrait_lookup=_vtt_token_image)
+    if req.render_art and getattr(_vtt_cfg(), "render_art", True):
+        background_tasks.add_task(_vtt_render_art, scene.id)
+    _push_vtt_state(req.session_id)
+    return {"status": "ok", "scene": vtt_engine.state(scene.id)}
+
+
+@app.post("/vtt/{map_id}/close")
+async def vtt_close(map_id: int):
+    scene = vtt_engine.close_scene(map_id)
+    if not scene:
+        raise HTTPException(status_code=404, detail="No such board.")
+    _push_vtt_state(scene.session_id)
+    return {"status": "ok"}
+
+
+@app.post("/vtt/{map_id}/token")
+async def vtt_add_token(map_id: int, req: VttTokenRequest):
+    tok = vtt_engine.add_token(
+        map_id, req.name, kind=req.kind, team=req.team, x=req.x, y=req.y,
+        size=req.size, speed_ft=req.speed_ft, reach_ft=req.reach_ft,
+        hidden=req.hidden)
+    if not tok:
+        raise HTTPException(status_code=400,
+                            detail="No legal square for that token.")
+    scene = vtt_engine.get_scene(map_id)
+    _push_vtt_state(scene.session_id if scene else None)
+    return {"status": "ok", "token_id": tok.id, "x": tok.x, "y": tok.y}
+
+
+@app.delete("/vtt/token/{token_id}")
+async def vtt_remove_token(token_id: int):
+    tok = vtt_engine.get_token(token_id)
+    if not tok or not vtt_engine.remove_token(token_id):
+        raise HTTPException(status_code=404, detail="No such token.")
+    scene = vtt_engine.get_scene(tok.map_id)
+    _push_vtt_state(scene.session_id if scene else None)
+    return {"status": "ok"}
+
+
+@app.post("/vtt/{map_id}/move")
+async def vtt_move(map_id: int, req: VttMoveRequest):
+    tok = vtt_engine.get_token(req.token_id)
+    if not tok or tok.map_id != map_id:
+        raise HTTPException(status_code=404, detail="No such token on this board.")
+    res = vtt_engine.move_token(req.token_id, req.x, req.y,
+                                teleport=req.teleport,
+                                enforce_speed=req.enforce_speed)
+    scene = vtt_engine.get_scene(map_id)
+    if res.get("ok") and scene:
+        try:
+            vtt_bridge.sync_bands(vtt_engine, map_id, tracker=combat)
+        except Exception as e:
+            print(f"[vtt] band sync failed: {e}")
+        _push_vtt_state(scene.session_id)
+    return res
+
+
+@app.get("/vtt/token/{token_id}/movement")
+async def vtt_movement_options(token_id: int, dash: bool = False):
+    """Every square this token can still reach — the UI's movement wash."""
+    opts = vtt_engine.movement_options(token_id, dash=dash)
+    if not opts:
+        raise HTTPException(status_code=404, detail="No such token.")
+    return opts
+
+
+@app.get("/vtt/token/{token_id}/path")
+async def vtt_path(token_id: int, x: int, y: int):
+    return vtt_engine.path_preview(token_id, x, y)
+
+
+@app.get("/vtt/{map_id}/cover")
+async def vtt_cover(map_id: int, attacker: str, target: str):
+    """Distance + cover between two creatures, straight from the grid."""
+    return {
+        "distance_ft": vtt_engine.measure(map_id, attacker, target),
+        "cover": vtt_engine.cover_for(map_id, attacker, target),
+        "line_of_sight": vtt_engine.can_see(map_id, attacker, target),
+    }
+
+
+@app.get("/vtt/{map_id}/area")
+async def vtt_area(map_id: int, shape: str, x: int, y: int, size: int = 20,
+                   direction: float = 0.0, width: int = 5):
+    """Preview a spell template: the squares it covers and who it would catch."""
+    scene = vtt_engine.get_scene(map_id)
+    if scene is None:
+        raise HTTPException(status_code=404, detail="No such board.")
+    from vtt import geometry as _geo
+    grid = vtt_engine.grid_of(scene)
+    radius = size if shape in ("sphere", "circle", "emanation") else 0
+    length = size if shape in ("cone", "line", "cube", "square") else 0
+    squares = _geo.area_squares(shape, (x, y), radius_ft=radius,
+                                length_ft=length, width_ft=width,
+                                direction_deg=direction,
+                                square_ft=scene.square_ft, grid=grid)
+    caught = vtt_engine.tokens_in_area(map_id, shape, x, y, radius_ft=radius,
+                                       length_ft=length, width_ft=width,
+                                       direction_deg=direction)
+    return {"squares": [list(s) for s in squares],
+            "tokens": [{"id": t.id, "name": t.name, "team": t.team} for t in caught]}
+
+
+@app.post("/vtt/{map_id}/art")
+async def vtt_art(map_id: int, background_tasks: BackgroundTasks):
+    """(Re)render the battlemap background for a board."""
+    if vtt_engine.get_scene(map_id) is None:
+        raise HTTPException(status_code=404, detail="No such board.")
+    background_tasks.add_task(_vtt_render_art, map_id)
+    return {"status": "rendering"}
 
 
 # ===================== Rules lookup (items + reference) =====================
@@ -13854,6 +14575,63 @@ async def _activity_whisper(session_id: Optional[str], user_id: str, ev: dict):
                 pass
 
 
+# The serving event loop, captured at startup. Background work that runs in a
+# worker thread (a battlemap render) uses it to push a frame back to the table.
+_MAIN_LOOP: "Optional[asyncio.AbstractEventLoop]" = None
+
+
+def _vtt_scene_payload(session_id: Optional[str]) -> Optional[dict]:
+    """The live board for a table, or ``None`` when no board is out."""
+    if not session_id or not _vtt_on():
+        return None
+    try:
+        scene = vtt_engine.active_scene(session_id)
+        return vtt_engine.state(scene.id) if scene else None
+    except Exception as e:
+        print(f"[activity] vtt state failed: {e}")
+        return None
+
+
+def _push_vtt_state(session_id: Optional[str]) -> None:
+    """Broadcast the board from *any* thread (art renders finish off-loop)."""
+    if not session_id:
+        return
+    payload = _vtt_scene_payload(session_id)
+    ev = {"t": "vtt", "scene": payload}
+    loop = _MAIN_LOOP
+    if loop is None or not loop.is_running():
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(
+            _activity_broadcast(session_id, ev), loop)
+    except Exception as e:
+        print(f"[activity] vtt push failed: {e}")
+
+
+def _vtt_may_move(session_id: str, user_id: Optional[str], scene, tok) -> tuple[bool, str]:
+    """May this player drag this token right now?
+
+    A player moves their OWN character's token, and — while a fight is running —
+    only on their own turn. Everything else on the board belongs to the DM.
+    """
+    cfg = _vtt_cfg()
+    if not getattr(cfg, "allow_player_move", True):
+        return False, "The Oracle moves the pieces in this tale."
+    member = _acting_member(_load_session_state(session_id).get("meta", {}) or {},
+                            user_id)
+    my_char = (member or {}).get("character_id")
+    if not my_char or tok.character_id != my_char:
+        return False, f"{tok.name} isn't yours to move."
+    if scene.encounter_id:
+        try:
+            cur = combat.current_combatant(scene.encounter_id)
+        except Exception:
+            cur = None
+        if cur is not None and cur.id != tok.combatant_id:
+            return False, f"It's {cur.name}'s turn."
+    return True, ""
+
+
 def _activity_characters(user_id: str, channel: str) -> list[dict]:
     """The landing page's character list: this player's PCs with liveness and
     a resumable session id when one exists for this channel."""
@@ -14044,6 +14822,10 @@ async def activity_ws(ws: WebSocket, channel: str):
             }, fallback=ws)
         except Exception as e:
             print(f"[activity] combat state push failed: {e}")
+        # The tactical board (null closes the overlay).
+        await _activity_broadcast(
+            session_id, {"t": "vtt", "scene": _vtt_scene_payload(session_id)},
+            fallback=ws)
         await send_levelup()
 
     sheet: Optional[dict] = None
@@ -14704,6 +15486,76 @@ async def activity_ws(ws: WebSocket, channel: str):
                 refreshed = _activity_sheet(session_id, user_id)
                 if refreshed:
                     await ws.send_json({"t": "sheet", "sheet": refreshed})
+                continue
+
+            # ---- tactical board: the player's own token on the grid ----
+            if str(msg.get("t") or "").startswith("vtt_"):
+                kind = msg["t"]
+                scene = (vtt_engine.active_scene(session_id)
+                         if (session_id and _vtt_on()) else None)
+                if scene is None:
+                    await ws.send_json({"t": "vtt", "scene": None})
+                    continue
+
+                if kind == "vtt_ping":
+                    sq = (int(msg.get("x", 0)), int(msg.get("y", 0)))
+                    await _activity_broadcast(session_id, {
+                        "t": "vtt_ping", "x": sq[0], "y": sq[1],
+                        "label": (msg.get("label") or username)[:40],
+                    }, fallback=ws)
+                    continue
+
+                tok = None
+                if msg.get("token_id") is not None:
+                    tok = vtt_engine.get_token(int(msg["token_id"]))
+                if tok is None or tok.map_id != scene.id:
+                    await ws.send_json({"t": "vtt_error",
+                                        "detail": "That token isn't on this board."})
+                    continue
+
+                if kind == "vtt_options":
+                    await ws.send_json({
+                        "t": "vtt_options",
+                        **vtt_engine.movement_options(
+                            tok.id, dash=bool(msg.get("dash")))})
+                    continue
+                if kind == "vtt_preview":
+                    await ws.send_json({
+                        "t": "vtt_preview", "token_id": tok.id,
+                        **vtt_engine.path_preview(tok.id, int(msg.get("x", 0)),
+                                                  int(msg.get("y", 0)))})
+                    continue
+
+                if kind == "vtt_move":
+                    ok, why = _vtt_may_move(session_id, user_id, scene, tok)
+                    if not ok:
+                        await ws.send_json({"t": "vtt_error", "detail": why})
+                        continue
+                    res = vtt_engine.move_token(
+                        tok.id, int(msg.get("x", 0)), int(msg.get("y", 0)),
+                        enforce_speed=bool(getattr(_vtt_cfg(), "enforce_movement", True)))
+                    if not res.get("ok"):
+                        await ws.send_json({"t": "vtt_error",
+                                            "detail": res.get("reason", "You can't move there.")})
+                        continue
+                    try:
+                        vtt_bridge.sync_bands(vtt_engine, scene.id, tracker=combat)
+                    except Exception as e:
+                        print(f"[activity] band sync after move failed: {e}")
+                    await _activity_broadcast(session_id, {
+                        "t": "vtt", "scene": _vtt_scene_payload(session_id)},
+                        fallback=ws)
+                    if res.get("opportunity"):
+                        who = ", ".join(o["name"] for o in res["opportunity"])
+                        await _activity_broadcast(session_id, {
+                            "t": "narration",
+                            "text": (f"*{tok.name} breaks away from {who} — "
+                                     "an opportunity attack follows.*")}, fallback=ws)
+                    for hz in res.get("hazards") or []:
+                        await ws.send_json({
+                            "t": "narration",
+                            "text": f"*{tok.name} crosses {hz.get('name')}.*"})
+                    continue
                 continue
 
             if msg.get("t") != "action" or not (msg.get("text") or "").strip():
