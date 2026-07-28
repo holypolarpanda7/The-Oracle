@@ -134,6 +134,15 @@ and keeps both descriptions true at once:
   melee — `bridge.reconcile_bands` walks that token to a matching square
   **before** the bands are rewritten, so the two models can't drift apart.
 
+While a board is out, `bridge.BoardSpatial` is attached to the engine as a
+*spatial provider*: reach checks are then measured in real feet (a Large
+creature with a 10-ft reach engages at 10 ft, not "melee-ish"), and each
+creature's cover is written to the tracker from its nearest enemy's line of
+attack. The provider answers `None` for any creature it has no token for, and
+the engine falls straight back to bands — so a table with no board, a late
+joiner with no token, or two tables resolving turns at once all degrade to the
+old behaviour instead of to a wrong number.
+
 The rule of thumb: **the grid is the truth when a board is out; the bands are the
 interface.**
 
@@ -192,9 +201,9 @@ cd activity-ui && npm run build && node vtt-shot.mjs   # screenshot the overlay
 * **Fog is party-wide**, not per-player; there is no per-viewer vision.
 * **Doors are stateful but not interactive from the overlay** — the DM opens
   them with a hook.
-* **The combat engine still reasons in bands.** The board keeps them honest, but
-  the engine does not yet consume exact feet for range checks, so a 120-ft
-  longbow shot and a 30-ft one are both simply "far".
+* **Weapon ranges are still unenforced.** Reach is now exact (see below), but
+  the engine has no normal/long range numbers for a bow, so a 120-ft shot and a
+  30-ft one are both simply legal.
 * **No token drag-and-drop** — click to select, click to move (touch-friendly);
   drag is a later nicety.
 * **Art alignment is approximate** by design; a wall painted at the wrong square

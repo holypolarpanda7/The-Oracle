@@ -234,6 +234,75 @@ def apply_band_move(vtt: VttEngine, map_id: int, combatant_id: int,
                           enforce_speed=False)
 
 
+class BoardSpatial:
+    """Exact distances for ``combat.CombatEngine``, taken off the board.
+
+    The engine asks two questions — "how far apart are these two?" and "how far
+    can this one reach?" — and falls back to its own band model whenever this
+    answers ``None``. So attaching one of these upgrades reach checks from
+    near/far to real feet without the engine knowing a grid exists, and
+    detaching it puts the table straight back to theater of the mind.
+
+        combat_engine.spatial = BoardSpatial(vtt, map_id)
+    """
+
+    def __init__(self, vtt: VttEngine, map_id: int):
+        self.vtt = vtt
+        self.map_id = map_id
+        row = vtt.get_scene(map_id)
+        self.square_ft = row.square_ft if row else 5
+        self._tokens = {t.combatant_id: t for t in vtt.tokens(map_id)
+                        if t.combatant_id}
+
+    def _tok(self, c):
+        return self._tokens.get(getattr(c, "id", None))
+
+    def distance_ft(self, a, b) -> Optional[int]:
+        ta, tb = self._tok(a), self._tok(b)
+        if ta is None or tb is None:
+            return None
+        return geo.token_distance_ft(
+            geo.footprint(ta.x, ta.y, size_squares(ta.size)),
+            geo.footprint(tb.x, tb.y, size_squares(tb.size)),
+            self.square_ft)
+
+    def reach_ft(self, c) -> int:
+        t = self._tok(c)
+        return int(t.reach_ft or 5) if t is not None else 5
+
+    def cover(self, attacker, target) -> Optional[str]:
+        ta, tb = self._tok(attacker), self._tok(target)
+        if ta is None or tb is None:
+            return None
+        return self.vtt.cover_for(self.map_id, ta.name, tb.name)
+
+
+def sync_cover(vtt: VttEngine, map_id: int, *, tracker: Any = None) -> None:
+    """Write each combatant's cover from its nearest enemy's line of attack.
+
+    The tracker carries one cover value per creature, not one per attacker
+    pair, so this is an approximation — but "the cultist is behind the altar"
+    is the fact that matters in practice, and it beats the DM guessing.
+    """
+    tracker = tracker or vtt.tracker
+    row = vtt.get_scene(map_id)
+    if tracker is None or row is None:
+        return
+    toks = [t for t in vtt.tokens(map_id, include_defeated=False) if t.combatant_id]
+    for t in toks:
+        foes = [o for o in toks if o.team != t.team]
+        if not foes:
+            continue
+        nearest = min(foes, key=lambda o: geo.token_distance_ft(
+            geo.footprint(t.x, t.y, size_squares(t.size)),
+            geo.footprint(o.x, o.y, size_squares(o.size)), row.square_ft))
+        try:
+            cover = vtt.cover_for(map_id, nearest.name, t.name)
+            tracker.set_cover(t.combatant_id, cover)
+        except Exception as e:
+            print(f"[vtt.bridge] cover sync failed for {t.name}: {e}")
+
+
 def board_band(vtt: VttEngine, map_id: int, tok, *, square_ft: int = 5) -> str:
     """The band the *board* implies for a token — the inverse of a band move."""
     foes = [o for o in vtt.tokens(map_id, include_defeated=False)
@@ -297,7 +366,8 @@ def sync_after_turn(vtt: VttEngine, map_id: int, *, tracker: Any = None) -> None
     """One call to make the board agree with the tracker after a resolved turn."""
     mirror_from_tracker(vtt, map_id, tracker=tracker)
     # Fiction first (the engine may have moved someone by band), then write the
-    # exact bands back from the grid.
+    # exact bands and cover back from the grid.
     reconcile_bands(vtt, map_id, tracker=tracker)
     sync_bands(vtt, map_id, tracker=tracker)
+    sync_cover(vtt, map_id, tracker=tracker)
     vtt.recompute_auras(map_id)

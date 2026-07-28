@@ -6033,6 +6033,28 @@ def _vtt_board_image_payload(session_id: str) -> Optional[dict]:
     }
 
 
+def _attach_board_spatial(encounter_id: Optional[int]) -> None:
+    """Point the combat engine at the board for this fight, or at nothing.
+
+    Called at the top of every engine turn, so the provider is never stale by
+    more than one exchange. Two tables resolving turns concurrently share the
+    engine object, but a provider only answers for combatant ids it holds
+    tokens for — anyone else's creatures come back ``None`` and fall through to
+    the band model, so a race degrades to the old behaviour rather than to a
+    wrong distance.
+    """
+    try:
+        if not _vtt_on() or not encounter_id:
+            combat_engine.spatial = None
+            return
+        scene = vtt_engine.scene_for_encounter(encounter_id)
+        combat_engine.spatial = (
+            vtt_bridge.BoardSpatial(vtt_engine, scene.id) if scene else None)
+    except Exception as e:
+        print(f"[vtt] spatial attach failed: {e}")
+        combat_engine.spatial = None
+
+
 def _vtt_board_block(session_id: str) -> Optional[str]:
     """The compact ASCII board for the DM prompt (None when no board is out)."""
     if not _vtt_on() or not getattr(_vtt_cfg(), "inject_board", True):
@@ -6441,6 +6463,11 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
     except Exception as e:
         print(f"[combat env] {e}")
         env = None
+
+    # Exact spacing while a board is out: the engine measures reach in real feet
+    # instead of near/far. Detached again below, so a table with no board (or a
+    # creature with no token) falls straight back to the band model.
+    _attach_board_spatial(enc.id)
 
     blocks: list[str] = []
     rolls_out: list[dict] = []

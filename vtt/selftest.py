@@ -306,10 +306,77 @@ def test_engine() -> None:
     check("the scene left a replay log", len(v.events(scene.id)) > 0)
 
 
+def test_bridge() -> None:
+    section("bridge: the board and the combat engine agree")
+    try:
+        from combat import CombatEngine, CombatTracker
+    except Exception as e:               # combat is optional for the board
+        check("combat package importable", False, str(e))
+        return
+    from .bridge import BoardSpatial, sync_bands, sync_cover
+
+    db = os.path.join(tempfile.gettempdir(), "oracle_vtt_bridge_selftest.db")
+    if os.path.exists(db):
+        os.remove(db)
+    url = f"sqlite:///{db}"
+    ct = CombatTracker(database_url=url)
+    ct.create_tables()
+    v = VttEngine(database_url=url, tracker=ct)
+    v.create_tables()
+    eng = CombatEngine(ct)
+
+    enc = ct.start_encounter("selftest:bridge", "Reach")
+    kara = ct.add_pc(enc.id, name="Kara", max_hp=20, armor_class=15, dex_mod=2,
+                     character_id=1)
+    ogre = ct.add_combatant(enc.id, "Ogre", max_hp=30, armor_class=11, dex_mod=0)
+    ct.roll_initiative(enc.id)
+    scene = v.open_scene("selftest:bridge", kind="combat", archetype="open",
+                         name="Field", seed=4, encounter_id=enc.id,
+                         render_art=False)
+    tk = v.add_token(scene.id, "Kara", kind=TokenKind.PC, team=Team.PARTY,
+                     x=6, y=9, combatant_id=kara.id, speed_ft=30)
+    v.add_token(scene.id, "Ogre", kind=TokenKind.MONSTER, team=Team.FOE,
+                x=8, y=9, size="large", combatant_id=ogre.id, reach_ft=10)
+
+    a, b = ct.get_combatant(kara.id), ct.get_combatant(ogre.id)
+    eng.spatial = BoardSpatial(v, scene.id)
+    eq("a 10-ft reach engages at 10 ft", eng._engaged_with(a, b), True)
+    eq("…and that is zero band-steps", eng._steps_between(a, b), 0)
+
+    moved = v.move_token(tk.id, 14, 9, teleport=True)
+    check("the mover lands where asked", moved["ok"], str(moved))
+    eng.spatial = BoardSpatial(v, scene.id)
+    eq("stepping out of reach breaks the engagement",
+       eng._engaged_with(a, b), False)
+    check("…and the gap is measured in real feet",
+          eng.spatial.distance_ft(a, b) == 25,
+          str(eng.spatial.distance_ft(a, b)))
+
+    class _Stranger:
+        id, name, position, kind = 999999, "Ghost", "near", "npc"
+    eq("a creature with no token answers None",
+       eng.spatial.distance_ft(a, _Stranger()), None)
+    eq("…so the engine falls back to its bands",
+       eng._steps_between(a, _Stranger()), 1)
+
+    sync_bands(v, scene.id, tracker=ct)
+    bands = {c.name: c.position for c in ct.order(enc.id)}
+    check("grid positions are written back as bands",
+          bands.get("Kara") in ("near", "far"), str(bands))
+
+    v.set_terrain(scene.id, [(10, 9), (10, 10)], "O")     # a pillar between them
+    sync_cover(v, scene.id, tracker=ct)
+    covers = {c.name: c.cover for c in ct.order(enc.id)}
+    check("cover from the grid reaches the tracker",
+          covers.get("Kara") not in (None, "none"), str(covers))
+    ct.end_encounter(enc.id)
+    v.close_scene(scene.id)
+
+
 def main() -> int:
     print("\033[1mThe Oracle — tactical board self-test\033[0m")
     for fn in (test_distance, test_sight_and_cover, test_templates, test_movement,
-               test_opportunity, test_mapgen, test_engine):
+               test_opportunity, test_mapgen, test_engine, test_bridge):
         try:
             fn()
         except Exception:

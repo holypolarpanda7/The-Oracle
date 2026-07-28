@@ -192,10 +192,33 @@ class CombatEngine:
         # Environmental combat aura for the current turn (set per top-level call from
         # the location's arcane sites): {d20, spell_d20, spell_dc, hazards:[...]}.
         self._env: dict = {}
+        # Optional exact-position provider (a tactical board — see vtt/bridge.py).
+        # When one is attached AND it can answer for both creatures, spacing is
+        # measured in real feet; otherwise the gridless bands below still rule,
+        # so a table with no board plays exactly as it always has.
+        #   distance_ft(a, b) -> Optional[int]
+        #   reach_ft(c)       -> int
+        self.spatial = None
 
     # ---------------- band / spacing model ----------------
 
+    def _spatial_gap(self, a: Combatant, b: Combatant) -> Optional[tuple[int, int]]:
+        """(distance in feet, the larger of the two reaches) — or None."""
+        if self.spatial is None:
+            return None
+        try:
+            d = self.spatial.distance_ft(a, b)
+            if d is None:
+                return None
+            reach = max(self.spatial.reach_ft(a), self.spatial.reach_ft(b))
+            return int(d), int(reach)
+        except Exception:
+            return None
+
     def _engaged_with(self, a: Combatant, b: Combatant) -> bool:
+        gap = self._spatial_gap(a, b)
+        if gap is not None:
+            return gap[0] <= gap[1]
         pa = (a.position or "").lower()
         pb = (b.position or "").lower()
         return (pa == f"melee with {b.name.lower()}"
@@ -208,6 +231,18 @@ class CombatEngine:
         return _BAND_RANK.get(p, 1)
 
     def _steps_between(self, a: Combatant, b: Combatant) -> int:
+        """Band-steps between two creatures — 0 means "in reach".
+
+        With a board out this is derived from the real distance (a step is one
+        normal move, ~30 ft), so "can I reach them this turn?" answers honestly
+        instead of rounding everything to near/far.
+        """
+        gap = self._spatial_gap(a, b)
+        if gap is not None:
+            dist, reach = gap
+            if dist <= reach:
+                return 0
+            return max(1, -(-(dist - reach) // 30))    # ceil to whole moves
         if self._engaged_with(a, b):
             return 0
         return max(1, abs(self._rank(a) - self._rank(b)))
