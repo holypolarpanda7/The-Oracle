@@ -359,6 +359,24 @@ def test_bridge() -> None:
     eq("…so the engine falls back to its bands",
        eng._steps_between(a, _Stranger()), 1)
 
+    # A damaging area must bite whoever stands in it — and nobody else.
+    v.add_effect(scene.id, "Wall of Fire", shape="cube", x=14, y=9, length_ft=10,
+                 damage="4d8 fire", save_ability="dex", save_dc=40,
+                 duration_rounds=10)
+    burning = {t.combatant_id for t in
+               v.tokens_in_effect(v.find_effect(scene.id, "Wall of Fire").id)}
+    eq("only the creature in the fire is a target", burning, {kara.id})
+    before = ct.get_combatant(kara.id).current_hp
+    ogre_before = ct.get_combatant(ogre.id).current_hp
+    eng.apply_environment_hazards(
+        enc.id, {"hazards": [{"name": "Wall of Fire", "dc": 40, "damage": "4d8",
+                              "ability": "dex", "targets": list(burning)}]}, {})
+    check("a failed save costs the creature standing in it hit points",
+          ct.get_combatant(kara.id).current_hp < before,
+          f"{before} -> {ct.get_combatant(kara.id).current_hp}")
+    eq("the creature outside it is untouched",
+       ct.get_combatant(ogre.id).current_hp, ogre_before)
+
     sync_bands(v, scene.id, tracker=ct)
     bands = {c.name: c.position for c in ct.order(enc.id)}
     check("grid positions are written back as bands",

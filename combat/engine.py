@@ -1753,7 +1753,12 @@ class CombatEngine:
                                   profiles: Optional[dict[int, PCProfile]] = None) -> list[dict]:
         """Environmental hazard tick (a gas cloud, spore field): every living combatant
         makes the hazard's save or takes its damage. Call once per round. Returns event
-        dicts for the backend to render — this does not advance turns."""
+        dicts for the backend to render — this does not advance turns.
+
+        A hazard may carry ``"targets": [combatant_id, ...]`` to hit only those
+        creatures — that's how a tactical board's damaging areas (a wall of
+        fire, a spike growth) bite only whoever is actually standing in them,
+        while a location-wide gas cloud still catches the whole room."""
         hazards = (env or {}).get("hazards") or []
         if not hazards:
             return []
@@ -1763,6 +1768,9 @@ class CombatEngine:
             if c.defeated:
                 continue
             for hz in hazards:
+                targets = hz.get("targets")
+                if targets is not None and c.id not in set(targets):
+                    continue
                 ability = (hz.get("ability") or "con")[:3]
                 mod = self._ability_mod(c, ability, profiles) + self._exh_pen(c, profiles)
                 dc = int(hz.get("dc", 12) or 12)

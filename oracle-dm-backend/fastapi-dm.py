@@ -6033,6 +6033,42 @@ def _vtt_board_image_payload(session_id: str) -> Optional[dict]:
     }
 
 
+def _vtt_effect_hazards(session_id: str) -> list[dict]:
+    """Damaging areas on the board, as per-round hazards the engine can resolve.
+
+    A wall of fire or a patch of spike growth is only decorative until standing
+    in it costs something. Each damaging effect becomes a hazard entry aimed at
+    exactly the creatures inside its squares, so it hits them and nobody else.
+    """
+    if not _vtt_on():
+        return []
+    try:
+        scene = vtt_engine.active_scene(session_id)
+        if scene is None:
+            return []
+        out: list[dict] = []
+        for eff in vtt_engine.effects(scene.id):
+            if not eff.damage or (eff.trigger or "start_of_turn") == "once":
+                continue
+            targets = [t.combatant_id for t in vtt_engine.tokens_in_effect(eff.id)
+                       if t.combatant_id]
+            if not targets:
+                continue
+            # "8d6 fire" -> the dice half; the damage type is narration's job.
+            m = re.match(r"\s*([0-9dD+\- ]+)", eff.damage or "")
+            out.append({
+                "name": eff.name,
+                "dc": int(eff.save_dc or 12),
+                "damage": (m.group(1).strip() if m else "1d6"),
+                "ability": (eff.save_ability or "dex")[:3],
+                "targets": targets,
+            })
+        return out
+    except Exception as e:
+        print(f"[vtt] effect hazards failed: {e}")
+        return []
+
+
 def _attach_board_spatial(encounter_id: Optional[int]) -> None:
     """Point the combat engine at the board for this fight, or at nothing.
 
@@ -6468,6 +6504,13 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
     # instead of near/far. Detached again below, so a table with no board (or a
     # creature with no token) falls straight back to the band model.
     _attach_board_spatial(enc.id)
+
+    # Damaging areas on the board ride the same per-round hazard tick as a
+    # location's gas cloud, but aimed only at whoever stands in them.
+    _board_hazards = _vtt_effect_hazards(session_id)
+    if _board_hazards:
+        env = dict(env or {"d20": 0, "spell_d20": 0, "spell_dc": 0, "hazards": []})
+        env["hazards"] = list(env.get("hazards") or []) + _board_hazards
 
     blocks: list[str] = []
     rolls_out: list[dict] = []

@@ -146,6 +146,10 @@ old behaviour instead of to a wrong number.
 The rule of thumb: **the grid is the truth when a board is out; the bands are the
 interface.**
 
+Damaging areas ride the engine's existing per-round hazard tick, but carry a
+`targets` list so a wall of fire burns whoever is standing in its squares and
+nobody else — the same mechanism a location-wide gas cloud already used.
+
 ### The DM prompt
 
 While a board is out, the compact ASCII board goes into the context — the map,
