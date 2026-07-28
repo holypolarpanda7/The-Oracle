@@ -263,6 +263,7 @@ async def lifespan(app: FastAPI):
                     ("current_hp", "INTEGER DEFAULT 0"),
                     ("temp_hp", "INTEGER DEFAULT 0"),
                     ("spell_slots_used", "JSON"),
+                    ("resources_used", "JSON"),
                     ("hit_die", "TEXT DEFAULT 'd8'"),
                     ("hit_dice_total", "INTEGER DEFAULT 1"),
                     ("hit_dice_remaining", "INTEGER DEFAULT 1"),
@@ -936,6 +937,9 @@ class Character(SQLModel, table=True):
     # Expended spell slots since the last rest: {"1": 2, "3": 1} (slot level ->
     # used count). Cleared on a long rest; warlock pact slots clear on short.
     spell_slots_used: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Expended class resources since the relevant rest: {"rage": 1, "ki": 2}.
+    # Reset per-resource (short/long) — see _class_resources_for.
+    resources_used: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
     # Persistent conditions/status effects that carry BETWEEN encounters (e.g.
     # poisoned until a save, frightened, a lingering curse). Exhaustion is tracked
@@ -1078,6 +1082,35 @@ def resolve_cast_hooks(text: str, char: "Character") -> str:
         return f"✨ {disp} ({_ORDINALS.get(spent, str(spent))}-level slot)"
 
     return CAST_HOOK_PATTERN.sub(repl, text)
+
+
+USE_HOOK_PATTERN = re.compile(r"\[\[USE:(.+?)\]\]", re.IGNORECASE)
+
+
+def resolve_use_hooks(text: str, char: "Character") -> str:
+    """Resolve [[USE: Resource | n]] hooks: spend `n` (default 1) of a class
+    resource (Rage/Ki/Sorcery Points/Bardic Inspiration), enforcing the pool —
+    an over-spend is turned into a visible failure. Mutates char.resources_used
+    (the caller persists)."""
+    def repl(match: re.Match) -> str:
+        parts = [p.strip() for p in match.group(1).split("|")]
+        name = parts[0] if parts else ""
+        amount = 1
+        if len(parts) > 1:
+            am = re.search(r"\d+", parts[1])
+            if am:
+                amount = max(1, int(am.group()))
+        res = _spend_resource(char, name, amount)
+        if res is None:
+            avail = next((f"{int(r['total']) - int(r['used'])} left"
+                          for r in _class_resources_for(char)
+                          if name.strip().lower() in r["name"].lower()
+                          or r["key"] in name.strip().lower()), "none available")
+            return f"⚡ {name} — not enough ({avail})."
+        amt = f"×{res['spent']} " if res["spent"] > 1 else ""
+        return f"⚡ {res['name']} {amt}spent ({res['remaining']} left)"
+
+    return USE_HOOK_PATTERN.sub(repl, text)
 
 
 MUSIC_HOOK_PATTERN = re.compile(r"\[\[MUSIC:(.+?)\]\]", re.IGNORECASE)
@@ -8282,6 +8315,26 @@ def _character_resource_block(character_id: int) -> str:
                     "slots); do NOT let it succeed.")
         except Exception as e:
             print(f"[spellcasting block] {e}")
+
+        # Combat resources (ENFORCED): Rage / Ki / Sorcery Points / Bardic
+        # Inspiration — the DM gates their use on what's left and emits [[USE]].
+        try:
+            resources = _class_resources_for(char)
+            if resources:
+                lines.append("")
+                lines.append("# Combat resources (ENFORCED)")
+                for r in resources:
+                    left = int(r["total"]) - int(r["used"])
+                    die = f", {r['die']}" if r.get("die") else ""
+                    lines.append(f"{r['name']}: {left}/{r['total']} left "
+                                 f"(resets on a {r['reset']} rest{die})")
+                lines.append(
+                    "When the PC spends one of these, emit [[USE: Resource | n]] "
+                    "(n defaults to 1) — the system deducts it. If none remain, "
+                    "the PC cannot use that feature; narrate accordingly. Do NOT "
+                    "let them Rage / spend Ki / etc. with none left.")
+        except Exception as e:
+            print(f"[resources block] {e}")
         return "\n".join(lines)
 
 
@@ -8486,9 +8539,9 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             print(f"[trust] hook processing failed: {e}")
 
-    # Spellcasting enforcement: expend the PC's spell slot for a [[CAST]] and
-    # block casts of spells they don't have prepared / have no slot for.
-    if re.search(r"\[\[CAST:", dm_text, re.IGNORECASE):
+    # Mechanical enforcement: expend the PC's spell slot for a [[CAST]] and class
+    # resources (Rage/Ki/…) for a [[USE]], and block the ones they can't afford.
+    if re.search(r"\[\[(CAST|USE):", dm_text, re.IGNORECASE):
         try:
             state = _load_session_state(req.session_id)
             cid = (_acting_member(state.get("meta", {}) or {}, req.user_id) or {}).get("character_id") \
@@ -8498,13 +8551,14 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                     ch = s.get(Character, cid)
                     if ch:
                         dm_text = resolve_cast_hooks(dm_text, ch)
+                        dm_text = resolve_use_hooks(dm_text, ch)
                         s.add(ch)
                         s.commit()
             else:
-                dm_text = CAST_HOOK_PATTERN.sub("", dm_text)
+                dm_text = CAST_HOOK_PATTERN.sub("", USE_HOOK_PATTERN.sub("", dm_text))
         except Exception as e:
-            print(f"[cast] hook processing failed: {e}")
-            dm_text = CAST_HOOK_PATTERN.sub("", dm_text)
+            print(f"[cast/use] hook processing failed: {e}")
+            dm_text = CAST_HOOK_PATTERN.sub("", USE_HOOK_PATTERN.sub("", dm_text))
 
     # Puzzles: present a puzzle the DM armed, dispense the next graded hint, or
     # record a solve/abandon. The solution stays server-side (fed only to the DM
@@ -11781,6 +11835,8 @@ async def survival_short_rest_endpoint(req: RestRequest):
         if (char.char_class or "").strip().lower() == "warlock":
             char.spell_slots_used = None
             result["pact_slots_restored"] = True
+        # Short-rest class resources (Ki, high-level Bardic Inspiration) recover.
+        _reset_resources(char, "short")
         if gate == "ok" and info:
             result["warded_by"] = info
         elif req.force and _pc_danger(req.character_id) in _REST_DANGEROUS:
@@ -11857,6 +11913,7 @@ async def survival_long_rest_endpoint(req: RestRequest):
         char.death_save_failures = 0
         char.stable = True
         char.spell_slots_used = None  # all spell slots return on a long rest
+        _reset_resources(char, "long")  # Rage/Ki/Sorcery/Bardic all recover
         # Conditions flagged to end on a long rest (e.g. a poison "until long rest").
         cleared = _clear_long_rest_conditions(char)
         # Level-up gate: after a long rest, check if they've earned a level.
@@ -13028,11 +13085,13 @@ def _spell_slots_for(char_class: Optional[str], level: int,
 
 
 def _class_resources_for(char: Character) -> list[dict]:
-    """Curated per-class pip resources (Bardic Inspiration, Ki, Rage…).
-    Not exhaustive; classes without an entry simply show none."""
+    """Curated per-class pip resources (Bardic Inspiration, Ki, Rage…), each with
+    a stable `key`, its `reset` cadence (short/long), and the count `used` so far
+    (from char.resources_used). Classes without an entry show none."""
     cls = (char.char_class or "").strip().lower()
     lvl = int(char.level or 1)
     stats = char.stats or {}
+    used_map = {str(k).lower(): int(v) for k, v in (char.resources_used or {}).items()}
 
     def amod(stat: str) -> int:
         for key in (stat, stat[:3], stat.capitalize(), stat[:3].capitalize(), stat.upper()):
@@ -13040,17 +13099,67 @@ def _class_resources_for(char: Character) -> list[dict]:
                 return (int(stats[key]) - 10) // 2
         return 0
 
+    def row(name, key, total, reset, die=None):
+        r = {"name": name, "key": key, "total": total,
+             "used": min(total, used_map.get(key, 0)), "reset": reset}
+        if die:
+            r["die"] = die
+        return r
+
     if cls == "bard":
         die = "d6" if lvl < 5 else "d8" if lvl < 10 else "d10" if lvl < 15 else "d12"
-        return [{"name": "Bardic Insp.", "total": max(1, amod("charisma")), "used": 0, "die": die}]
+        # Font of Inspiration (level 5) lets it recover on a short rest too.
+        return [row("Bardic Insp.", "bardic", max(1, amod("charisma")),
+                    "short" if lvl >= 5 else "long", die)]
     if cls == "monk":
-        return [{"name": "Ki", "total": lvl, "used": 0}]
+        return [row("Ki", "ki", lvl, "short")]
     if cls == "barbarian":
         rage = 2 if lvl < 3 else 3 if lvl < 6 else 4 if lvl < 12 else 5 if lvl < 17 else 6
-        return [{"name": "Rage", "total": rage, "used": 0}]
+        return [row("Rage", "rage", rage, "long")]
     if cls == "sorcerer" and lvl >= 2:
-        return [{"name": "Sorcery Pts", "total": lvl, "used": 0}]
+        return [row("Sorcery Pts", "sorcery", lvl, "long")]
     return []
+
+
+def _spend_resource(char: Character, name: str, amount: int = 1) -> Optional[dict]:
+    """Spend `amount` of a class resource by fuzzy name/key match. Mutates
+    char.resources_used (caller persists). Returns {name, key, spent, remaining}
+    on success, or None if there's no such resource or not enough left."""
+    needle = (name or "").strip().lower()
+    if not needle:
+        return None
+    res = _class_resources_for(char)
+    match = None
+    for r in res:
+        if needle == r["key"] or needle in r["name"].lower() or r["key"] in needle \
+                or r["name"].lower().rstrip(".") in needle:
+            match = r
+            break
+    if match is None:
+        return None
+    avail = int(match["total"]) - int(match["used"])
+    if amount > avail:
+        return None
+    used_map = {str(k).lower(): int(v) for k, v in (char.resources_used or {}).items()}
+    used_map[match["key"]] = used_map.get(match["key"], 0) + amount
+    char.resources_used = used_map
+    return {"name": match["name"], "key": match["key"], "spent": amount,
+            "remaining": avail - amount}
+
+
+def _reset_resources(char: Character, cadence: str) -> None:
+    """Recover class resources on a rest. A LONG rest recovers everything; a
+    SHORT rest recovers only the short-reset resources (Ki, Font-of-Inspiration
+    Bardic Inspiration)."""
+    used = {str(k).lower(): int(v) for k, v in (char.resources_used or {}).items()}
+    if not used:
+        return
+    if cadence == "long":
+        char.resources_used = None
+        return
+    short_keys = {r["key"] for r in _class_resources_for(char) if r.get("reset") == "short"}
+    keep = {k: v for k, v in used.items() if k not in short_keys}
+    char.resources_used = keep or None
 
 
 def _feat_kind(name: str) -> str:
