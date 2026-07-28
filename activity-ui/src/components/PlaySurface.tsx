@@ -64,8 +64,11 @@ export interface PlayProps {
   vtt: VttScene | null;
   vttOptions: VttOptions | null;
   vttPing: { x: number; y: number; label?: string; at: number } | null;
+  vttPreview: { token_id: number; ok: boolean; cost_ft?: number;
+                opportunity?: string[] } | null;
   vttError: string | null;
   onVttOptions: (tokenId: number, dash: boolean) => void;
+  onVttPreview: (tokenId: number, x: number, y: number) => void;
   onVttMove: (tokenId: number, x: number, y: number) => void;
   onVttPing: (x: number, y: number) => void;
   onVttDismissError: () => void;
@@ -113,9 +116,11 @@ export function PlaySurface(p: PlayProps) {
               combat={p.combat}
               myCharacterId={p.sheet?.character_id ?? null}
               options={p.vttOptions}
+              preview={p.vttPreview}
               ping={p.vttPing}
               error={p.vttError}
               onRequestOptions={p.onVttOptions}
+              onPreviewPath={p.onVttPreview}
               onMove={p.onVttMove}
               onPing={p.onVttPing}
               onDismissError={p.onVttDismissError}

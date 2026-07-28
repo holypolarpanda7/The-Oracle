@@ -138,7 +138,10 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
     onEvent({ t: "vtt_ping", x: ev.x, y: ev.y, label: ev.label ?? "here" });
     return;
   }
-  if (ev.t === "vtt_preview") return;   // the overlay previews from the cost map
+  if (ev.t === "vtt_preview") {
+    onEvent({ t: "vtt_preview", ...demoVttApi.preview(ev.token_id, ev.x, ev.y) });
+    return;
+  }
   if (ev.t === "inspect_item") {
     onEvent({ t: "item_detail", item: demoItemDetail(ev.name) });
     return;

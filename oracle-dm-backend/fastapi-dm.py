@@ -695,6 +695,12 @@ image_store = ImageStore(engine=engine, world_day_fn=world.current_day)
 # decides the outcome. It reads the combat tracker (whose turn, who is down) and
 # writes spacing bands back to it, so combat/ never has to know it exists.
 vtt_engine = VttEngine(engine=engine, tracker=combat, image_store=image_store)
+# Explicit, rather than relying on another subsystem's create_all side effect:
+# the board's tables must exist before the first fight opens one.
+try:
+    vtt_engine.create_tables()
+except Exception as e:  # a read-only/locked DB shouldn't stop the backend booting
+    print(f"[vtt] table creation deferred: {e}")
 
 # Per-session metadata (which PC is playing) alongside the in-memory history.
 

@@ -92,6 +92,8 @@ export interface PaintState {
   path?: [number, number][] | null;
   pathCost?: number;
   pathLegal?: boolean;
+  /** The route leaves an enemy's reach — drawn as a warning. */
+  pathProvokes?: boolean;
   hover?: [number, number] | null;
   /** Measurement in progress: [from, to]. */
   measure?: [[number, number], [number, number]] | null;
@@ -253,7 +255,9 @@ export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: P
   // --- path preview ---
   if (st.path && st.path.length > 1) {
     const legal = st.pathLegal !== false;
-    ctx.strokeStyle = legal ? "#ffd479" : "#d23843";
+    const warn = legal && st.pathProvokes;
+    const stroke = !legal ? "#d23843" : warn ? "#f59a3c" : "#ffd479";
+    ctx.strokeStyle = stroke;
     ctx.lineWidth = Math.max(2, cell * 0.09);
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
@@ -270,12 +274,12 @@ export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: P
     ctx.setLineDash([]);
     const [ex, ey] = st.path[st.path.length - 1];
     const [sx, sy] = toScreen(v, ex, ey);
-    ctx.strokeStyle = legal ? "#ffd479" : "#d23843";
+    ctx.strokeStyle = stroke;
     ctx.lineWidth = 2;
     ctx.strokeRect(sx + 1.5, sy + 1.5, cell - 3, cell - 3);
     if (st.pathCost != null) {
-      pill(ctx, sx + cell / 2, sy - 8, `${st.pathCost} ft`,
-        legal ? "#ffd479" : "#d23843");
+      pill(ctx, sx + cell / 2, sy - 8,
+        warn ? `${st.pathCost} ft · provokes` : `${st.pathCost} ft`, stroke);
     }
   }
 

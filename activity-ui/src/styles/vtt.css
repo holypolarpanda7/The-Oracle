@@ -196,6 +196,10 @@
 .play .vtt-budget { color: var(--teal); }
 .play .vtt-measure { color: var(--teal); margin-left: auto; }
 .play .vtt-hint { color: var(--text-faint); font-style: normal; }
+.play .vtt-warn {
+  color: var(--ember); letter-spacing: 0.05em;
+  text-shadow: 0 0 10px rgba(245, 154, 60, 0.45);
+}
 .play .vtt-dash {
   border: 1px solid var(--edge); border-radius: 4px;
   padding: 2px 8px; background: rgba(9, 12, 21, 0.7);

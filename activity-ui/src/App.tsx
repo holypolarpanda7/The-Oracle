@@ -39,6 +39,8 @@ export default function App({ session }: { session: Session }) {
   const [vtt, setVtt] = useState<VttScene | null>(null);
   const [vttOptions, setVttOptions] = useState<VttOptions | null>(null);
   const [vttPing, setVttPing] = useState<{ x: number; y: number; label?: string; at: number } | null>(null);
+  const [vttPreview, setVttPreview] = useState<
+    { token_id: number; ok: boolean; cost_ft?: number; opportunity?: string[] } | null>(null);
   const [vttError, setVttError] = useState<string | null>(null);
   const [sceneUrl, setSceneUrl] = useState<string | null>(null);
   const [levelUp, setLevelUp] = useState<LevelUpData | null>(null);
@@ -177,11 +179,15 @@ export default function App({ session }: { session: Session }) {
           break;
         case "vtt":
           setVtt(ev.scene);
-          if (!ev.scene) { setVttOptions(null); setVttError(null); }
+          if (!ev.scene) { setVttOptions(null); setVttError(null); setVttPreview(null); }
           break;
         case "vtt_options":
           setVttOptions({ token_id: ev.token_id, budget_ft: ev.budget_ft,
                           squares: ev.squares });
+          break;
+        case "vtt_preview":
+          setVttPreview({ token_id: ev.token_id, ok: ev.ok, cost_ft: ev.cost_ft,
+                          opportunity: ev.opportunity });
           break;
         case "vtt_ping":
           setVttPing({ x: ev.x, y: ev.y, label: ev.label, at: Date.now() });
@@ -362,9 +368,12 @@ export default function App({ session }: { session: Session }) {
               vtt={vtt}
               vttOptions={vttOptions}
               vttPing={vttPing}
+              vttPreview={vttPreview}
               vttError={vttError}
               onVttOptions={(token_id, dash) =>
                 connRef.current?.send({ t: "vtt_options", token_id, dash })}
+              onVttPreview={(token_id, x, y) =>
+                connRef.current?.send({ t: "vtt_preview", token_id, x, y })}
               onVttMove={(token_id, x, y) =>
                 connRef.current?.send({ t: "vtt_move", token_id, x, y })}
               onVttPing={(x, y) => connRef.current?.send({ t: "vtt_ping", x, y })}

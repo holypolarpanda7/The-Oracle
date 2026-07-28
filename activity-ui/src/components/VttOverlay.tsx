@@ -46,9 +46,13 @@ export interface VttProps {
   /** The viewer's character, so we know which token is theirs to move. */
   myCharacterId?: number | null;
   options: VttOptions | null;
+  /** The server's answer for the square being hovered (cost + who it provokes). */
+  preview: { token_id: number; ok: boolean; cost_ft?: number;
+             opportunity?: string[] } | null;
   ping: { x: number; y: number; label?: string; at: number } | null;
   error?: string | null;
   onRequestOptions: (tokenId: number, dash: boolean) => void;
+  onPreviewPath: (tokenId: number, x: number, y: number) => void;
   onMove: (tokenId: number, x: number, y: number) => void;
   onPing: (x: number, y: number) => void;
   onDismissError: () => void;
@@ -140,6 +144,27 @@ export function VttOverlay(p: VttProps) {
   }, [selectedToken?.id, dash, scene.revision]);
 
   // ---- path preview -------------------------------------------------------
+  // The blue wash and the drawn route come from the cost map (instant, local).
+  // Whether the route provokes an opportunity attack is a question only the
+  // server can answer, so it's asked on a short debounce once the pointer
+  // settles — a warning before you move beats an apology after.
+  useEffect(() => {
+    if (!hover || !selectedToken || !isMine(selectedToken)) return;
+    if (!reach?.has(`${hover[0]},${hover[1]}`)) return;
+    const [hx, hy] = hover;
+    const id = window.setTimeout(
+      () => p.onPreviewPath(selectedToken.id, hx, hy), 180);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hover?.[0], hover?.[1], selectedToken?.id, reach]);
+
+  const provokes = (p.preview && selectedToken
+    && p.preview.token_id === selectedToken.id
+    && hover && p.preview.ok
+    && (p.preview.opportunity?.length ?? 0) > 0)
+    ? p.preview.opportunity ?? []
+    : [];
+
   const path = useMemo(() => {
     if (!reach || !selectedToken || !hover) return null;
     return pathFromCosts(reach, [selectedToken.x, selectedToken.y], hover);
@@ -162,10 +187,11 @@ export function VttOverlay(p: VttProps) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paint(ctx, size[0], size[1], {
       scene, view, art: artRef.current, reach, path, pathCost,
-      pathLegal: pathCost !== undefined, hover, measure, show, pings,
-      now: Date.now(),
+      pathLegal: pathCost !== undefined, pathProvokes: provokes.length > 0,
+      hover, measure, show, pings, now: Date.now(),
     });
-  }, [scene, view, size, reach, path, pathCost, hover, measure, show, pings]);
+  }, [scene, view, size, reach, path, pathCost, hover, measure, show, pings,
+      provokes.length]);
 
   useEffect(() => {
     draw();
@@ -398,11 +424,17 @@ export function VttOverlay(p: VttProps) {
                 <button className={`vtt-dash${dash ? " on" : ""}`}
                   onClick={() => setDash((d) => !d)}
                   title="Preview movement as though you Dash">Dash</button>
-                <span className="vtt-hint">
-                  {myTurn
-                    ? "click a lit square to move · right-click to ping · scroll to zoom"
-                    : "waiting for your turn"}
-                </span>
+                {provokes.length > 0 ? (
+                  <span className="vtt-warn">
+                    ⚠ that route leaves {provokes.join(", ")} — it provokes
+                  </span>
+                ) : (
+                  <span className="vtt-hint">
+                    {myTurn
+                      ? "click a lit square to move · right-click to ping · scroll to zoom"
+                      : "waiting for your turn"}
+                  </span>
+                )}
               </>
             ) : (
               <span className="vtt-hint">

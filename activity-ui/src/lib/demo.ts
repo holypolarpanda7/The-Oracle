@@ -296,6 +296,20 @@ function demoReach(tokenId: number, dash: boolean) {
 export const demoVttApi = {
   scene: demoScene,
   options: demoReach,
+  /** Mirrors the server's path preview: cost plus whose reach the route leaves. */
+  preview(tokenId: number, x: number, y: number) {
+    const scene = demoScene();
+    const me = scene.tokens.find((t) => t.id === tokenId);
+    const hit = demoReach(tokenId, true).squares.find((s) => s.x === x && s.y === y);
+    if (!me || !hit) return { token_id: tokenId, ok: false, reason: "no route" };
+    const near = (ax: number, ay: number, t: { x: number; y: number }) =>
+      Math.max(Math.abs(ax - t.x), Math.abs(ay - t.y)) <= 1;
+    const opportunity = scene.tokens
+      .filter((t) => t.team !== me.team && !t.defeated
+        && near(me.x, me.y, t) && !near(x, y, t))
+      .map((t) => t.name);
+    return { token_id: tokenId, ok: true, cost_ft: hit.cost, opportunity };
+  },
   move(tokenId: number, x: number, y: number) {
     const reach = demoReach(tokenId, false);
     const hit = reach.squares.find((s) => s.x === x && s.y === y);
