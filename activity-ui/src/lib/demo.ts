@@ -59,6 +59,7 @@ const sheet: ServerEvent = {
       { level: 3, total: 2, used: 1 },
     ],
     caster_mode: "spellbook",   // demo the wizard-style prepare-from-spellbook flow
+    can_reprepare: true,        // demo: fresh out of a long rest
     resources: [{ name: "Bardic Insp.", total: 3, used: 0, die: "d8" }],
     features: [
       { name: "Breath Weapon", note: "2d10 fire · recharge on rest", kind: "fire" },

@@ -205,9 +205,10 @@ export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr, 
           </div>
         ) : null}
 
-        {(sheet.caster_mode === "prepared" || sheet.caster_mode === "spellbook") && onReprepare && (
+        {(sheet.caster_mode === "prepared" || sheet.caster_mode === "spellbook")
+          && sheet.can_reprepare && onReprepare && (
           <button className="sheet-prep" onClick={onReprepare}>
-            ⟳ Prepare Spells
+            ⟳ Prepare Spells <span className="prep-hint">· after a rest</span>
           </button>
         )}
 

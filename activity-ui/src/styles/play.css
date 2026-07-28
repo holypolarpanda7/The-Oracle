@@ -364,6 +364,7 @@
   color: var(--amethyst); background: rgba(154, 107, 255, 0.12); cursor: pointer;
   border: 1px solid color-mix(in srgb, var(--amethyst) 40%, var(--edge)); border-radius: 5px; }
 .play .sheet-prep:hover { background: rgba(154, 107, 255, 0.22); color: #e7dcff; }
+.play .sheet-prep .prep-hint { color: var(--text-dim); font-size: 0.9em; }
 
 .play .res { margin-bottom: 9px; }
 .play .rrow { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }

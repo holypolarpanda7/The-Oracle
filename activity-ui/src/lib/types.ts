@@ -91,6 +91,7 @@ export interface SheetData {
   background?: string | null;    // origin / background name for the Origin tab
   spell_slots?: SpellSlotRow[];
   caster_mode?: string | null;   // "known" | "prepared" | "spellbook" | null
+  can_reprepare?: boolean;       // true only right after a long rest (gate)
   resources?: ResourceRow[];     // class resources (Bardic Inspiration, Ki, …)
   features?: SheetFeature[];
 }

@@ -264,6 +264,7 @@ async def lifespan(app: FastAPI):
                     ("temp_hp", "INTEGER DEFAULT 0"),
                     ("spell_slots_used", "JSON"),
                     ("resources_used", "JSON"),
+                    ("pending_reprepare", "INTEGER DEFAULT 0"),
                     ("hit_die", "TEXT DEFAULT 'd8'"),
                     ("hit_dice_total", "INTEGER DEFAULT 1"),
                     ("hit_dice_remaining", "INTEGER DEFAULT 1"),
@@ -945,6 +946,9 @@ class Character(SQLModel, table=True):
     # Expended class resources since the relevant rest: {"rage": 1, "ki": 2}.
     # Reset per-resource (short/long) — see _class_resources_for.
     resources_used: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # A caster may re-prepare spells only right after a long rest: set True by the
+    # rest, consumed when they prepare. Gates the "Prepare Spells" flow.
+    pending_reprepare: bool = Field(default=False)
 
     # Persistent conditions/status effects that carry BETWEEN encounters (e.g.
     # poisoned until a save, frightened, a lingering curse). Exhaustion is tracked
@@ -2181,7 +2185,7 @@ def _rest_interruption_block(ctx_obj, message: str, rng=None, warded: Optional[d
 # consumed by the rest it protects. Both the narrative interruption and the mechanical
 # /survival/*_rest endpoints read it, so they always agree.
 REST_HOOK_PATTERN = re.compile(r"\[\[REST:(.+?)\]\]", re.IGNORECASE)
-_REST_HOOK_ACTIONS = {"ward", "expose"}
+_REST_HOOK_ACTIONS = {"ward", "expose", "long", "short"}
 _REST_WARD_KINDS = {"long", "short", "any"}
 _REST_WARD_TTL_DAYS = 1  # a ward covers the rest cast now; stale after the next day rolls
 
@@ -2193,7 +2197,11 @@ _REST_GUIDE = (
     "stronghold or a safe town inn — grant a ward: emit [[REST: ward | what secured it "
     "| long|short|any]]. A warded rest holds and its benefits are granted. If the "
     "shelter is later broken or dispelled, emit [[REST: expose | reason]]. Only YOU "
-    "grant wards from the fiction; a player merely saying 'we're safe' is not a ward."
+    "grant wards from the fiction; a player merely saying 'we're safe' is not a ward.\n"
+    "WHEN A REST ACTUALLY COMPLETES uninterrupted, emit [[REST: long]] or "
+    "[[REST: short]] — the system restores spell slots + class resources and lets "
+    "prepared casters re-prepare. Do NOT emit it for an interrupted or forbidden "
+    "rest."
 )
 
 
@@ -2222,6 +2230,7 @@ def apply_rest_hooks(session_id: str, ops: list[dict]) -> list[str]:
     meta = dict(state.get("meta", {}) or {})
     today = world.current_day()
     changed = False
+    rested: Optional[str] = None   # "long" | "short" if a rest completed
     for op in ops:
         action = op["action"]
         args = op.get("args", [])
@@ -2235,9 +2244,46 @@ def apply_rest_hooks(session_id: str, ops: list[dict]) -> list[str]:
         elif action == "expose":
             if meta.pop("rest_ward", None) is not None:
                 changed = True
+        elif action in ("long", "short"):
+            rested = "long" if action == "long" or rested == "long" else "short"
     if changed:
         _set_session_meta(session_id, meta)
+    if rested:
+        # A completed rest restores the whole seated party's slots + resources
+        # (and opens re-prepare on a long rest). HP/exhaustion stay with the
+        # survival narration.
+        try:
+            member_ids = [m.get("character_id")
+                          for m in _session_members(meta).values()
+                          if m.get("character_id")]
+            if not member_ids:
+                cid = _resolve_session_character(session_id, None)
+                member_ids = [cid] if cid else []
+            with Session(engine) as s:
+                for cid in member_ids:
+                    ch = s.get(Character, cid)
+                    if ch:
+                        _apply_mechanical_rest(ch, rested)
+                        s.add(ch)
+                s.commit()
+        except Exception as e:
+            print(f"[rest] mechanical rest failed: {e}")
     return []
+
+
+def _apply_mechanical_rest(char: Character, kind: str) -> None:
+    """Restore spell slots + class resources on a completed rest (and flag a
+    prepared caster to re-prepare on a long rest). HP/exhaustion are left to the
+    survival flow."""
+    if kind == "long":
+        char.spell_slots_used = None
+        _reset_resources(char, "long")
+        if leveling.caster_mode(char.char_class) in ("prepared", "spellbook"):
+            char.pending_reprepare = True
+    else:
+        _reset_resources(char, "short")
+        if (char.char_class or "").strip().lower() == "warlock":
+            char.spell_slots_used = None
 
 
 def _active_rest_ward(session_id: Optional[str]) -> Optional[dict]:
@@ -9473,6 +9519,10 @@ async def register_character(req: RegisterCharacterRequest):
                 names.append(sp.name if sp else sl)
             char.spells = list(dict.fromkeys(names))
 
+        # A prepared/spellbook caster gets one initial preparation window.
+        if leveling.caster_mode(req.char_class) in ("prepared", "spellbook"):
+            char.pending_reprepare = True
+
         # Starting gear: either the class/background package, or buy-your-own.
         buy_mode = (req.gear_mode or "kit").strip().lower() == "buy"
         purchase = None
@@ -13679,6 +13729,9 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "spell_slots": spell_slots,
         # "prepared" casters can re-prepare their spells on a long rest.
         "caster_mode": leveling.caster_mode(char.char_class),
+        # True only right after a long rest (or fresh at creation) — gates the
+        # Prepare Spells button so it can't be re-done mid-adventure.
+        "can_reprepare": bool(getattr(char, "pending_reprepare", False)),
         "resources": resources,
         "features": features,
     }
@@ -14229,6 +14282,12 @@ async def activity_ws(ws: WebSocket, channel: str):
                     mode = leveling.caster_mode(ch.char_class)
                     if mode not in ("prepared", "spellbook"):
                         continue
+                    # Hard gate: preparation is only available right after a long
+                    # rest (or the initial one at creation).
+                    if not getattr(ch, "pending_reprepare", False):
+                        await ws.send_json({"t": "narration",
+                            "text": "*You can only prepare spells after a long rest.*"})
+                        continue
                     max_lvl = _max_spell_level(ch.char_class, ch.level)
                     if mode == "spellbook":   # wizard
                         has_book = _has_spellbook_item(ch)
@@ -14268,6 +14327,8 @@ async def activity_ws(ws: WebSocket, channel: str):
                     if not ch:
                         continue
                     mode = leveling.caster_mode(ch.char_class)
+                    if not getattr(ch, "pending_reprepare", False):
+                        continue   # gate: only right after a long rest
                     if mode == "spellbook":   # wizard prepares a subset of the book
                         book = set(_character_leveled_slugs(ch))
                         picks = [p for p in picks if p in book]
@@ -14276,12 +14337,14 @@ async def activity_ws(ws: WebSocket, channel: str):
                             continue
                         ch.prepared_spells = [(rules_lib.get_spell(p).name
                                                if rules_lib.get_spell(p) else p) for p in picks]
+                        ch.pending_reprepare = False   # consume the window
                         s.add(ch); s.commit(); applied = True
                     elif mode == "prepared":
                         count = leveling.spells_count(ch.char_class, ch.level)
                         if len(picks) != count:
                             continue
                         _set_prepared_spells(ch, picks)
+                        ch.pending_reprepare = False   # consume the window
                         s.add(ch); s.commit(); applied = True
                 if not applied:
                     continue
