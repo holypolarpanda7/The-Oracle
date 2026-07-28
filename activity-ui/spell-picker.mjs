@@ -61,7 +61,7 @@ await page.locator(".cf-chips .cf-chip.big:not([disabled])").nth(1).click();
 await page.waitForTimeout(80);
 await page.getByText("Skilled", { exact: false }).first().click();   // pick the feat card
 await page.waitForTimeout(200);
-const skilledUi = await page.getByText(/grants 3 skill proficiencies/).count();
+const skilledUi = await page.getByText(/Choose 3 skills/i).count();
 check("Skilled feat reveals its skill picker", skilledUi > 0);
 // pick 3 skilled skills (distinct small chips under the feat)
 for (let i = 0; i < 3; i++) {

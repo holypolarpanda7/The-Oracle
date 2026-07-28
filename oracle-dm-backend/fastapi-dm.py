@@ -580,6 +580,11 @@ class RegisterCharacterRequest(BaseModel):
     # Resolved to display names and stored on Character.spells.
     cantrips: Optional[List[str]] = None
     spells: Optional[List[str]] = None
+    # Feat-choice proficiencies (Musician/Crafter tools, faction-feat languages).
+    # Stored as `tool:`/`language:` tags. Ability-increase choices are already
+    # folded into `stats` client-side.
+    tools: Optional[List[str]] = None
+    languages: Optional[List[str]] = None
 
 
 class CheckCharacterRequest(BaseModel):
@@ -9447,17 +9452,15 @@ async def register_character(req: RegisterCharacterRequest):
                         status_code=400,
                         detail=f"Feat '{frow.name}' — prerequisite not met ({why}).")
 
-        # Skill proficiencies + feats from the CC wizard, tagged onto the sheet.
-        if req.skills or req.feats:
+        # Skill/tool/language proficiencies + feats from the CC wizard, tagged.
+        if req.skills or req.feats or req.tools or req.languages:
             tags = list(char.tags or [])
-            for sk in (req.skills or []):
-                t = f"skill: {sk}"
-                if t not in tags:
-                    tags.append(t)
-            for ft in (req.feats or []):
-                t = f"feat: {ft}"
-                if t not in tags:
-                    tags.append(t)
+            for pfx, vals in (("skill", req.skills), ("tool", req.tools),
+                              ("language", req.languages), ("feat", req.feats)):
+                for v in (vals or []):
+                    t = f"{pfx}: {v}"
+                    if t not in tags:
+                        tags.append(t)
             char.tags = tags
 
         # Spells chosen at creation (class cantrips/spells + Magic Initiate).
@@ -9608,16 +9611,45 @@ CC_SPELLCASTING: Dict[str, Dict[str, Any]] = {
 }
 
 # Origin-feat choices resolved at creation. The client folds the picks into the
-# normal payload (skills into `skills`, spells into `cantrips`/`spells`), so no
-# extra registration plumbing is needed. SRD-safe feats only; owned-book feat
-# schemas can be added to a local override later.
+# normal payload (skills/tools into `skills`/`tools`, spells into `cantrips`/
+# `spells`, ability/language into `feat_choices`). SRD-safe feats only; owned-
+# book feat schemas live in a LOCAL override (owned_books/feat_choices.json).
+#
+# Choice kinds: "skills" (n from all, or a `from` subset) · "tools" (n from a
+# `from` group: instrument/artisan/any, or an explicit list) · "ability" (n from
+# a `from` list of 3-letter codes) · "language" (n) · "magic_initiate".
 FEAT_CHOICES: Dict[str, Dict[str, Any]] = {
     "skilled": {"kind": "skills", "n": 3,
                 "hint": "Choose 3 skill proficiencies."},
     "magic-initiate": {"kind": "magic_initiate", "cantrips": 2, "spells": 1,
                        "classes": ["cleric", "druid", "wizard"],
                        "hint": "Choose a class, then 2 cantrips + 1 level-1 spell."},
+    "musician": {"kind": "tools", "n": 3, "from": "instrument",
+                 "hint": "Choose 3 musical instruments."},
+    "crafter": {"kind": "tools", "n": 3, "from": "artisan",
+                "hint": "Choose 3 artisan's tools."},
 }
+
+# Owned-book feat-choice schemas stay LOCAL (same policy as species_looks.json):
+# {"<feat-slug>": {"kind": ..., "n": ..., ...}}.
+_FEAT_CHOICE_OVERRIDE_FILE = (Path(__file__).resolve().parent.parent
+                              / "owned_books" / "feat_choices.json")
+
+
+def _feat_choices_merged() -> Dict[str, Dict[str, Any]]:
+    """FEAT_CHOICES plus any local (owned-book) overrides. Overrides win."""
+    merged = dict(FEAT_CHOICES)
+    try:
+        if _FEAT_CHOICE_OVERRIDE_FILE.is_file():
+            import json
+            with open(_FEAT_CHOICE_OVERRIDE_FILE, encoding="utf-8") as fh:
+                data = json.load(fh)
+            for k, v in (data or {}).items():
+                if isinstance(v, dict) and v.get("kind"):
+                    merged[str(k).strip().lower()] = v
+    except Exception as e:
+        print(f"[cc] feat-choice override load failed: {e}")
+    return merged
 
 
 @app.get("/cc/options")
@@ -9653,6 +9685,7 @@ def cc_options():
                 _Item.cost_gp.is_not(None)).order_by(_Item.name)).all()
         except Exception:
             buyable = []
+    _fc = _feat_choices_merged()   # SRD + local owned-book feat choices
     return {
         "races": [{
             "slug": r.index_slug, "name": r.name,
@@ -9683,7 +9716,7 @@ def cc_options():
             "prerequisite": f.prerequisite, "min_level": f.min_level,
             "brief": (f.benefit or "")[:160],
             # A choice the player must resolve when taking this feat (or None).
-            "choices": FEAT_CHOICES.get(f.index_slug),
+            "choices": _fc.get(f.index_slug),
         } for f in feats],
         "backgrounds": [{
             "slug": bg, "name": bg.title(),

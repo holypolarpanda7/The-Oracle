@@ -66,6 +66,9 @@ interface Draft {
   featBg?: string;    // the background's Origin feat
   featRace?: string;  // a species-granted feat (Human origin, Custom Lineage any)
   featSkills: string[];   // skills granted by a chosen feat (e.g. Skilled)
+  featTools: string[];    // tools granted by a feat (Musician/Crafter)
+  featLanguages: string[];// languages granted by a feat
+  featAbility?: string;   // ability chosen by a feat (3-letter code)
   cantrips: string[];     // class cantrip slugs
   spells: string[];       // class level-1 spell slugs
   miClass?: string;       // Magic Initiate: chosen class list
@@ -82,8 +85,9 @@ interface Draft {
 const freshDraft = (): Draft => ({
   boostMode: "two-one", method: "standard_array", pool: [], assigned: {},
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
-  skills: [], featSkills: [], cantrips: [], spells: [],
-  miCantrips: [], miSpells: [], gearMode: "kit", cart: {}, name: "",
+  skills: [], featSkills: [], featTools: [], featLanguages: [],
+  cantrips: [], spells: [], miCantrips: [], miSpells: [],
+  gearMode: "kit", cart: {}, name: "",
 });
 
 const CASTER_CLASSES = new Set([
@@ -98,6 +102,66 @@ const ALL_SKILLS = [
   "Perception", "Performance", "Persuasion", "Religion", "Sleight of Hand",
   "Stealth", "Survival",
 ];
+const INSTRUMENTS = [
+  "Bagpipes", "Drum", "Dulcimer", "Flute", "Lute", "Lyre", "Horn",
+  "Pan Flute", "Shawm", "Viol",
+];
+const ARTISAN_TOOLS = [
+  "Alchemist's Supplies", "Brewer's Supplies", "Calligrapher's Supplies",
+  "Carpenter's Tools", "Cartographer's Tools", "Cobbler's Tools",
+  "Cook's Utensils", "Glassblower's Tools", "Jeweler's Tools",
+  "Leatherworker's Tools", "Mason's Tools", "Painter's Supplies",
+  "Potter's Tools", "Smith's Tools", "Tinker's Tools", "Weaver's Tools",
+  "Woodcarver's Tools",
+];
+const LANGUAGES = [
+  "Common", "Dwarvish", "Elvish", "Giant", "Gnomish", "Goblin", "Halfling",
+  "Orc", "Abyssal", "Celestial", "Draconic", "Deep Speech", "Infernal",
+  "Primordial", "Sylvan", "Undercommon",
+];
+
+type Choice = NonNullable<CCOptions["feats"][number]["choices"]>;
+
+/** The option list a non-spell feat-choice draws from. */
+function choiceOptions(c: Choice): string[] {
+  if (c.kind === "tools") {
+    if (Array.isArray(c.from)) return c.from;
+    if (c.from === "instrument") return INSTRUMENTS;
+    if (c.from === "artisan") return ARTISAN_TOOLS;
+    return [...INSTRUMENTS, ...ARTISAN_TOOLS];
+  }
+  if (c.kind === "language") return LANGUAGES;
+  if (c.kind === "ability") return Array.isArray(c.from) ? c.from : ABILITIES.slice();
+  return Array.isArray(c.from) ? c.from : ALL_SKILLS;   // skills
+}
+
+/** A "choose N" chip picker (skills / tools / languages / an ability). */
+function ChoiceChips({ label, options, chosen, n, single, onToggle }: {
+  label: string; options: string[]; chosen: string[]; n: number;
+  single?: boolean; onToggle: (v: string) => void;
+}) {
+  const left = n - chosen.length;
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div className="cf-sub-label">
+        {label}{left > 0 ? <span className="cf-req"> · {left} left</span> : null}
+      </div>
+      <div className="cf-chips">
+        {options.map((o) => {
+          const on = chosen.includes(o);
+          return (
+            <button
+              key={o}
+              className={`cf-chip ${on ? "picked" : ""}`}
+              disabled={!on && !single && chosen.length >= n}
+              onClick={() => { uiTick(); onToggle(o); }}
+            >{o}</button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 /** A "choose N spells" grid (cantrips or level-1). Cards toggle; the grid locks
  *  once N are picked. Shared by class spellcasting and Magic Initiate. */
@@ -296,8 +360,15 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     .map((slug) => opts?.feats.find((f) => f.slug === slug)?.choices)
     .filter(Boolean) as NonNullable<CCOptions["feats"][number]["choices"]>[];
   const skilledChoice = featChoices.find((c) => c.kind === "skills");
+  const toolsChoice = featChoices.find((c) => c.kind === "tools");
+  const abilityChoice = featChoices.find((c) => c.kind === "ability");
+  const languageChoice = featChoices.find((c) => c.kind === "language");
   const miChoice = featChoices.find((c) => c.kind === "magic_initiate");
   const featSkillsDone = !skilledChoice || d.featSkills.length === (skilledChoice.n ?? 3);
+  const featToolsDone = !toolsChoice || d.featTools.length === (toolsChoice.n ?? 1);
+  const featLangDone = !languageChoice || d.featLanguages.length === (languageChoice.n ?? 1);
+  const featAbilityDone = !abilityChoice || !!d.featAbility;
+  const featChoicesDone = featSkillsDone && featToolsDone && featLangDone && featAbilityDone;
 
   // The Spells stage appears when the class casts OR Magic Initiate was taken.
   const needsSpells = !!spellData || !!miChoice;
@@ -316,7 +387,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     skills: d.skills.length === skillsNeeded
       && (!needsBgFeat || !!d.featBg)
       && (!raceFeat || !!d.featRace)
-      && featSkillsDone,
+      && featChoicesDone,
     spells: !needsSpells || spellsDone,
     gear: d.gearMode === "kit" || cartCost <= budget,  // buy is fine even empty
     wondrous: true,                                     // optional — always ok
@@ -332,6 +403,11 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     if (stage === "review") {
       const stats: Record<string, number> = {};
       for (const a of ABILITIES) stats[ABILITY_FULL[a]] = finalScore(a) ?? 10;
+      // A feat that grants an ability increase folds into the final stats.
+      if (abilityChoice && d.featAbility && (abilityChoice.amount ?? 0) > 0) {
+        const full = ABILITY_FULL[d.featAbility as Ability];
+        if (full) stats[full] = (stats[full] ?? 10) + (abilityChoice.amount ?? 0);
+      }
       const feats = [d.featBg, d.featRace].filter(Boolean) as string[];
       const lineageName = race?.lineages?.find((l) => l.slug === d.lineage)?.name;
       const allCantrips = [...d.cantrips, ...d.miCantrips];
@@ -342,8 +418,11 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         char_class: cls!.name, background: bg!.slug,
         deity: d.deity?.trim() || undefined,
         gender: d.gender?.trim() || undefined,
-        // Feat-granted skills (Skilled) fold into the skill list.
+        // Feat-granted skills (Skilled) fold into the skill list; tools/languages
+        // ride their own fields.
         stats, skills: [...d.skills, ...d.featSkills],
+        tools: d.featTools.length ? d.featTools : undefined,
+        languages: d.featLanguages.length ? d.featLanguages : undefined,
         feats: feats.length ? feats : undefined,
         cantrips: allCantrips.length ? allCantrips : undefined,
         spells: allSpells.length ? allSpells : undefined,
@@ -566,7 +645,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 feats={originFeats} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featBg}
                 onPick={(slug) => setD({ ...d, featBg: slug,
-                  featSkills: [], miClass: undefined, miCantrips: [], miSpells: [] })} />
+                  featSkills: [], featTools: [], featLanguages: [], featAbility: undefined, miClass: undefined, miCantrips: [], miSpells: [] })} />
             )}
             {raceFeat && (
               <FeatPicker
@@ -576,39 +655,39 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 feats={raceFeatPool} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featRace}
                 onPick={(slug) => setD({ ...d, featRace: slug,
-                  featSkills: [], miClass: undefined, miCantrips: [], miSpells: [] })} />
+                  featSkills: [], featTools: [], featLanguages: [], featAbility: undefined, miClass: undefined, miCantrips: [], miSpells: [] })} />
             )}
             {skilledChoice && (
-              <div style={{ marginTop: 14 }}>
-                <div className="cf-sub-label">
-                  Your feat grants {skilledChoice.n ?? 3} skill proficiencies
-                  {!featSkillsDone && (
-                    <span className="cf-req">
-                      {" "}· {(skilledChoice.n ?? 3) - d.featSkills.length} left
-                    </span>
-                  )}
-                </div>
-                <div className="cf-chips">
-                  {ALL_SKILLS.map((s) => {
-                    const on = d.featSkills.includes(s);
-                    const already = d.skills.includes(s) || !!bg?.skills.includes(s);
-                    return (
-                      <button
-                        key={s}
-                        className={`cf-chip ${on ? "picked" : ""} ${already ? "granted" : ""}`}
-                        disabled={already
-                          || (!on && d.featSkills.length >= (skilledChoice.n ?? 3))}
-                        onClick={() => {
-                          uiTick();
-                          setD({ ...d, featSkills: on
-                            ? d.featSkills.filter((x) => x !== s)
-                            : [...d.featSkills, s] });
-                        }}
-                      >{s}</button>
-                    );
-                  })}
-                </div>
-              </div>
+              <ChoiceChips
+                label={skilledChoice.hint || `Your feat grants ${skilledChoice.n ?? 3} skills`}
+                options={choiceOptions(skilledChoice)} chosen={d.featSkills}
+                n={skilledChoice.n ?? 3}
+                onToggle={(v) => setD({ ...d, featSkills: d.featSkills.includes(v)
+                  ? d.featSkills.filter((x) => x !== v) : [...d.featSkills, v] })} />
+            )}
+            {toolsChoice && (
+              <ChoiceChips
+                label={toolsChoice.hint || `Choose ${toolsChoice.n ?? 1} tools`}
+                options={choiceOptions(toolsChoice)} chosen={d.featTools}
+                n={toolsChoice.n ?? 1}
+                onToggle={(v) => setD({ ...d, featTools: d.featTools.includes(v)
+                  ? d.featTools.filter((x) => x !== v) : [...d.featTools, v] })} />
+            )}
+            {languageChoice && (
+              <ChoiceChips
+                label={languageChoice.hint || `Choose ${languageChoice.n ?? 1} languages`}
+                options={choiceOptions(languageChoice)} chosen={d.featLanguages}
+                n={languageChoice.n ?? 1}
+                onToggle={(v) => setD({ ...d, featLanguages: d.featLanguages.includes(v)
+                  ? d.featLanguages.filter((x) => x !== v) : [...d.featLanguages, v] })} />
+            )}
+            {abilityChoice && (
+              <ChoiceChips single
+                label={abilityChoice.hint || "Choose an ability"}
+                options={choiceOptions(abilityChoice)}
+                chosen={d.featAbility ? [d.featAbility] : []} n={1}
+                onToggle={(v) => setD({ ...d,
+                  featAbility: d.featAbility === v ? undefined : v })} />
             )}
           </>
         )}

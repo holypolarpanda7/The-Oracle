@@ -255,6 +255,9 @@ export interface CCPayload {
   // level-0 picks, spells = level-1 picks.
   cantrips?: string[];
   spells?: string[];
+  // Feat-choice proficiencies (Musician/Crafter tools, faction-feat languages).
+  tools?: string[];
+  languages?: string[];
 }
 
 /** Level-1 spellcasting info for a class (null for non-casters). */
@@ -265,9 +268,13 @@ export interface Spellcasting {
 
 /** A feat's creation-time choice (null when the feat needs none). */
 export interface FeatChoice {
-  kind: "skills" | "magic_initiate";
+  kind: "skills" | "tools" | "ability" | "language" | "magic_initiate";
   n?: number; cantrips?: number; spells?: number;
   classes?: string[]; hint?: string;
+  // skills/ability: an explicit subset; tools: a group ("instrument"|"artisan"|
+  // "any") or an explicit list.
+  from?: string | string[];
+  amount?: number;   // ability: +N added to the chosen ability's score
 }
 
 /** One spell in a pick list (GET /cc/spells/{class}). */
