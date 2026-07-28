@@ -1032,8 +1032,10 @@ class VttEngine:
             for sq in geo.footprint(t.x, t.y, size_squares(t.size)):
                 marks[sq] = ch
 
+        light = {"dark": "unlit", "dim": "dim light",
+                 "bright": "bright light"}.get(row.lighting or "bright", "bright light")
         lines = [f"# Board: {row.name} — {row.width}x{row.height} squares "
-                 f"({row.square_ft} ft each), {row.lighting} light"]
+                 f"({row.square_ft} ft each), {light}"]
         desc = (row.notes or {}).get("description")
         if desc:
             lines.append(f"  {desc}")

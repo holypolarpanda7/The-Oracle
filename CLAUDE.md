@@ -50,6 +50,26 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - Wired into the DM brain: the LLM emits `[[ROLL: 1d20+5 | Stealth | DC 15]]`
      or `[[ROLL: 2d6+3 | Greataxe damage]]` and the backend substitutes the
      resolved result inline (`resolve_roll_hooks`). Single-voice UX.
+6. **`vtt/`** — the **tactical board**: a square grid that opens ONLY for moments
+   where position and timing decide the outcome (combat, spatial puzzles, chase
+   terrain, trap rooms), then closes and hands play back to prose. See
+   `docs/design/vtt.md`.
+   - `models.py` — `TacticalMap`, `MapToken`, `MapEffect`, `MapEvent` (share `oracle.db`).
+   - `terrain.py` — tile taxonomy (cost/sight/cover/hazard) + the `Grid` container.
+     A board is one string per row, one char per 5-ft square.
+   - `geometry.py` — 5e distance (5-5-5, and 5-10-5 behind a config switch), A*
+     + Dijkstra movement, line of sight, the PHB corner cover rule, spell
+     templates clipped by line of effect, field of view, OA triggers.
+   - `mapgen.py` — 17 deterministic seeded layout generators; every board is one
+     connected region with opposed spawn zones. `archetype_for()` maps loose DM
+     language ("a smoky taproom") onto a generator.
+   - `art.py` — top-down battlemap through `imagery/`; the picture is a TEXTURE,
+     the tile grid is the truth. Offline = tiles only, never a broken board.
+   - `scene.py` — `VttEngine`: open/close, tokens, validated movement, effects,
+     fog; `state()` for the Activity, `render()` for the DM prompt.
+   - `bridge.py` — the board and `combat/` stay in step: grid distance is written
+     back as spacing bands, and bands the engine changed walk their token to match.
+   - `triggers.py` — the whole "is a board worth it?" policy, tuned by `VttConfig`.
 
 ## Running
 - Backend: `uv run python oracle-dm-backend/fastapi-dm.py`
@@ -57,6 +77,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - World-graph demo: `uv run python -m eight_card_system.demo`
 - Rules ingest/demo: `uv run python -m rules.demo` (network required)
 - Dice demo: `uv run python -m dice.demo`
+- Tactical board demo: `uv run python -m vtt.demo`
+- Tactical board self-test: `uv run python -m vtt.selftest` (asserts the rules
+  math — run it after touching `vtt/geometry.py` or `vtt/mapgen.py`)
 
 ## Key facts & constraints
 - **D&D Beyond has NO public write API.** You cannot create/store a character on a
@@ -79,6 +102,13 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     concise-mechanical, never verbatim.
   - Retrieval is selective — only fetch rules when the action needs a mechanic; prose
     lore stays out of prompts except brief mechanical facts.
+- **The tactical board is a spotlight, not a stage.** Play stays theater-of-the-
+  mind; `vtt/` opens a grid only for moments where position decides the outcome,
+  and closes it after. The LLM decides FICTION (a board opens here, the fireball
+  lands on the altar); the code decides MECHANICS (layout, path, squares, cover).
+  Never let the model author a layout or a distance. This does NOT contradict the
+  "hex maps were dropped" rule below — that was a world-map render engine; this is
+  an encounter-scale square grid.
 - **World persistence** = the graph, not maps. It's append-only: facts are opened/
   closed over in-world days (nothing deleted), and the DM is only ever fed the
   *relevant* subgraph via `get_world_context`, never the whole world.

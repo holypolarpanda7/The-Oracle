@@ -304,6 +304,12 @@ def cover_between(grid: Grid, attacker: Square, target: Square, *,
 
 # --------------------------------------------------------------- templates
 
+# A cone or line originates at the *edge* of the caster's space, never its
+# middle — nobody is caught in their own breath weapon. Measuring from square
+# centres, that means the template starts half a square out.
+_ORIGIN_OFFSET = 0.5
+
+
 def _cone_contains(origin: Point, pt: Point, length: float,
                    direction_deg: float) -> bool:
     """A 5e cone: at distance d from the apex it is d wide, so half-width d/2."""
@@ -312,7 +318,7 @@ def _cone_contains(origin: Point, pt: Point, length: float,
     dx, dy = pt[0] - origin[0], pt[1] - origin[1]
     along = dx * ux + dy * uy
     across = abs(-dx * uy + dy * ux)
-    if along < -0.001 or along > length + 0.001:
+    if along < _ORIGIN_OFFSET - 0.001 or along > length + 0.001:
         return False
     return across <= along / 2.0 + 0.001
 
@@ -324,7 +330,8 @@ def _line_contains(origin: Point, pt: Point, length: float, width: float,
     dx, dy = pt[0] - origin[0], pt[1] - origin[1]
     along = dx * ux + dy * uy
     across = abs(-dx * uy + dy * ux)
-    return -0.25 <= along <= length and across <= width / 2.0 + 0.25
+    return (_ORIGIN_OFFSET - 0.001 <= along <= length + 0.001
+            and across <= max(0.5, width / 2.0) - 0.001)
 
 
 def area_squares(shape: str, origin: Square, *, radius_ft: int = 0,
