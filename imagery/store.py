@@ -214,16 +214,25 @@ class ImageStore:
     def _render(self, cfg, prompt, ckey: str,
                 reference_filenames: Optional[list[str]] = None,
                 mature: bool = False,
+                width: Optional[int] = None,
+                height: Optional[int] = None,
+                seed: Optional[int] = None,
                 ) -> tuple[Optional[bytes], Optional[int], bool]:
-        """Return (raw_bytes, seed, offline). raw_bytes is None only if offline."""
-        seed = random.randint(0, 2**31 - 1)
+        """Return (raw_bytes, seed, offline). raw_bytes is None only if offline.
+
+        ``width``/``height`` override the configured render size — battlemaps
+        need the canvas to match the board's aspect ratio, not a square portrait.
+        An explicit ``seed`` makes a render reproducible (a map regenerated from
+        its layout seed comes back looking the same).
+        """
+        seed = random.randint(0, 2**31 - 1) if seed is None else int(seed)
         try:
             client = self._client_for(cfg)
             raw = client.generate(
                 prompt.positive,
                 prompt.negative,
-                width=cfg.gen_width,
-                height=cfg.gen_height,
+                width=int(width or cfg.gen_width),
+                height=int(height or cfg.gen_height),
                 steps=cfg.steps,
                 seed=seed,
                 reference_filenames=reference_filenames,
@@ -248,6 +257,11 @@ class ImageStore:
         extra: str = "",
         force_new: bool = False,
         mature: bool = False,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        seed: Optional[int] = None,
+        max_per_bucket: Optional[int] = None,
+        store_width: Optional[int] = None,
     ) -> Optional[ImageResult]:
         """Return an image for (subject x context), reusing or generating as needed.
 
@@ -284,14 +298,19 @@ class ImageStore:
             extra=extra,
         )
 
+        # Battlemaps want exactly one image per layout signature (the room IS the
+        # picture), so callers can pin the bucket to 1 instead of the default 3.
+        cap = int(max_per_bucket if max_per_bucket is not None else cfg.max_per_bucket)
+
         with Session(self.engine) as s:
             existing = self._bucket(s, kind, ref, ckey)
             # Full bucket (or explicitly no new render) -> random draw.
-            if existing and (force_new is False) and len(existing) >= cfg.max_per_bucket:
+            if existing and (force_new is False) and len(existing) >= cap:
                 return self._draw_random(s, existing, prompt.caption)
 
         # Otherwise render a fresh image (building bucket variety up to the cap).
-        raw, seed, offline = self._render(cfg, prompt, ckey)
+        raw, seed, offline = self._render(cfg, prompt, ckey, width=width,
+                                          height=height, seed=seed)
         if offline or raw is None:
             # Backend down: prefer any stored art for this bucket over a
             # placeholder — a slightly-repeated picture beats a blank one.
@@ -306,8 +325,8 @@ class ImageStore:
             )
 
         enc = encode_webp(
-            raw, store_width=cfg.store_width, thumb_width=cfg.thumb_width,
-            quality=cfg.webp_quality,
+            raw, store_width=int(store_width or cfg.store_width),
+            thumb_width=cfg.thumb_width, quality=cfg.webp_quality,
         )
         row = EntityImage(
             kind=kind, ref_slug=ref, context_key=ckey, caption=prompt.caption,
@@ -322,8 +341,7 @@ class ImageStore:
             s.refresh(row)
             # force_new can push a full bucket over its cap — trim, keeping the
             # fresh render.
-            self._enforce_bucket_cap(s, kind, ref, ckey, cfg.max_per_bucket,
-                                     keep_id=row.id)
+            self._enforce_bucket_cap(s, kind, ref, ckey, cap, keep_id=row.id)
             self._enforce_global_cap(s, cfg)
             s.commit()
             image_id = row.id

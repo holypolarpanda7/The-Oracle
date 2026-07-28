@@ -308,6 +308,42 @@ class ImageryConfig:
 
 
 @dataclass
+class VttConfig:
+    """The tactical board (see the ``vtt/`` package).
+
+    The Oracle plays theater-of-the-mind by default and drops a square grid only
+    for moments where position and timing decide the outcome. Everything about
+    *when* that happens, and how much board the table gets, is dialled here.
+    """
+    enabled: bool = True
+    # ----- when a board opens -----
+    auto_open_combat: bool = True     # a fight always deserves a map
+    auto_open_chase: bool = True      # terrain legs of a pursuit
+    auto_open_puzzle: bool = True     # only if the puzzle reads as spatial
+    auto_open_hazard: bool = False    # trap rooms: opt-in, they're often prose
+    # ----- board shape -----
+    default_width: int = 24           # squares
+    default_height: int = 18
+    square_ft: int = 5
+    # 5-5-5 (PHB "chebyshev") or the DMG 5-10-5 variant ("alternating").
+    diagonal_rule: str = "chebyshev"
+    fog_of_war: bool = False          # on for exploration-style scenes
+    # ----- art -----
+    render_art: bool = True           # ask the diffusion backend for a battlemap
+    art_budget_px: int = 1_100_000    # render canvas size (aspect-matched)
+    art_store_width: int = 1280       # stored battlemap width (tiles stay crisp)
+    reuse_place_art: bool = True      # the same room looks the same next visit
+    # ----- prompt -----
+    inject_board: bool = True         # feed the DM the compact ASCII board
+    inject_hook_guidance: bool = True # teach the DM the [[VTT]] hook
+    max_board_tokens: int = 24        # creatures listed in the prompt board
+    # ----- play -----
+    enforce_movement: bool = True     # reject moves past the speed budget
+    warn_opportunity: bool = True     # flag opportunity attacks on a move
+    allow_player_move: bool = True    # players may drag their own token
+
+
+@dataclass
 class GameConfig:
     profile: str = "normal"
     progression: ProgressionConfig = field(default_factory=ProgressionConfig)
@@ -325,6 +361,7 @@ class GameConfig:
     dm_guide: DMGuideConfig = field(default_factory=DMGuideConfig)
     session_memory: SessionMemoryConfig = field(default_factory=SessionMemoryConfig)
     imagery: ImageryConfig = field(default_factory=ImageryConfig)
+    vtt: VttConfig = field(default_factory=VttConfig)
 
     def to_dict(self) -> dict:
         return _dataclass_to_dict(self)

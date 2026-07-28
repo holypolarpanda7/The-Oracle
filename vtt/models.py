@@ -1,0 +1,280 @@
+"""
+Tactical-scene tables — the square-grid battlemap the Oracle drops onto the
+table when a moment turns *tactical*.
+
+Most of play is theater-of-the-mind: the DM narrates, the world graph remembers.
+A **tactical scene** is the exception — combat, a timed puzzle, a chase's terrain
+gauntlet, a trapped room — where exact position, distance, and line of sight
+decide whether a choice was good. When one opens, this package becomes the
+spatial source of truth for the duration, then closes and hands the world back
+to prose.
+
+Four tables, all in the backend's ``oracle.db``:
+
+``TacticalMap``
+    The board: a ``width x height`` grid of 5-ft squares, a terrain string per
+    row (see :mod:`vtt.terrain`), an optional diffusion-rendered background
+    keyed to an ``entity_image`` row, plus fog-of-war and lighting.
+``MapToken``
+    A creature or object standing on it. PC/monster tokens carry
+    ``combatant_id`` so the board and the initiative tracker are the same fight
+    seen twice — the tracker owns HP/conditions, the token owns position.
+``MapEffect``
+    Anything overlaid on the grid that isn't a creature: a spell's area, a
+    lingering aura, a patch of grease, a wall of fire, a light source, a marker.
+    Every effect stores its resolved ``squares`` so the UI, the rules, and the
+    DM prompt all read the exact same footprint.
+``MapEvent``
+    Append-only log of what happened on the board (spawn/move/effect/reveal),
+    so a scene can be replayed or audited exactly like ``combat_log``.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from sqlalchemy import Boolean, Column, Integer, JSON, String
+from sqlmodel import Field, SQLModel
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (datetime.utcnow() is deprecated since 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class SceneKind:
+    """Why the board is out. Drives the map archetype and the close policy."""
+    COMBAT = "combat"        # a fight — closes when the encounter ends
+    PUZZLE = "puzzle"        # a spatial/timed puzzle room
+    CHASE = "chase"          # a pursuit across hazardous ground
+    HAZARD = "hazard"        # a trapped room / collapsing bridge
+    EXPLORE = "explore"      # dungeon crawl with fog of war
+    SOCIAL = "social"        # a standoff where "who stands where" matters
+    ALL = (COMBAT, PUZZLE, CHASE, HAZARD, EXPLORE, SOCIAL)
+
+
+class TokenKind:
+    PC = "pc"
+    NPC = "npc"
+    MONSTER = "monster"
+    OBJECT = "object"        # barrel, door, lever — a thing that occupies squares
+    MARKER = "marker"        # a labelled point of interest (no creature)
+    ALL = (PC, NPC, MONSTER, OBJECT, MARKER)
+
+
+class Team:
+    PARTY = "party"
+    FOE = "foe"
+    NEUTRAL = "neutral"
+    ALL = (PARTY, FOE, NEUTRAL)
+
+
+# Creature-size footprints, in squares on a side (SRD "Space").
+SIZE_SQUARES: dict[str, int] = {
+    "tiny": 1, "small": 1, "medium": 1,
+    "large": 2, "huge": 3, "gargantuan": 4,
+}
+
+
+def size_squares(size: Optional[str]) -> int:
+    return SIZE_SQUARES.get((size or "medium").strip().lower(), 1)
+
+
+class EffectKind:
+    """What an overlay *is* — the UI paints each family differently."""
+    AREA = "area"            # an instantaneous spell area (fireball's burst)
+    ZONE = "zone"            # a lingering area (grease, web, spike growth)
+    AURA = "aura"            # follows its source token (paladin aura, torch)
+    WALL = "wall"            # a barrier along a path of squares
+    LIGHT = "light"          # bright/dim light emission
+    HAZARD = "hazard"        # environmental damage (lava, caltrops)
+    MARKER = "marker"        # a DM annotation / objective ping
+    ALL = (AREA, ZONE, AURA, WALL, LIGHT, HAZARD, MARKER)
+
+
+class Shape:
+    """Template geometry (see :func:`vtt.geometry.area_squares`)."""
+    SPHERE = "sphere"        # radius from a point (5e "sphere"/"radius"/"burst")
+    CIRCLE = "circle"        # alias for sphere on a flat board
+    CONE = "cone"
+    LINE = "line"
+    CUBE = "cube"
+    SQUARE = "square"
+    EMANATION = "emanation"  # radius measured from the source creature
+    PATH = "path"            # an explicit list of squares (walls, spills)
+    ALL = (SPHERE, CIRCLE, CONE, LINE, CUBE, SQUARE, EMANATION, PATH)
+
+
+class TacticalMap(SQLModel, table=True):
+    __tablename__ = "vtt_map"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # The table this board belongs to ("guild:channel").
+    session_id: str = Field(sa_column=Column(String, nullable=False, index=True))
+    # The fight it mirrors, when the scene is a combat.
+    encounter_id: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
+    # The world-graph place it depicts, so re-entering a room can reuse its map.
+    place_slug: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+
+    name: str = Field(default="Tactical Scene", sa_column=Column(String))
+    kind: str = Field(default=SceneKind.COMBAT, sa_column=Column(String, index=True))
+    # Layout family from vtt.mapgen (dungeon-room, cave, forest, street, ...).
+    archetype: str = Field(default="dungeon-room", sa_column=Column(String))
+    biome: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    width: int = Field(default=20, sa_column=Column(Integer))     # squares
+    height: int = Field(default=15, sa_column=Column(Integer))    # squares
+    square_ft: int = Field(default=5, sa_column=Column(Integer))
+
+    # ``height`` strings of ``width`` tile codes each (see vtt.terrain).
+    terrain: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Per-square elevation in feet, sparse: {"x,y": ft}. Absent = ground level.
+    elevation: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Doors and other stateful furniture: [{"x","y","state":"open|closed|locked",
+    # "dc": int|None, "name": str}]. Terrain holds the code; this holds the state.
+    doors: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
+    # Ambient light for the whole board: bright | dim | dark. Individual light
+    # sources are MapEffect rows of kind "light".
+    lighting: str = Field(default="bright", sa_column=Column(String))
+
+    # Fog of war: ``height`` strings of ``width`` chars, "1" seen / "0" unseen.
+    # None means the whole board is revealed (most combats).
+    fog: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
+    # Diffusion-rendered top-down art, stored in ``entity_image``.
+    background_image_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    # pending | ready | offline | none — lets the UI show tiles while art renders.
+    art_status: str = Field(default="none", sa_column=Column(String))
+    art_prompt: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    # Layout seed: the same seed + archetype + size always rebuilds this board.
+    seed: int = Field(default=0, sa_column=Column(Integer))
+
+    active: bool = Field(default=True, sa_column=Column(Boolean, index=True))
+    # Bumped on every mutation so clients can cheaply tell "did anything move?".
+    revision: int = Field(default=0, sa_column=Column(Integer))
+    # Free-form scene notes for the DM prompt (objectives, timers, exits).
+    notes: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class MapToken(SQLModel, table=True):
+    __tablename__ = "vtt_token"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    map_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+
+    # Links back to the fight and the character sheet (either may be absent for
+    # scenery objects and markers).
+    combatant_id: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
+    character_id: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
+    monster_slug: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    name: str = Field(sa_column=Column(String, nullable=False))
+    kind: str = Field(default=TokenKind.MONSTER, sa_column=Column(String))
+    team: str = Field(default=Team.FOE, sa_column=Column(String, index=True))
+
+    # Top-left square of the token's footprint.
+    x: int = Field(default=0, sa_column=Column(Integer))
+    y: int = Field(default=0, sa_column=Column(Integer))
+    size: str = Field(default="medium", sa_column=Column(String))
+    elevation_ft: int = Field(default=0, sa_column=Column(Integer))
+    facing_deg: int = Field(default=0, sa_column=Column(Integer))
+
+    # Movement, in feet — the tracker owns the action economy, the board owns
+    # the distance actually walked this turn.
+    speed_ft: int = Field(default=30, sa_column=Column(Integer))
+    reach_ft: int = Field(default=5, sa_column=Column(Integer))
+    moved_ft: int = Field(default=0, sa_column=Column(Integer))
+    # Flying/swimming tokens ignore ground hazards and difficult terrain.
+    movement_mode: str = Field(default="walk", sa_column=Column(String))
+
+    # Hidden from the players' board (an unnoticed ambusher, a DM-only marker).
+    hidden: bool = Field(default=False, sa_column=Column(Boolean))
+    # Prone tokens are drawn flat; defeated ones greyed out.
+    prone: bool = Field(default=False, sa_column=Column(Boolean))
+    defeated: bool = Field(default=False, sa_column=Column(Boolean))
+
+    # Portrait/creature art for the token face (an ``entity_image`` id).
+    image_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    color: Optional[str] = Field(default=None, sa_column=Column(String))
+    label: Optional[str] = Field(default=None, sa_column=Column(String))
+    notes: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class MapEffect(SQLModel, table=True):
+    __tablename__ = "vtt_effect"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    map_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+
+    name: str = Field(default="Effect", sa_column=Column(String))
+    kind: str = Field(default=EffectKind.AREA, sa_column=Column(String, index=True))
+    shape: str = Field(default=Shape.SPHERE, sa_column=Column(String))
+
+    # Template placement. Origin is a square; direction points a cone/line.
+    origin_x: int = Field(default=0, sa_column=Column(Integer))
+    origin_y: int = Field(default=0, sa_column=Column(Integer))
+    radius_ft: int = Field(default=0, sa_column=Column(Integer))
+    length_ft: int = Field(default=0, sa_column=Column(Integer))
+    width_ft: int = Field(default=5, sa_column=Column(Integer))
+    direction_deg: int = Field(default=0, sa_column=Column(Integer))
+
+    # The resolved footprint: [[x, y], ...]. Authoritative — the UI paints it,
+    # the rules test membership, the DM prompt summarises it.
+    squares: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
+    # Mechanics the board enforces or reminds the DM about.
+    difficult_terrain: bool = Field(default=False, sa_column=Column(Boolean))
+    blocks_sight: bool = Field(default=False, sa_column=Column(Boolean))
+    blocks_movement: bool = Field(default=False, sa_column=Column(Boolean))
+    obscured: Optional[str] = Field(default=None, sa_column=Column(String))  # light|heavy
+    damage: Optional[str] = Field(default=None, sa_column=Column(String))    # "2d6 fire"
+    save_ability: Optional[str] = Field(default=None, sa_column=Column(String))
+    save_dc: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    # on_enter | start_of_turn | end_of_turn | once — when the damage/save fires.
+    trigger: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    # Presentation.
+    color: Optional[str] = Field(default=None, sa_column=Column(String))
+    opacity: float = Field(default=0.35)
+    icon: Optional[str] = Field(default=None, sa_column=Column(String))
+
+    # Lifetime. Auras follow their source; timed effects expire on a round.
+    source_token_id: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
+    concentration: bool = Field(default=False, sa_column=Column(Boolean))
+    created_round: int = Field(default=1, sa_column=Column(Integer))
+    expires_round: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    active: bool = Field(default=True, sa_column=Column(Boolean, index=True))
+
+    # all | party | foe | dm — who sees it on their board.
+    visible_to: str = Field(default="all", sa_column=Column(String))
+
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class MapEvent(SQLModel, table=True):
+    """Append-only board telemetry: enough to replay a scene square by square."""
+    __tablename__ = "vtt_event"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+    map_id: int = Field(sa_column=Column(Integer, index=True, nullable=False))
+    session_id: Optional[str] = Field(default=None, sa_column=Column(String, index=True))
+    round: Optional[int] = Field(default=None, sa_column=Column(Integer))
+
+    # open | close | spawn | move | remove | effect | effect_end | reveal |
+    # terrain | door | ping
+    kind: str = Field(default="move", sa_column=Column(String, index=True))
+    actor: Optional[str] = Field(default=None, sa_column=Column(String))
+    summary: Optional[str] = Field(default=None, sa_column=Column(String))
+    payload: Optional[Any] = Field(default=None, sa_column=Column(JSON))

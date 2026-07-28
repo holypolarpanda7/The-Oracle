@@ -42,8 +42,11 @@ class ImageKind:
     SCENE = "scene"        # -> a moment in play (multi-subject, never bucketed;
     #                          rendered with stored art of participants as
     #                          visual references — see store.generate_scene)
+    MAP = "map"            # -> a top-down tactical battlemap for a vtt scene,
+    #                          keyed by the layout signature so the same room
+    #                          re-renders identically (see vtt/art.py)
 
-    ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE}
+    ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE, MAP}
 
 
 def normalize_kind(kind: str) -> str:
@@ -51,7 +54,8 @@ def normalize_kind(kind: str) -> str:
     aliases = {"monster": ImageKind.CREATURE, "beast": ImageKind.CREATURE,
                "location": ImageKind.PLACE, "person": ImageKind.NPC,
                "character": ImageKind.NPC, "player": ImageKind.PC,
-               "portrait": ImageKind.PC, "hero": ImageKind.PC}
+               "portrait": ImageKind.PC, "hero": ImageKind.PC,
+               "battlemap": ImageKind.MAP, "tactical": ImageKind.MAP}
     k = aliases.get(k, k)
     return k if k in ImageKind.ALL else ImageKind.CREATURE
 

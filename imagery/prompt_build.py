@@ -21,7 +21,24 @@ _KIND_FRAMING = {
     ImageKind.ITEM: "single object study on a neutral background, museum lighting",
     ImageKind.PC: "heroic character portrait, head and shoulders, detailed face, single figure, adventurer",
     ImageKind.SCENE: "dynamic action scene, mid-motion, cinematic wide composition, dramatic moment",
+    # A battlemap is furniture for the rules, not a picture: dead-flat overhead,
+    # no perspective, no figures, so the grid the engine enforces lines up with
+    # what the players see.
+    ImageKind.MAP: (
+        "top-down orthographic battlemap, straight overhead bird's-eye view, "
+        "flat lay, no perspective, no horizon, tabletop RPG battle map, "
+        "even diffuse lighting, full-bleed edge to edge"
+    ),
 }
+
+#: Extra negatives that only make sense for a battlemap — anything that would
+#: fight the grid, the tokens, or the flat overhead framing.
+_MAP_NEGATIVE = (
+    "isometric, perspective, side view, horizon, vanishing point, "
+    "people, characters, figures, creatures, miniatures, tokens, "
+    "grid lines, hex grid, text, labels, legend, compass rose, border, frame, "
+    "vignette, watermark, signature, ui, drop shadow"
+)
 
 
 @dataclass
@@ -76,6 +93,9 @@ def build_prompt(
     if style_prompt:
         pieces.append(style_prompt)
     positive = ", ".join(p for p in pieces if p)
+
+    if kind == ImageKind.MAP:
+        negative_prompt = ", ".join(p for p in (negative_prompt, _MAP_NEGATIVE) if p)
 
     caption_bits = [subject]
     if context:
