@@ -90,6 +90,15 @@ from games import (
 )
 import pvp as ipvp
 import revival as irevival
+from arena import (
+    DIFFICULTIES as ARENA_DIFFICULTIES,
+    MAX_SLOTS as ARENA_MAX_SLOTS,
+    build_roster as arena_build_roster,
+    environment_payload as arena_environment_payload,
+    get_environment as arena_get_environment,
+    load_cards as arena_load_cards,
+    sibling_environments as arena_siblings,
+)
 from bastion import (
     can_own_bastion,
     facilities_for_level,
@@ -267,6 +276,7 @@ async def lifespan(app: FastAPI):
                     ("pending_level_up", "INTEGER DEFAULT 0"),
                     ("is_npc", "INTEGER DEFAULT 0"),
                     ("controller", "TEXT DEFAULT 'player'"),
+                    ("arena_slot", "INTEGER"),
                     ("cp", "INTEGER DEFAULT 0"),
                     ("sp", "INTEGER DEFAULT 0"),
                     ("ep", "INTEGER DEFAULT 0"),
@@ -320,6 +330,8 @@ async def lifespan(app: FastAPI):
 
                 conn.exec_driver_sql(
                     'CREATE INDEX IF NOT EXISTS ix_character_is_npc ON "character" (is_npc)')
+                conn.exec_driver_sql(
+                    'CREATE INDEX IF NOT EXISTS ix_character_arena_slot ON "character" (arena_slot)')
                 conn.exec_driver_sql(
                     'CREATE INDEX IF NOT EXISTS ix_character_approved ON "character" (approved)')
 
@@ -921,6 +933,12 @@ class Character(SQLModel, table=True):
     # (location, trust, party membership) and links back here by character id.
     is_npc: bool = Field(default=False, index=True)
     controller: str = Field(default="player", sa_column=Column(String))
+
+    # Practice characters live in the Proving Grounds (arena/), not the world:
+    # 1..MAX_SLOTS when this character occupies a Grounds slot, None for a real
+    # PC. Grounds characters never enter the world graph and never appear on the
+    # landing roster — the slot is theirs until it's overwritten.
+    arena_slot: Optional[int] = Field(default=None, index=True)
 
     # Coin purse (SRD denominations) + downtime lifestyle tier.
     cp: int = Field(default=0)
@@ -7830,7 +7848,8 @@ def _resolve_session_character(session_id: str, user_id: str) -> Optional[int]:
     with Session(engine) as session:
         char = session.exec(
             select(Character)
-            .where(Character.discord_user_id == user_id)
+            .where(Character.discord_user_id == user_id,
+                   Character.arena_slot == None)      # noqa: E711
             .order_by(Character.id.desc())
         ).first()
     if not char:
@@ -7880,6 +7899,11 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
         if resolved:
             state = _load_session_state(session_id)
             meta = state.get("meta", {})
+    # A Proving-Grounds bout has no world slice to stand on — it isn't in the
+    # world. Tell the DM exactly what this place is instead.
+    if (meta or {}).get("arena"):
+        texts.append(_arena_guide(meta["arena"]))
+
     # Anchor the world slice on the ACTING player's PC at a shared table.
     acting = _acting_member(meta or {}, user_id)
     anchor_slug = (acting or {}).get("pc_slug") or (meta or {}).get("pc_slug")
@@ -9089,6 +9113,10 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     """
 
     game_state = _load_session_state(req.session_id)
+    # A Proving-Grounds bout (arena/) runs the same play loop on purpose — same
+    # prompt, same hooks, same tracker — but it stands outside the world: no
+    # clock, no entropy, no extraction.
+    _is_arena_session = bool((game_state.get("meta") or {}).get("arena"))
 
     # Per-PC gates: they bind the ACTING player's character, never the table.
     member = _acting_member(game_state.get("meta", {}) or {}, req.user_id)
@@ -9121,20 +9149,22 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     state = _append_turn(req.session_id, Turn(role="player", user=req.username, content=req.message))
 
     # Ratchet clock: apply the wall-time floor and any due entropy pass BEFORE
-    # assembling context, so the DM narrates the world as time has left it.
-    try:
-        world.sync_clock(days_per_real_day=WORLD_DAYS_PER_REAL_DAY)
-        _ent = world_entropy.run_if_due(world)
-        if any(_ent.values()):
-            print(f"[entropy] {_ent}")
-        # Living-time pressure: neglected quests with stakes escalate (and may
-        # fail + worsen their place) as world-days pass — logged as events BEFORE
-        # context assembly, so the DM narrates the fallout this turn.
-        _qc = world_entropy.advance_quest_clocks(world, session_id=req.session_id)
-        if any(_qc.values()):
-            print(f"[quest-clock] {_qc}")
-    except Exception as e:
-        print(f"[entropy] clock sync failed: {e}")
+    # assembling context, so the DM narrates the world as time has left it. A
+    # practice bout doesn't move the world's clock — no days pass in the Grounds.
+    if not _is_arena_session:
+        try:
+            world.sync_clock(days_per_real_day=WORLD_DAYS_PER_REAL_DAY)
+            _ent = world_entropy.run_if_due(world)
+            if any(_ent.values()):
+                print(f"[entropy] {_ent}")
+            # Living-time pressure: neglected quests with stakes escalate (and may
+            # fail + worsen their place) as world-days pass — logged as events BEFORE
+            # context assembly, so the DM narrates the fallout this turn.
+            _qc = world_entropy.advance_quest_clocks(world, session_id=req.session_id)
+            if any(_qc.values()):
+                print(f"[quest-clock] {_qc}")
+        except Exception as e:
+            print(f"[entropy] clock sync failed: {e}")
 
     # DM reply
     ctx_obj = None
@@ -9559,15 +9589,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         _schedule_session_compaction(background_tasks, req.session_id)
 
     # Write this turn's world-state changes to the graph in the background —
-    # never blocks the reply the player is waiting on.
-    background_tasks.add_task(
-        _run_world_extraction,
-        req.session_id,
-        req.message,
-        dm_text,
-        ctx_obj.render() if ctx_obj else "",
-        [e.id for e in ctx_obj.entities] if ctx_obj else [],
-    )
+    # never blocks the reply the player is waiting on. A practice bout writes
+    # nothing: the Grounds are outside the world and leave no mark on it.
+    if not _is_arena_session:
+        background_tasks.add_task(
+            _run_world_extraction,
+            req.session_id,
+            req.message,
+            dm_text,
+            ctx_obj.render() if ctx_obj else "",
+            [e.id for e in ctx_obj.entities] if ctx_obj else [],
+        )
 
     # Permadeath check: if this turn confirmed the PC's death, canonize it and
     # attach the one-page memorial for the bot to post (fires exactly once).
@@ -14822,9 +14854,12 @@ def _activity_characters(user_id: str, channel: str) -> list[dict]:
     """The landing page's character list: this player's PCs with liveness and
     a resumable session id when one exists for this channel."""
     with Session(engine) as session:
+        # Proving-Grounds characters are practice, not people: they never appear
+        # on the roster of PCs who can walk into the world.
         chars = session.exec(select(Character).where(
             Character.discord_user_id == user_id,
-            Character.is_npc == False)).all()  # noqa: E712
+            Character.is_npc == False,               # noqa: E712
+            Character.arena_slot == None)).all()     # noqa: E711
         out = []
         for c in chars:
             alive = True
@@ -14951,12 +14986,364 @@ def _activity_find_session(session: Session, user_id: str, channel: str,
             meta = _json.loads(r.meta_json or "{}")
         except Exception:
             continue
+        if meta.get("arena"):
+            continue    # practice bouts are not a tale to resume
         if (meta.get("user_id") == user_id
                 and meta.get("activity_channel") == channel
                 and (meta.get("character_name") or "").lower()
                 == character_name.lower()):
             return r.session_id
     return None
+
+
+# ==================== The Proving Grounds (arena/) ========================
+# A practice mode that stands outside the world: three level-1 character slots,
+# a place to fight, a level to fight at, and encounters the code rosters against
+# a real XP budget. Every run walks the same paths a real table does — creation,
+# level-up, the initiative tracker, the tactical board — so the systems that
+# have to be right on day one get exercised on purpose instead of by accident.
+#
+# Two characters per slot, and the distinction matters:
+#   arena_slot =  n  the SAVED character, always level 1, never modified
+#   arena_slot = -n  the RUN copy, leveled up to the target for this bout
+# Levelling the copy is what lets "fight at level 12" replay the whole level-up
+# flow from 1 without ever spending the saved character.
+
+_ARENA_CARDS: list = []
+
+
+def _arena_cards() -> list:
+    """The rosterable bestiary, loaded once."""
+    global _ARENA_CARDS
+    if not _ARENA_CARDS:
+        try:
+            _ARENA_CARDS = arena_load_cards(engine)
+        except Exception as e:
+            print(f"[arena] loading the bestiary failed: {e}")
+            _ARENA_CARDS = []
+    return _ARENA_CARDS
+
+
+def _arena_session_id(channel: str, user_id: str) -> str:
+    """One practice session per player per channel — never a shared table."""
+    return f"arena:{channel}:{user_id}"
+
+
+def _arena_run(session_id: Optional[str]) -> dict:
+    if not session_id:
+        return {}
+    meta = _load_session_state(session_id).get("meta", {}) or {}
+    return dict(meta.get("arena") or {})
+
+
+def _arena_set_run(session_id: str, **fields) -> dict:
+    """Merge fields into the run state living in this session's meta."""
+    state = _load_session_state(session_id)
+    meta = dict(state.get("meta", {}) or {})
+    run = dict(meta.get("arena") or {})
+    run.update(fields)
+    meta["arena"] = run
+    _set_session_meta(session_id, meta)
+    return run
+
+
+def _arena_char_summary(char: Character) -> dict:
+    return {
+        "id": char.id, "name": char.name, "race": char.race,
+        "char_class": char.char_class, "subclass": char.subclass,
+        "level": char.level, "hp": char.current_hp, "hp_max": char.max_hp,
+    }
+
+
+def _arena_slots(user_id: str) -> list[dict]:
+    """The player's three slots: what's saved in each, and any leveled copy."""
+    with Session(engine) as s:
+        rows = s.exec(select(Character).where(
+            Character.discord_user_id == user_id,
+            Character.arena_slot != None)).all()      # noqa: E711
+        saved = {int(c.arena_slot): c for c in rows if (c.arena_slot or 0) > 0}
+        runs = {abs(int(c.arena_slot)): c for c in rows if (c.arena_slot or 0) < 0}
+        out = []
+        for n in range(1, ARENA_MAX_SLOTS + 1):
+            char = saved.get(n)
+            run = runs.get(n)
+            out.append({
+                "slot": n,
+                "character": _arena_char_summary(char) if char else None,
+                # A copy already advanced to some level — offered as "fight on"
+                # so a level-12 run isn't 11 clicks every single time.
+                "leveled": ({"id": run.id, "name": run.name, "level": run.level}
+                            if run and run.level > 1 else None),
+            })
+    return out
+
+
+def _arena_state(user_id: str, session_id: Optional[str] = None) -> dict:
+    """Everything the Grounds screen draws."""
+    run = _arena_run(session_id)
+    return {
+        "slots": _arena_slots(user_id),
+        "environments": arena_environment_payload(),
+        "difficulties": list(ARENA_DIFFICULTIES),
+        "max_level": 20,
+        "max_slots": ARENA_MAX_SLOTS,
+        "run": run or None,
+    }
+
+
+def _arena_clear_slot(user_id: str, slot: int, *, include_run: bool = True) -> None:
+    """Free a slot: a practice character is meant to be thrown away."""
+    with Session(engine) as s:
+        rows = s.exec(select(Character).where(
+            Character.discord_user_id == user_id)).all()
+        for c in rows:
+            n = int(c.arena_slot or 0)
+            if n == slot or (include_run and n == -slot):
+                s.delete(c)
+        s.commit()
+
+
+def _arena_clone_for_run(user_id: str, slot: int) -> Optional[Character]:
+    """Copy the saved level-1 character into this bout's run character."""
+    with Session(engine) as s:
+        src = s.exec(select(Character).where(
+            Character.discord_user_id == user_id,
+            Character.arena_slot == slot)).first()
+        if src is None:
+            return None
+        for old in s.exec(select(Character).where(
+                Character.discord_user_id == user_id,
+                Character.arena_slot == -slot)).all():
+            s.delete(old)
+        s.commit()
+        copy = Character(**{
+            k: getattr(src, k) for k in (
+                "discord_user_id", "name", "gender", "race", "char_class",
+                "subclass", "background", "level", "creature_type", "immunities",
+                "cp", "sp", "ep", "gp", "pp", "lifestyle", "max_hp", "current_hp",
+                "hit_die", "hit_dice_total", "hit_dice_remaining", "stats",
+                "spells", "prepared_spells", "inventory", "tags", "deity",
+                "home_region", "approved", "notes", "active_portrait")
+        })
+        copy.arena_slot = -slot
+        s.add(copy)
+        s.commit()
+        s.refresh(copy)
+        return copy
+
+
+def _arena_run_character(user_id: str, slot: int) -> Optional[Character]:
+    with Session(engine) as s:
+        return s.exec(select(Character).where(
+            Character.discord_user_id == user_id,
+            Character.arena_slot == -slot)).first()
+
+
+def _arena_restore(char_id: int) -> None:
+    """Between bouts the Grounds put a fighter back the way they found them:
+    full HP, no wounds, every slot and resource back, nothing carried over.
+    A practice fight that starts half-dead tests nothing."""
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if not char:
+            return
+        char.current_hp = char.max_hp
+        char.temp_hp = 0
+        char.hit_dice_remaining = char.hit_dice_total
+        char.death_save_successes = 0
+        char.death_save_failures = 0
+        char.stable = True
+        char.exhaustion = 0
+        char.conditions = None
+        char.spell_slots_used = None
+        char.resources_used = None
+        char.updated_at = _utcnow()
+        s.add(char)
+        s.commit()
+
+
+def _arena_guide(run: dict) -> str:
+    """The DM's framing for a practice bout — told plainly what this place is."""
+    env = arena_get_environment(run.get("environment") or "")
+    lines = [
+        "# THE PROVING GROUNDS",
+        "This is a conjured practice bout, NOT the living world. Nothing here is",
+        "remembered: no travel, no NPCs with histories, no consequences beyond the",
+        "fight itself. Do not invent quests, towns, or people. Narrate the combat",
+        "and nothing else — tight, physical, present tense.",
+    ]
+    if env is not None:
+        lines.append(f"The bout is set in {env.name}: {env.blurb}")
+        if env.dm_note:
+            lines.append(env.dm_note)
+    if run.get("roster"):
+        lines.append(f"The opposition: {run['roster']}.")
+    lines.append(
+        "The fight ends when one side is down. When the last enemy falls, say so "
+        "and emit [[COMBAT: end]] — do not offer a new scene, the Grounds handle "
+        "what comes next.")
+    return "\n".join(lines)
+
+
+def _arena_open_fight(session_id: str, user_id: str, *,
+                      environment: Optional[str] = None,
+                      difficulty: Optional[str] = None) -> dict:
+    """Roster and seat a bout: monsters, initiative, and a board to fight on.
+
+    Returns ``{"ok": True, "text": <opening narration>, ...}`` or
+    ``{"ok": False, "reason": ...}``.
+    """
+    run = _arena_run(session_id)
+    env_slug = environment or run.get("environment") or ""
+    env = arena_get_environment(env_slug)
+    if env is None:
+        return {"ok": False, "reason": "That is not a place in the Grounds."}
+    tier = (difficulty or run.get("difficulty") or "medium").lower()
+    if tier not in ARENA_DIFFICULTIES:
+        tier = "medium"
+
+    char_id = run.get("character_id")
+    with Session(engine) as s:
+        char = s.get(Character, char_id) if char_id else None
+        if char is None:
+            return {"ok": False, "reason": "No fighter is standing in the Grounds."}
+        level, char_name = char.level, char.name
+    _arena_restore(char_id)
+
+    roster = arena_build_roster(env, level, _arena_cards(), difficulty=tier)
+    if roster is None or not roster.entries:
+        return {"ok": False,
+                "reason": ("The bestiary is empty — run the rules ingest before "
+                           "using the Grounds.")}
+
+    # A fresh encounter every bout; anything still standing from the last one goes.
+    prior = combat.get_active(session_id)
+    if prior:
+        combat.end_encounter(prior.id)
+    enc = combat.start_encounter(session_id, f"{env.name}: {roster.title}")
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        _combat_seat_pc(enc.id, char)
+    for slug, count in roster.entries:
+        try:
+            combat.add_from_monster(enc.id, slug, count=count, roll_hp=True)
+        except ValueError as e:
+            print(f"[arena] seating {slug} failed: {e}")
+    combat.roll_initiative(enc.id)
+
+    # The board. The environment names the layout, so the Grounds always fight
+    # where the player asked to fight.
+    scene = None
+    if _vtt_on():
+        try:
+            scene = _vtt_open(session_id, kind="combat", archetype=env.archetype,
+                              name=env.name, encounter_id=enc.id, auto_close=False)
+            if scene is not None:
+                _arena_fit_movement(scene.id, env)
+        except Exception as e:
+            print(f"[arena] opening the board failed: {e}")
+
+    _arena_set_run(
+        session_id, environment=env.slug, difficulty=tier, encounter_id=enc.id,
+        roster=roster.title, roster_xp=roster.adjusted_xp,
+        roster_reads=roster.difficulty, phase="fighting", result=None,
+        fights=int(run.get("fights") or 0) + 1)
+
+    order = combat.order(enc.id)
+    first = order[0].name if order else char_name
+    conjured = (" Something is dragged in that has no business here."
+                if roster.conjured else "")
+    text = (f"**{env.name}** — {env.blurb}\n\n"
+            f"The wards close. {roster.title} takes shape across the ground "
+            f"from you.{conjured}\n\n"
+            f"*{roster.title} — reads as {roster.difficulty} for a level "
+            f"{level} fighter. {first} moves first.*")
+    return {"ok": True, "text": text, "encounter_id": enc.id,
+            "scene_id": scene.id if scene is not None else None}
+
+
+def _arena_fit_movement(map_id: int, env) -> None:
+    """Everything on a sea or sky board moves in that medium.
+
+    The Grounds grant the fighter the movement the place demands — a landbound
+    PC dropped into open water would be a test of drowning, not of combat. The
+    board's own mode already covers creatures seated later; this fixes up the
+    ones seated with the encounter.
+    """
+    if env.mode == "walk":
+        return
+    try:
+        for tok in vtt_engine.tokens(map_id):
+            if tok.movement_mode != env.mode:
+                vtt_engine.update_token(tok.id, movement_mode=env.mode)
+    except Exception as e:
+        print(f"[arena] setting movement mode failed: {e}")
+
+
+def _arena_outcome(session_id: str) -> Optional[str]:
+    """How the bout stands: victory, defeat, over (called off), or None (live)."""
+    run = _arena_run(session_id)
+    enc_id = run.get("encounter_id")
+    if not enc_id:
+        return None
+    state = combat.state(int(enc_id))
+    if not state:
+        return None
+    combatants = state.get("combatants") or []
+    if not combatants:
+        return None
+
+    def down(c: dict) -> bool:
+        return bool(c.get("defeated")) or int(c.get("current_hp") or 0) <= 0
+
+    pcs = [c for c in combatants if c.get("kind") == "pc"]
+    foes = [c for c in combatants if c.get("kind") != "pc"]
+    if pcs and all(down(c) for c in pcs):
+        return "defeat"
+    if foes and all(down(c) for c in foes):
+        return "victory"
+    return None if state.get("active") else "over"
+
+
+def _arena_finish_fight(session_id: str, outcome: str) -> None:
+    """Close the bout out: the tracker stops, the board stays up as an aftermath."""
+    run = _arena_run(session_id)
+    enc_id = run.get("encounter_id")
+    if enc_id:
+        try:
+            enc = combat.get_encounter(int(enc_id))
+            if enc and enc.active:
+                combat.end_encounter(int(enc_id))
+        except Exception as e:
+            print(f"[arena] ending the encounter failed: {e}")
+    char_id = run.get("character_id")
+    if char_id:
+        try:
+            _arena_restore(int(char_id))
+        except Exception as e:
+            print(f"[arena] restoring the fighter failed: {e}")
+    _arena_set_run(session_id, phase="resolved", result=outcome,
+                   wins=int(run.get("wins") or 0) + (1 if outcome == "victory" else 0))
+
+
+def _arena_leave(session_id: str) -> None:
+    """Walk out of the Grounds: no fight, no board, nothing left running."""
+    run = _arena_run(session_id)
+    enc_id = run.get("encounter_id")
+    if enc_id:
+        try:
+            enc = combat.get_encounter(int(enc_id))
+            if enc and enc.active:
+                combat.end_encounter(int(enc_id))
+        except Exception as e:
+            print(f"[arena] ending the encounter failed: {e}")
+    try:
+        scene = vtt_engine.active_scene(session_id)
+        if scene is not None:
+            vtt_engine.close_scene(scene.id)
+    except Exception as e:
+        print(f"[arena] closing the board failed: {e}")
+    _arena_set_run(session_id, phase="idle", result=None, encounter_id=None)
 
 
 @app.websocket("/ws/activity/{channel}")
@@ -15050,6 +15437,145 @@ async def activity_ws(ws: WebSocket, channel: str):
                                     "name": req.name,
                                     "detail": result if isinstance(result, dict) else None})
                 await send_hello()
+                continue
+
+            # ---- the Proving Grounds: practice bouts outside the world ----
+            if str(msg.get("t") or "").startswith("arena"):
+                kind = msg["t"]
+
+                async def send_arena():
+                    await ws.send_json({
+                        "t": "arena",
+                        "state": _arena_state(user_id, session_id)})
+
+                if kind == "arena_state":
+                    await send_arena()
+                    continue
+
+                slot = max(1, min(ARENA_MAX_SLOTS, int(msg.get("slot") or 1)))
+
+                if kind == "arena_create":
+                    p = msg.get("payload") or {}
+                    _arena_clear_slot(user_id, slot)   # slots are overwritable
+                    try:
+                        req = RegisterCharacterRequest(
+                            discord_user_id=user_id,
+                            name=(p.get("name") or "").strip(),
+                            race=p.get("race"), char_class=p.get("char_class"),
+                            background=p.get("background"), deity=p.get("deity"),
+                            gender=p.get("gender"),
+                            stats=p.get("stats"), skills=p.get("skills"),
+                            feats=p.get("feats"), approve=True, source="guided",
+                            gear_mode=p.get("gear_mode") or "kit",
+                            bought_items=p.get("bought_items"),
+                            wondrous_item=p.get("wondrous_item"),
+                        )
+                        result = await register_character(req)
+                    except HTTPException as e:
+                        await ws.send_json({"t": "cc_error", "detail": e.detail})
+                        continue
+                    except Exception as e:
+                        print(f"[arena] slot creation failed: {e}")
+                        await ws.send_json({"t": "cc_error",
+                                            "detail": "Character creation failed."})
+                        continue
+                    new_id = (result or {}).get("character_id") if isinstance(result, dict) else None
+                    with Session(engine) as s:
+                        ch = s.get(Character, new_id) if new_id else None
+                        if ch:
+                            ch.arena_slot = slot
+                            s.add(ch)
+                            s.commit()
+                    await send_arena()
+                    continue
+
+                if kind == "arena_delete":
+                    _arena_clear_slot(user_id, slot)
+                    await send_arena()
+                    continue
+
+                if kind == "arena_begin":
+                    target = max(1, min(20, int(msg.get("level") or 1)))
+                    env_slug = str(msg.get("environment") or "")
+                    tier = str(msg.get("difficulty") or "medium").lower()
+                    if arena_get_environment(env_slug) is None:
+                        await ws.send_json({"t": "cc_error",
+                                            "detail": "Choose somewhere to fight."})
+                        continue
+                    # Fight on with the copy already advanced, or start the
+                    # climb again from level 1 — the level-up flow IS the test.
+                    char = (_arena_run_character(user_id, slot)
+                            if msg.get("reuse") else None)
+                    if char is None or char.level != target:
+                        char = _arena_clone_for_run(user_id, slot)
+                    if char is None:
+                        await ws.send_json({"t": "cc_error",
+                                            "detail": "That slot is empty."})
+                        continue
+                    sid = _arena_session_id(channel, user_id)
+                    await bind_session(sid)
+                    _set_session_meta(sid, {
+                        "user_id": str(user_id),
+                        "character_id": char.id,
+                        "character_name": char.name,
+                        "activity_channel": channel,
+                        "members": {str(user_id): {"character_id": char.id,
+                                                   "character_name": char.name}},
+                        "arena": {"slot": slot, "character_id": char.id,
+                                  "target_level": target, "environment": env_slug,
+                                  "difficulty": tier, "phase": "leveling",
+                                  "fights": 0, "wins": 0},
+                    })
+                    _arena_restore(char.id)
+                    await ws.send_json({"t": "entered", "resumed": False,
+                                        "arena": True})
+                    if char.level < target:
+                        with Session(engine) as s:
+                            ch = s.get(Character, char.id)
+                            ch.pending_level_up = True
+                            s.add(ch)
+                            s.commit()
+                        await _activity_broadcast(session_id, {
+                            "t": "narration",
+                            "text": (f"*The Grounds raise {char.name} toward level "
+                                     f"{target}. Choose what they become.*")},
+                            fallback=ws)
+                    else:
+                        res = _arena_open_fight(session_id, user_id)
+                        if not res.get("ok"):
+                            await ws.send_json({"t": "narration",
+                                                "text": f"⚠ {res.get('reason')}"})
+                        else:
+                            await ws.send_json({"t": "narration",
+                                                "text": res["text"]})
+                    await send_state()
+                    await send_arena()
+                    continue
+
+                # Everything below acts on a bout already under way.
+                if session_id is None or not _arena_run(session_id):
+                    await send_arena()
+                    continue
+
+                if kind == "arena_fight":
+                    res = _arena_open_fight(
+                        session_id, user_id,
+                        environment=msg.get("environment") or None,
+                        difficulty=msg.get("difficulty") or None)
+                    if not res.get("ok"):
+                        await ws.send_json({"t": "narration",
+                                            "text": f"⚠ {res.get('reason')}"})
+                    else:
+                        await ws.send_json({"t": "narration", "text": res["text"]})
+                    await send_state()
+                    await send_arena()
+                    continue
+
+                if kind == "arena_leave":
+                    _arena_leave(session_id)
+                    await send_state()
+                    await send_arena()
+                    continue
                 continue
 
             # ---- landing: enter the world (resume or begin) ----
@@ -15230,6 +15756,31 @@ async def activity_ws(ws: WebSocket, channel: str):
                     sheet = _activity_sheet(session_id, user_id)
                     if sheet:
                         await ws.send_json({"t": "sheet", "sheet": sheet})
+                    # In the Proving Grounds the climb continues until the
+                    # chosen level, then the bout opens by itself.
+                    run = _arena_run(session_id)
+                    if run.get("phase") == "leveling":
+                        target = int(run.get("target_level") or 1)
+                        with Session(engine) as s:
+                            ch = s.get(Character, char_id)
+                            more = bool(ch and ch.level < target)
+                            if more:
+                                ch.pending_level_up = True
+                                s.add(ch)
+                                s.commit()
+                        if more:
+                            await send_levelup()
+                        else:
+                            _arena_restore(char_id)
+                            res = _arena_open_fight(session_id, user_id)
+                            await ws.send_json({
+                                "t": "narration",
+                                "text": (res["text"] if res.get("ok")
+                                         else f"⚠ {res.get('reason')}")})
+                            await send_state()
+                            await ws.send_json({
+                                "t": "arena",
+                                "state": _arena_state(user_id, session_id)})
                 else:
                     await send_levelup()  # subclass still required
                 continue
@@ -15843,6 +16394,26 @@ async def activity_ws(ws: WebSocket, channel: str):
                     }, fallback=ws)
 
             await send_state()
+
+            # A practice bout ends the moment one side is down — the Grounds
+            # call it, not the narration, so a fight can't limp on past its end.
+            _run = _arena_run(session_id)
+            if _run.get("phase") == "fighting":
+                _outcome = _arena_outcome(session_id)
+                if _outcome:
+                    _arena_finish_fight(session_id, _outcome)
+                    await ws.send_json({"t": "narration", "text": {
+                        "victory": ("*The last of them goes down. The wards dim, "
+                                    "and the Grounds go quiet — you are whole "
+                                    "again, and ready for the next.*"),
+                        "defeat": ("*You fall. The wards catch you before the "
+                                   "ground does; the Grounds do not keep the "
+                                   "dead. You come back up whole.*"),
+                    }.get(_outcome, "*The bout is called off.*")})
+                    await send_state()
+                    await ws.send_json({
+                        "t": "arena", "state": _arena_state(user_id, session_id)})
+
             await _activity_broadcast(session_id, {"t": "busy", "on": False},
                                       fallback=ws)
 
