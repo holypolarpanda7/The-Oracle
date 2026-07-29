@@ -2,10 +2,11 @@ import { useState } from "react";
 import type { CharacterSummary } from "../lib/types";
 import { setSoundEnabled, soundEnabled, uiTick } from "../lib/sound";
 
-export function Landing({ characters, onEnter, onCreate }: {
+export function Landing({ characters, onEnter, onCreate, onArena }: {
   characters: CharacterSummary[];
   onEnter: (name: string) => void;
   onCreate: () => void;
+  onArena: () => void;
 }) {
   const [sound, setSound] = useState(soundEnabled());
   const living = characters.filter((c) => c.alive);
@@ -49,6 +50,12 @@ export function Landing({ characters, onEnter, onCreate }: {
 
       <button className="landing-create" onClick={() => { uiTick(); onCreate(); }}>
         ⚒ Forge a new character
+      </button>
+
+      {/* Practice, not play: a fight with no world attached to it. */}
+      <button className="landing-arena" onClick={() => { uiTick(); onArena(); }}>
+        ⚔ The Proving Grounds
+        <span>test a build · land, sea or air · no consequences</span>
       </button>
 
       {fallen.length > 0 && (

@@ -1,5 +1,5 @@
 import type { ClientEvent, ItemDetail, ServerEvent } from "./types";
-import { demoScript, demoVttApi } from "./demo";
+import { demoArenaApi, demoScript, demoVttApi } from "./demo";
 
 export interface Connection {
   send(ev: ClientEvent): void;
@@ -120,6 +120,34 @@ function demoItemDetail(name: string): ItemDetail {
 }
 
 function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
+  // ---- the Proving Grounds (offline): the same contract, scripted ----
+  if (ev.t === "arena_state") {
+    onEvent({ t: "arena", state: demoArenaApi.state() });
+    return;
+  }
+  if (ev.t === "arena_create") {
+    demoArenaApi.create(ev.slot, ev.payload.name, ev.payload.race,
+                        ev.payload.char_class);
+    onEvent({ t: "arena", state: demoArenaApi.state() });
+    return;
+  }
+  if (ev.t === "arena_delete") {
+    demoArenaApi.remove(ev.slot);
+    onEvent({ t: "arena", state: demoArenaApi.state() });
+    return;
+  }
+  if (ev.t === "arena_begin") {
+    for (const e of demoArenaApi.begin(ev)) onEvent(e);
+    return;
+  }
+  if (ev.t === "arena_fight") {
+    for (const e of demoArenaApi.fight(ev.environment)) onEvent(e);
+    return;
+  }
+  if (ev.t === "arena_leave") {
+    for (const e of demoArenaApi.leave()) onEvent(e);
+    return;
+  }
   // ---- tactical board (offline): the same contract the backend implements ----
   if (ev.t === "vtt_options") {
     onEvent({ t: "vtt_options", ...demoVttApi.options(ev.token_id, !!ev.dash) });
@@ -184,6 +212,10 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
       t: "narration",
       text: "Kara rises to level 3 — new strength settles into old scars.",
     });
+    // In the Grounds the last level-up is what opens the gate.
+    if (demoArenaApi.climbing()) {
+      for (const e of demoArenaApi.fight()) onEvent(e);
+    }
     return;
   }
   if (ev.t === "reprepare") {
@@ -226,6 +258,13 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
   }
   if (ev.t !== "action") return;
   onEvent({ t: "player", text: ev.text });
+  // A practice bout is decided on the first swing in the offline feed.
+  const bout = demoArenaApi.resolve();
+  if (bout.length) {
+    let d = 500;
+    for (const e of bout) { setTimeout(() => onEvent(e), d); d += 250; }
+    return;
+  }
   onEvent({ t: "busy", on: true });
   let delay = 700;
   for (const e of demoScript.respond(ev.text)) {

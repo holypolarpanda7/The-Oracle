@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { connect, type Connection } from "./lib/connection";
 import type {
-  Ally, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry, RepData,
-  ServerEvent, SheetData, VttOptions, VttScene,
+  Ally, ArenaState, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry,
+  RepData, ServerEvent, SheetData, VttOptions, VttScene,
 } from "./lib/types";
 import { Block, makeOracleBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
 import { PortraitStep } from "./components/PortraitStep";
 import { Landing } from "./components/Landing";
+import { Arena, ArenaResult } from "./components/Arena";
 import { LevelUpOverlay } from "./components/LevelUp";
 import { ReprepareOverlay } from "./components/Reprepare";
 import { PlaySurface } from "./components/PlaySurface";
@@ -26,10 +27,15 @@ function Corner({ pos }: { pos: string }) {
   );
 }
 
-type Screen = "landing" | "create" | "portrait" | "play";
+type Screen = "landing" | "create" | "portrait" | "play" | "arena";
 
 export default function App({ session }: { session: Session }) {
   const [screen, setScreen] = useState<Screen>("landing");
+  // The Proving Grounds: practice bouts. `arenaMode` means the play surface is
+  // showing a bout, so "main menu" goes back to the Grounds, not the landing.
+  const [arena, setArena] = useState<ArenaState | null>(null);
+  const [arenaMode, setArenaMode] = useState(false);
+  const arenaSlotRef = useRef<number | null>(null);
   const [characters, setCharacters] = useState<CharacterSummary[]>([]);
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [sheet, setSheet] = useState<SheetData | null>(null);
@@ -114,8 +120,17 @@ export default function App({ session }: { session: Session }) {
           break;
         case "entered":
           clearEnterTimer();
+          setArenaMode(!!ev.arena);
           setScreen("play");
           setEntering(false);
+          break;
+        case "arena":
+          setArena(ev.state);
+          // A slot we were filling has been forged — back to the Grounds.
+          if (arenaSlotRef.current !== null && screenRef.current === "create") {
+            arenaSlotRef.current = null;
+            setScreen("arena");
+          }
           break;
         case "cc_done": {
           // Detour through the portrait step before entering the world. We do
@@ -285,7 +300,33 @@ export default function App({ session }: { session: Session }) {
           <Landing
             characters={characters}
             onEnter={(name) => beginEnter({ character_name: name })}
-            onCreate={() => { setCcError(null); setScreen("create"); }}
+            onCreate={() => {
+              setCcError(null);
+              arenaSlotRef.current = null;
+              setScreen("create");
+            }}
+            onArena={() => {
+              connRef.current?.send({ t: "arena_state" });
+              setScreen("arena");
+            }}
+          />
+        )}
+
+        {screen === "arena" && (
+          <Arena
+            state={arena}
+            onCreate={(slot) => {
+              setCcError(null);
+              arenaSlotRef.current = slot;
+              setScreen("create");
+            }}
+            onDelete={(slot) => connRef.current?.send({ t: "arena_delete", slot })}
+            onBegin={({ slot, environment, level, difficulty, reuse }) => {
+              setBlocks([]);   // a new bout starts on a clean surface
+              connRef.current?.send({ t: "arena_begin", slot, environment, level,
+                                      difficulty, reuse });
+            }}
+            onBack={() => setScreen("landing")}
           />
         )}
 
@@ -331,10 +372,15 @@ export default function App({ session }: { session: Session }) {
         {screen === "create" && (
           <CreateFlow
             ccError={ccError}
-            onCancel={() => setScreen("landing")}
+            onCancel={() => setScreen(arenaSlotRef.current !== null ? "arena" : "landing")}
             onDone={(payload: CCPayload) => {
               setCcError(null);
-              connRef.current?.send({ t: "cc_register", payload });
+              const slot = arenaSlotRef.current;
+              if (slot !== null) {
+                connRef.current?.send({ t: "arena_create", slot, payload });
+              } else {
+                connRef.current?.send({ t: "cc_register", payload });
+              }
             }}
           />
         )}
@@ -351,6 +397,20 @@ export default function App({ session }: { session: Session }) {
 
         {screen === "play" && (
           <>
+            {arenaMode && arena && (
+              <ArenaResult
+                state={arena}
+                onAgain={() => connRef.current?.send({ t: "arena_fight" })}
+                onElsewhere={(environment) =>
+                  connRef.current?.send({ t: "arena_fight", environment })}
+                onLeave={() => {
+                  connRef.current?.send({ t: "arena_leave" });
+                  setArenaMode(false);
+                  setBlocks([]);
+                  setScreen("arena");
+                }}
+              />
+            )}
             {levelUp && (
               <LevelUpOverlay
                 data={levelUp}
@@ -385,7 +445,16 @@ export default function App({ session }: { session: Session }) {
               rateWait={rateWait}
               onSkip={skipAll}
               onBlockDone={markDone}
-              onMainMenu={() => setScreen("landing")}
+              onMainMenu={() => {
+                if (arenaMode) {
+                  connRef.current?.send({ t: "arena_leave" });
+                  setArenaMode(false);
+                  setBlocks([]);
+                  setScreen("arena");
+                } else {
+                  setScreen("landing");
+                }
+              }}
               onInspect={inspectItem}
               onPortrait={portraitAction}
               onSetDnr={setDnr}

@@ -294,8 +294,53 @@ export interface CharacterSummary {
   reclaim?: boolean;
 }
 
+// ---- the Proving Grounds (practice bouts, outside the world) ----
+
+export interface ArenaSlotChar {
+  id: number; name: string; race?: string | null; char_class?: string | null;
+  subclass?: string | null; level: number; hp: number; hp_max: number;
+}
+
+export interface ArenaSlot {
+  slot: number;
+  character: ArenaSlotChar | null;
+  /** A copy already advanced to some level — "fight on" instead of re-climbing. */
+  leveled: { id: number; name: string; level: number } | null;
+}
+
+export interface ArenaEnv {
+  slug: string; name: string; domain: "land" | "sea" | "air";
+  mode: "walk" | "swim" | "fly"; blurb: string; archetype: string;
+}
+
+export interface ArenaRun {
+  slot: number;
+  character_id: number;
+  target_level: number;
+  environment: string;
+  difficulty: string;
+  /** leveling → the climb; fighting → a live bout; resolved → it's over. */
+  phase: "leveling" | "fighting" | "resolved" | "idle";
+  result?: "victory" | "defeat" | "over" | null;
+  roster?: string;
+  roster_reads?: string;
+  roster_xp?: number;
+  fights?: number;
+  wins?: number;
+}
+
+export interface ArenaState {
+  slots: ArenaSlot[];
+  environments: ArenaEnv[];
+  difficulties: string[];
+  max_level: number;
+  max_slots: number;
+  run: ArenaRun | null;
+}
+
 export type ServerEvent =
   | { t: "hello"; channel: string; characters: CharacterSummary[] }
+  | { t: "arena"; state: ArenaState }
   | { t: "lexicon"; entries: LexEntry[] }
   | { t: "player"; text: string; who?: string; secret?: boolean }
   | { t: "narration"; text: string; secret?: boolean }
@@ -318,7 +363,7 @@ export type ServerEvent =
   | { t: "item_error"; detail: string }
   | { t: "item_gone"; name: string }
   | { t: "levelup"; data: LevelUpData | null }
-  | { t: "entered"; resumed: boolean }
+  | { t: "entered"; resumed: boolean; arena?: boolean }
   | { t: "cc_done"; name: string; detail?: unknown }
   | { t: "cc_error"; detail: string }
   | { t: "join_blocked"; reason: string; travel_days?: number; away_days?: number }
@@ -334,6 +379,14 @@ export type ClientEvent =
   | { t: "reprepare_apply"; spells: string[] }
   | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload }
+  // ---- the Proving Grounds ----
+  | { t: "arena_state" }
+  | { t: "arena_create"; slot: number; payload: CCPayload }
+  | { t: "arena_delete"; slot: number }
+  | { t: "arena_begin"; slot: number; environment: string; level: number;
+      difficulty: string; reuse?: boolean }
+  | { t: "arena_fight"; environment?: string; difficulty?: string }
+  | { t: "arena_leave" }
   | { t: "inspect_item"; name: string }
   | { t: "inscribe_spell"; spell: string; book?: string }
   | { t: "item_action"; name: string; action: string; target?: string }

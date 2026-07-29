@@ -1,4 +1,4 @@
-import type { CombatState, ServerEvent, VttEffect, VttScene } from "./types";
+import type { ArenaEnv, ArenaState, CombatState, ServerEvent, VttEffect, VttScene } from "./types";
 
 /** Standalone demo feed — lets the whole UI run with no backend, and doubles
     as living documentation of the event protocol. */
@@ -293,6 +293,70 @@ function demoReach(tokenId: number, dash: boolean) {
   };
 }
 
+/* The level-up overlay payload, shared by the scripted world demo and
+   the offline Proving Grounds. */
+const demoLevelUp: ServerEvent = {
+  t: "levelup",
+  data: {
+    character_id: 1,
+    current_level: 2, next_level: 3, class: "Ranger",
+    subclass: null, subclass_required: true,
+    subclass_label: "Ranger Archetype",
+    notes: [
+      "Gain hit points: roll 1d10+2 or take the fixed average of 8.",
+      "You reach the level where your class chooses its subclass (level 3). Pick one now.",
+    ],
+    class_features: [],
+    subclass_options: [
+      {
+        name: "Gloom Stalker", slug: "gloom-stalker",
+        source: "Owned (PHB 2024) — local ingest",
+        features: [
+          { level: 3, name: "Dread Ambusher" },
+          { level: 3, name: "Gloom Stalker Spells" },
+          { level: 3, name: "Umbral Sight" },
+        ],
+      },
+      {
+        name: "Hunter", slug: "hunter",
+        source: "Owned (PHB 2024) — local ingest",
+        features: [
+          { level: 3, name: "Hunter's Lore" },
+          { level: 3, name: "Hunter's Prey" },
+        ],
+      },
+      {
+        name: "Beast Master", slug: "beast-master",
+        source: "Owned (PHB 2024) — local ingest",
+        features: [{ level: 3, name: "Primal Companion" }],
+      },
+      {
+        name: "Horizon Walker", slug: "horizon-walker",
+        source: "Owned (Xanathar's Guide) — local ingest",
+        features: [
+          { level: 3, name: "Detect Portal" },
+          { level: 3, name: "Planar Warrior" },
+        ],
+      },
+    ],
+    spells_due: {
+      cantrips: 0, spells: 1, mode: "known", max_spell_level: 1,
+      cantrip_options: [],
+      spell_options: [
+        { slug: "cure-wounds", name: "Cure Wounds", level: 1, school: "Abjuration" },
+        { slug: "hunters-mark", name: "Hunter's Mark", level: 1, school: "Divination", concentration: true },
+        { slug: "goodberry", name: "Goodberry", level: 1, school: "Conjuration" },
+        { slug: "ensnaring-strike", name: "Ensnaring Strike", level: 1, school: "Conjuration", concentration: true },
+      ],
+      can_swap: true,
+      current_spells: [
+        { slug: "fog-cloud", name: "Fog Cloud" },
+        { slug: "speak-with-animals", name: "Speak with Animals" },
+      ],
+    },
+  },
+};
+
 export const demoVttApi = {
   scene: demoScene,
   options: demoReach,
@@ -319,6 +383,137 @@ export const demoVttApi = {
     const me = scene.tokens.find((t) => t.id === tokenId);
     demoMoved.set(tokenId, (me?.moved_ft ?? 0) + hit.cost);
     return { ok: true };
+  },
+};
+
+/* ---- The Proving Grounds, offline ---------------------------------------
+   A trimmed copy of the backend's catalog (two places per domain) so the
+   practice screens are explorable with no backend running. The real list lives
+   in arena/environments.py. */
+const demoEnvs: ArenaEnv[] = [
+  { slug: "training-yard", name: "The Sand Ring", domain: "land", mode: "walk",
+    archetype: "arena",
+    blurb: "A bare sand pit under a hot white sky. No cover, no excuses." },
+  { slug: "old-forest", name: "Blackroot Wood", domain: "land", mode: "walk",
+    archetype: "forest",
+    blurb: "Close trunks and tangled undergrowth. Sight lines die at twenty feet." },
+  { slug: "ship-deck", name: "The Rolling Deck", domain: "sea", mode: "walk",
+    archetype: "ship",
+    blurb: "A ship's deck at sea — rigging, lashed crates, water past the rail." },
+  { slug: "coral-reef", name: "The Sunlit Shelf", domain: "sea", mode: "swim",
+    archetype: "reef",
+    blurb: "A coral shelf beneath the waves. Sand flats, deep channels, coral heads." },
+  { slug: "sky-islands", name: "The Hanging Stones", domain: "air", mode: "fly",
+    archetype: "sky-islands",
+    blurb: "Islands of broken rock adrift in open sky, cloud far below." },
+  { slug: "skyship", name: "The Skyship Argent", domain: "air", mode: "fly",
+    archetype: "skyship",
+    blurb: "The deck of a flying ship under sail. Past the rail there is nothing." },
+];
+
+const demoArenaState: ArenaState = {
+  slots: [
+    { slot: 1, character: { id: 901, name: "Practice Kara", race: "Human",
+        char_class: "Fighter", subclass: null, level: 1, hp: 12, hp_max: 12 },
+      leveled: null },
+    { slot: 2, character: null, leveled: null },
+    { slot: 3, character: null, leveled: null },
+  ],
+  environments: demoEnvs,
+  difficulties: ["easy", "medium", "hard", "deadly"],
+  max_level: 20,
+  max_slots: 3,
+  run: null,
+};
+
+export const demoArenaApi = {
+  state(): ArenaState {
+    return JSON.parse(JSON.stringify(demoArenaState)) as ArenaState;
+  },
+  create(slot: number, name: string, race?: string | null, cls?: string | null) {
+    const row = demoArenaState.slots.find((s) => s.slot === slot);
+    if (row) {
+      row.character = { id: 900 + slot, name, race: race ?? null,
+                        char_class: cls ?? null, subclass: null, level: 1,
+                        hp: 12, hp_max: 12 };
+      row.leveled = null;
+    }
+  },
+  remove(slot: number) {
+    const row = demoArenaState.slots.find((s) => s.slot === slot);
+    if (row) { row.character = null; row.leveled = null; }
+  },
+  /** True while the run is still climbing to its chosen level. */
+  climbing(): boolean {
+    return demoArenaState.run?.phase === "leveling";
+  },
+  begin(o: { slot: number; environment: string; level: number; difficulty: string;
+             reuse?: boolean }): ServerEvent[] {
+    const row = demoArenaState.slots.find((s) => s.slot === o.slot);
+    demoArenaState.run = {
+      slot: o.slot, character_id: row?.character?.id ?? 901,
+      target_level: o.level, environment: o.environment,
+      difficulty: o.difficulty, phase: "leveling", fights: 0, wins: 0,
+    };
+    // The play surface needs a fighter to draw before the bout arrives.
+    const out: ServerEvent[] = [
+      { t: "entered", resumed: false, arena: true }, lexicon, sheet, party,
+    ];
+    if (o.level > 1 && !o.reuse) {
+      out.push({ t: "narration",
+                 text: `*The Grounds raise ${row?.character?.name ?? "your fighter"} `
+                       + `toward level ${o.level}. Choose what they become.*` });
+      out.push(demoLevelUp);
+      return out;
+    }
+    return [...out, ...this.fight()];
+  },
+  fight(environment?: string): ServerEvent[] {
+    const run = demoArenaState.run;
+    if (!run) return [];
+    if (environment) run.environment = environment;
+    run.phase = "fighting";
+    run.result = null;
+    run.roster = "Three Goblin Warriors";
+    run.roster_reads = run.difficulty;
+    run.fights = (run.fights ?? 0) + 1;
+    const env = demoEnvs.find((e) => e.slug === run.environment);
+    demoCombatStage = 1;
+    return [
+      { t: "narration",
+        text: `**${env?.name ?? "The Grounds"}** — ${env?.blurb ?? ""}\n\n`
+              + "The wards close. Three Goblin Warriors take shape across the "
+              + "ground from you." },
+      { t: "combat", encounter: demoEncounter(1) },
+      { t: "vtt", scene: demoVtt(1) },
+      { t: "arena", state: demoArenaApi.state() },
+    ];
+  },
+  /** The offline feed resolves a bout the moment the player swings. */
+  resolve(): ServerEvent[] {
+    const run = demoArenaState.run;
+    if (!run || run.phase !== "fighting") return [];
+    run.phase = "resolved";
+    run.result = "victory";
+    run.wins = (run.wins ?? 0) + 1;
+    return [
+      { t: "narration",
+        text: "*The last of them goes down. The wards dim, and the Grounds go "
+              + "quiet — you are whole again, and ready for the next.*" },
+      { t: "combat", encounter: null },
+      { t: "arena", state: demoArenaApi.state() },
+    ];
+  },
+  leave(): ServerEvent[] {
+    if (demoArenaState.run) {
+      demoArenaState.run.phase = "idle";
+      demoArenaState.run.result = null;
+    }
+    return [
+      { t: "combat", encounter: null },
+      { t: "vtt", scene: null },
+      { t: "arena", state: demoArenaApi.state() },
+    ];
   },
 };
 
@@ -350,69 +545,7 @@ export const demoScript = {
   ],
   respond(action: string): ServerEvent[] {
     if (/level ?up/i.test(action)) {
-      return [
-        {
-          t: "levelup",
-          data: {
-            character_id: 1,
-            current_level: 2, next_level: 3, class: "Ranger",
-            subclass: null, subclass_required: true,
-            subclass_label: "Ranger Archetype",
-            notes: [
-              "Gain hit points: roll 1d10+2 or take the fixed average of 8.",
-              "You reach the level where your class chooses its subclass (level 3). Pick one now.",
-            ],
-            class_features: [],
-            subclass_options: [
-              {
-                name: "Gloom Stalker", slug: "gloom-stalker",
-                source: "Owned (PHB 2024) — local ingest",
-                features: [
-                  { level: 3, name: "Dread Ambusher" },
-                  { level: 3, name: "Gloom Stalker Spells" },
-                  { level: 3, name: "Umbral Sight" },
-                ],
-              },
-              {
-                name: "Hunter", slug: "hunter",
-                source: "Owned (PHB 2024) — local ingest",
-                features: [
-                  { level: 3, name: "Hunter's Lore" },
-                  { level: 3, name: "Hunter's Prey" },
-                ],
-              },
-              {
-                name: "Beast Master", slug: "beast-master",
-                source: "Owned (PHB 2024) — local ingest",
-                features: [{ level: 3, name: "Primal Companion" }],
-              },
-              {
-                name: "Horizon Walker", slug: "horizon-walker",
-                source: "Owned (Xanathar's Guide) — local ingest",
-                features: [
-                  { level: 3, name: "Detect Portal" },
-                  { level: 3, name: "Planar Warrior" },
-                ],
-              },
-            ],
-            spells_due: {
-              cantrips: 0, spells: 1, mode: "known", max_spell_level: 1,
-              cantrip_options: [],
-              spell_options: [
-                { slug: "cure-wounds", name: "Cure Wounds", level: 1, school: "Abjuration" },
-                { slug: "hunters-mark", name: "Hunter's Mark", level: 1, school: "Divination", concentration: true },
-                { slug: "goodberry", name: "Goodberry", level: 1, school: "Conjuration" },
-                { slug: "ensnaring-strike", name: "Ensnaring Strike", level: 1, school: "Conjuration", concentration: true },
-              ],
-              can_swap: true,
-              current_spells: [
-                { slug: "fog-cloud", name: "Fog Cloud" },
-                { slug: "speak-with-animals", name: "Speak with Animals" },
-              ],
-            },
-          },
-        },
-      ];
+      return [demoLevelUp];
     }
     if (/sneak|stealth|hide|quiet/i.test(action)) {
       return [

@@ -60,5 +60,7 @@ docs/design/proofs/
 # can be force-added: git add -f activity-ui/public/assets/species/<slug>-*.webp)
 activity-ui/public/assets/species/
 
-# VTT overlay screenshots (local verification only)
+# UI screenshots (local verification only)
 activity-ui/vtt-shots/
+activity-ui/arena-shots/
+activity-ui/mobile-shots/
