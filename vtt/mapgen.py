@@ -46,6 +46,11 @@ class GeneratedMap:
     # {"x,y": feet} — sparse elevation for ledges and platforms.
     elevation: dict[str, int] = field(default_factory=dict)
     lighting: str = "bright"
+    # The medium the board is fought in: "walk" (ground), "swim" (underwater),
+    # "fly" (aloft). Connectivity, spawn zones and the "did the generator
+    # collapse?" check are all judged in THIS mode — an open-water board is one
+    # connected space to a swimmer even though a walker would drown in it.
+    mode: str = "walk"
     # A one-line description used for the art prompt and the DM's board header.
     description: str = ""
     # Suggested ambient effects the scene engine may materialise (hazards,
@@ -67,16 +72,21 @@ def _rng(seed: int) -> random.Random:
     return random.Random(seed & 0x7FFFFFFF)
 
 
-def _walkable(grid: Grid) -> set[Square]:
-    return {(x, y) for x, y in grid.squares() if grid.passable(x, y)}
+#: The tile a corridor is carved from, per movement mode — carving stone floor
+#: through a reef or a cloudbank would be nonsense.
+_CORRIDOR_CODE = {"walk": FLOOR, "swim": "~", "fly": "^"}
 
 
-def _regions(grid: Grid) -> list[set[Square]]:
-    """Connected walkable regions (4-way — diagonal-only links don't count as
+def _walkable(grid: Grid, mode: str = "walk") -> set[Square]:
+    return {(x, y) for x, y in grid.squares() if grid.passable(x, y, mode=mode)}
+
+
+def _regions(grid: Grid, mode: str = "walk") -> list[set[Square]]:
+    """Connected traversable regions (4-way — diagonal-only links don't count as
     a corridor a Large creature could use)."""
     seen: set[Square] = set()
     out: list[set[Square]] = []
-    for sq in _walkable(grid):
+    for sq in _walkable(grid, mode):
         if sq in seen:
             continue
         stack, region = [sq], set()
@@ -87,30 +97,31 @@ def _regions(grid: Grid) -> list[set[Square]]:
             for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
                 if (nx, ny) in seen:
                     continue
-                if grid.in_bounds(nx, ny) and grid.passable(nx, ny):
+                if grid.in_bounds(nx, ny) and grid.passable(nx, ny, mode=mode):
                     seen.add((nx, ny))
                     stack.append((nx, ny))
         out.append(region)
     return sorted(out, key=len, reverse=True)
 
 
-def _dominant_blocker(grid: Grid) -> str:
+def _dominant_blocker(grid: Grid, mode: str = "walk") -> str:
     """The wall code this map is mostly built from — so filling a dead pocket in
     a cave leaves rock, not a stray dungeon wall."""
     counts: dict[str, int] = {}
     for x, y in grid.squares():
         c = grid.get(x, y)
-        if not grid.passable(x, y) and c != VOID:
+        if not grid.passable(x, y, mode=mode) and c != VOID:
             counts[c] = counts.get(c, 0) + 1
     return max(counts, key=counts.get) if counts else WALL  # type: ignore[arg-type]
 
 
-def _connect_regions(grid: Grid, rng: random.Random) -> None:
-    """Carve corridors until every walkable square is reachable from the main
+def _connect_regions(grid: Grid, rng: random.Random, mode: str = "walk") -> None:
+    """Carve corridors until every traversable square is reachable from the main
     region; anything too small to bother with is filled back in as solid."""
-    solid = _dominant_blocker(grid)
+    solid = _dominant_blocker(grid, mode)
+    code = _CORRIDOR_CODE.get(mode, FLOOR)
     for _ in range(12):
-        regions = _regions(grid)
+        regions = _regions(grid, mode)
         if len(regions) <= 1:
             return
         main = regions[0]
@@ -123,7 +134,7 @@ def _connect_regions(grid: Grid, rng: random.Random) -> None:
                 abs(s[0] - m[0]) + abs(s[1] - m[1]) for m in _sample(main, rng, 24)))
             b = min(_sample(main, rng, 48),
                     key=lambda s: abs(s[0] - a[0]) + abs(s[1] - a[1]))
-            _carve_corridor(grid, a, b)
+            _carve_corridor(grid, a, b, code)
             break
 
 
@@ -146,14 +157,15 @@ def _carve_corridor(grid: Grid, a: Square, b: Square, code: str = FLOOR) -> None
 
 def _scatter(grid: Grid, rng: random.Random, code: str, chance: float, *,
              only_on: tuple[str, ...] = (FLOOR,),
-             keep_passable: bool = True) -> None:
+             keep_passable: bool = True, mode: str = "walk") -> None:
     """Sprinkle a tile across the floor without cutting the map in half."""
     for x, y in list(grid.squares()):
         if grid.get(x, y) not in only_on or rng.random() > chance:
             continue
         prev = grid.get(x, y)
         grid.set(x, y, code)
-        if keep_passable and not grid.passable(x, y) and len(_regions(grid)) > 1:
+        if keep_passable and not grid.passable(x, y, mode=mode) and len(
+                _regions(grid, mode)) > 1:
             grid.set(x, y, prev)
 
 
@@ -168,11 +180,12 @@ def _blob(grid: Grid, rng: random.Random, cx: int, cy: int, size: int,
             grid.set(x, y, code)
 
 
-def _edge_zone(grid: Grid, side: str, depth: int = 3) -> list[Square]:
-    """Walkable squares along one edge — a natural entry zone."""
+def _edge_zone(grid: Grid, side: str, depth: int = 3,
+               mode: str = "walk") -> list[Square]:
+    """Traversable squares along one edge — a natural entry zone."""
     out: list[Square] = []
     for x, y in grid.squares():
-        if not grid.passable(x, y):
+        if not grid.passable(x, y, mode=mode):
             continue
         if side == "west" and x < depth:
             out.append((x, y))
@@ -185,16 +198,18 @@ def _edge_zone(grid: Grid, side: str, depth: int = 3) -> list[Square]:
     return out
 
 
-def _opposed_zones(grid: Grid, rng: random.Random) -> tuple[list[Square], list[Square]]:
+def _opposed_zones(grid: Grid, rng: random.Random,
+                   mode: str = "walk") -> tuple[list[Square], list[Square]]:
     """Two entry zones on opposite edges, both non-empty (falls back to the
-    left/right halves of whatever is walkable)."""
+    left/right halves of whatever is traversable)."""
     pairs = [("west", "east"), ("north", "south"), ("east", "west"), ("south", "north")]
     rng.shuffle(pairs)
     for a, b in pairs:
-        za, zb = _edge_zone(grid, a), _edge_zone(grid, b)
+        za = _edge_zone(grid, a, mode=mode)
+        zb = _edge_zone(grid, b, mode=mode)
         if len(za) >= 3 and len(zb) >= 3:
             return za, zb
-    walk = sorted(_walkable(grid))
+    walk = sorted(_walkable(grid, mode))
     if not walk:
         return [], []
     mid = len(walk) // 2
@@ -584,6 +599,91 @@ def _gen_sewer(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     out.description = "a vaulted sewer tunnel, ledges either side of a slow green channel"
 
 
+def _gen_reef(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """Underwater: a coral shelf. Shallows a walker can wade, channels only a
+    swimmer crosses, coral heads that block both sight and line of effect."""
+    g.fill_rect(0, 0, g.width - 1, g.height - 1, "~")
+    for _ in range(int(g.width * g.height * 0.02)):
+        cx, cy = rng.randrange(g.width), rng.randrange(g.height)
+        _blob(g, rng, cx, cy, rng.randint(4, 12), "W")     # deep channels
+    for _ in range(int(g.width * g.height * 0.015)):
+        cx, cy = rng.randrange(g.width), rng.randrange(g.height)
+        _blob(g, rng, cx, cy, rng.randint(1, 4), "R")      # coral heads
+    _scatter(g, rng, "s", 0.08, only_on=("~",), mode="swim")
+    _scatter(g, rng, "O", 0.02, only_on=("~",), mode="swim")
+    out.mode = "swim"
+    out.lighting = "dim"
+    out.description = ("a sunlit coral shelf under the sea — sand flats, deep "
+                       "blue channels, coral heads taller than a man")
+
+
+def _gen_open_water(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """Open sea: blue water in every direction, with wreckage to shelter behind."""
+    g.fill_rect(0, 0, g.width - 1, g.height - 1, "W")
+    for _ in range(rng.randint(3, 7)):
+        cx, cy = rng.randrange(g.width), rng.randrange(g.height)
+        _blob(g, rng, cx, cy, rng.randint(3, 10), "~")     # kelp / shallows
+    # Drifting wreckage: something to stand on, something to hide behind.
+    for _ in range(rng.randint(2, 5)):
+        cx, cy = rng.randrange(1, g.width - 1), rng.randrange(1, g.height - 1)
+        g.set(cx, cy, "b")
+        for dx, dy in ((1, 0), (0, 1), (1, 1)):
+            if rng.random() < 0.6:
+                g.set(cx + dx, cy + dy, rng.choice(("b", "o")))
+    out.mode = "swim"
+    out.lighting = "dim"
+    out.description = ("open water — drifting wreckage and ribbons of kelp, "
+                       "blue falling away to black below")
+
+
+def _gen_sky(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """Aloft: floating stone islands in open air. Only a flier (or a very good
+    jumper) crosses between them; the islands themselves are solid ground."""
+    g.fill_rect(0, 0, g.width - 1, g.height - 1, "^")
+    islands = rng.randint(3, 6)
+    for i in range(islands):
+        cx = rng.randrange(2, max(3, g.width - 2))
+        cy = rng.randrange(2, max(3, g.height - 2))
+        _blob(g, rng, cx, cy, rng.randint(8, 24), "g")
+        if rng.random() < 0.5:
+            g.set(cx, cy, "R")                              # a spire of rock
+        # Islands hang at different heights — the fight has a third axis.
+        height = rng.choice((0, 0, 10, 20))
+        if height:
+            for x, y in g.squares():
+                if g.get(x, y) == "g" and abs(x - cx) <= 3 and abs(y - cy) <= 3:
+                    out.elevation[f"{x},{y}"] = height
+    _scatter(g, rng, ",", 0.06, only_on=("g",), mode="fly")
+    _scatter(g, rng, "T", 0.03, only_on=("g",), mode="fly")
+    out.mode = "fly"
+    out.lighting = "bright"
+    out.description = ("islands of broken stone hanging in open sky, roots "
+                       "trailing into cloud beneath them")
+
+
+def _gen_skyship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """Aloft: the deck of a flying ship, with nothing at all past the rail."""
+    g.fill_rect(0, 0, g.width - 1, g.height - 1, "^")
+    inset = max(1, g.height // 6)
+    for y in range(g.height):
+        taper = int(abs(y - (g.height - 1) / 2) / max(1, (g.height - 1) / 2) * inset * 2)
+        for x in range(taper + 1, g.width - taper - 1):
+            g.set(x, y, "b")
+    for x, y in list(g.squares()):
+        if g.get(x, y) != "b":
+            continue
+        if any(g.get(x + dx, y + dy) == "^"
+               for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+            if rng.random() < 0.8:
+                g.set(x, y, "w")                            # the rail
+    g.set(g.width // 2, g.height // 2, "O")                 # the mast
+    _scatter(g, rng, "o", 0.05, only_on=("b",), mode="fly")
+    out.mode = "fly"
+    out.lighting = "bright"
+    out.description = ("the deck of a skyship under sail, rigging taut, open "
+                       "air past every rail")
+
+
 def _gen_open(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     """The fallback: open ground with just enough cover to make choices matter."""
     g.fill_rect(0, 0, g.width - 1, g.height - 1, "g")
@@ -614,6 +714,10 @@ ARCHETYPES: dict[str, Callable[[Grid, random.Random, GeneratedMap], None]] = {
     "swamp": _gen_swamp,
     "mountain-pass": _gen_pass,
     "sewer": _gen_sewer,
+    "reef": _gen_reef,
+    "open-water": _gen_open_water,
+    "sky-islands": _gen_sky,
+    "skyship": _gen_skyship,
     "open": _gen_open,
 }
 
@@ -621,6 +725,13 @@ ARCHETYPES: dict[str, Callable[[Grid, random.Random, GeneratedMap], None]] = {
 #: Loose words the DM might use -> the archetype that fits. First match wins,
 #: so put the specific phrases before the generic ones.
 _KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("skyship", "airship", "flying ship", "sky ship"), "skyship"),
+    (("sky island", "floating island", "cloud", "aloft", "midair", "mid-air",
+      "open sky", "in the air"), "sky-islands"),
+    (("reef", "coral", "seabed", "sea floor", "seafloor", "lagoon",
+      "underwater", "under the sea"), "reef"),
+    (("open water", "open sea", "ocean", "the deep", "shipwreck", "sunken"),
+     "open-water"),
     (("tavern", "inn", "taproom", "alehouse", "common room"), "tavern"),
     (("crypt", "tomb", "burial", "sarcoph", "mausoleum", "catacomb"), "crypt"),
     (("sewer", "drain", "culvert"), "sewer"),
@@ -668,16 +779,18 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
     out = GeneratedMap(grid=grid, archetype=archetype, seed=seed)
     ARCHETYPES[archetype](grid, rng, out)
 
-    # Every board must be one connected space and have room to stand.
-    _connect_regions(grid, rng)
-    if len(_walkable(grid)) < (width * height) // 8:
+    # Every board must be one connected space and have room to stand — judged in
+    # the medium it's fought in, so an open-water board isn't condemned for
+    # being unwalkable.
+    _connect_regions(grid, rng, out.mode)
+    if len(_walkable(grid, out.mode)) < (width * height) // 8:
         # A generator collapsed (rare corner of the CA); fall back to open ground
         # rather than handing the table an unplayable board.
         grid = Grid.blank(width, height)
         out = GeneratedMap(grid=grid, archetype=archetype, seed=seed)
         _gen_open(grid, rng, out)
 
-    party, foes = _opposed_zones(grid, rng)
+    party, foes = _opposed_zones(grid, rng, out.mode)
     out.spawn_party, out.spawn_foes = party, foes
     if lighting:
         out.lighting = lighting

@@ -75,6 +75,9 @@ TILES: dict[str, Tile] = {t.code: t for t in (
     _t("n", "furniture", None, cover="half", art="overturned table and benches"),
     _t("w", "low wall", None, cover="half", art="waist-high broken wall"),
     _t("W", "deep water", None, traversable_swimming=True, art="deep dark water"),
+    # Open sky: a flier's ground. Unlike a chasm this is not a hazard — the
+    # board IS the air, so crossing it is ordinary movement for anything aloft.
+    _t("^", "open sky", None, traversable_flying=True, art="open sky, cloud far below"),
     _t("x", "chasm", None, traversable_flying=True, hazard=True, art="yawning chasm"),
     _t("l", "lava", None, traversable_flying=True, hazard=True, art="molten lava"),
     _t("f", "fire", 10, hazard=True, art="burning wreckage"),

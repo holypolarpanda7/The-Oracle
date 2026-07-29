@@ -185,7 +185,10 @@ def test_mapgen() -> None:
     section("map generation")
     for arch in ARCHETYPES:
         m = generate_map(arch, width=24, height=16, seed=7)
-        walk = [(x, y) for x, y in m.grid.squares() if m.grid.passable(x, y)]
+        # Connectivity is judged in the medium the board is fought in: an
+        # open-water board is one space to a swimmer, none at all to a walker.
+        md = m.mode
+        walk = [(x, y) for x, y in m.grid.squares() if m.grid.passable(x, y, mode=md)]
         # One connected space: every board must be playable end to end.
         seen = {walk[0]}
         stack = [walk[0]]
@@ -193,13 +196,21 @@ def test_mapgen() -> None:
             x, y = stack.pop()
             for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
                 if (nx, ny) not in seen and m.grid.in_bounds(nx, ny) \
-                        and m.grid.passable(nx, ny):
+                        and m.grid.passable(nx, ny, mode=md):
                     seen.add((nx, ny))
                     stack.append((nx, ny))
         check(f"{arch}: one connected region", len(seen) == len(walk),
               f"{len(seen)}/{len(walk)} reachable")
         check(f"{arch}: has both spawn zones",
               bool(m.spawn_party) and bool(m.spawn_foes))
+
+    # A sea board swims, a sky board flies, everything else walks.
+    eq("an underwater board is swum", generate_map("reef", seed=3).mode, "swim")
+    eq("a sky board is flown", generate_map("sky-islands", seed=3).mode, "fly")
+    eq("a dungeon is walked", generate_map("dungeon-room", seed=3).mode, "walk")
+    eq("DM language finds the sea floor", archetype_for("an underwater ruin"), "reef")
+    eq("…and the open sky", archetype_for("a fight among floating islands"),
+       "sky-islands")
 
     a = generate_map("cave", width=20, height=14, seed=99)
     b = generate_map("cave", width=20, height=14, seed=99)

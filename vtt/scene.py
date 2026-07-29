@@ -143,6 +143,9 @@ class VttEngine:
             seed=seed, active=True, revision=1,
             notes={"description": gen.description,
                    "auto_close": bool(auto_close),
+                   # The medium this board is fought in (walk|swim|fly) — spawn
+                   # placement and default token movement follow it.
+                   "mode": gen.mode,
                    "spawn_party": [list(s) for s in gen.spawn_party[:60]],
                    "spawn_foes": [list(s) for s in gen.spawn_foes[:60]]},
         )
@@ -375,17 +378,24 @@ class VttEngine:
                   character_id: Optional[int] = None,
                   monster_slug: Optional[str] = None,
                   image_id: Optional[int] = None, hidden: bool = False,
-                  color: Optional[str] = None, movement_mode: str = "walk",
+                  color: Optional[str] = None,
+                  movement_mode: Optional[str] = None,
                   label: Optional[str] = None,
                   elevation_ft: int = 0) -> Optional[MapToken]:
         """Put a creature (or an object) on the board.
 
         With no coordinates the token is dropped in its side's spawn zone, in
         the nearest legal square that nobody else is standing in.
+
+        ``movement_mode`` defaults to the board's own medium: everything on an
+        underwater board swims, everything on a sky board flies. A creature
+        that moves differently from the board it stands on is the exception and
+        says so explicitly.
         """
         row = self.get_scene(map_id)
         if row is None:
             return None
+        movement_mode = movement_mode or self.board_mode(row)
         g = self.grid_of(row)
         n = size_squares(size)
         occupied = self._occupied(map_id)
@@ -513,13 +523,21 @@ class VttEngine:
             out.update(geo.footprint(t.x, t.y, size_squares(t.size)))
         return out
 
+    @staticmethod
+    def board_mode(row: Optional[TacticalMap]) -> str:
+        """The medium this board is fought in: walk (ground), swim, or fly.
+        Boards generated before the field existed are ground boards."""
+        mode = ((row.notes or {}) if row is not None else {}).get("mode")
+        return mode if mode in ("walk", "swim", "fly") else "walk"
+
     def _spawn_square(self, row: TacticalMap, g: Grid, team: str,
                       occupied: set[Square], n: int) -> Optional[Square]:
         notes = row.notes or {}
+        mode = self.board_mode(row)
         key = "spawn_party" if team == Team.PARTY else "spawn_foes"
         zone = [tuple(s) for s in (notes.get(key) or [])]
         for sq in zone:
-            if geo._fits(g, sq, n, mode="walk", blocked=occupied):  # type: ignore[arg-type]
+            if geo._fits(g, sq, n, mode=mode, blocked=occupied):  # type: ignore[arg-type]
                 return sq  # type: ignore[return-value]
         # Zone full or unusable — fall back to anywhere legal, farthest from
         # the other side so the two groups don't start interleaved.
@@ -527,7 +545,7 @@ class VttEngine:
         best: Optional[Square] = None
         best_score = -1.0
         for x, y in g.squares():
-            if not geo._fits(g, (x, y), n, mode="walk", blocked=occupied):
+            if not geo._fits(g, (x, y), n, mode=mode, blocked=occupied):
                 continue
             if not others:
                 return (x, y)
@@ -1073,6 +1091,7 @@ class VttEngine:
             "height": row.height,
             "square_ft": row.square_ft,
             "lighting": row.lighting,
+            "mode": self.board_mode(row),
             "revision": row.revision,
             "active": row.active,
             "round": self._round(row),
@@ -1117,8 +1136,11 @@ class VttEngine:
 
         light = {"dark": "unlit", "dim": "dim light",
                  "bright": "bright light"}.get(row.lighting or "bright", "bright light")
+        medium = {"swim": ", fought underwater — everything here is swimming",
+                  "fly": ", fought in open air — everything here is flying"}.get(
+                      self.board_mode(row), "")
         lines = [f"# Board: {row.name} — {row.width}x{row.height} squares "
-                 f"({row.square_ft} ft each), {light}"]
+                 f"({row.square_ft} ft each), {light}{medium}"]
         desc = (row.notes or {}).get("description")
         if desc:
             lines.append(f"  {desc}")

@@ -36,6 +36,7 @@ export const TILE_STYLES: Record<string, TileStyle> = {
   n: { fill: "#42311f", edge: "#7a5c30", family: "solid" },
   w: { fill: "#242a3d", edge: "#4a5478", family: "solid" },
   W: { fill: "#10293b", family: "water" },
+  "^": { fill: "#141c33", family: "void" },
   x: { fill: "#06080e", edge: "#38406a", family: "hazard" },
   l: { fill: "#5a1c0c", edge: "#ff7a33", family: "hazard" },
   f: { fill: "#4a2410", edge: "#ff9a4a", family: "hazard" },
