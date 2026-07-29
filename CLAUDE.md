@@ -35,6 +35,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - `seed.py` — `seed_starter_world` + `place_pc` (starter region "Greenfields").
    - `extraction.py` — second-LLM-call change extractor: `extract_and_apply`
      reads (action + narration + context) → JSON `WorldDelta` → applies it.
+   - `pantheon.py` — the original power families (gods, giant-gods, celestials,
+     archfey, old gods, archdevils, demon lords) seeded as DEITY entities, plus
+     the DM-gated `apply_divine_event`. **The GRAPH is the live roster** —
+     `living_powers`/`pantheon_payload` read it, so a power born in play is
+     offered by character creation and a slain one stops being offered. Never
+     hard-code a deity list in a caller.
    - `demo.py` — runnable end-to-end demo.
 4. **`rules/`** — SRD **rules reference** (structured game data). Seeded from the
    open, CC-BY-4.0 5e SRD dataset so the DM brain + dice roller get exact numbers.
@@ -96,6 +102,8 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
   level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed)
+- Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
+  (a god born in play becomes choosable in CC; an unmade one stops being offered)
 
 ## Key facts & constraints
 - **D&D Beyond has NO public write API.** You cannot create/store a character on a
