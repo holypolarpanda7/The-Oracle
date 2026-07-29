@@ -494,4 +494,37 @@ export interface CCOptions {
   }[];
   buyable_items: { slug: string; name: string; category?: string | null; cost_gp: number }[];
   starting_gold: { by_class: Record<string, number>; default: number };
+  /** The world's living powers, by family. Absent on older backends — the
+   *  patron field falls back to free text when it is. */
+  deities?: Pantheon;
+}
+
+/** A god, archfey, archdevil, demon prince or elder power a character may name. */
+export interface Power {
+  slug?: string | null;
+  name: string;
+  title?: string;
+  alignment?: string;
+  domains?: string;
+  symbol?: string;
+  blurb?: string;
+  family: string;
+  family_label?: string;
+  power_class?: string;
+  /** temples (prayed to) · cults · pacts (bargained with) · allies. */
+  worship?: string;
+  plane?: string;
+  /** Risen in play through a divine event rather than seeded with the world. */
+  risen?: boolean;
+  born_day?: number | null;
+}
+
+export interface PowerFamily {
+  key: string; label: string; plane?: string; power_class?: string;
+  worship?: string; blurb?: string; count: number;
+}
+
+export interface Pantheon {
+  families: PowerFamily[];
+  powers: Power[];
 }

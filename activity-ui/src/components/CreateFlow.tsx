@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CCOptions, CCPayload, CCSpells, SpellBrief } from "../lib/types";
+import type { CCOptions, CCPayload, CCSpells, Pantheon, Power, SpellBrief } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
 
@@ -22,6 +22,100 @@ function SpeciesPortrait({ slug, lineageSlug, large }: {
                       onError={() => setMi((i) => i + 1)} />}
       {!fDone && <img key={p.f[fi]} src={p.f[fi]} alt="" loading="lazy"
                       onError={() => setFi((i) => i + 1)} />}
+    </div>
+  );
+}
+
+/** How mortals deal with a family of powers — shown so a player knows what
+ *  naming one actually means. */
+const WORSHIP_WORD: Record<string, string> = {
+  temples: "prayed to in temples",
+  cults: "revered by cults",
+  pacts: "bargained with, not worshipped",
+  allies: "served as an ally, not a god",
+};
+
+/** Choose a patron from the world's LIVING powers — the seeded canon plus
+ *  anything that has risen since — with free text as the escape hatch for a
+ *  local saint or a power the world has yet to name. */
+function DeityPicker({ pantheon, value, onPick }: {
+  pantheon: Pantheon;
+  value: string;
+  onPick: (name: string) => void;
+}) {
+  const [family, setFamily] = useState<string>("");
+  const [q, setQ] = useState("");
+  const query = q.trim().toLowerCase();
+
+  const shown = pantheon.powers.filter((p) => {
+    if (family && p.family !== family) return false;
+    if (!query) return true;
+    return [p.name, p.title, p.domains, p.alignment, p.family_label]
+      .some((s) => (s ?? "").toLowerCase().includes(query));
+  });
+  // A patron that isn't one of the world's powers (typed by hand, or carried in
+  // from an import) still has to show as chosen.
+  const known = pantheon.powers.some((p) => p.name === value);
+  const custom = !!value && !known;
+
+  return (
+    <div className="cf-deity">
+      <div className="cf-chips" style={{ marginBottom: 8 }}>
+        <button className={`cf-chip ${family === "" ? "picked" : ""}`}
+                onClick={() => { uiTick(); setFamily(""); }}>All powers</button>
+        {pantheon.families.map((f) => (
+          <button key={f.key} className={`cf-chip ${family === f.key ? "picked" : ""}`}
+                  onClick={() => { uiTick(); setFamily(f.key); }}
+                  title={f.blurb}>{f.label} ({f.count})</button>
+        ))}
+        <input className="cf-input" style={{ maxWidth: 190 }} value={q}
+               placeholder="search a name or domain…"
+               onChange={(e) => setQ(e.target.value)} />
+      </div>
+
+      {family && (
+        <p className="cf-deity-note">
+          {pantheon.families.find((f) => f.key === family)?.blurb}
+          {" — "}
+          {WORSHIP_WORD[pantheon.families.find((f) => f.key === family)?.worship ?? ""]
+            ?? "known to mortals"}.
+        </p>
+      )}
+
+      <div className="cf-deity-list">
+        <button className={`cf-deity-card ${!value ? "picked" : ""}`}
+                onClick={() => { uiTick(); onPick(""); }}>
+          <div className="cf-card-name">No patron</div>
+          <div className="cf-card-sub">You owe nothing to any power.</div>
+        </button>
+        {shown.map((p, i) => (
+          // Index-qualified: two powers should never share a slug, but a
+          // duplicate key silently strands a stale card in a filtered list.
+          <button key={`${p.slug ?? p.name}-${i}`}
+                  className={`cf-deity-card ${value === p.name ? "picked" : ""}`}
+                  onClick={() => { uiTick(); onPick(p.name); }}>
+            <div className="cf-card-name">
+              {p.name}{p.title ? ` ${p.title}` : ""}
+              {p.risen && <span className="cf-risen">risen in this age</span>}
+            </div>
+            <div className="cf-card-sub">{p.domains}</div>
+            <div className="cf-deity-meta">
+              {p.alignment}
+              {p.family_label ? ` · ${p.family_label}` : ""}
+            </div>
+          </button>
+        ))}
+        {shown.length === 0 && (
+          <p className="cf-deity-note">No power here answers to that.</p>
+        )}
+      </div>
+
+      <label className="cf-sub-label" style={{ marginTop: 10 }}>
+        Or name someone else — a local saint, an unnamed thing in a barrow
+      </label>
+      <input className="cf-input" value={custom ? value : ""}
+             placeholder="only if none of the above fit…"
+             onChange={(e) => onPick(e.target.value)} />
     </div>
   );
 }
@@ -597,12 +691,20 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                   ? " — your class draws its power from one"
                   : " (optional)"}
               </label>
-              <input
-                className="cf-input"
-                value={d.deity ?? ""}
-                placeholder="e.g. Serath the Dawnmother — or leave blank"
-                onChange={(e) => setD({ ...d, deity: e.target.value })}
-              />
+              {opts.deities && opts.deities.powers.length > 0 ? (
+                <DeityPicker
+                  pantheon={opts.deities}
+                  value={d.deity ?? ""}
+                  onPick={(name) => setD({ ...d, deity: name })}
+                />
+              ) : (
+                <input
+                  className="cf-input"
+                  value={d.deity ?? ""}
+                  placeholder="e.g. Serath the Dawnmother — or leave blank"
+                  onChange={(e) => setD({ ...d, deity: e.target.value })}
+                />
+              )}
             </div>
           </div>
         )}
