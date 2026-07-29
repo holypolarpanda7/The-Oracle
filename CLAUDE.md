@@ -70,6 +70,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - `bridge.py` — the board and `combat/` stay in step: grid distance is written
      back as spacing bands, and bands the engine changed walk their token to match.
    - `triggers.py` — the whole "is a board worth it?" policy, tuned by `VttConfig`.
+   - Boards carry a **medium** (`GeneratedMap.mode`: walk / swim / fly). Sea and
+     sky layouts are only connected to a swimmer or a flier, so connectivity,
+     spawn zones and token movement all key off it.
+7. **`arena/`** — the **Proving Grounds**: a practice mode outside the world.
+   3 overwritable level-1 slots → pick land/sea/air + a level + difficulty →
+   climb through the REAL level-up flow → fight a code-rostered encounter on a
+   real board. Nothing is remembered (no world clock, no extraction). Exists to
+   exercise CC + level-up + combat/VTT on purpose. See `docs/design/arena.md`.
+   - `environments.py` — the catalog (slug → domain, mapgen archetype, medium).
+   - `encounters.py` — XP-budgeted roster building from the rules bestiary.
+   - Wiring lives in `_arena_*` in the backend; the screens in `Arena.tsx`.
 
 ## Running
 - Backend: `uv run python oracle-dm-backend/fastapi-dm.py`
@@ -82,6 +93,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   math — run it after touching `vtt/geometry.py` or `vtt/mapgen.py`)
 - Tactical board wiring smoke test: `uv run python scripts/vtt_smoke.py` (drives
   the real chat path with a stubbed LLM: fight → board → hooks → prompt → close)
+- Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
+- Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
+  level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed)
 
 ## Key facts & constraints
 - **D&D Beyond has NO public write API.** You cannot create/store a character on a
