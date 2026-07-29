@@ -31,16 +31,21 @@ def _align_distance(a: str, b: str) -> int:
 
 
 def retributor_for(deity_name: Optional[str],
-                   victim_alignment: Optional[str] = None) -> Dict:
+                   victim_alignment: Optional[str] = None,
+                   graph=None) -> Dict:
     """The power that avenges the victim. Returns a roster dict (name/title/alignment/
-    domains/family). Falls back to an alignment-fitting avenger, then a just judge."""
+    domains/family). Falls back to an alignment-fitting avenger, then a just judge.
+
+    Pass the world ``graph`` so a power born in play — not in the seeded canon —
+    still avenges its own worshippers.
+    """
     if deity_name:
-        p = pantheon.power_by_name(deity_name)
+        p = pantheon.power_by_name(deity_name, graph)
         if p:
             return p
 
     va = victim_alignment or "neutral"
-    candidates = [p for p in pantheon.worshipable_powers()
+    candidates = [p for p in pantheon.worshipable_powers(graph)
                   if "evil" not in (p.get("alignment") or "").lower()
                   and any(d in (p.get("domains") or "").lower() for d in _AVENGER_DOMAINS)]
     if candidates:
@@ -48,7 +53,7 @@ def retributor_for(deity_name: Optional[str],
         return candidates[0]
 
     for nm in _FALLBACK_NAMES:
-        p = pantheon.power_by_name(nm)
+        p = pantheon.power_by_name(nm, graph)
         if p:
             return p
     # Absolute last resort — an unnamed higher power.

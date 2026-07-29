@@ -272,29 +272,123 @@ def iter_powers():
             yield fam, m
 
 
-def power_by_name(name: str) -> Optional[dict]:
-    """Look a power up by name or 'Name the Title' (case-insensitive).
+def _roster_power(fam: str, m: dict) -> dict:
+    """One roster member in the shape everything downstream expects."""
+    meta = POWER_FAMILIES[fam]
+    return {
+        **m,
+        "slug": None,
+        "family": fam,
+        "family_label": meta["label"],
+        "power_class": meta["power_class"],
+        "worship": meta["worship"],
+        "plane": meta["plane"],
+        "risen": False,
+    }
 
-    Returns a copy of the roster member with its ``family`` key added, or None.
+
+def _entity_power(ent) -> dict:
+    """A DEITY entity from the graph in the same shape as a roster member.
+
+    Graph entities are the LIVE roster: everything seeded, plus every power
+    that has risen since through a divine event.
+    """
+    attrs = ent.attributes or {}
+    fam = attrs.get("family") or ""
+    meta = POWER_FAMILIES.get(fam, {})
+    return {
+        "slug": ent.slug,
+        "name": ent.name,
+        "title": attrs.get("title", "") or "",
+        "alignment": attrs.get("alignment", "") or "",
+        "domains": attrs.get("domain", "") or "",
+        "symbol": attrs.get("symbol", "") or "",
+        "blurb": attrs.get("description", "") or "",
+        "family": fam,
+        "family_label": attrs.get("family_label") or meta.get("label", ""),
+        "power_class": attrs.get("power_class") or ent.subtype or meta.get("power_class", ""),
+        "worship": attrs.get("worship") or meta.get("worship", ""),
+        "plane": attrs.get("plane") or meta.get("plane", ""),
+        # Risen in the current age, not seeded with the world — worth saying so
+        # to a player choosing a patron.
+        "risen": bool(attrs.get("divine_event")),
+        "born_day": attrs.get("born_day"),
+    }
+
+
+def living_powers(graph: Optional[WorldGraph] = None) -> list[dict]:
+    """Every power a mortal could name today, ordered by family then name.
+
+    Reads the GRAPH when one is given, so powers born in a divine event are
+    included and slain ones are not. Falls back to the static roster when the
+    world hasn't been seeded yet (a fresh database, or a caller with no graph).
+    """
+    order = list(POWER_FAMILIES)
+
+    def key(p: dict) -> tuple:
+        fam = p.get("family") or ""
+        return (order.index(fam) if fam in order else len(order), p.get("name", ""))
+
+    if graph is not None:
+        try:
+            from sqlmodel import Session, select
+
+            from .models import Entity
+            with Session(graph.engine) as s:
+                rows = s.exec(select(Entity).where(
+                    Entity.type == EntityType.DEITY)).all()
+            out = [_entity_power(e) for e in rows if e.status != "dead"]
+            if out:
+                return sorted(out, key=key)
+        except Exception as e:      # a graph that isn't there yet is not an error
+            print(f"[pantheon] live roster unavailable, using canon: {e}")
+    return sorted((_roster_power(fam, m) for fam, m in iter_powers()), key=key)
+
+
+def pantheon_payload(graph: Optional[WorldGraph] = None) -> dict:
+    """Families + their living powers, ready for a character-creation picker.
+
+    Only families that actually have living members are listed, so a world where
+    a whole family has been unmade doesn't show an empty heading.
+    """
+    powers = living_powers(graph)
+    families = []
+    for key, meta in POWER_FAMILIES.items():
+        members = [p for p in powers if p.get("family") == key]
+        if not members:
+            continue
+        families.append({
+            "key": key, "label": meta["label"], "plane": meta["plane"],
+            "power_class": meta["power_class"], "worship": meta["worship"],
+            "blurb": meta["blurb"], "count": len(members),
+        })
+    return {"families": families, "powers": powers}
+
+
+def power_by_name(name: str, graph: Optional[WorldGraph] = None) -> Optional[dict]:
+    """Look a power up by name, slug, or 'Name the Title' (case-insensitive).
+
+    With a graph, powers risen since the world was seeded resolve too — which is
+    what lets a god born in play avenge their worshipper and be worshipped by
+    the next character.
     """
     q = (name or "").strip().lower()
     if not q:
         return None
-    for fam, m in iter_powers():
-        full = f"{m['name']} {m.get('title', '')}".strip().lower()
-        if q == m["name"].lower() or q == full or (q in full and len(q) > 3):
-            return {**m, "family": fam}
+    for p in living_powers(graph):
+        full = f"{p['name']} {p.get('title', '')}".strip().lower()
+        if q in (p["name"].lower(), full, (p.get("slug") or "").lower()):
+            return p
+        if q in full and len(q) > 3:
+            return p
     return None
 
 
-def worshipable_powers() -> list[dict]:
+def worshipable_powers(graph: Optional[WorldGraph] = None) -> list[dict]:
     """Powers mortals actually pray to (temple/cult families) — each with ``family``.
     Used to pick an avenging god for a slain worshipper who named no patron."""
-    out = []
-    for fam, m in iter_powers():
-        if POWER_FAMILIES[fam].get("worship") in ("temples", "cults"):
-            out.append({**m, "family": fam})
-    return out
+    return [p for p in living_powers(graph)
+            if p.get("worship") in ("temples", "cults")]
 
 
 def _power_attrs(fam: str, m: dict) -> dict:

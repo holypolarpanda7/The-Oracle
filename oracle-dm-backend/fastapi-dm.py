@@ -1589,8 +1589,8 @@ def _mirror_deity_worship(char: Character) -> None:
         pc = world.find_pc(char.discord_user_id, char.name)
         if pc is None:
             return
-        power = _pan.power_by_name(char.deity)
-        dst = power["name"] if power else char.deity
+        power = _pan.power_by_name(char.deity, world)
+        dst = power["slug"] or power["name"] if power else char.deity
         world.add_relation(pc.slug, RelationType.WORSHIPS, dst)
     except Exception as e:
         print(f"[deity] worship mirror failed: {e}")
@@ -3533,7 +3533,7 @@ def process_deity_hooks(ops: list[dict]) -> None:
             char = _resolve_pc_char(session, op["pc"])
             if not char:
                 continue
-            char.deity = op["deity"]
+            char.deity = _canonical_deity(op["deity"])
             session.add(char)
             session.commit()
             _mirror_deity_worship(char)
@@ -3617,7 +3617,8 @@ def process_pvp_hooks(session_id: str, ops: list[dict], meta: Dict[str, Any],
                 # Not both real PCs (e.g. a PC killing an NPC) — no PvP consequence.
                 continue
             victim_align = _pc_alignment_label(victim)
-            retributor = ipvp.retributor_for(getattr(victim, "deity", None), victim_align)
+            retributor = ipvp.retributor_for(getattr(victim, "deity", None),
+                                             victim_align, graph=world)
             offense = ipvp.offense_count(pvp_state, attacker_name)
             outcome = ipvp.assess(
                 action, attacker.level or 1, victim.level or 1, retributor,
@@ -10215,7 +10216,7 @@ async def register_character(req: RegisterCharacterRequest):
             avrae_import_text=req.avrae_import_text,
             approved=approved_flag,
             home_region=req.home_region,
-            deity=(req.deity or None),
+            deity=_canonical_deity(req.deity),
             max_hp=start_hp,
             current_hp=start_hp,
             hit_die=hit_die,
@@ -10546,7 +10547,54 @@ def cc_options():
             "by_class": _CLASS_STARTING_GOLD,
             "default": get_config().economy.starting_gold,
         },
+        # Who a character may swear to. Read LIVE from the world graph, so a
+        # power that rose (or fell) in play is offered (or gone) the next time
+        # anyone makes a character.
+        "deities": _pantheon_options(),
     }
+
+
+def _pantheon_options() -> Dict[str, Any]:
+    """The pantheon as a character-creation picker: families and their powers.
+
+    Never fatal — a world with no graph yet degrades to the seeded canon, and a
+    total failure degrades to the free-text field the UI falls back on.
+    """
+    try:
+        from eight_card_system import pantheon as _pan
+        return _pan.pantheon_payload(world)
+    except Exception as e:
+        print(f"[pantheon] options unavailable: {e}")
+        return {"families": [], "powers": []}
+
+
+def _canonical_deity(name: Optional[str]) -> Optional[str]:
+    """Normalise a written patron to the power's canonical name.
+
+    A player may type "serath" or "Serath the Dawnmother"; both must end up as
+    the same string on the sheet, or the worship edge and divine retribution
+    won't find the god. An unrecognised name is kept verbatim — a local saint or
+    a power the DM has yet to canonise is a legitimate answer.
+    """
+    if not name or not str(name).strip():
+        return None
+    raw = str(name).strip()
+    try:
+        from eight_card_system import pantheon as _pan
+        power = _pan.power_by_name(raw, world)
+        return power["name"] if power else raw
+    except Exception:
+        return raw
+
+
+@app.get("/pantheon")
+def pantheon_endpoint():
+    """The world's living powers, by family — the source the CC picker uses.
+
+    Also the honest answer to "what gods are there?" for the bot and for tooling:
+    it reflects the graph, so it includes anything a divine event has added.
+    """
+    return _pantheon_options()
 
 
 @app.post("/cc/roll_abilities")
@@ -10811,7 +10859,7 @@ def import_ddb_endpoint(req: DDBImportRequest):
             ddb_url=req.url,
             approved=True,
             home_region=req.home_region,
-            deity=(parsed.get("deity") or None),
+            deity=_canonical_deity(parsed.get("deity")),
             max_hp=start_hp, current_hp=start_hp,
             hit_die=hit_die, hit_dice_total=1, hit_dice_remaining=1,
             rations=surv.starting_rations, water=surv.starting_water,
