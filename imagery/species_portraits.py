@@ -16,6 +16,11 @@ Run (on the machine where ComfyUI is up):
     uv run python -m imagery.species_portraits --dry-run    # print prompts only
     uv run python -m imagery.species_portraits --species dwarf,tiefling --force
     uv run python -m imagery.species_portraits --sex f --list
+    uv run python -m imagery.species_portraits --audit [--prune]   # dead files
+
+``--audit`` compares what's on disk against every filename the CC menu can ask
+for (see ``expected_files``) and names the strays — a species that leaves the
+rules DB leaves its art behind. ``--prune`` deletes them.
 
 Nothing is committed automatically — review the art, then add the ones you want.
 """
@@ -51,18 +56,83 @@ _FRAMING = ("head and shoulders character portrait, three-quarter view facing "
 # of the global style_prompt for portraits so scenes/items keep their own look.
 _SPECIES_STYLE = ("soft painterly digital painting, semi-realistic stylized "
                   "fantasy character portrait, warm naturalistic lighting, "
-                  "appealing expressive face with large lively eyes, smooth "
-                  "confident brushwork with fine detail, muted warm earthy "
-                  "palette, gentle atmosphere, high-quality fantasy character art")
+                  "smooth confident brushwork with fine detail, muted warm "
+                  "earthy palette, gentle atmosphere, high-quality fantasy "
+                  "character art")
+# "An appealing face with large lively eyes" is lovely on a human and poison on
+# a kenku — it is the single clause that quietly pulls every species back
+# toward a pretty human. So it is only added for the peoples it suits.
+_STYLE_HUMANLIKE = "appealing expressive face with large lively eyes"
+_STYLE_CREATURE = ("believable non-human anatomy, the species' own skull shape "
+                   "and eyes, creature-design integrity")
 # Light grounding so faces stay characterful rather than airbrushed. Males and
 # non-small females get a touch of natural realism; the SMALL folk females read
 # cuter (a weathered look is wrong on the little peoples).
 _GRIT = "grounded semi-realism, natural skin texture, characterful weathered look"
-_GRIT_FEM = ("cute and pretty, endearing charming face, soft rounded youthful "
-             "features, large expressive eyes, smooth complexion, adorable")
+# "Youthful" plus a small stature is how the gnome and halfling women came back
+# as human CHILDREN. They are grown adults with soft round faces — say both.
+_GRIT_FEM = ("an adult woman with a charming endearing face, soft rounded "
+             "features, warm expressive eyes, smooth complexion, laugh lines, "
+             "grown-up poise")
 _NEG_EXTRA = ("full body, multiple people, crowd, nudity, nsfw, modern clothing, "
               "photograph, low detail, plastic skin, airbrushed, harsh, ugly, "
               "grimdark, horror")
+# The small folk are the ones a "cute" style turns into children.
+_NEG_CHILD = "child, little girl, little boy, teenager, baby face, toddler, youth"
+
+# ---- keeping a species from collapsing into a human ------------------------
+#
+# The descriptors below are accurate and detailed, and the model still handed
+# back a handsome human for firbolg, triton, goliath, aasimar, kalashtar,
+# reborn, changeling and shifter. The reason is dilution, not description: the
+# species clause is ~25 words at the head of a ~90-word prompt whose tail is all
+# flattering-human-portrait language. The fix is to weight the species clause,
+# repeat its name as an anchor, and say in the NEGATIVE what it must not be.
+#
+# Three tiers, because "not human" means different things:
+#   human    — is a human; push nothing.
+#   kindred  — a human-shaped face carrying unmistakable species traits; push
+#              away from a PLAIN human, not from a human face.
+#   creature — a non-human head; push away from a human face outright.
+_HUMAN_SPECIES = {"human", "custom-lineage", "variant-human", "half-elf",
+                  "khoravar"}
+_CREATURE_SPECIES = {"dragonborn", "lizardfolk", "kobold", "kenku", "tabaxi",
+                     "warforged", "firbolg"}
+
+_NEG_KINDRED = ("plain ordinary human, generic human portrait, unmarked human "
+                "face, the species traits missing, human cosplay, costume")
+_NEG_CREATURE = (_NEG_KINDRED + ", human face, human head, human nose, "
+                 "human skin, human hair, mostly human")
+# Sex drifts under a style this flattering — changeling, tiefling and yuan-ti
+# all came back as women in their MALE slot. Name it in the negative.
+_NEG_BY_SEX = {
+    "m": "woman, female, feminine face, lipstick, long eyelashes, breasts",
+    "f": "man, male, masculine jaw, stubble",
+}
+
+
+def species_tier(slug: str) -> str:
+    """'human' | 'kindred' | 'creature' — how hard to push off a human face."""
+    s = _norm(slug)
+    if s in _HUMAN_SPECIES:
+        return "human"
+    if s in _CREATURE_SPECIES:
+        return "creature"
+    return "kindred"
+
+
+def species_negative(base_negative: str, slug: str, sex: str,
+                     small: bool = False) -> str:
+    """The negative prompt for one species/sex render."""
+    tier = species_tier(slug)
+    parts = [base_negative, _NEG_EXTRA, _NEG_BY_SEX.get(sex, "")]
+    if tier == "creature":
+        parts.append(_NEG_CREATURE)
+    elif tier == "kindred":
+        parts.append(_NEG_KINDRED)
+    if small:
+        parts.append(_NEG_CHILD)
+    return ", ".join(p for p in parts if p)
 
 # Species art is only ever shown small in the CC menu (cards ~100px, the detail
 # preview ~250px), so we store it far smaller than scene art — big space saving
@@ -95,12 +165,19 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
                   "weathered skin, heavy brow, deep-set eyes, braided hair with "
                   "rings, stern proud expression, rugged armor",
         "male": "a dwarven man with a long thick braided beard",
-        "female": "a dwarven woman, strong features, elaborately braided hair "
-                  "(no beard), often braided sideburns"},
+        # Left at "strong features" the women came back as human travellers —
+        # the dwarven build has to be named as loudly as the beard is.
+        "female": "a dwarven woman: a broad blunt face, a wide flat nose, a "
+                  "heavy jaw and thick neck, ruddy weathered cheeks, elaborately "
+                  "braided hair and braided sideburns, no beard, stout and "
+                  "powerfully built, never a slender human"},
     "halfling": {
-        "shared": "a small halfling with an adult but soft round face, curly hair, "
-                  "rosy cheeks, warm cheerful eyes, simple rustic clothing, "
-                  "childlike stature but clearly a grown adult",
+        "shared": "a halfling: a fully grown adult of a very small people, a "
+                  "broad soft ROUND face with full round cheeks and a small "
+                  "upturned nose, thick curly hair, slightly oversized head for "
+                  "the body, warm cheerful crinkled eyes, laugh lines, ruddy "
+                  "complexion, simple rustic homespun clothing — a small adult, "
+                  "never a human child or teenager",
         "male": "a jovial halfling man, curly hair, maybe light stubble",
         "female": "a cheerful halfling woman, bouncy curls"},
     "gnome": {
@@ -161,18 +238,25 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
                   "scaled neck, ornate warrior's armor",
         "male": "a broad dragonborn warrior, heavier jaw and brow horns",
         "female": "a sleek dragonborn, finer features, subtle crest"},
+    # Subtlety is what made these two render as plain handsome humans: a
+    # "faint" glow and a "gray-toned" skin lose every argument with a warm
+    # portrait style. The marks are stated as unmissable facts instead.
     "aasimar": {
-        "shared": "an aasimar, a celestial-touched human of ethereal beauty, "
-                  "luminous softly-glowing eyes, faintly radiant skin sometimes "
-                  "flecked with metallic light, a suggestion of a halo, serene "
-                  "otherworldly presence",
-        "male": "a radiant aasimar man, noble calm features",
-        "female": "a radiant aasimar woman, luminous and graceful"},
+        "shared": "an aasimar, a celestial-blooded being, skin visibly lit from "
+                  "within with a soft golden glow, eyes shining solid luminous "
+                  "silver-white with no visible pupil, delicate glowing filigree "
+                  "markings tracing the cheekbones and brow, a faint ring of "
+                  "light hanging behind the head, hair with a metallic sheen, "
+                  "unmistakably not mortal",
+        "male": "a radiant aasimar man, noble calm features, glowing sigils",
+        "female": "a radiant aasimar woman, luminous and graceful, glowing sigils"},
     "goliath": {
-        "shared": "a goliath, enormous and towering, gray stone-toned skin marked "
-                  "with darker mottled patches and lithoderm bony growths, "
-                  "sweeping tribal tattoos, a bald or minimally-haired head, a "
-                  "heavy stony brow, mountain-giant heritage, tremendous muscle",
+        "shared": "a goliath, enormous and towering, skin the flat cold gray of "
+                  "granite all over — stone-gray, not tanned — mottled with "
+                  "darker slate patches and studded with raised bony lithoderm "
+                  "growths across the brow, jaw and shoulders, dark tribal "
+                  "markings, a bald head, a heavy jutting stony brow ridge, "
+                  "small deep-set eyes, mountain-giant heritage, colossal muscle",
         "male": "a massive goliath man, jutting jaw, stony ridges",
         "female": "a towering goliath woman, angular stone-marked features"},
 }
@@ -338,11 +422,28 @@ def species_from_db() -> List[Tuple[str, Dict[str, str]]]:
 
 
 def build_positive(look: Dict[str, str], sex: str, style_prompt: str,
-                   cute: bool = False, skip_grit: bool = False) -> str:
+                   cute: bool = False, skip_grit: bool = False,
+                   slug: str = "") -> str:
+    """The positive prompt for one species/sex portrait.
+
+    The species clause is CLIP-weighted and its name repeated at the tail: it
+    has to outweigh the portrait-style language that follows it, or the render
+    drifts back to a good-looking human (see the tier notes above).
+    """
     sexed = look.get("male" if sex == "m" else "female", "")
-    parts = [look.get("shared", ""), sexed, _FRAMING, style_prompt]
+    shared = look.get("shared", "")
+    tier = species_tier(slug)
+    anchor = _norm(slug).replace("-", " ")
+    parts = [f"({shared}:1.35)" if shared and tier != "human" else shared,
+             sexed,
+             "a male" if sex == "m" else "a female",
+             _FRAMING,
+             _STYLE_HUMANLIKE if tier == "human" else _STYLE_CREATURE,
+             style_prompt]
     if not skip_grit:   # a style reference (IP-Adapter) defines the mood instead
         parts.append(_GRIT_FEM if (sex == "f" and cute) else _GRIT)
+    if tier != "human" and anchor:
+        parts.append(f"({anchor}:1.2)")   # last word on what this is
     return ", ".join(p for p in parts if p)
 
 
@@ -386,7 +487,7 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
 
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
     style = _SPECIES_STYLE   # portrait-specific look (not the global scene style)
-    negative = f"{cfg.negative_prompt}, {_NEG_EXTRA}"
+    base_negative = cfg.negative_prompt
     small = small_race_slugs()   # their females render cuter
     # A style reference (IP-Adapter style-transfer) defines the whole set's look
     # from one image; drop the grit descriptors so the reference's mood leads.
@@ -424,12 +525,13 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
         n = state["style_ref_name"]
         return [n] if n else None
 
-    def render(out: Path, positive: str, tag: str, ref_files=None) -> bool:
+    def render(out: Path, positive: str, negative: str, tag: str,
+               ref_files=None) -> bool:
         """Render one portrait. Returns False only on a fatal backend outage
         (stops the batch); a per-image failure is logged and skipped."""
         nonlocal made
         if dry_run:
-            print(f"\n=== {tag} ===\n{positive}")
+            print(f"\n=== {tag} ===\n+ {positive}\n- {negative}")
             return True
         if out.exists() and not force:
             print(f"· {tag}: exists, skipping (use --force to regenerate)")
@@ -487,7 +589,10 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
                         if ref_cache[key]:
                             ref_files = [ref_cache[key]]
                 cute = sex == "f" and _norm(slug) in small
-                if not render(out, build_positive(look, sex, style, cute, skip_grit),
+                if not render(out,
+                              build_positive(look, sex, style, cute, skip_grit, slug),
+                              species_negative(base_negative, slug, sex,
+                                               _norm(slug) in small),
                               f"{slug}-{sex}", ref_files):
                     return made
 
@@ -496,12 +601,70 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
         for sex in sexes:
             cute = sex == "f" and _norm(race_slug) in small
             ref_files = style_ref_files() if (use_style_ref and not dry_run) else None
+            # A lineage inherits its parent species' tier (a red dragonborn
+            # is as non-human as a dragonborn).
             if not render(_OUT_DIR / f"{race_slug}-{lin_slug}-{sex}.webp",
-                          build_positive(look, sex, style, cute, skip_grit),
+                          build_positive(look, sex, style, cute, skip_grit, race_slug),
+                          species_negative(base_negative, race_slug, sex,
+                                           _norm(race_slug) in small),
                           f"{race_slug}-{lin_slug}-{sex}", ref_files):
                 return made
 
     return made
+
+
+def expected_files() -> set:
+    """Every filename the CC menu can ask for, from the live race list.
+
+    Mirrors `speciesPortraitFor` in the client: `<race>-<sex>.webp` for each
+    species plus `<race>-<lineage>-<sex>.webp` for each of its lineages. Any
+    file on disk outside this set is dead weight (a species that left the DB —
+    half-elf and half-orc, folded away by the 2024 rules, were the first).
+    """
+    want: set = set()
+    try:
+        from sqlmodel import Session, select
+        from rules.query import RulesLibrary
+        from rules.models import Race
+        lib = RulesLibrary()
+        with Session(lib.engine) as s:
+            races = s.exec(select(Race)).all()
+    except Exception as e:
+        print(f"[species] race list unavailable ({e}); cannot audit.")
+        return want
+    for r in races:
+        lins = [_norm(l.get("slug") or "") for l in (getattr(r, "lineages", None) or [])
+                if isinstance(l, dict)]
+        for sex in ("m", "f"):
+            want.add(f"{r.index_slug}-{sex}.webp")
+            for lin in lins:
+                if lin:
+                    want.add(f"{r.index_slug}-{lin}-{sex}.webp")
+    return want
+
+
+def audit(prune: bool = False) -> int:
+    """Report (and optionally delete) species art the menu can never ask for."""
+    want = expected_files()
+    if not want:
+        return 1
+    have = {p.name for p in _OUT_DIR.glob("*.webp")}
+    orphans = sorted(have - want)
+    # Lineages we deliberately don't draw (mechanical-only ones fall back to the
+    # base species) are "missing" by design, so they're reported, never fixed.
+    missing = sorted(want - have)
+    print(f"{len(have)} file(s) on disk · {len(want)} the menu can ask for\n")
+    print(f"ORPHANED — never requested ({len(orphans)}):")
+    for n in orphans:
+        print(f"   {n}")
+        if prune:
+            (_OUT_DIR / n).unlink()
+    if prune and orphans:
+        print(f"   → deleted {len(orphans)} file(s)")
+    print(f"\nNO ART — falls back to the base species, or hides ({len(missing)}):")
+    for n in missing:
+        print(f"   {n}")
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -511,6 +674,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--force", action="store_true", help="regenerate even if a file exists")
     ap.add_argument("--dry-run", action="store_true", help="print prompts, generate nothing")
     ap.add_argument("--list", action="store_true", help="list the species that would be covered")
+    ap.add_argument("--audit", action="store_true",
+                    help="report art files the CC menu can never ask for (and which "
+                         "species have none), then exit")
+    ap.add_argument("--prune", action="store_true",
+                    help="with --audit: delete the orphaned files")
     ap.add_argument("--ref-dir", help="folder of reference images (<slug>.png/jpg) to "
                     "condition each species on via IP-Adapter — 'use real art references'. "
                     "Requires use_ipadapter enabled + the ComfyUI_IPAdapter_plus nodes.")
@@ -528,6 +696,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "match (IP-Adapter style-transfer). Grit descriptors are dropped so the "
                     "reference's look leads. Pair with --ip-weight (~0.8-1.0).")
     a = ap.parse_args(argv)
+
+    if a.audit:
+        return audit(prune=a.prune)
 
     if a.list:
         overrides = _load_look_overrides()
