@@ -75,6 +75,7 @@ class BuiltPrompt:
     descriptor: str        # the intrinsic-appearance text
     descriptor_hash: str   # stable hash of descriptor (kind+ref+descriptor)
     caption: str
+    kind: str = ""         # normalized ImageKind — picks the render's LoRA stack
 
 
 def _hash(*parts: str) -> str:
@@ -144,4 +145,5 @@ def build_prompt(
         descriptor=descriptor,
         descriptor_hash=descriptor_hash,
         caption=caption,
+        kind=kind,
     )

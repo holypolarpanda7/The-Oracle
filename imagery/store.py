@@ -116,6 +116,12 @@ class ImageStore:
         from game_config import get_config
         return get_config().imagery
 
+    def _loras_for(self, cfg, kind: str) -> list:
+        """The LoRA stack for one render: the kind's own, else the house style."""
+        by_kind = getattr(cfg, "loras_by_kind", None) or {}
+        return list(by_kind.get(normalize_kind(kind) if kind else "",
+                                getattr(cfg, "loras", None) or []))
+
     def _client_for(self, cfg) -> ComfyClient:
         if self._client is None:
             self._client = client_from_config(cfg)
@@ -224,10 +230,15 @@ class ImageStore:
         need the canvas to match the board's aspect ratio, not a square portrait.
         An explicit ``seed`` makes a render reproducible (a map regenerated from
         its layout seed comes back looking the same).
+
+        The LoRA stack is chosen from ``prompt.kind``: the house style for
+        everything, unless that kind is listed in ``loras_by_kind`` (a map's job
+        is the opposite of a portrait's — see the config note).
         """
         seed = random.randint(0, 2**31 - 1) if seed is None else int(seed)
         try:
             client = self._client_for(cfg)
+            client.loras = self._loras_for(cfg, getattr(prompt, "kind", ""))
             raw = client.generate(
                 prompt.positive,
                 prompt.negative,

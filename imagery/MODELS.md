@@ -127,17 +127,47 @@ PERSON.
 uv run python -m imagery.species_portraits --lineages --kin --force --species gnome
 ```
 
-## LoRA
+## LoRA — and which situation gets which
 
-Wired but **nothing installed** (`ComfyUI/models/loras/` is empty). This is the
-real fix for "the whole set should look like one set": it moves art direction
-out of the prompt entirely, freeing the words for anatomy. Configure as
+Wired but **nothing installed** (`ComfyUI/models/loras/` is empty).
+
+The tempting idea is a different LoRA per situation. Mostly resist it. There
+are two kinds of LoRA and they answer different questions:
+
+* a **STYLE** LoRA changes *how* a thing is drawn. Varying this per mood is how
+  a game ends up looking like several games. One house style, everywhere, is
+  the whole point — and it moves art direction out of the prompt entirely,
+  handing the text budget back to anatomy, which is what four rounds of
+  species-prompt surgery were actually fighting.
+* a **SUBJECT/FUNCTION** LoRA changes *what* is drawn, or how it must be
+  constructed. This one IS legitimately per-situation, because some renders
+  have a different job.
+
+In this pipeline exactly one kind has a different job:
+
+| ImageKind | LoRA |
+|---|---|
+| `pc` `npc` `creature` `place` `item` `scene` | the house style — `loras` |
+| `map` | a battlemap LoRA — `loras_by_kind["map"]` |
+
+A battlemap must be dead-flat overhead with no perspective and no figures (see
+`_MAP_NEGATIVE`) — the exact opposite of the cinematic rim-lit look everything
+else wants, and today that fight is fought entirely in the negative prompt. A
+battlemap LoRA moves it into the weights, the same argument that made PAG win.
 
 ```python
-loras = [{"name": "my_style_xl.safetensors", "model": 0.8, "clip": 0.8}]
+loras = [{"name": "house_style_xl.safetensors", "model": 0.8, "clip": 0.8}]
+loras_by_kind = {"map": [{"name": "dnd_battlemaps_xl.safetensors", "model": 0.9}]}
 ```
 
-Applied in order; drop the files in `ComfyUI/models/loras/`.
+A kind listed in `loras_by_kind` uses its list INSTEAD of `loras`, not on top.
+
+### Two cautions
+* LoRAs are trained against a checkpoint family. One trained on SDXL/Juggernaut
+  will not behave on the Pony `checkpoint_mature`; either curate a second set
+  or leave the mature path bare.
+* Start at `model: 0.6-0.8`. A style LoRA at 1.0 will happily overpower the
+  species descriptors we just spent four rounds getting right.
 
 ## Card legibility: it was never a detail problem
 

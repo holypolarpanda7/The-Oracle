@@ -278,10 +278,25 @@ class ImageryConfig:
     # style and anatomy were fighting for room in one text budget.
     #
     # LoRAs: [{"name": "<file>.safetensors", "model": 0.8, "clip": 0.8}, ...],
-    # applied in order. A STYLE LoRA is the real fix for "the whole set should
-    # look like one set" — it moves art direction out of the prompt entirely,
-    # freeing the words for anatomy. Drop files in ComfyUI/models/loras/.
+    # applied in order. Drop the files in ComfyUI/models/loras/.
+    #
+    # `loras` is the HOUSE STYLE and applies to every render. That is the point:
+    # one art direction across portraits, places, creatures, items and scenes is
+    # what makes the game look like one game, and it moves that art direction
+    # out of the prompt entirely — freeing the whole text budget for anatomy,
+    # which is what four rounds of species-prompt surgery were really fighting.
+    # Resist the urge to vary style per mood; that just makes it look like
+    # several games.
     loras: List[Dict[str, Any]] = field(default_factory=list)
+    # `loras_by_kind` overrides the house style for a specific ImageKind, and
+    # exists for kinds whose JOB is different, not whose mood is. In practice
+    # that means "map": a battlemap must be dead-flat overhead with no
+    # perspective (see _MAP_NEGATIVE in prompt_build) — the exact opposite of
+    # the cinematic rim-lit look everything else wants. A battlemap LoRA fights
+    # that battle in the weights instead of the prompt.
+    #   {"map": [{"name": "dnd_battlemaps_xl.safetensors", "model": 0.9}]}
+    # A kind listed here uses ITS list INSTEAD of `loras`, not in addition.
+    loras_by_kind: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
     # RescaleCFG (0..1) lets you raise `cfg_scale` without the blown-out colour
     # high CFG normally causes. MEASURED WORSE for this pipeline: on the
     # goliath probe, cfg 10 + rescale 0.7 pushed the render further toward a
