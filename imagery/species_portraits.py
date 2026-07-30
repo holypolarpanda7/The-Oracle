@@ -97,7 +97,7 @@ _NEG_CHILD = "child, little girl, little boy, teenager, baby face, toddler, yout
 _HUMAN_SPECIES = {"human", "custom-lineage", "variant-human", "half-elf",
                   "khoravar"}
 _CREATURE_SPECIES = {"dragonborn", "lizardfolk", "kobold", "kenku", "tabaxi",
-                     "warforged", "firbolg"}
+                     "warforged"}
 
 _NEG_KINDRED = ("plain ordinary human, generic human portrait, unmarked human "
                 "face, the species traits missing, human cosplay, costume")
@@ -107,7 +107,11 @@ _NEG_CREATURE = (_NEG_KINDRED + ", human face, human head, human nose, "
 # all came back as women in their MALE slot. Name it in the negative.
 _NEG_BY_SEX = {
     "m": "woman, female, feminine face, lipstick, long eyelashes, breasts",
-    "f": "man, male, masculine jaw, stubble",
+    # Dwarf art is so beard-dominated that a dwarven WOMAN comes back bearded
+    # unless it is negated outright. No species' women want facial hair here
+    # (dwarven braided sideburns are hair, and survive this).
+    "f": "man, male, masculine jaw, stubble, beard, moustache, goatee, "
+         "facial hair",
 }
 
 
@@ -122,8 +126,14 @@ def species_tier(slug: str) -> str:
 
 
 def species_negative(base_negative: str, slug: str, sex: str,
-                     small: bool = False) -> str:
-    """The negative prompt for one species/sex render."""
+                     small: bool = False,
+                     look: Optional[Dict[str, str]] = None) -> str:
+    """The negative prompt for one species/sex render.
+
+    A look may carry its own ``negative``: saying "NO horns" in the positive
+    does nothing (diffusion has no negation), so a species that keeps growing
+    something it shouldn't — the firbolg's cattle horns — vetoes it here.
+    """
     tier = species_tier(slug)
     parts = [base_negative, _NEG_EXTRA, _NEG_BY_SEX.get(sex, "")]
     if tier == "creature":
@@ -132,6 +142,7 @@ def species_negative(base_negative: str, slug: str, sex: str,
         parts.append(_NEG_KINDRED)
     if small:
         parts.append(_NEG_CHILD)
+    parts.append((look or {}).get("negative", ""))
     return ", ".join(p for p in parts if p)
 
 # Species art is only ever shown small in the CC menu (cards ~100px, the detail
@@ -141,7 +152,8 @@ _STORE_WIDTH = 512
 _WEBP_QUALITY = 80
 
 # Canon-accurate looks for the common SRD/PHB species. Each entry: shared traits
-# plus a male/female cue. These are generic fantasy-species descriptions (own
+# plus a male/female cue, and optionally a ``negative`` the species must never
+# grow (see species_negative). These are generic fantasy-species descriptions (own
 # words), NOT any book's text.
 SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
     "human": {
@@ -167,10 +179,11 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
         "male": "a dwarven man with a long thick braided beard",
         # Left at "strong features" the women came back as human travellers —
         # the dwarven build has to be named as loudly as the beard is.
-        "female": "a dwarven woman: a broad blunt face, a wide flat nose, a "
-                  "heavy jaw and thick neck, ruddy weathered cheeks, elaborately "
-                  "braided hair and braided sideburns, no beard, stout and "
-                  "powerfully built, never a slender human"},
+        "female": "a dwarven WOMAN, clearly female and clean-shaven, but built "
+                  "like a dwarf: a broad heavy-boned face, wide jaw, a large "
+                  "blunt nose, ruddy weathered cheeks, thick neck and massive "
+                  "shoulders, long elaborately braided hair with rings and "
+                  "braided sideburns — short and stocky, not a slim human"},
     "halfling": {
         "shared": "a halfling: a fully grown adult of a very small people, a "
                   "broad soft ROUND face with full round cheeks and a small "
@@ -592,7 +605,7 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
                 if not render(out,
                               build_positive(look, sex, style, cute, skip_grit, slug),
                               species_negative(base_negative, slug, sex,
-                                               _norm(slug) in small),
+                                               _norm(slug) in small, look),
                               f"{slug}-{sex}", ref_files):
                     return made
 
@@ -606,7 +619,7 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
             if not render(_OUT_DIR / f"{race_slug}-{lin_slug}-{sex}.webp",
                           build_positive(look, sex, style, cute, skip_grit, race_slug),
                           species_negative(base_negative, race_slug, sex,
-                                           _norm(race_slug) in small),
+                                           _norm(race_slug) in small, look),
                           f"{race_slug}-{lin_slug}-{sex}", ref_files):
                 return made
 

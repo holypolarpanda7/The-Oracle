@@ -4,6 +4,33 @@ An AI Dungeon Master for Discord that runs a persistent, living D&D world.
 Players create a character, "enter the world," and adventure while an LLM narrates.
 
 ## Environment
+
+> **Reaching Windows services from WSL — read this before concluding "it's down".**
+> The GPU services (ComfyUI :8188, Ollama :11434) and the Cloudflare tunnel run
+> as **Windows** processes. WSL2 has its own network namespace, so `curl
+> 127.0.0.1:8188` from the Linux side ALWAYS fails and proves nothing. The
+> bridge is the project's **Windows venv**, which is callable straight from WSL:
+> ```bash
+> ./.venv/Scripts/python.exe -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8188/system_stats',timeout=6).read()[:80])"
+> ```
+> (`.venv` = Windows/`Scripts`; `.venv-linux` = what `uv run` uses in WSL.)
+> Anything that must TALK to those services — the species-portrait generator,
+> any diffusion render, an Ollama call — has to run under `./.venv/Scripts/python.exe`,
+> not `uv run`. Use `uv run` for everything else (tests, DB work, parsing).
+>
+> Env vars do **not** cross into a Windows process by default; name them in
+> `WSLENV` or they arrive as `None`. Windows paths, not `/mnt/...`:
+> ```bash
+> DATABASE_URL="sqlite:///D:/path/no spaces/oracle.db" WSLENV=DATABASE_URL \
+>   ./.venv/Scripts/python.exe -m imagery.species_portraits --audit
+> ```
+>
+> If ComfyUI really is stopped, start it yourself and wait ~40s:
+> ```bash
+> cd /mnt/d/ComfyUI && nohup ./.venv/Scripts/python.exe main.py --listen 127.0.0.1 --port 8188 > /tmp/comfy.log 2>&1 &
+> ```
+> (`launcher/run_comfyui.bat` is the same command; `COMFYUI_HOME` defaults to
+> `D:\ComfyUI`. The launcher starts it, the backend, the bot and the tunnel.)
 - **Package manager**: `uv` (`uv run` to execute, `uv add` to add deps)
 - **Python**: 3.12+
 - **Config**: `pyproject.toml` (deps live here; `requirements.txt` is legacy)
