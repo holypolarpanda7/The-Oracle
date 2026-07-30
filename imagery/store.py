@@ -262,6 +262,9 @@ class ImageStore:
         seed: Optional[int] = None,
         max_per_bucket: Optional[int] = None,
         store_width: Optional[int] = None,
+        style_prompt: Optional[str] = None,
+        negative_extra: str = "",
+        drop_stale: bool = False,
     ) -> Optional[ImageResult]:
         """Return an image for (subject x context), reusing or generating as needed.
 
@@ -272,6 +275,13 @@ class ImageStore:
         is a no-op unless ``checkpoint_mature`` is configured. A mature render is
         NEVER stored — it short-circuits to a throwaway ``generate_temp`` render,
         so NSFW art never persists to the DB (safe art still caches/reuses).
+
+        ``style_prompt`` replaces the house art direction for this one render —
+        the standing style is ornate and jewel-toned, which is wrong for a pair
+        of workman's boots. ``negative_extra`` appends to the configured
+        negatives for the same reason. ``drop_stale`` first discards anything in
+        this bucket that was drawn from a DIFFERENT descriptor, for callers whose
+        look recipe can change under them.
         """
         cfg = self._cfg()
         if not cfg.enabled:
@@ -293,8 +303,9 @@ class ImageStore:
         ckey = context_key(context)
         prompt = build_prompt(
             kind, subject, look=look, context=context, ref_slug=ref,
-            style_prompt=cfg.style_prompt,
-            negative_prompt=cfg.negative_prompt,
+            style_prompt=(cfg.style_prompt if style_prompt is None else style_prompt),
+            negative_prompt=", ".join(
+                p for p in (cfg.negative_prompt, negative_extra) if p),
             extra=extra,
         )
 
@@ -303,6 +314,16 @@ class ImageStore:
         cap = int(max_per_bucket if max_per_bucket is not None else cfg.max_per_bucket)
 
         with Session(self.engine) as s:
+            if drop_stale:
+                # The recipe for this subject's look changed, so anything drawn
+                # from the old one is wrong, not merely a variant. Clear it out
+                # rather than keep drawing it at random.
+                stale = [r for r in self._bucket(s, kind, ref, ckey)
+                         if r.descriptor_hash != prompt.descriptor_hash]
+                for r in stale:
+                    s.delete(r)
+                if stale:
+                    s.commit()
             existing = self._bucket(s, kind, ref, ckey)
             # Full bucket (or explicitly no new render) -> random draw.
             if existing and (force_new is False) and len(existing) >= cap:
@@ -644,7 +665,7 @@ class ImageStore:
 
     def generate_gear_look(
         self, character_name: str, label: str, *,
-        look: str = "", description: str = "",
+        look: str = "", description: str = "", seed: Optional[int] = None,
     ) -> Optional[ImageResult]:
         """Render + store an equipped-gear portrait variant (its own slot).
 
@@ -652,6 +673,9 @@ class ImageStore:
         ``label`` is stored as the look's caption so the UI can name it. Returns
         ``None`` when imagery is disabled and an ``offline`` result (nothing
         stored) when the backend is down. Callers enforce the max-looks cap.
+
+        Pass the base portrait's ``seed`` to start the variant from the same
+        noise, which keeps the face (and skin tone) recognisably the same person.
         """
         cfg = self._cfg()
         if not cfg.enabled:
@@ -660,7 +684,7 @@ class ImageStore:
         self.invalidate_context(ImageKind.PC, character_name, ctx)
         res = self.ensure_image(
             ImageKind.PC, character_name,
-            look=look or description, context=ctx, force_new=True,
+            look=look or description, context=ctx, force_new=True, seed=seed,
         )
         # Stamp the human label as the caption so lists/switchers can name it.
         if res is not None and res.image_id and not res.offline and label:

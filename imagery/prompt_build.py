@@ -18,9 +18,18 @@ _KIND_FRAMING = {
     ImageKind.PLACE: "wide establishing shot of a location, environment scenery, no characters in focus",
     ImageKind.NPC: "character portrait, upper body, expressive face, single figure",
     ImageKind.CREATURE: "full-body creature illustration, dynamic pose, menacing presence",
-    ImageKind.ITEM: "single object study on a neutral background, museum lighting",
+    ImageKind.ITEM: (
+        "single object study, the whole object shown complete and in one piece, "
+        "centered on a plain neutral background, even museum lighting"
+    ),
     ImageKind.PC: "heroic character portrait, head and shoulders, detailed face, single figure, adventurer",
-    ImageKind.SCENE: "dynamic action scene, mid-motion, cinematic wide composition, dramatic moment",
+    # Deliberately NOT "dynamic action, mid-motion": a scene is whatever was
+    # described, and a player who asks to see a quiet throne room should not get
+    # a fight. The framing says "draw this moment", the description says which.
+    ImageKind.SCENE: (
+        "cinematic illustration of this exact moment, composed around what is "
+        "described above and nothing else, single coherent scene"
+    ),
     # A battlemap is furniture for the rules, not a picture: dead-flat overhead,
     # no perspective, no figures, so the grid the engine enforces lines up with
     # what the players see.
@@ -30,6 +39,24 @@ _KIND_FRAMING = {
         "even diffuse lighting, full-bleed edge to edge"
     ),
 }
+
+#: Coherence clauses appended for kinds that depict a person. Diffusion models
+#: happily give a red-haired dwarf a black beard, or shift a skin tone between
+#: two renders of the same character; saying the constraint out loud (and
+#: negating the failure below) holds a face together across a set of looks.
+_FIGURE_COHERENCE = (
+    "consistent colouring, facial hair exactly the same colour as the hair on "
+    "the head, eyebrows matching the hair, one uniform skin tone over face neck "
+    "and hands"
+)
+
+#: ...and the matching negatives. These name the actual failure modes rather
+#: than generic quality tags, which the configured negative prompt covers.
+_FIGURE_NEGATIVE = (
+    "mismatched beard colour, beard a different colour from the hair, two-tone "
+    "hair, dyed streaks, patchy skin tone, discoloured face, blotchy skin, "
+    "colour shift between face and body"
+)
 
 #: Extra negatives that only make sense for a battlemap — anything that would
 #: fight the grid, the tokens, or the flat overhead framing.
@@ -85,7 +112,14 @@ def build_prompt(
     descriptor = subject if not look else f"{subject}, {look}"
     descriptor_hash = _hash(kind, ref_slug or subject, descriptor)
 
-    pieces = [descriptor, framing]
+    # A scene is a one-off request for a SPECIFIC moment, usually because a
+    # player asked to see it — so what was described has to outweigh the house
+    # style trailing it. CLIP emphasis puts the thumb on that side of the scale.
+    lead = f"({descriptor}:1.3)" if kind == ImageKind.SCENE and descriptor \
+        else descriptor
+    pieces = [lead, framing]
+    if kind in (ImageKind.PC, ImageKind.NPC):
+        pieces.append(_FIGURE_COHERENCE)
     if context:
         pieces.append(f"in {context}")
     if extra:
@@ -96,6 +130,8 @@ def build_prompt(
 
     if kind == ImageKind.MAP:
         negative_prompt = ", ".join(p for p in (negative_prompt, _MAP_NEGATIVE) if p)
+    elif kind in (ImageKind.PC, ImageKind.NPC):
+        negative_prompt = ", ".join(p for p in (negative_prompt, _FIGURE_NEGATIVE) if p)
 
     caption_bits = [subject]
     if context:

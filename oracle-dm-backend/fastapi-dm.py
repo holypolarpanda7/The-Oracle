@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 # Database (SQLModel)
 from sqlmodel import SQLModel, Field, create_engine, Session, select
-from sqlalchemy import Column, JSON, String, Text, func
+from sqlalchemy import Column, Integer, JSON, String, Text, func
 from typing import Any
 from datetime import datetime, timezone
 
@@ -320,6 +320,8 @@ async def lifespan(app: FastAPI):
                     ("gender", "TEXT"),
                     ("notes", "TEXT"),
                     ("active_portrait", "TEXT"),
+                    ("appearance", "TEXT"),
+                    ("portrait_seed", "INTEGER"),
                     ("created_at", "DATETIME"),
                     ("updated_at", "DATETIME"),
                 ]
@@ -1019,6 +1021,14 @@ class Character(SQLModel, table=True):
     # active portrait image — ``"portrait"`` (or None) = the base look,
     # ``"portrait-gear-*"`` = an equipped-gear variant the player rendered.
     active_portrait: Optional[str] = Field(default=None, sa_column=Column(String))
+    # The player's own words for how this character LOOKS — skin, hair, scars,
+    # bearing. Captured the first time they summon a portrait and reused for
+    # every later render, so a re-geared look is the same person in new armour
+    # rather than a fresh roll of the dice.
+    appearance: Optional[str] = Field(default=None, sa_column=Column(String))
+    # Diffusion seed of the base portrait. Re-used by gear looks so the face
+    # carries over instead of drifting between variants.
+    portrait_seed: Optional[int] = Field(default=None, sa_column=Column(Integer))
 
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
@@ -1322,6 +1332,11 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict],
                     extra=rq.get("look") or "", reference_refs=refs,
                     mature=req_mature,
                 )
+            elif (rq.get("kind") or "").strip().lower() == "item" \
+                    and not (rq.get("look") or "").strip():
+                # No look given: ground the object in the catalog rather than
+                # let the bare name and the ornate house style invent one.
+                result = _item_art(subject, rq.get("context") or "inspect")
             else:
                 result = image_store.ensure_image(
                     rq.get("kind") or "creature", subject,
@@ -7754,10 +7769,15 @@ def generate_dm_reply(
             "    [[IMAGE: npc | Jim the blacksmith | forge in town | burly, soot-stained, graying beard]]\n"
             "    [[IMAGE: place | Greenfields | autumn morning | rolling farmland, timber cottages]]\n"
             "- Fields: kind (place|npc|creature|item|scene) | subject | context (environment/season/mood) | look.\n"
-            "- Use kind 'scene' for a dramatic MOMENT involving the player or known figures —\n"
+            "- Use kind 'scene' for a specific MOMENT involving the player or known figures —\n"
             "    [[IMAGE: scene | Kara hurls a fireball at the goblin | torchlit dungeon melee | desperate, embers flying]]\n"
             "  Name the participants exactly (the player's name, the creature) — the system uses\n"
             "  their existing portraits/art as visual references so the picture shows THEM.\n"
+            "- The 'subject' IS the picture: it is the only part the renderer is told to obey.\n"
+            "  When a player asks to see something, restate WHAT THEY DESCRIBED there, in full\n"
+            "  and concretely — who/what, doing what, where, from what angle. Do not shorten it\n"
+            "  to a title, do not substitute your own idea of the moment, and do not leave out a\n"
+            "  detail they specified. Everything they said belongs in 'subject' or 'look'.\n"
             "- The SAME subject in a different environment (a desert wolf vs a jungle wolf, an NPC in\n"
             "  town vs in the desert) is a distinct picture: keep 'subject' stable, vary 'context'.\n"
             "- If a subject's appearance changes PERMANENTLY (an NPC is maimed, a town burns down),\n"
@@ -8761,7 +8781,14 @@ def _clear_long_rest_conditions(char: Character) -> List[str]:
 
 
 def _portrait_base_look(char: Character) -> str:
-    """A short appearance seed (gender/race/class/subclass) to anchor a PC portrait."""
+    """The appearance seed anchoring EVERY picture of this PC.
+
+    Gender/race/class/subclass plus the player's own description of the face
+    (``Character.appearance``). The description has to be in here, not just in
+    the one-off request that first summoned a portrait: a later gear look is
+    rendered from this seed alone, and without it the model re-rolls skin and
+    hair and hands back a stranger wearing the right armour.
+    """
     parts: List[str] = []
     if getattr(char, "gender", None):
         parts.append(str(char.gender))
@@ -8772,7 +8799,9 @@ def _portrait_base_look(char: Character) -> str:
         if char.subclass:
             cls = f"{char.subclass} {cls}"
         parts.append(cls)
-    return ", ".join(parts)
+    if getattr(char, "appearance", None):
+        parts.append(str(char.appearance).strip())
+    return ", ".join(p for p in parts if p)
 
 
 # A character keeps ONE base portrait plus up to this many equipped-gear looks
@@ -13799,19 +13828,36 @@ async def character_portrait_generate(character_id: int, req: PortraitGenerateRe
     cfg = get_config().imagery
     if not cfg.enabled:
         raise HTTPException(status_code=503, detail="Imagery is disabled in config.")
+    described = (req.look or req.description or "").strip()
     with Session(engine) as session:
         char = session.get(Character, character_id)
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
+        # Remember how the player described this face. Every later render —
+        # gear looks especially — is built from the stored appearance, so the
+        # same person comes back rather than a fresh one in the same armour.
+        if described:
+            char.appearance = described
+            session.add(char)
+            session.commit()
+            session.refresh(char)
         name = char.name
-        base_look = _portrait_base_look(char)
-    look = " ".join(p for p in (base_look, req.look or req.description) if p).strip()
+        look = _portrait_base_look(char)
     _mark_diffusion_dirty()
     result = image_store.generate_portrait(name, description=req.description, look=look)
     if result is None:
         raise HTTPException(status_code=503, detail="Imagery is disabled.")
     if result.offline:
         raise HTTPException(status_code=503, detail="Image service is offline.")
+    # Pin the base seed so gear looks can be rendered from the same starting
+    # noise — the strongest lever we have on face consistency without refs.
+    if getattr(result, "seed", None) is not None:
+        with Session(engine) as session:
+            char = session.get(Character, character_id)
+            if char is not None:
+                char.portrait_seed = int(result.seed)
+                session.add(char)
+                session.commit()
     return result.payload()
 
 
@@ -13877,10 +13923,13 @@ def _do_regear(session: Session, char: Character, *,
             image_store.delete_look(char.name, replace_context)
         else:
             return {"status": "choose_deletion", "looks": gear, "label": label}
+    # _portrait_base_look now carries the player's own appearance text, so the
+    # variant is the same face in different gear rather than a fresh roll.
     look = ", ".join(p for p in (_portrait_base_look(char),
                                  _equipped_look(char), extra_desc) if p)
     _mark_diffusion_dirty()
-    res = image_store.generate_gear_look(char.name, label, look=look)
+    res = image_store.generate_gear_look(
+        char.name, label, look=look, seed=getattr(char, "portrait_seed", None))
     if res is None:
         return {"status": "disabled"}
     if res.offline:
@@ -14551,6 +14600,147 @@ def _activity_inventory(char: Character) -> list[dict]:
 
 def _img_data_url(res) -> str:
     return f"data:{res.mime};base64,{res.b64()}"
+
+
+# ---- item pictures: say WHAT THE THING IS, not just its name ----------------
+#
+# A bare name is a terrible diffusion prompt for gear. "Scale Mail" reads as
+# loose reptile scales rather than a suit of armour, and "Common Clothes" under
+# the house style ("ornate engraved details, saturated jewel tones") comes back
+# as courtly finery — the exact opposite of common. So the inspector builds a
+# grounded description from the catalog row, and mundane kit gets a plainer
+# art direction than the treasure the house style was written for.
+
+_MUNDANE_ITEM_STYLE = (
+    "painterly digital illustration, bold ink outlines, muted earthy palette, "
+    "honest workaday craftsmanship, plain functional object, natural light"
+)
+_MUNDANE_ITEM_NEGATIVE = (
+    "ornate, gilded, gold trim, jewelled, gemstones, filigree, engraved, "
+    "glowing, magical aura, arcane runes, luxurious, regal, courtly, pristine, "
+    "fantasy embellishment"
+)
+
+#: Name keyword -> what the object actually is. First match wins, so longer and
+#: more specific keys are listed before the generic ones.
+_ITEM_LOOK_KEYWORDS: List[tuple] = [
+    ("scale mail", "a complete suit of medium body armour: a knee-length coat of "
+                   "overlapping steel scales riveted to leather backing, with "
+                   "sleeves and a skirt, displayed on an armour stand"),
+    ("chain mail", "a complete suit of heavy body armour: a riveted steel mail "
+                   "hauberk with coif and leggings, displayed on an armour stand"),
+    ("chain shirt", "a sleeveless riveted steel mail shirt worn over a padded "
+                    "gambeson, displayed on an armour stand"),
+    ("half plate", "a complete suit of medium body armour: shaped steel "
+                   "breastplate and limb plates over mail, on an armour stand"),
+    ("breastplate", "a fitted steel breastplate with shoulder straps, on an "
+                    "armour stand"),
+    ("splint", "a complete suit of heavy body armour: vertical steel strips "
+               "riveted to a leather backing, on an armour stand"),
+    ("plate", "a complete suit of heavy full plate armour, every piece "
+              "articulated, standing on an armour stand"),
+    ("hide armor", "a complete suit of thick layered animal hide and fur "
+                   "armour, on an armour stand"),
+    ("leather armor", "a complete suit of stiffened boiled-leather body armour "
+                      "with straps and buckles, on an armour stand"),
+    ("padded", "a quilted cloth gambeson, a full torso garment, on a stand"),
+    ("shield", "a single shield seen face on, its full front visible"),
+    ("common clothes", "a set of plain commoner's clothing laid out flat: a "
+                       "coarse undyed wool tunic, simple trousers, a leather "
+                       "belt — worn soft, mended at the elbows, cheap and drab"),
+    ("traveler's clothes", "a set of practical hard-wearing travelling clothes "
+                           "laid out flat: sturdy tunic, trousers, hooded cloak, "
+                           "belt and boots, dusty from the road"),
+    ("fine clothes", "a set of finely tailored courtly clothes laid out flat, "
+                     "good cloth and neat stitching"),
+    ("costume", "a theatrical performer's costume laid out flat, bright and "
+                "showy but cheaply made"),
+    ("vestments", "a set of plain priestly vestments laid out flat"),
+    ("robe", "a full-length robe laid out flat, the whole garment visible"),
+    ("clothes", "a set of clothing laid out flat, the whole outfit visible"),
+    ("boots", "a pair of boots, side by side"),
+    ("cloak", "a cloak spread out to show the whole garment"),
+    ("pack", "an open adventurer's pack with its contents laid out beside it"),
+    ("pouch", "a small drawstring belt pouch"),
+    ("tools", "a complete tool kit laid out in its open case, every tool visible"),
+    ("kit", "a complete kit laid out in its open case, every piece visible"),
+    ("potion", "a small stoppered glass vial of liquid"),
+    ("scroll", "a rolled parchment scroll, partly unrolled to show writing"),
+    ("spellbook", "a thick leather-bound spellbook, closed, clasps visible"),
+    ("holy symbol", "a small holy symbol on a chain"),
+    ("arrows", "a bundle of arrows, fletching upward"),
+    ("bolts", "a bundle of crossbow bolts"),
+]
+
+#: Catalog category / magic-item type -> a fallback framing when no keyword hit.
+_ITEM_LOOK_BY_CATEGORY = {
+    "armor": "a complete suit of body armour worn on an armour stand, the whole "
+             "harness visible",
+    "weapon": "a single complete weapon, whole from grip to tip, laid on plain cloth",
+    "tools": "a complete set of tools laid out, every piece visible",
+    "adventuring-gear": "a single piece of ordinary adventuring equipment",
+    "mounts-and-vehicles": "the whole vehicle or harness seen from the side",
+}
+_ITEM_LOOK_BY_TYPE = {
+    "potion": "a small stoppered glass vial of liquid",
+    "scroll": "a rolled parchment scroll",
+    "ring": "a single finger ring, close up",
+    "wand": "a slender wand, whole, laid on plain cloth",
+    "staff": "a full-length staff, whole, standing upright",
+    "rod": "a short heavy rod, whole, laid on plain cloth",
+    "ammunition": "a bundle of matching ammunition",
+}
+
+
+def _item_art_prompt(row, name: str) -> tuple[str, Optional[str], str]:
+    """(look, style_override, negative_extra) for one item's inspector picture.
+
+    ``row`` is the rules-catalog row (may be None for a purely narrative item).
+    """
+    n = _normalize_item_name(name)
+    category = (getattr(row, "category", None) or "").strip().lower()
+    item_type = (getattr(row, "item_type", None) or "").strip().lower()
+    is_magic = category == "magic-item" or bool(getattr(row, "rarity", None))
+
+    look_bits: List[str] = []
+    for key, phrase in _ITEM_LOOK_KEYWORDS:
+        if key in n:
+            look_bits.append(phrase)
+            break
+    else:
+        for prefix, phrase in _ITEM_LOOK_BY_TYPE.items():
+            if item_type.startswith(prefix):
+                look_bits.append(phrase)
+                break
+        else:
+            if item_type.startswith("armor"):
+                look_bits.append(_ITEM_LOOK_BY_CATEGORY["armor"])
+            elif item_type.startswith("weapon"):
+                look_bits.append(_ITEM_LOOK_BY_CATEGORY["weapon"])
+            elif category in _ITEM_LOOK_BY_CATEGORY:
+                look_bits.append(_ITEM_LOOK_BY_CATEGORY[category])
+
+    # A magic item earns the ornate treatment; ordinary kit does not.
+    if is_magic:
+        rarity = (getattr(row, "rarity", None) or "").strip().lower()
+        look_bits.append("an enchanted object with a faint arcane glow"
+                         if rarity not in ("", "common")
+                         else "a subtly enchanted object, otherwise unassuming")
+        return ", ".join(look_bits), None, ""
+    look_bits.append("mundane non-magical everyday equipment")
+    return ", ".join(look_bits), _MUNDANE_ITEM_STYLE, _MUNDANE_ITEM_NEGATIVE
+
+
+def _item_art(name: str, context: str = "inspect"):
+    """Render/fetch an item's picture, grounded in the catalog row."""
+    try:
+        row = rules_lib.get_item(name)
+    except Exception:
+        row = None
+    look, style, negative = _item_art_prompt(row, name)
+    return image_store.ensure_image(
+        "item", name, look=look, context=context,
+        style_prompt=style, negative_extra=negative, drop_stale=True)
 
 
 def _item_stat_lines(row) -> list[str]:
@@ -15941,8 +16131,7 @@ async def activity_ws(ws: WebSocket, channel: str):
                         try:
                             loop = asyncio.get_event_loop()
                             res = await loop.run_in_executor(
-                                None, lambda: image_store.ensure_image(
-                                    "item", nm, context="inspect"))
+                                None, lambda: _item_art(nm))
                             if res and not getattr(res, "offline", False):
                                 await ws.send_json({"t": "item_image", "name": nm,
                                                     "url": _img_data_url(res)})
