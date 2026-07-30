@@ -197,6 +197,39 @@ That is the acceptance test for any candidate: **does it fix the interiors?**
 The outdoor half needs no help. `_MAP_NEGATIVE` is already fighting this
 battle in the prompt and losing on exactly these seven.
 
+`--lora NAME[:STRENGTH]` (also on `species_portraits`) applies a stack for one
+run without touching config, so candidates and strengths can be swept quickly.
+
+### A drawn grid cannot be the measurement source
+
+A battlemap LoRA that draws its own 5-ft squares is tempting to measure off.
+It cannot be, and the arithmetic is the reason. The engine's pitch is
+`canvas_size(w,h) / squares`, which is fractional and board-dependent:
+
+| board | canvas | px per square |
+|---|---|---|
+| 20x20 | 1024x1024 | 51.20 |
+| 20x15 | 1216x896 | 60.80 wide vs **59.73 tall** |
+| 30x20 | 1280x832 | 42.67 wide vs **41.60 tall** |
+| 40x30 | 1216x896 | 30.40 wide vs **29.87 tall** |
+
+On a non-square board the two axes do not even agree, so no uniform drawn grid
+can match both. A diffusion model draws a grid at whatever spacing looks right,
+with phase error and cumulative drift over twenty cells — it will not land on
+51.20px. If players measure off the drawn squares while movement validation
+uses the engine's, a token three squares away by eye is four by the rules.
+
+So the drawn grid stays TEXTURE, exactly as the architecture already says ("the
+picture is a TEXTURE, the tile grid is the truth"). Either keep negating it via
+`_MAP_NEGATIVE` and let the engine overlay be the only grid, or accept a
+decorative one underneath and never measure from it.
+
+The probe prints the strongest pitch near the engine's for each render as a
+HINT — not a verdict. Deciding "ruled grid" vs "row of flagstones" from the
+spectrum alone did not survive real map art: every threshold either missed
+faint grids or called a cave pool one. The number is worth knowing; confirm on
+the sheet.
+
 ### Two cautions
 * LoRAs are trained against a checkpoint family. One trained on SDXL/Juggernaut
   will not behave on the Pony `checkpoint_mature`; either curate a second set

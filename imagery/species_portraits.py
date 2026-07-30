@@ -423,6 +423,13 @@ def _load_look_overrides() -> Dict[str, Dict[str, str]]:
     return {}
 
 
+def _parse_lora(spec: str) -> Dict:
+    """``name.safetensors:0.45`` -> a LoRA entry (strength defaults to 0.8)."""
+    name, _, strength = spec.partition(":")
+    v = float(strength) if strength else 0.8
+    return {"name": name, "model": v, "clip": v}
+
+
 def _norm(s: str) -> str:
     return (s or "").strip().lower()
 
@@ -558,7 +565,8 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
                      style_ref: Optional[Path] = None,
                      style_preset: str = "STANDARD (medium strength)",
                      kin: bool = False, kin_weight: float = 0.45,
-                     kin_cross_sex: bool = False) -> int:
+                     kin_cross_sex: bool = False,
+                     loras: Optional[List[Dict]] = None) -> int:
     cfg = get_config().imagery
     want = ({_ALIASES.get(_norm(s), _norm(s)) for s in slugs} if slugs else None)
 
@@ -598,6 +606,10 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
                 c.ipadapter_weight = float(
                     ip_weight if ip_weight is not None
                     else (kin_weight if kin else c.ipadapter_weight))
+            if loras is not None:
+                c.loras = list(loras)
+                print("LoRA stack: "
+                      + ", ".join(f"{l['name']}@{l['model']}" for l in loras))
             if not c.is_available():
                 return None
             state["client"] = c
@@ -807,6 +819,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "colours, shifter aspects) as <race>-<lineage>-<sex>.webp")
     ap.add_argument("--skip-base", action="store_true",
                     help="skip the base-species pass (use with --lineages for lineages only)")
+    ap.add_argument("--lora", action="append", default=[], metavar="NAME[:STRENGTH]",
+                    help="LoRA for this run, e.g. --lora dark_fantasy_xl.safetensors:0.45 "
+                         "(repeatable, applied in order). Overrides the config, so a "
+                         "style can be dialled in without editing anything. Start LOW: "
+                         "a style LoRA at 1.0 will overpower the species descriptors.")
     ap.add_argument("--kin", action="store_true",
                     help="hold a family together with IP-Adapter, using the set's OWN art: "
                          "a lineage takes after its base species, a female after the male. "
@@ -847,7 +864,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                          ipadapter=a.ipadapter or bool(ref_dir), ip_weight=a.ip_weight,
                          lineages=a.lineages, base=not a.skip_base, style_ref=style_ref,
                          kin=a.kin, kin_weight=a.kin_weight,
-                         kin_cross_sex=a.kin_cross_sex)
+                         kin_cross_sex=a.kin_cross_sex,
+                         loras=[_parse_lora(x) for x in a.lora] or None)
     if not a.dry_run:
         print(f"\nDone — {n} portrait(s) generated into {_OUT_DIR}.")
         print("Review them, then `git add -f` the SRD/PHB ones you want in the repo "
