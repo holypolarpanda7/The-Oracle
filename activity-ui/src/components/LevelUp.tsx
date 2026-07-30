@@ -1,5 +1,88 @@
 import { useState } from "react";
-import type { LevelUpData, SpellBrief } from "../lib/types";
+import type { AsiFeat, FeatPicks, LevelUpData, SpellBrief } from "../lib/types";
+import {
+  ABILITY_CODES, AsiSpread, FeatChoiceFields, featChoicesSatisfied,
+} from "./FeatChoices";
+import { uiTick } from "../lib/sound";
+
+/** Ability scores come off the sheet keyed by full name; the pickers speak
+ *  3-letter codes. */
+function byCode(scores?: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const code of ABILITY_CODES) {
+    const full = { str: "strength", dex: "dexterity", con: "constitution",
+      int: "intelligence", wis: "wisdom", cha: "charisma" }[code];
+    const v = scores?.[full] ?? scores?.[code] ?? scores?.[code.toUpperCase()];
+    if (typeof v === "number") out[code] = v;
+  }
+  return out;
+}
+
+/** The Ability Score Improvement step: raise scores, or take a feat and answer
+ *  whatever that feat asks. The level doesn't land until one of them is done. */
+function AsiStep({ data, mode, setMode, increases, setIncreases,
+                   feat, setFeat, picks, setPicks }: {
+  data: LevelUpData;
+  mode: "scores" | "feat";
+  setMode: (m: "scores" | "feat") => void;
+  increases: FeatPicks;
+  setIncreases: (p: FeatPicks) => void;
+  feat: string | null;
+  setFeat: (s: string | null) => void;
+  picks: FeatPicks;
+  setPicks: (p: FeatPicks) => void;
+}) {
+  const scores = byCode(data.abilities);
+  const feats = data.asi_feats ?? [];
+  const chosen = feats.find((f) => f.slug === feat);
+  return (
+    <>
+      <div className="lu-pick-label">Ability Score Improvement</div>
+      <div className="lu-asi-modes">
+        <button className={`lu-option ${mode === "scores" ? "picked" : ""}`}
+                onClick={() => { uiTick(); setMode("scores"); }}>
+          <div className="lu-opt-name">Raise your scores</div>
+          <div className="lu-opt-feats">+2 to one ability, or +1 to two</div>
+        </button>
+        <button className={`lu-option ${mode === "feat" ? "picked" : ""}`}
+                onClick={() => { uiTick(); setMode("feat"); }}>
+          <div className="lu-opt-name">Take a feat</div>
+          <div className="lu-opt-feats">{feats.length} available</div>
+        </button>
+      </div>
+
+      {mode === "scores" && (
+        <AsiSpread
+          choice={{ kind: "asi", total: 2, max: 20, hint: "Spend your points" }}
+          scores={scores} picks={increases} onChange={setIncreases} />
+      )}
+
+      {mode === "feat" && (
+        <>
+          <div className="lu-options lu-featgrid">
+            {feats.map((f: AsiFeat) => (
+              <button
+                key={f.slug}
+                className={`lu-option ${feat === f.slug ? "picked" : ""} ${f.eligible ? "" : "blocked"}`}
+                disabled={!f.eligible}
+                title={f.eligible ? f.prerequisite || "" : f.blocked_reason || ""}
+                onClick={() => { uiTick(); setFeat(f.slug === feat ? null : f.slug); setPicks({}); }}
+              >
+                <div className="lu-opt-name">{f.name}</div>
+                <div className="lu-opt-feats">
+                  {f.eligible ? f.brief.slice(0, 110) : `locked — ${f.blocked_reason}`}
+                </div>
+              </button>
+            ))}
+          </div>
+          {chosen?.choices && (
+            <FeatChoiceFields choice={chosen.choices} picks={picks} onChange={setPicks} />
+          )}
+        </>
+      )}
+    </>
+  );
+}
 
 /** A compact "choose N" spell list for the level-up overlay. */
 function LuSpellPick({ label, list, chosen, n, onToggle }: {
@@ -38,7 +121,9 @@ function LuSpellPick({ label, list, chosen, n, onToggle }: {
 export function LevelUpOverlay({ data, onApply }: {
   data: LevelUpData;
   onApply: (opts: { subclass?: string; cantrips?: string[]; spells?: string[];
-    swap_out?: string; swap_in?: string }) => void;
+    swap_out?: string; swap_in?: string;
+    ability_increases?: Record<string, number>;
+    feat?: string; feat_choices?: FeatPicks }) => void;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [cantrips, setCantrips] = useState<string[]>([]);
@@ -46,6 +131,11 @@ export function LevelUpOverlay({ data, onApply }: {
   // Optional level-up swap (known casters): replace one spell with another.
   const [swapOut, setSwapOut] = useState<string | null>(null);   // current spell NAME
   const [swapIn, setSwapIn] = useState<string | null>(null);     // replacement SLUG
+  // Ability Score Improvement: scores or a feat, never both.
+  const [asiMode, setAsiMode] = useState<"scores" | "feat">("scores");
+  const [asiSpread, setAsiSpread] = useState<FeatPicks>({});
+  const [asiFeat, setAsiFeat] = useState<string | null>(null);
+  const [asiFeatPicks, setAsiFeatPicks] = useState<FeatPicks>({});
   const needsPick = !!data.subclass_required;
   const due = data.spells_due || null;
   const canSwap = !!due?.can_swap && (due.current_spells?.length ?? 0) > 0;
@@ -57,7 +147,11 @@ export function LevelUpOverlay({ data, onApply }: {
     || (cantrips.length === due.cantrips && spells.length === due.spells);
   // A swap is optional, but if started it must be completed (both ends chosen).
   const swapOk = !swapOut === !swapIn;
-  const canConfirm = (!needsPick || picked !== null) && spellsOk && swapOk;
+  const asiFeatRow = (data.asi_feats ?? []).find((f) => f.slug === asiFeat);
+  const asiOk = !data.asi_due || (asiMode === "scores"
+    ? Object.values(asiSpread.ability_increases ?? {}).reduce((a, b) => a + b, 0) === 2
+    : !!asiFeat && featChoicesSatisfied(asiFeatRow?.choices, asiFeatPicks));
+  const canConfirm = (!needsPick || picked !== null) && spellsOk && swapOk && asiOk;
 
   return (
     <div className="levelup-veil">
@@ -108,6 +202,14 @@ export function LevelUpOverlay({ data, onApply }: {
               ))}
             </div>
           </>
+        )}
+
+        {data.asi_due && (
+          <AsiStep data={data}
+                   mode={asiMode} setMode={setAsiMode}
+                   increases={asiSpread} setIncreases={setAsiSpread}
+                   feat={asiFeat} setFeat={setAsiFeat}
+                   picks={asiFeatPicks} setPicks={setAsiFeatPicks} />
         )}
 
         {due && due.cantrips > 0 && (
@@ -162,6 +264,13 @@ export function LevelUpOverlay({ data, onApply }: {
               spells: spells.length ? spells : undefined,
               swap_out: swapOut ?? undefined,
               swap_in: swapIn ?? undefined,
+              // Exactly one of these when an ASI is due; neither otherwise.
+              ability_increases: data.asi_due && asiMode === "scores"
+                ? asiSpread.ability_increases : undefined,
+              feat: data.asi_due && asiMode === "feat" && asiFeat
+                ? asiFeat : undefined,
+              feat_choices: data.asi_due && asiMode === "feat" && asiFeat
+                ? asiFeatPicks : undefined,
             })}
           >
             {!canConfirm ? "choose above…" : "Take the level"}

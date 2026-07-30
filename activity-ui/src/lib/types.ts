@@ -277,6 +277,21 @@ export interface LevelUpData {
   race_features?: { name: string; summary?: string }[];
   subclass_options: SubclassOption[];
   spells_due?: SpellsDue | null;
+  /** True at an Ability Score Improvement level: the player owes either a
+   *  score spread or a feat before the level lands. */
+  asi_due?: boolean;
+  /** The feats takeable at this ASI, prerequisites already judged. */
+  asi_feats?: AsiFeat[];
+  /** Current ability scores, so the picker can show and cap them. */
+  abilities?: Record<string, number>;
+}
+
+/** A feat offered at an ASI level, with its eligibility already decided. */
+export interface AsiFeat {
+  slug: string; name: string; category?: string;
+  prerequisite?: string | null; min_level?: number; brief: string;
+  eligible: boolean; blocked_reason?: string | null;
+  choices?: FeatChoice | null;
 }
 
 export interface CharacterSummary {
@@ -374,7 +389,10 @@ export type ServerEvent =
 export type ClientEvent =
   | { t: "action"; text: string; private?: boolean }
   | { t: "levelup_apply"; subclass?: string; cantrips?: string[]; spells?: string[];
-      swap_out?: string; swap_in?: string }
+      swap_out?: string; swap_in?: string;
+      // ASI levels: exactly one of these two.
+      ability_increases?: Record<string, number>;
+      feat?: string; feat_choices?: FeatPicks }
   | { t: "reprepare" }
   | { t: "reprepare_apply"; spells: string[] }
   | { t: "enter"; character_name?: string; solo?: boolean }
@@ -419,6 +437,9 @@ export interface CCPayload {
   // Feat-choice proficiencies (Musician/Crafter tools, faction-feat languages).
   tools?: string[];
   languages?: string[];
+  // Named feat picks that aren't proficiencies (a damage resistance, a giant
+  // strike). Filed under the choice's own tag prefix on the sheet.
+  feat_options?: string[];
 }
 
 /** Level-1 spellcasting info for a class (null for non-casters). */
@@ -427,15 +448,34 @@ export interface Spellcasting {
   mode: "known" | "prepared" | "spellbook";
 }
 
-/** A feat's creation-time choice (null when the feat needs none). */
+/** A feat's choice, asked at creation or when taken at an ASI level (null when
+ *  the feat needs none). */
 export interface FeatChoice {
-  kind: "skills" | "tools" | "ability" | "language" | "magic_initiate";
+  kind: "skills" | "tools" | "ability" | "language" | "magic_initiate"
+      | "options" | "asi";
   n?: number; cantrips?: number; spells?: number;
   classes?: string[]; hint?: string;
-  // skills/ability: an explicit subset; tools: a group ("instrument"|"artisan"|
-  // "any") or an explicit list.
+  // skills/ability/options: an explicit subset; tools: a group ("instrument"|
+  // "artisan"|"any") or an explicit list.
   from?: string | string[];
   amount?: number;   // ability: +N added to the chosen ability's score
+  max?: number;      // ability: the score ceiling (20, or 30 for epic boons)
+  total?: number;    // asi: points to spend (2)
+  save_proficiency?: boolean;   // ability: also grants that save (Resilient)
+  /** A second choice the same feat asks for (e.g. Dragonscarred's resistance). */
+  also?: FeatChoice | null;
+}
+
+/** The picks a player has made for one feat, sent back with the level-up. */
+export interface FeatPicks {
+  skills?: string[];
+  tools?: string[];
+  languages?: string[];
+  options?: string[];
+  ability?: string;
+  ability_increases?: Record<string, number>;
+  cantrips?: string[];
+  spells?: string[];
 }
 
 /** One spell in a pick list (GET /cc/spells/{class}). */

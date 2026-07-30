@@ -206,8 +206,11 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
         if prog.get("subclass_options") and (prog.get("report") or {}).get(
                 "subclass_choice_due"):
             sub = prog["subclass_options"][0]["slug"]
+        # An ASI level won't land until the player spends it — the climb makes
+        # the same call a real one does (here: +2 to the primary stat).
+        asi = {"str": 2} if prog.get("asi_due") else None
         res = asyncio.run(m.level_up(m.LevelUpRequest(
-            character_id=run_char.id, subclass=sub)))
+            character_id=run_char.id, subclass=sub, ability_increases=asi)))
         if res.get("applied"):
             applied += 1
             with Session(m.engine) as s:

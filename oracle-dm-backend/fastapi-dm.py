@@ -615,6 +615,9 @@ class RegisterCharacterRequest(BaseModel):
     # folded into `stats` client-side.
     tools: Optional[List[str]] = None
     languages: Optional[List[str]] = None
+    # Named picks a feat asks for that aren't a proficiency — a damage
+    # resistance, a giant strike. Stored under the choice's own tag prefix.
+    feat_options: Optional[List[str]] = None
 
 
 class CheckCharacterRequest(BaseModel):
@@ -626,6 +629,14 @@ class LevelUpRequest(BaseModel):
     # Provide when the character reaches the level that chooses a subclass, or to
     # (re)assign one. Validated against the class's subclass level + roster.
     subclass: Optional[str] = None
+    # Ability Score Improvement levels (4/8/12/16/19 + the class's extras) ask
+    # for EITHER a score spread OR a feat — exactly one of these two.
+    #   ability_increases: {"str": 2} or {"str": 1, "dex": 1}
+    #   feat: a feat slug, with `feat_choices` resolving whatever it asks for
+    #         ({"skills": [...], "ability": "con", "options": [...], ...}).
+    ability_increases: Optional[Dict[str, int]] = None
+    feat: Optional[str] = None
+    feat_choices: Optional[Dict[str, Any]] = None
 
 
 class CombatStartRequest(BaseModel):
@@ -10511,6 +10522,15 @@ async def register_character(req: RegisterCharacterRequest):
                     if t not in tags:
                         tags.append(t)
             char.tags = tags
+        # Named feat picks that aren't proficiencies (a damage resistance, a
+        # giant strike) — filed under whichever tag their choice declares.
+        if req.feat_options:
+            prefix = "feat-option"
+            for fslug in (req.feats or []):
+                for spec in _feat_choice_specs(fslug):
+                    if spec.get("kind") == "options":
+                        prefix = str(spec.get("tag") or prefix)
+            _add_tags(char, prefix, list(req.feat_options))
 
         # Spells chosen at creation (class cantrips/spells + Magic Initiate).
         # Stored as display names to match the inscribe flow's format.
@@ -10638,6 +10658,141 @@ def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
     return True, None
 
 
+def _feat_choice_specs(slug: str) -> List[Dict[str, Any]]:
+    """Every choice a feat asks for, flattened (a feat may ask for two)."""
+    spec = _feat_choices_merged().get((slug or "").strip().lower())
+    if not spec:
+        return []
+    out = [{k: v for k, v in spec.items() if k != "also"}]
+    also = spec.get("also")
+    if isinstance(also, dict) and also.get("kind"):
+        out.append(also)
+    return out
+
+
+def _feat_choice_satisfied(spec: Dict[str, Any], picks: Dict[str, Any]) -> bool:
+    """Has the player answered this one feat choice completely?"""
+    kind = spec.get("kind")
+    n = int(spec.get("n") or 1)
+    if kind == "ability":
+        return bool(str(picks.get("ability") or "").strip())
+    if kind == "asi":
+        got = sum(int(v or 0) for v in (picks.get("ability_increases") or {}).values())
+        return got == int(spec.get("total") or 2)
+    if kind == "skills":
+        return len(picks.get("skills") or []) == n
+    if kind == "tools":
+        return len(picks.get("tools") or []) == n
+    if kind == "language":
+        return len(picks.get("languages") or []) == n
+    if kind == "options":
+        return len(picks.get("options") or []) == n
+    if kind == "magic_initiate":
+        return (len(picks.get("cantrips") or []) == int(spec.get("cantrips") or 2)
+                and len(picks.get("spells") or []) == int(spec.get("spells") or 1))
+    return True
+
+
+def _bump_ability(char: Character, code: str, amount: int, cap: int = 20) -> Optional[str]:
+    """Raise one ability score, respecting the cap. Returns a note, or None."""
+    full = _ABILITY_FULL.get((code or "").strip().lower())
+    if not full or amount <= 0:
+        return None
+    stats = dict(char.stats or {})
+    # Sheets are written with full names, but an import may have left codes.
+    key = next((k for k in (full, full.capitalize(), full.upper(),
+                            code.lower(), code.upper()) if k in stats), full)
+    before = int(stats.get(key) or 10)
+    after = min(int(cap), before + int(amount))
+    if after == before:
+        return f"{full.capitalize()} is already at its maximum of {cap}."
+    stats[key] = after
+    char.stats = stats
+    return f"{full.capitalize()} {before} → {after}."
+
+
+def _add_tags(char: Character, prefix: str, values: List[str]) -> List[str]:
+    """Append 'prefix: value' tags, skipping ones already on the sheet."""
+    tags = list(char.tags or [])
+    added: List[str] = []
+    for v in values:
+        v = str(v or "").strip()
+        if not v:
+            continue
+        t = f"{prefix}: {v}"
+        if t not in tags:
+            tags.append(t)
+            added.append(v)
+    char.tags = tags
+    return added
+
+
+def _apply_feat(char: Character, slug: str,
+                choices: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Record a feat on the sheet and apply whatever the player chose for it.
+
+    Shared by character creation and level-up so a feat means the same thing
+    whenever it is taken. Returns human-readable notes for the caller to show.
+    """
+    slug = (slug or "").strip().lower()
+    if not slug:
+        return []
+    notes: List[str] = []
+    try:
+        row = rules_lib.get_feat(slug)
+    except Exception:
+        row = None
+    name = getattr(row, "name", None) or slug.replace("-", " ").title()
+    _add_tags(char, "feat", [slug])
+    notes.append(f"Feat gained: {name}.")
+
+    picks = choices or {}
+    for spec in _feat_choice_specs(slug):
+        kind = spec.get("kind")
+        if kind == "ability":
+            code = str(picks.get("ability") or "").strip().lower()
+            if code:
+                if int(spec.get("amount") or 0) > 0:
+                    note = _bump_ability(char, code, int(spec["amount"]),
+                                         int(spec.get("max") or 20))
+                    if note:
+                        notes.append(note)
+                else:
+                    _add_tags(char, "feat-ability", [code.upper()])
+                if spec.get("save_proficiency"):
+                    full = _ABILITY_FULL.get(code, code)
+                    _add_tags(char, "save", [full.capitalize()])
+                    notes.append(f"Proficient in {full.capitalize()} saving throws.")
+        elif kind == "asi":
+            for code, amt in (picks.get("ability_increases") or {}).items():
+                note = _bump_ability(char, code, int(amt or 0),
+                                     int(spec.get("max") or 20))
+                if note:
+                    notes.append(note)
+        elif kind in ("skills", "tools", "language"):
+            key = {"skills": "skills", "tools": "tools",
+                   "language": "languages"}[kind]
+            prefix = {"skills": "skill", "tools": "tool",
+                      "language": "language"}[kind]
+            got = _add_tags(char, prefix, list(picks.get(key) or []))
+            if got:
+                notes.append(f"{prefix.title()} proficiencies: {', '.join(got)}.")
+        elif kind == "options":
+            got = _add_tags(char, str(spec.get("tag") or "feat-option"),
+                            list(picks.get("options") or []))
+            if got:
+                notes.append(", ".join(got) + ".")
+        elif kind == "magic_initiate":
+            learned: List[str] = []
+            for sl in list(picks.get("cantrips") or []) + list(picks.get("spells") or []):
+                sp = rules_lib.get_spell(sl)
+                learned.append(sp.name if sp else str(sl))
+            if learned:
+                char.spells = list(dict.fromkeys(list(char.spells or []) + learned))
+                notes.append(f"Learned: {', '.join(learned)}.")
+    return notes
+
+
 # Spellcasting ability per caster class. The cantrip/spell PICK COUNTS come from
 # rules.leveling (single source of truth shared with level-up), so CC and
 # level-up never drift; `mode` ("known"/"prepared"/"spellbook") is from there.
@@ -10670,8 +10825,26 @@ CC_SPELLCASTING: Dict[str, Dict[str, Any]] = {
 #
 # Choice kinds: "skills" (n from all, or a `from` subset) · "tools" (n from a
 # `from` group: instrument/artisan/any, or an explicit list) · "ability" (n from
-# a `from` list of 3-letter codes) · "language" (n) · "magic_initiate".
+# a `from` list of 3-letter codes, raising each by `amount` up to `max`) ·
+# "language" (n) · "magic_initiate" · "options" (n from an explicit labelled
+# list, recorded as a tag) · "asi" (the level-up +2 / +1+1 spread).
+_ANY_ABILITY = ["str", "dex", "con", "int", "wis", "cha"]
+
+
+def _plus_one(codes: List[str], hint: str, *, cap: int = 20) -> Dict[str, Any]:
+    """A '+1 to one of these (max cap)' feat choice."""
+    return {"kind": "ability", "n": 1, "from": codes, "amount": 1,
+            "max": cap, "hint": hint}
+
+
+def _spell_ability_choice(codes: List[str]) -> Dict[str, Any]:
+    """A 'choose the spellcasting ability' pick — a choice with no score bump."""
+    return {"kind": "ability", "n": 1, "from": codes, "amount": 0,
+            "hint": "Choose the spellcasting ability for this feat."}
+
+
 FEAT_CHOICES: Dict[str, Dict[str, Any]] = {
+    # ----- origin feats -----
     "skilled": {"kind": "skills", "n": 3,
                 "hint": "Choose 3 skill proficiencies."},
     "magic-initiate": {"kind": "magic_initiate", "cantrips": 2, "spells": 1,
@@ -10681,7 +10854,79 @@ FEAT_CHOICES: Dict[str, Dict[str, Any]] = {
                  "hint": "Choose 3 musical instruments."},
     "crafter": {"kind": "tools", "n": 3, "from": "artisan",
                 "hint": "Choose 3 artisan's tools."},
+    "harper-agent": {"kind": "tools", "n": 1, "from": "instrument",
+                     "hint": "Choose a musical instrument."},
+    "purple-dragon-rook": {"kind": "skills", "n": 1,
+                           "from": ["Insight", "Performance", "Persuasion"],
+                           "hint": "Entreat — choose one skill proficiency."},
+    "cult-of-the-dragon-initiate": {
+        "kind": "language", "n": 1,
+        "hint": "Dragon's Tongue — Draconic, or another language if you have it."},
+    "emerald-enclave-fledgling": _spell_ability_choice(["int", "wis", "cha"]),
+    "spellfire-spark": _spell_ability_choice(["int", "wis", "cha"]),
+
+    # ----- general feats -----
+    "ability-score-improvement": {
+        "kind": "asi", "total": 2, "max": 20,
+        "hint": "Raise one ability by 2, or two abilities by 1 each."},
+    "resilient": {"kind": "ability", "n": 1, "from": _ANY_ABILITY, "amount": 1,
+                  "max": 20, "save_proficiency": True,
+                  "hint": "+1 to an ability, and proficiency in its saves."},
+    "cold-caster": _plus_one(["int", "wis", "cha"], "+1 to INT, WIS, or CHA."),
+    "enclave-magic": _plus_one(["int", "wis", "cha"], "+1 to INT, WIS, or CHA."),
+    "genie-magic": _plus_one(["int", "wis", "cha"], "+1 to INT, WIS, or CHA."),
+    "mythal-touched": _plus_one(["int", "wis", "cha"], "+1 to INT, WIS, or CHA."),
+    "spellfire-adept": _plus_one(["int", "wis", "cha"], "+1 to INT, WIS, or CHA."),
+    "fairy-trickster": _plus_one(["dex", "cha"], "+1 to DEX or CHA."),
+    "harper-teamwork": _plus_one(["dex", "cha"], "+1 to DEX or CHA."),
+    "zhentarim-tactics": _plus_one(["dex", "cha"], "+1 to DEX or CHA."),
+    "lordly-resolve": _plus_one(["str", "cha"], "+1 to STR or CHA."),
+    "orders-resilience": _plus_one(["str", "wis", "cha"], "+1 to STR, WIS, or CHA."),
+    "purple-dragon-commandant": _plus_one(["str", "dex"], "+1 to STR or DEX."),
+    "street-justice": _plus_one(["str", "dex"], "+1 to STR or DEX."),
+    "dragonscarred": {
+        "kind": "ability", "n": 1, "from": ["con", "cha"], "amount": 1, "max": 20,
+        "hint": "+1 to CON or CHA.",
+        "also": {"kind": "options", "n": 1, "tag": "resistance",
+                 "from": ["Acid", "Cold", "Fire", "Lightning", "Poison"],
+                 "hint": "Choose a damage resistance."}},
+
+    # ----- giant feats -----
+    "ember-of-the-fire-giant": _plus_one(["str", "con", "wis"], "+1 to STR, CON, or WIS."),
+    "fury-of-the-frost-giant": _plus_one(["str", "con", "wis"], "+1 to STR, CON, or WIS."),
+    "keenness-of-the-stone-giant": _plus_one(["str", "con", "wis"], "+1 to STR, CON, or WIS."),
+    "vigor-of-the-hill-giant": _plus_one(["str", "con", "wis"], "+1 to STR, CON, or WIS."),
+    "guile-of-the-cloud-giant": _plus_one(["str", "con", "cha"], "+1 to STR, CON, or CHA."),
+    "soul-of-the-storm-giant": _plus_one(["str", "wis", "cha"], "+1 to STR, WIS, or CHA."),
+    "strike-of-the-giants": {
+        "kind": "options", "n": 1, "tag": "giant-strike",
+        "from": ["Cloud Strike", "Fire Strike", "Frost Strike", "Hill Strike",
+                 "Stone Strike", "Storm Strike"],
+        "hint": "Choose your giant strike."},
+
+    # ----- epic boons (level 19+; these raise scores to a max of 30) -----
+    "boon-of-bloodshed": _plus_one(_ANY_ABILITY, "+1 to any ability.", cap=30),
+    "boon-of-bountiful-health": _plus_one(_ANY_ABILITY, "+1 to any ability.", cap=30),
+    "boon-of-exquisite-radiance": _plus_one(_ANY_ABILITY, "+1 to any ability.", cap=30),
+    "boon-of-fortunes-favor": _plus_one(_ANY_ABILITY, "+1 to any ability.", cap=30),
+    "boon-of-poison-mastery": _plus_one(_ANY_ABILITY, "+1 to any ability.", cap=30),
+    "boon-of-siberys": _plus_one(_ANY_ABILITY, "+1 to any ability.", cap=30),
+    "boon-of-the-soul-drinker": _plus_one(_ANY_ABILITY, "+1 to any ability.", cap=30),
+    "boon-of-communication": _plus_one(["int", "wis", "cha"], "+1 to INT, WIS, or CHA.", cap=30),
+    "boon-of-fluid-forms": _plus_one(["int", "wis", "cha"], "+1 to INT, WIS, or CHA.", cap=30),
+    "boon-of-revelry": _plus_one(["int", "wis", "cha"], "+1 to INT, WIS, or CHA.", cap=30),
+    "boon-of-the-furious-storm": _plus_one(["int", "wis", "cha"], "+1 to INT, WIS, or CHA.", cap=30),
+    "boon-of-the-bright-sun": _plus_one(["con", "wis", "cha"], "+1 to CON, WIS, or CHA.", cap=30),
+    "boon-of-desperate-resilience": _plus_one(["str", "con"], "+1 to STR or CON.", cap=30),
 }
+
+# The Greater Marks all read "+1 to one ability score (max 20)" — same schema,
+# thirteen slugs, so generate rather than repeat.
+for _gm in ("detection", "finding", "handling", "healing", "hospitality",
+            "making", "passage", "scribing", "sentinel", "shadow", "storm",
+            "warding"):
+    FEAT_CHOICES[f"greater-mark-of-{_gm}"] = _plus_one(
+        _ANY_ABILITY, "+1 to one ability score.")
 
 # Owned-book feat-choice schemas stay LOCAL (same policy as species_looks.json):
 # {"<feat-slug>": {"kind": ..., "n": ..., ...}}.
@@ -11194,7 +11439,78 @@ def _find_subclass(session: Session, cls: DndClass, name: str) -> Optional[Subcl
     return None
 
 
-def _progression(session: Session, char: Character, target_subclass: Optional[str], apply: bool) -> dict:
+def _asi_feat_pool(char: Character, level: int) -> list:
+    """Feats this character may take at an ASI, with their prerequisites judged.
+
+    Origin feats are granted by background/species at creation, so an ASI draws
+    from the general pool (plus epic boons once the character is high enough).
+    Ineligible feats are still listed, flagged, so the player can see WHY.
+    """
+    from rules.models import Feat as _Feat
+    stats = dict(char.stats or {})
+    taken = {t.split(":", 1)[1].strip().lower()
+             for t in (char.tags or [])
+             if isinstance(t, str) and t.lower().startswith("feat:")}
+    _fc = _feat_choices_merged()
+    out = []
+    with Session(rules_lib.engine) as s:
+        rows = s.exec(select(_Feat).where(
+            _Feat.category.in_(["general", "giant", "dragonmark", "epic-boon"]))
+            .order_by(_Feat.category, _Feat.name)).all()
+    has_mark = next((t for t in taken if t.startswith("mark-of-")
+                     or t == "aberrant-dragonmark"), None)
+    for f in rows:
+        if f.index_slug in taken:
+            continue
+        met, why = _feat_prereq_met(f.prerequisite, f.min_level or 1, stats,
+                                    char.char_class, level, race=char.race)
+        # Dragonmarks are exclusive, and a Greater Mark only deepens a mark you
+        # already bear. Neither clause is machine-readable in the prereq text.
+        if met and f.category == "dragonmark" and has_mark:
+            met, why = False, "you already bear a dragonmark"
+        if met and f.index_slug.startswith("greater-"):
+            base = f.index_slug.replace("greater-", "", 1)
+            base = "aberrant-dragonmark" if base == "aberrant-mark" else base
+            if base not in taken:
+                met, why = False, "requires the lesser mark first"
+        out.append({
+            "slug": f.index_slug, "name": f.name, "category": f.category,
+            "prerequisite": f.prerequisite, "min_level": f.min_level,
+            "brief": (f.benefit or "")[:200],
+            "eligible": bool(met), "blocked_reason": None if met else why,
+            "choices": _fc.get(f.index_slug),
+        })
+    return out
+
+
+def _validate_asi(char: Character, increases: Optional[Dict[str, int]]) -> Dict[str, int]:
+    """Check an ASI spread: 2 points total, at most +2 on any one ability."""
+    clean: Dict[str, int] = {}
+    total = 0
+    for code, amt in (increases or {}).items():
+        c = str(code).strip().lower()
+        if c not in _ABILITY_FULL:
+            raise HTTPException(status_code=400, detail=f"Unknown ability {code!r}.")
+        a = int(amt or 0)
+        if a <= 0:
+            continue
+        if a > 2:
+            raise HTTPException(status_code=400,
+                                detail="An ASI raises one ability by at most 2.")
+        clean[c] = a
+        total += a
+    if total != 2:
+        raise HTTPException(
+            status_code=400,
+            detail="An Ability Score Improvement spends exactly 2 points: "
+                   "+2 to one ability, or +1 to two.")
+    return clean
+
+
+def _progression(session: Session, char: Character, target_subclass: Optional[str],
+                 apply: bool, *, ability_increases: Optional[Dict[str, int]] = None,
+                 feat: Optional[str] = None,
+                 feat_choices: Optional[Dict[str, Any]] = None) -> dict:
     cls = _get_class_row(session, char.char_class)
     if cls is None:
         raise HTTPException(status_code=400, detail=f"Unknown class for character: {char.char_class!r}")
@@ -11229,13 +11545,53 @@ def _progression(session: Session, char: Character, target_subclass: Optional[st
     )
 
     subclass_required = bool(report.get("subclass_choice_due")) and not chosen_name
-    # Don't advance until the required subclass choice is made.
-    did_apply = apply and not subclass_required
+
+    # Ability Score Improvement: this level owes the player a score spread OR a
+    # feat, and the level does not land until they have picked one.
+    asi_due = bool(report.get("asi_or_feat"))
+    asi_required = asi_due and not ability_increases and not feat
+    if asi_due and ability_increases and feat:
+        raise HTTPException(status_code=400,
+                            detail="Take EITHER the ability increases or a feat, not both.")
+    asi_notes: List[str] = []
+    clean_increases: Dict[str, int] = {}
+    if asi_due and not asi_required:
+        if feat:
+            slug = str(feat).strip().lower()
+            pool = {f["slug"]: f for f in _asi_feat_pool(char, new_level)}
+            row = pool.get(slug)
+            if row is None:
+                raise HTTPException(status_code=400,
+                                    detail=f"{feat!r} is not a feat you can take now.")
+            if not row["eligible"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{row['name']} — prerequisite not met ({row['blocked_reason']}).")
+            # Every choice the feat asks for must actually be answered.
+            for spec in _feat_choice_specs(slug):
+                if not _feat_choice_satisfied(spec, feat_choices or {}):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{row['name']} needs a choice: "
+                               f"{spec.get('hint') or spec.get('kind')}")
+        else:
+            clean_increases = _validate_asi(char, ability_increases)
+
+    # Don't advance until every required choice is made.
+    did_apply = apply and not subclass_required and not asi_required
 
     if did_apply:
         char.level = new_level
         if target_subclass and chosen_row:
             char.subclass = chosen_row.name
+        if asi_due:
+            if feat:
+                asi_notes = _apply_feat(char, str(feat).strip().lower(), feat_choices)
+            else:
+                for code, amt in clean_increases.items():
+                    note = _bump_ability(char, code, amt, 20)
+                    if note:
+                        asi_notes.append(note)
         char.updated_at = _utcnow()
         session.add(char)
         session.commit()
@@ -11253,6 +11609,10 @@ def _progression(session: Session, char: Character, target_subclass: Optional[st
         "subclass_level": cls.subclass_level,
         "subclass_required": subclass_required,
         "subclass_options": option_list,
+        "asi_due": asi_due,
+        "asi_required": asi_required,
+        "asi_feats": _asi_feat_pool(char, new_level) if asi_required else [],
+        "asi_notes": asi_notes,
         "report": report,
     }
 
@@ -11274,13 +11634,16 @@ async def level_up(req: LevelUpRequest):
     If the new level is where the class chooses its subclass and none is provided,
     the level is NOT applied — the response returns ``subclass_required`` plus the
     available subclass options (including owned non-SRD ones) so the caller can
-    resubmit with a choice.
+    resubmit with a choice. An Ability Score Improvement level behaves the same
+    way via ``asi_required`` + ``asi_feats``.
     """
     with Session(engine) as session:
         char = session.get(Character, req.character_id)
         if not char:
             raise HTTPException(status_code=404, detail="Character not found.")
-        result = _progression(session, char, target_subclass=req.subclass, apply=True)
+        result = _progression(session, char, target_subclass=req.subclass, apply=True,
+                              ability_increases=req.ability_increases,
+                              feat=req.feat, feat_choices=req.feat_choices)
         # If the level-up was successfully applied, clear the pending flag.
         if result.get("applied"):
             char.pending_level_up = False
@@ -14308,6 +14671,7 @@ def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
         if not char or not char.pending_level_up:
             return None
         char_race = char.race
+        char_stats = dict(char.stats or {})
         prog = _progression(session, char, target_subclass=None, apply=False)
     new_level = prog["next_level"]
     race_feats: list = []
@@ -14379,6 +14743,10 @@ def _activity_levelup(session_id: str, user_id: str) -> Optional[dict]:
         "race_features": race_feats,
         "subclass_options": options,
         "spells_due": spells_due,
+        # Ability Score Improvement: this level owes a score spread or a feat.
+        "asi_due": prog.get("asi_due"),
+        "asi_feats": prog.get("asi_feats") or [],
+        "abilities": dict(char_stats or {}),
     }
 
 
@@ -16191,9 +16559,17 @@ async def activity_ws(ws: WebSocket, channel: str):
                             or len(pick_spells) < due["spells"]):
                     await send_levelup()
                     continue
+                # Ability Score Improvement: either a score spread or a feat
+                # (with the feat's own choices already resolved client-side).
+                raw_inc = msg.get("ability_increases") or None
+                increases = ({str(k): int(v) for k, v in raw_inc.items()}
+                             if isinstance(raw_inc, dict) else None)
                 try:
                     result = await level_up(LevelUpRequest(
-                        character_id=char_id, subclass=msg.get("subclass")))
+                        character_id=char_id, subclass=msg.get("subclass"),
+                        ability_increases=increases,
+                        feat=(msg.get("feat") or None),
+                        feat_choices=(msg.get("feat_choices") or None)))
                 except HTTPException as e:
                     await ws.send_json({"t": "narration", "text": f"⚠ {e.detail}"})
                     await send_levelup()
@@ -16211,11 +16587,13 @@ async def activity_ws(ws: WebSocket, channel: str):
                                 s.add(ch)
                                 s.commit()
                     sub = f" — {result['subclass']}" if result.get("subclass") else ""
+                    gains = result.get("asi_notes") or []
                     await _activity_broadcast(session_id, {
                         "t": "narration",
                         "text": (f"{result['name']} rises to level "
                                  f"{result['current_level']}{sub}. "
-                                 "New strength settles into old scars."),
+                                 "New strength settles into old scars."
+                                 + (" " + " ".join(gains) if gains else "")),
                     }, fallback=ws)
                     await ws.send_json({"t": "levelup", "data": None})
                     sheet = _activity_sheet(session_id, user_id)

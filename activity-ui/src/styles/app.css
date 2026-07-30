@@ -544,6 +544,41 @@ body {
 .lu-opt-name { font-size: 15px; color: var(--parchment); }
 .lu-opt-tag { font-size: 9px; letter-spacing: 0.14em; color: var(--brass); margin-top: 2px; }
 .lu-opt-feats { font-size: 11px; color: var(--text-dim); margin-top: 5px; line-height: 1.45; }
+/* ---- Ability Score Improvement: scores or a feat ---- */
+.lu-asi-modes {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px; margin-bottom: 12px;
+}
+.lu-option.blocked { opacity: 0.38; cursor: default; }
+.lu-option.blocked:hover { border-color: var(--panel-edge); }
+/* The feat pool is long — give it its own scroll rather than pushing the
+   confirm button off the overlay. */
+.lu-featgrid { max-height: 34vh; overflow-y: auto; padding-right: 4px; }
+.asi-row {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px;
+  margin-bottom: 14px;
+}
+.asi-cell {
+  border: 1px solid var(--panel-edge); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel) 60%, black);
+  padding: 8px 4px; text-align: center;
+}
+.asi-cell.on { border-color: var(--brass); }
+.asi-name { font-size: 10px; letter-spacing: 0.14em; color: var(--text-dim); }
+.asi-score { font-size: 19px; color: var(--parchment); margin: 2px 0 4px; }
+.asi-delta { font-size: 11px; color: var(--brass); }
+.asi-steps { display: flex; gap: 4px; justify-content: center; }
+.asi-steps button {
+  width: 22px; height: 22px; line-height: 1; padding: 0;
+  background: transparent; border: 1px solid var(--panel-edge);
+  border-radius: 3px; color: var(--text); cursor: pointer;
+}
+.asi-steps button:hover:not(:disabled) { border-color: var(--brass); color: var(--brass); }
+.asi-steps button:disabled { opacity: 0.3; cursor: default; }
+@media (max-width: 560px) {
+  .asi-row { grid-template-columns: repeat(3, 1fr); }
+}
+
 .lu-swap-clear { margin-left: 8px; background: none; border: none;
   color: var(--text-dim); font-size: 0.7rem; cursor: pointer; }
 .lu-swap-clear:hover { color: var(--oxblood); }

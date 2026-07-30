@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CCOptions, CCPayload, CCSpells, Pantheon, Power, SpellBrief } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
+import { ChoiceChips, choiceOptions } from "./FeatChoices";
 
 /** Male+female species portraits for a race/lineage card. Each image walks a
  * candidate list (lineage art → base species art) and hides itself only when
@@ -163,6 +164,7 @@ interface Draft {
   featTools: string[];    // tools granted by a feat (Musician/Crafter)
   featLanguages: string[];// languages granted by a feat
   featAbility?: string;   // ability chosen by a feat (3-letter code)
+  featOptions: string[];  // named feat picks (a damage resistance, a giant strike)
   cantrips: string[];     // class cantrip slugs
   spells: string[];       // class level-1 spell slugs
   miClass?: string;       // Magic Initiate: chosen class list
@@ -179,7 +181,7 @@ interface Draft {
 const freshDraft = (): Draft => ({
   boostMode: "two-one", method: "standard_array", pool: [], assigned: {},
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
-  skills: [], featSkills: [], featTools: [], featLanguages: [],
+  skills: [], featSkills: [], featTools: [], featLanguages: [], featOptions: [],
   cantrips: [], spells: [], miCantrips: [], miSpells: [],
   gearMode: "kit", cart: {}, name: "",
 });
@@ -189,74 +191,11 @@ const CASTER_CLASSES = new Set([
   "wizard", "artificer",
 ]);
 
-// The 18 standard skills — the pool for choice-feats like Skilled.
-const ALL_SKILLS = [
-  "Acrobatics", "Animal Handling", "Arcana", "Athletics", "Deception",
-  "History", "Insight", "Intimidation", "Investigation", "Medicine", "Nature",
-  "Perception", "Performance", "Persuasion", "Religion", "Sleight of Hand",
-  "Stealth", "Survival",
-];
-const INSTRUMENTS = [
-  "Bagpipes", "Drum", "Dulcimer", "Flute", "Lute", "Lyre", "Horn",
-  "Pan Flute", "Shawm", "Viol",
-];
-const ARTISAN_TOOLS = [
-  "Alchemist's Supplies", "Brewer's Supplies", "Calligrapher's Supplies",
-  "Carpenter's Tools", "Cartographer's Tools", "Cobbler's Tools",
-  "Cook's Utensils", "Glassblower's Tools", "Jeweler's Tools",
-  "Leatherworker's Tools", "Mason's Tools", "Painter's Supplies",
-  "Potter's Tools", "Smith's Tools", "Tinker's Tools", "Weaver's Tools",
-  "Woodcarver's Tools",
-];
-const LANGUAGES = [
-  "Common", "Dwarvish", "Elvish", "Giant", "Gnomish", "Goblin", "Halfling",
-  "Orc", "Abyssal", "Celestial", "Draconic", "Deep Speech", "Infernal",
-  "Primordial", "Sylvan", "Undercommon",
-];
-
+// Skill / tool / language pools and the chip row live in FeatChoices so the
+// level-up overlay resolves a feat's choices exactly the way creation does.
 type Choice = NonNullable<CCOptions["feats"][number]["choices"]>;
 
-/** The option list a non-spell feat-choice draws from. */
-function choiceOptions(c: Choice): string[] {
-  if (c.kind === "tools") {
-    if (Array.isArray(c.from)) return c.from;
-    if (c.from === "instrument") return INSTRUMENTS;
-    if (c.from === "artisan") return ARTISAN_TOOLS;
-    return [...INSTRUMENTS, ...ARTISAN_TOOLS];
-  }
-  if (c.kind === "language") return LANGUAGES;
-  if (c.kind === "ability") return Array.isArray(c.from) ? c.from : ABILITIES.slice();
-  return Array.isArray(c.from) ? c.from : ALL_SKILLS;   // skills
-}
-
 /** A "choose N" chip picker (skills / tools / languages / an ability). */
-function ChoiceChips({ label, options, chosen, n, single, onToggle }: {
-  label: string; options: string[]; chosen: string[]; n: number;
-  single?: boolean; onToggle: (v: string) => void;
-}) {
-  const left = n - chosen.length;
-  return (
-    <div style={{ marginTop: 14 }}>
-      <div className="cf-sub-label">
-        {label}{left > 0 ? <span className="cf-req"> · {left} left</span> : null}
-      </div>
-      <div className="cf-chips">
-        {options.map((o) => {
-          const on = chosen.includes(o);
-          return (
-            <button
-              key={o}
-              className={`cf-chip ${on ? "picked" : ""}`}
-              disabled={!on && !single && chosen.length >= n}
-              onClick={() => { uiTick(); onToggle(o); }}
-            >{o}</button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 /** A "choose N spells" grid (cantrips or level-1). Cards toggle; the grid locks
  *  once N are picked. Shared by class spellcasting and Magic Initiate. */
 function SpellPicker({ title, list, chosen, n, onToggle }: {
@@ -450,19 +389,28 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   // Choices carried by the chosen origin feats (Skilled → skills, Magic
   // Initiate → a class + cantrips + a spell).
   const chosenFeats = [d.featBg, d.featRace].filter(Boolean) as string[];
+  // A feat may ask two things (Dragonscarred wants an ability AND a damage
+  // resistance), so flatten `also` in alongside the primary choice.
   const featChoices = chosenFeats
-    .map((slug) => opts?.feats.find((f) => f.slug === slug)?.choices)
-    .filter(Boolean) as NonNullable<CCOptions["feats"][number]["choices"]>[];
+    .flatMap((slug) => {
+      const c = opts?.feats.find((f) => f.slug === slug)?.choices;
+      if (!c) return [];
+      const { also, ...primary } = c;
+      return also ? [primary as Choice, also as Choice] : [primary as Choice];
+    });
   const skilledChoice = featChoices.find((c) => c.kind === "skills");
   const toolsChoice = featChoices.find((c) => c.kind === "tools");
   const abilityChoice = featChoices.find((c) => c.kind === "ability");
   const languageChoice = featChoices.find((c) => c.kind === "language");
+  const optionsChoice = featChoices.find((c) => c.kind === "options");
   const miChoice = featChoices.find((c) => c.kind === "magic_initiate");
   const featSkillsDone = !skilledChoice || d.featSkills.length === (skilledChoice.n ?? 3);
   const featToolsDone = !toolsChoice || d.featTools.length === (toolsChoice.n ?? 1);
   const featLangDone = !languageChoice || d.featLanguages.length === (languageChoice.n ?? 1);
   const featAbilityDone = !abilityChoice || !!d.featAbility;
-  const featChoicesDone = featSkillsDone && featToolsDone && featLangDone && featAbilityDone;
+  const featOptionsDone = !optionsChoice || d.featOptions.length === (optionsChoice.n ?? 1);
+  const featChoicesDone = featSkillsDone && featToolsDone && featLangDone
+    && featAbilityDone && featOptionsDone;
 
   // The Spells stage appears when the class casts OR Magic Initiate was taken.
   const needsSpells = !!spellData || !!miChoice;
@@ -517,6 +465,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         stats, skills: [...d.skills, ...d.featSkills],
         tools: d.featTools.length ? d.featTools : undefined,
         languages: d.featLanguages.length ? d.featLanguages : undefined,
+        feat_options: d.featOptions.length ? d.featOptions : undefined,
         feats: feats.length ? feats : undefined,
         cantrips: allCantrips.length ? allCantrips : undefined,
         spells: allSpells.length ? allSpells : undefined,
@@ -747,7 +696,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 feats={originFeats} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featBg}
                 onPick={(slug) => setD({ ...d, featBg: slug,
-                  featSkills: [], featTools: [], featLanguages: [], featAbility: undefined, miClass: undefined, miCantrips: [], miSpells: [] })} />
+                  featSkills: [], featTools: [], featLanguages: [], featAbility: undefined, featOptions: [], miClass: undefined, miCantrips: [], miSpells: [] })} />
             )}
             {raceFeat && (
               <FeatPicker
@@ -757,7 +706,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 feats={raceFeatPool} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featRace}
                 onPick={(slug) => setD({ ...d, featRace: slug,
-                  featSkills: [], featTools: [], featLanguages: [], featAbility: undefined, miClass: undefined, miCantrips: [], miSpells: [] })} />
+                  featSkills: [], featTools: [], featLanguages: [], featAbility: undefined, featOptions: [], miClass: undefined, miCantrips: [], miSpells: [] })} />
             )}
             {skilledChoice && (
               <ChoiceChips
@@ -790,6 +739,14 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 chosen={d.featAbility ? [d.featAbility] : []} n={1}
                 onToggle={(v) => setD({ ...d,
                   featAbility: d.featAbility === v ? undefined : v })} />
+            )}
+            {optionsChoice && (
+              <ChoiceChips
+                label={optionsChoice.hint || `Choose ${optionsChoice.n ?? 1}`}
+                options={choiceOptions(optionsChoice)} chosen={d.featOptions}
+                n={optionsChoice.n ?? 1}
+                onToggle={(v) => setD({ ...d, featOptions: d.featOptions.includes(v)
+                  ? d.featOptions.filter((x) => x !== v) : [...d.featOptions, v] })} />
             )}
           </>
         )}
