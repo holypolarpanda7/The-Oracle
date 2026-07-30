@@ -857,7 +857,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         {stage === "wondrous" && (
           <>
             <div className="cf-sub-label">
-              Choose one free <b>common magic item</b> to start with — or none.
+              Choose one free <b>common wondrous item</b> to start with — or none.
             </div>
             <div className="cf-grid">
               {opts.common_items.map((w) => (
@@ -877,7 +877,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
               ))}
             </div>
             {opts.common_items.length === 0 && (
-              <p className="cf-hint">No common items are ingested yet — skip onward.</p>
+              <p className="cf-hint">No common wondrous items are ingested yet — skip onward.</p>
             )}
           </>
         )}

@@ -10371,13 +10371,28 @@ def _grant_bought_items(char: Character, session: Session,
     return {"granted": granted, "spent_gp": round(spent, 2), "gp_left": char.gp}
 
 
+def _common_wondrous_items(session: Session) -> list:
+    """The free-pick pool: COMMON WONDROUS items only.
+
+    Not every common magic item — a potion is drunk once and a scroll burns, so
+    neither is a keepsake to start play with. Rarity is stored inconsistently
+    across the SRD and the local book overrides ('Common' vs 'common'), and the
+    type is spelled both 'Wondrous Item' and 'Wondrous Items', so both are
+    matched case-insensitively.
+    """
+    from rules.models import Item as _Item
+    rows = session.exec(
+        select(_Item).where(func.lower(_Item.rarity) == "common",
+                            func.lower(_Item.item_type).like("wondrous item%"))
+        .order_by(_Item.name)).all()
+    return list(rows)
+
+
 def _grant_wondrous_item(char: Character, session: Session,
                          slug: str) -> Optional[str]:
     """Grant the chosen free common wondrous item. Returns its name if valid."""
-    from rules.models import Item as _Item
-    row = session.exec(
-        select(_Item).where(_Item.index_slug == slug,
-                            _Item.rarity == "Common")).first()
+    row = next((r for r in _common_wondrous_items(session)
+                if r.index_slug == slug), None)
     if not row:
         return None
     _add_inventory_item(char, row.name, quantity=1,
@@ -10708,12 +10723,13 @@ def cc_options():
             feats = s.exec(select(_Feat).order_by(_Feat.category, _Feat.name)).all()
         except Exception:
             feats = []
-        # Free common magic-item pick — ALL common items (wondrous, wands,
-        # staves, common armor/weapons, potions...), not just wondrous. Level-1
-        # balance is held by the Common-rarity gate. Empty degrades gracefully.
+        # Free trinket pick — COMMON WONDROUS items, nothing else: a keepsake
+        # you keep, not a potion you drink once. Level-1 balance is held by the
+        # Common-rarity gate. An empty pool degrades gracefully (the stage is
+        # optional), which is what the SRD alone gives you — the interesting
+        # ones arrive via the local owned-book override slot.
         try:
-            common_items = s.exec(select(_Item).where(
-                _Item.rarity == "Common").order_by(_Item.name)).all()
+            common_items = _common_wondrous_items(s)
         except Exception:
             common_items = []
         # Buyable mundane gear for the "buy your own" path.
