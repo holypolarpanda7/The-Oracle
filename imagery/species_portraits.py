@@ -153,6 +153,12 @@ def species_negative(base_negative: str, slug: str, sex: str,
 # across the whole set with no visible loss on the cards.
 _STORE_WIDTH = 512
 _WEBP_QUALITY = 80
+# The CC card shows these at aspect-ratio 3/4 with object-fit: cover, so a
+# SQUARE render loses ~25% off the sides — and the composition was framed for a
+# square the player never sees. Rendering at the card's own ratio puts every
+# pixel on screen and makes the face bigger at the same file size. 896x1152 is
+# an SDXL-native bucket close to 3:4 (0.78), so quality doesn't suffer.
+_GEN_W, _GEN_H = 896, 1152
 
 # Canon-accurate looks for the common SRD/PHB species. Each entry: shared traits
 # plus a male/female cue, and optionally a ``negative`` the species must never
@@ -494,27 +500,34 @@ def build_positive(look: Dict[str, str], sex: str, style_prompt: str,
 _REF_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
-def _kin_reference(slug: str, sex: str, race_slug: Optional[str] = None) -> Optional[Path]:
+def _kin_reference(slug: str, sex: str, race_slug: Optional[str] = None,
+                   cross_sex: bool = False) -> Optional[Path]:
     """The already-rendered portrait a new one should take after, if any.
 
     IP-Adapter has been enabled and installed all along with nothing to feed
     it, because identity references meant sourcing art per species. But the set
     is its own best reference:
 
-      * a LINEAGE takes after its base species (the forest gnome and the rock
-        gnome should read as the same people as the gnome — which is exactly
-        the note that came back from review), and
-      * the FEMALE of a species takes after the male already on disk, so the
-        two are kin rather than two unrelated renders that share a prompt.
+      * a LINEAGE takes after its base species — the forest gnome and the rock
+        gnome should read as the same people as the gnome, which is exactly the
+        note that came back from review. This is the useful link and it is on
+        by default.
+      * optionally (``cross_sex``), the FEMALE of a species takes after the
+        male. This is OFF by default because it MEASURED BADLY: at weight 0.45
+        it cloned rather than guided, and halfling, reborn, shifter, kalashtar,
+        firbolg and tabaxi women came back as their own menfolk. Sex is a
+        weaker signal in the prompt than a reference face is, so the reference
+        simply wins. Two portraits of one species need to look like the same
+        PEOPLE, which the prompt already handles — not the same PERSON.
 
     Returns None when the parent art doesn't exist yet, so a cold run still
-    works — it just renders the base/male first and the rest take after it.
+    works — it just renders the base first and the lineages take after it.
     """
     if race_slug and race_slug != slug:
         base = _OUT_DIR / f"{race_slug}-{sex}.webp"       # lineage → its species
         if base.is_file():
             return base
-    if sex == "f":
+    if cross_sex and sex == "f":
         male = _OUT_DIR / f"{race_slug or slug}-m.webp"   # female → the male
         if male.is_file():
             return male
@@ -544,7 +557,8 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
                      lineages: bool = False, base: bool = True,
                      style_ref: Optional[Path] = None,
                      style_preset: str = "STANDARD (medium strength)",
-                     kin: bool = False, kin_weight: float = 0.45) -> int:
+                     kin: bool = False, kin_weight: float = 0.45,
+                     kin_cross_sex: bool = False) -> int:
     cfg = get_config().imagery
     want = ({_ALIASES.get(_norm(s), _norm(s)) for s in slugs} if slugs else None)
 
@@ -593,7 +607,7 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
         """Upload the kin portrait for this render, once per file."""
         if not kin or dry_run:
             return None
-        path = _kin_reference(slug, sex, race_slug)
+        path = _kin_reference(slug, sex, race_slug, kin_cross_sex)
         if path is None:
             return None
         key = str(path)
@@ -641,8 +655,8 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
             return False
         try:
             print(f"→ rendering {tag}{' [ref]' if ref_files else ''} …", flush=True)
-            raw = client.generate(positive, negative, width=cfg.gen_width,
-                                  height=cfg.gen_height, steps=cfg.steps,
+            raw = client.generate(positive, negative, width=_GEN_W,
+                                  height=_GEN_H, steps=cfg.steps,
                                   reference_filenames=ref_files)
             enc = encode_webp(raw, store_width=_STORE_WIDTH, thumb_width=256,
                               quality=_WEBP_QUALITY)
@@ -799,6 +813,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "Render the base/male first (a missing parent is simply skipped).")
     ap.add_argument("--kin-weight", type=float, default=0.45,
                     help="how hard a kin reference pulls (default 0.45 — guide, not clone)")
+    ap.add_argument("--kin-cross-sex", action="store_true",
+                    help="also make each female take after her species' male. OFF by "
+                         "default: at any useful weight the reference face beats the "
+                         "prompt's sex cue and the women come back as the men.")
     ap.add_argument("--style-ref", help="one image whose ART STYLE every portrait should "
                     "match (IP-Adapter style-transfer). Grit descriptors are dropped so the "
                     "reference's look leads. Pair with --ip-weight (~0.8-1.0).")
@@ -828,7 +846,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     n = generate_species(slugs, sexes, force=a.force, dry_run=a.dry_run, ref_dir=ref_dir,
                          ipadapter=a.ipadapter or bool(ref_dir), ip_weight=a.ip_weight,
                          lineages=a.lineages, base=not a.skip_base, style_ref=style_ref,
-                         kin=a.kin, kin_weight=a.kin_weight)
+                         kin=a.kin, kin_weight=a.kin_weight,
+                         kin_cross_sex=a.kin_cross_sex)
     if not a.dry_run:
         print(f"\nDone — {n} portrait(s) generated into {_OUT_DIR}.")
         print("Review them, then `git add -f` the SRD/PHB ones you want in the repo "

@@ -109,11 +109,19 @@ present, and `use_ipadapter` is enabled in `game_settings.json`. Nothing used it
 because identity references meant sourcing reference art per species.
 
 **`--kin` makes the set its own reference.** A lineage takes after its base
-species, and a female takes after the male already on disk — so the three gnomes
-read as one people instead of three independent rolls. Weight defaults to 0.45:
-a lineage that comes back as a copy of its base is as wrong as one that looks
-unrelated. A missing parent is skipped, so a cold run still works (base/male
-renders first, the rest take after it).
+species, so the three gnomes read as one people instead of three independent
+rolls. Weight defaults to 0.45: a lineage that comes back as a copy of its base
+is as wrong as one that looks unrelated. A missing parent is skipped, so a cold
+run still works (the base renders first, the lineages take after it).
+
+Linking each FEMALE to her species' male (`--kin-cross-sex`) is available and
+**off**, because it was tried and it failed: at 0.45 the halfling, reborn,
+shifter, kalashtar, firbolg and tabaxi women came back as their own menfolk. A
+reference face beats the prompt's sex cue outright — the useful generalisation
+being that IP-Adapter overrides whatever the prompt says about the *subject*,
+so only use it for things you want copied. Two portraits of one species must
+look like the same PEOPLE, which the prompt already handles, not the same
+PERSON.
 
 ```bash
 uv run python -m imagery.species_portraits --lineages --kin --force --species gnome
@@ -131,7 +139,32 @@ loras = [{"name": "my_style_xl.safetensors", "model": 0.8, "clip": 0.8}]
 
 Applied in order; drop the files in `ComfyUI/models/loras/`.
 
+## Card legibility: it was never a detail problem
+
+I expected a detailer (`FaceDetailer`, Impact Pack) to be the fix for faces
+mushing on the ~83px CC cards. Measuring first said otherwise, and saved a
+third-party install:
+
+| Change | Effect at 83px |
+|---|---|
+| unsharp after downscale | **marginal** — visible but small |
+| render at the card's own 3:4 ratio | **large** — the obvious fix |
+
+A species card is `aspect-ratio: 3/4` with `object-fit: cover`, and the
+portraits were rendered SQUARE — so a quarter of every image was cropped away
+unseen, and the composition was framed for a frame the player never gets.
+Rendering at `896x1152` (an SDXL-native bucket at 0.78) puts every pixel on
+screen and the face lands far bigger for the same file size.
+
+The lesson generalises: at a 6x downscale, **composition survives and detail
+does not**. Extra facial detail added at 1024px is gone by 83px — which is
+exactly why a detailer would not have helped here. It is still worth
+considering for SCENE art, which is displayed largest.
+
+Sharpening is kept anyway (`encode_webp(sharpen=0.6)`, ~+17% bytes): it costs
+nothing and does help the larger views — the ~250px species detail panel, the
+180px PC portrait, the scene panel.
+
 ## Not installed
-ControlNet (empty dir) and any detailer — `FaceDetailer` needs the Impact Pack,
-which would be the obvious next win given the art is viewed at ~100px on the CC
-cards, where several faces currently mush.
+ControlNet (empty dir), Impact Pack / any detailer — see above for why the
+detailer is not the win it looks like.
