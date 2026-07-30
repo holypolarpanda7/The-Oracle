@@ -50,7 +50,8 @@ _OUT_DIR = Path(__file__).resolve().parent.parent / "activity-ui" / "public" / "
 _FRAMING = ("head and shoulders character portrait, three-quarter view facing "
             "the viewer, calm curious expression, softly blurred natural outdoor "
             "background with shallow depth of field, warm gentle rim light, "
-            "single figure, no text")
+            "single figure, no text, one uniform skin tone across the face, "
+            "neck and shoulders")
 # Species house style — matches the reference: a soft, warm, semi-realistic
 # painterly illustration (NOT the bold graphic-novel scene style). Used in place
 # of the global style_prompt for portraits so scenes/items keep their own look.
@@ -219,7 +220,12 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
                   "pointed ears, a flat wide nose, coarse black hair, war paint "
                   "and bone ornaments, a fierce commanding presence",
         "male": "a huge orc man, jutting tusks, shaved or mohawked head",
-        "female": "a powerful orc woman, strong jaw, prominent tusks, braided hair"},
+        "female": "a powerful orc woman, strong jaw, prominent tusks, braided "
+                  "hair, the SAME deep grey-green skin over her whole face, "
+                  "neck and shoulders",
+        "negative": "two-tone skin, mismatched skin colour, war paint, face "
+                    "paint, mask, pale jaw, human skin on the neck, horns, "
+                    "antlers, demon"},
     "high-elf": {
         "shared": "a high elf, tall and refined, pale luminous skin, sharp regal "
                   "features, long pointed ears, cool jewel-toned eyes, immaculate "
@@ -233,17 +239,27 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
         "male": "a rugged wood-elf man, feral grace, light face paint",
         "female": "a keen wood-elf woman, windswept hair, watchful eyes"},
     "forest-gnome": {
-        "shared": "a forest gnome, tiny and quick, warm nut-brown skin, oversized "
-                  "bright eyes, a button nose, wild mossy-toned hair with twigs "
-                  "and flowers, woodland clothing, an impish knowing smile",
-        "male": "a forest-gnome man, leafy pointed beard",
-        "female": "a forest-gnome woman, flower-woven wild hair"},
+        "negative": "garden gnome, lawn ornament, figurine, toy, chibi, cartoon, "
+                    "caricature, doll, plastic, child",
+        "shared": "a forest gnome, a small elderly-featured adult with a "
+                  "lived-in weathered face, crow's feet and fine wrinkles, a "
+                  "long prominent nose, shrewd bright eyes under bushy brows, "
+                  "neatly pointed ears — warm nut-brown sun-touched skin, wiry "
+                  "moss-toned hair going grey with twigs and small flowers "
+                  "caught in it, woodland clothing, painted seriously",
+        "male": "an old forest-gnome man, leafy pointed grey beard",
+        "female": "an old forest-gnome woman, flower-woven wiry grey hair"},
     "rock-gnome": {
-        "shared": "a rock gnome tinkerer, tiny with an oversized head, huge "
-                  "curious eyes, a big nose, soot-smudged cheeks, brass goggles on "
-                  "the brow, frizzy wild hair, an inventor's leather apron of tools",
-        "male": "a rock-gnome man, singed pointed beard, goggles",
-        "female": "a rock-gnome woman, frizzy voluminous hair, goggles"},
+        "negative": "garden gnome, lawn ornament, figurine, toy, chibi, cartoon, "
+                    "caricature, doll, plastic, child",
+        "shared": "a rock gnome tinkerer, a small elderly-featured adult with a "
+                  "lived-in weathered face, crow's feet and fine wrinkles, a "
+                  "long prominent nose, shrewd bright eyes under bushy brows, "
+                  "neatly pointed ears — soot-smudged cheeks, brass goggles "
+                  "pushed up on the brow, wiry grey hair, an inventor's leather "
+                  "apron of tools, painted seriously",
+        "male": "an old rock-gnome man, singed pointed grey beard, goggles",
+        "female": "an old rock-gnome woman, wiry grey hair, goggles"},
     "tiefling": {
         "shared": "a tiefling: humanlike but clearly fiend-touched, prominent "
                   "curling horns rising from the brow, solid glowing eyes with no "
@@ -272,12 +288,14 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
         "male": "a radiant aasimar man, noble calm features, glowing sigils",
         "female": "a radiant aasimar woman, luminous and graceful, glowing sigils"},
     "goliath": {
-        "shared": "a goliath, enormous and towering, skin the flat cold gray of "
-                  "granite all over — stone-gray, not tanned — mottled with "
-                  "darker slate patches and studded with raised bony lithoderm "
-                  "growths across the brow, jaw and shoulders, dark tribal "
-                  "markings, a bald head, a heavy jutting stony brow ridge, "
-                  "small deep-set eyes, mountain-giant heritage, colossal muscle",
+        "shared": "a goliath, enormous and towering, skin a cool slate BLUE-GREY "
+                  "(or a dull brick red), never tanned human flesh tones, "
+                  "mottled with darker patches and studded with raised bony "
+                  "lithoderm growths across the brow, jaw and shoulders, bold "
+                  "dark tribal tattoos sweeping across the scalp and face, a "
+                  "bald head, a heavy jutting stony brow ridge, small deep-set "
+                  "eyes, mountain-giant heritage, colossal muscle",
+        "negative": "tan skin, human skin tone, concrete grey, plain grey",
         "male": "a massive goliath man, jutting jaw, stony ridges",
         "female": "a towering goliath woman, angular stone-marked features"},
 }
@@ -328,11 +346,15 @@ LINEAGE_LOOKS: Dict[str, Dict[str, str]] = {
     "forest-gnome": SPECIES_LOOKS["forest-gnome"],
     "rock-gnome": SPECIES_LOOKS["rock-gnome"],
     "drow": {
-        "shared": "a drow (dark elf), obsidian to dusky-charcoal skin, stark white "
-                  "or silver hair, long pointed ears, sharp angular features, pale "
-                  "lavender or red eyes adapted to darkness, elegant dark attire",
-        "male": "a drow man, cold refined features",
-        "female": "a drow woman, imperious elegant features"},
+        "negative": "pale skin, white skin, fair skin, light skin, human skin "
+                    "tone, tanned",
+        "shared": "a drow (dark elf) whose skin is deep dusky VIOLET-PURPLE "
+                  "shading to blue-black — richly coloured, never pale — stark "
+                  "white or moonlight-silver hair against it, long pointed ears, "
+                  "sharp angular features, pale lavender or red eyes adapted to "
+                  "darkness, elegant dark attire",
+        "male": "a drow man, cold refined features, dark violet skin",
+        "female": "a drow woman, imperious elegant features, dark violet skin"},
     **{c: _dragon_look(c, s) for c, s in _DRAGON_SCALES.items()},
     **{slug: {"shared": desc, "male": f"a male {slug} shifter",
               "female": f"a female {slug} shifter"}
