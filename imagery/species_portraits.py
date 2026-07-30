@@ -65,6 +65,8 @@ _SPECIES_STYLE = ("soft painterly digital painting, semi-realistic stylized "
 _STYLE_HUMANLIKE = "appealing expressive face with large lively eyes"
 _STYLE_CREATURE = ("believable non-human anatomy, the species' own skull shape "
                    "and eyes, creature-design integrity")
+_STYLE_KINDRED = ("a real adult face rendered seriously, the species' own bone "
+                  "structure and build, not a caricature")
 # Light grounding so faces stay characterful rather than airbrushed. Males and
 # non-small females get a touch of natural realism; the SMALL folk females read
 # cuter (a weathered look is wrong on the little peoples).
@@ -185,20 +187,26 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
                   "shoulders, long elaborately braided hair with rings and "
                   "braided sideburns — short and stocky, not a slim human"},
     "halfling": {
-        "shared": "a halfling: a fully grown adult of a very small people, a "
-                  "broad soft ROUND face with full round cheeks and a small "
-                  "upturned nose, thick curly hair, slightly oversized head for "
-                  "the body, warm cheerful crinkled eyes, laugh lines, ruddy "
-                  "complexion, simple rustic homespun clothing — a small adult, "
-                  "never a human child or teenager",
-        "male": "a jovial halfling man, curly hair, maybe light stubble",
-        "female": "a cheerful halfling woman, bouncy curls"},
+        "negative": "child, teenager, boy, girl, chibi, cartoon, caricature, "
+                    "doll, elf ears, pointed ears",
+        "shared": "a halfling, a MIDDLE-AGED adult of a small people: a settled "
+                  "grown-up face with deep laugh lines around the eyes and "
+                  "mouth, weathered ruddy cheeks, a rounded jaw, thick curly "
+                  "hair with grey coming in at the temples, small round ears "
+                  "(not pointed), shrewd kindly eyes, simple rustic homespun, "
+                  "painted seriously — a small ADULT of forty, not a child",
+        "male": "a halfling man of middle years, curly greying hair, stubble",
+        "female": "a halfling woman of middle years, greying curls, laugh lines"},
     "gnome": {
-        "shared": "a very small gnome, oversized head-to-body proportions, large "
-                  "bright curious eyes, a big nose, wild unruly hair, animated "
-                  "mischievous grin, tinker's clothes with brass trinkets",
-        "male": "a gnome man, wild hair and a pointed beard",
-        "female": "a gnome woman, wild voluminous hair"},
+        "negative": "garden gnome, lawn ornament, figurine, toy, chibi, cartoon, "
+                    "caricature, doll, plastic, child",
+        "shared": "a gnome, a small elderly-featured adult with a lived-in "
+                  "weathered face, crow's feet and fine wrinkles, a long "
+                  "prominent nose, shrewd bright eyes under bushy brows, wiry "
+                  "unruly hair going grey, neatly pointed ears, a tinker's "
+                  "worn leather and brass trinkets, painted seriously",
+        "male": "an old gnome man, wild grey hair and a pointed beard",
+        "female": "an old gnome woman, wiry voluminous grey-streaked hair"},
     "half-orc": {
         "shared": "a powerful half-orc, greenish-gray skin, broad heavy jaw with "
                   "prominent lower tusks jutting up, sloped heavy brow, pointed "
@@ -451,11 +459,12 @@ def build_positive(look: Dict[str, str], sex: str, style_prompt: str,
              sexed,
              "a male" if sex == "m" else "a female",
              _FRAMING,
-             _STYLE_HUMANLIKE if tier == "human" else _STYLE_CREATURE,
+             _STYLE_HUMANLIKE if tier == "human"
+             else _STYLE_CREATURE if tier == "creature" else _STYLE_KINDRED,
              style_prompt]
     if not skip_grit:   # a style reference (IP-Adapter) defines the mood instead
         parts.append(_GRIT_FEM if (sex == "f" and cute) else _GRIT)
-    if tier != "human" and anchor:
+    if tier == "creature" and anchor:
         parts.append(f"({anchor}:1.2)")   # last word on what this is
     return ", ".join(p for p in parts if p)
 
