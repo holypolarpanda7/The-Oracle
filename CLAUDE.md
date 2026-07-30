@@ -93,7 +93,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - `geometry.py` — 5e distance (5-5-5, and 5-10-5 behind a config switch), A*
      + Dijkstra movement, line of sight, the PHB corner cover rule, spell
      templates clipped by line of effect, field of view, OA triggers.
-   - `mapgen.py` — 17 deterministic seeded layout generators; every board is one
+   - `mapgen.py` — 21 deterministic seeded layout generators; every board is one
      connected region with opposed spawn zones. `archetype_for()` maps loose DM
      language ("a smoky taproom") onto a generator.
    - `art.py` — top-down battlemap through `imagery/`; the picture is a TEXTURE,

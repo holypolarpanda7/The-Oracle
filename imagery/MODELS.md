@@ -162,6 +162,41 @@ loras_by_kind = {"map": [{"name": "dnd_battlemaps_xl.safetensors", "model": 0.9}
 
 A kind listed in `loras_by_kind` uses its list INSTEAD of `loras`, not on top.
 
+### Judging a map LoRA: `scripts/map_lora_probe.py`
+
+A map LoRA that nails a dungeon corridor and then draws a tavern in elevation
+is worse than none — the grid the engine enforces stops matching what players
+see. One good sample proves nothing, so the probe renders ALL 21 archetypes
+through the real `vtt.art.render_battlemap` path and lays them out as one
+sheet. Same `--seed` across runs makes two sheets directly comparable.
+
+```bash
+./.venv/Scripts/python.exe scripts/map_lora_probe.py --tag baseline
+# ...configure loras_by_kind["map"], then
+./.venv/Scripts/python.exe scripts/map_lora_probe.py --tag lora-0.9
+```
+
+**Baseline result (no LoRA, 2026-07-30) — 14 of 21 pass, and the 7 failures
+are all the same failure.** Natural terrain is fine top-down: arena, bridge,
+camp, cave, clearing, forest, mountain-pass, open, reef, ruins, sky-islands,
+swamp, ship all hold flat overhead. What breaks is BUILT INTERIORS, which
+revert to a side or oblique view:
+
+| archetype | what it drew instead |
+|---|---|
+| `tavern` | a fireplace in elevation, seen from the side |
+| `dungeon-room` | a floor/wall corner in perspective |
+| `dungeon-complex` | a shelved wall at an angle |
+| `crypt` | an archway seen from the side |
+| `sewer` | a chasm from the side |
+| `street` | strong oblique — buildings at an angle |
+| `skyship` | tilted deck |
+| `open-water` | flat, but framed in a wooden border (breaks full-bleed) |
+
+That is the acceptance test for any candidate: **does it fix the interiors?**
+The outdoor half needs no help. `_MAP_NEGATIVE` is already fighting this
+battle in the prompt and losing on exactly these seven.
+
 ### Two cautions
 * LoRAs are trained against a checkpoint family. One trained on SDXL/Juggernaut
   will not behave on the Pony `checkpoint_mature`; either curate a second set
