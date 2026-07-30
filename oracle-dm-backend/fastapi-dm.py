@@ -8416,8 +8416,59 @@ def _has_inventory_item(char: Character, name: str) -> bool:
     return False
 
 
+# Coin is money, not gear. Book equipment lists write it as a line item ("15
+# GP"), which would otherwise show up in the pack alongside the purse's own
+# Gold row — two places claiming the same coin. Every name here folds into the
+# purse instead.
+_COIN_ITEM_NAMES: Dict[str, str] = {
+    "cp": "cp", "copper": "cp", "copper piece": "cp", "copper pieces": "cp",
+    "sp": "sp", "silver": "sp", "silver piece": "sp", "silver pieces": "sp",
+    "ep": "ep", "electrum": "ep", "electrum piece": "ep", "electrum pieces": "ep",
+    "gp": "gp", "gold": "gp", "gold piece": "gp", "gold pieces": "gp",
+    "pp": "pp", "platinum": "pp", "platinum piece": "pp", "platinum pieces": "pp",
+}
+
+
+def _coin_denomination(name: str) -> Optional[str]:
+    """The purse key an item name denotes ('15 GP' -> 'gp'), or None for gear."""
+    n = _normalize_item_name(name)
+    # Book lists sometimes carry the count in the name itself ("50 GP").
+    n = re.sub(r"^\d+\s*(x\s*)?", "", n).strip()
+    return _COIN_ITEM_NAMES.get(n)
+
+
+def _purse_coins_from_inventory(char: Character) -> Dict[str, int]:
+    """Strip any coin line items out of the inventory into a purse delta.
+
+    Older characters were created before coin was routed to the purse, so their
+    packs still carry a 'GP' row; this repairs them in place.
+    """
+    delta: Dict[str, int] = {}
+    kept: List[Dict[str, Any]] = []
+    for it in _inventory_items(char):
+        coin = _coin_denomination(str(it.get("name", "")))
+        if coin is None:
+            kept.append(it)
+            continue
+        try:
+            delta[coin] = delta.get(coin, 0) + int(it.get("quantity", 1) or 1)
+        except (TypeError, ValueError):
+            delta[coin] = delta.get(coin, 0) + 1
+    if delta:
+        char.inventory = kept
+    return delta
+
+
 def _add_inventory_item(char: Character, name: str, *, quantity: int = 1, extra: Optional[Dict[str, Any]] = None) -> None:
-    """Add/increment an item in the character's JSON inventory."""
+    """Add/increment an item in the character's JSON inventory.
+
+    Coin names ('GP', 'gold pieces', ...) are money: they go to the purse, so
+    the pack never lists currency the Gold row is already showing.
+    """
+    coin = _coin_denomination(name)
+    if coin is not None:
+        _write_purse(char, add_coins(_purse_of(char), {coin: max(0, int(quantity or 0))}))
+        return
     inv = _inventory_items(char)
     target = _normalize_item_name(name)
     for it in inv:
@@ -9931,6 +9982,23 @@ async def enter_world(req: EnterRequest):
             )
     except Exception as e:
         print(f"[enterworld permadeath check error] {e}")
+
+    # Repair characters created before coin was routed to the purse: their packs
+    # still carry a 'GP' line item beside the purse's own Gold. Fold it in once.
+    try:
+        with Session(engine) as s:
+            row = s.get(Character, chosen.id)
+            if row is not None:
+                delta = _purse_coins_from_inventory(row)
+                if delta:
+                    _write_purse(row, add_coins(_purse_of(row), delta))
+                    s.add(row)
+                    s.commit()
+                    s.refresh(row)
+                    chosen = row
+                    print(f"[coins] folded {delta} out of {row.name}'s pack into the purse")
+    except Exception as e:
+        print(f"[enterworld coin repair error] {e}")
 
     # Reclaim: if this PC was revived to DM-control while its owner was away, hand
     # control back now that the owner has returned (prepended to the opening intro).
