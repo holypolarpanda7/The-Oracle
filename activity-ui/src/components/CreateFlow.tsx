@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CCOptions, CCPayload, CCSpells, Pantheon, Power, SpellBrief } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
-import { ChoiceChips, choiceOptions } from "./FeatChoices";
+import { ABILITY_LABEL, ChoiceChips, choiceOptions } from "./FeatChoices";
 
 /** Male+female species portraits for a race/lineage card. Each image walks a
  * candidate list (lineage art → base species art) and hides itself only when
@@ -322,12 +322,33 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   const originFeats = useMemo(
     () => (opts?.feats ?? []).filter((f) => (f.category ?? "origin") === "origin"),
     [opts]);
-  const needsBgFeat = (opts?.feats.length ?? 0) > 0;
+  // A 2024 background GRANTS one named Origin feat — it is not a free pick.
+  // Look it up in the whole pool, not just the origin category: a book
+  // background can grant a feat filed elsewhere (Rune Carver → Rune Shaper,
+  // which is a "giant" feat and so was missing from the picker entirely).
+  const grantedBgFeat = useMemo(
+    () => (bg?.origin_feat
+      ? opts?.feats.find((f) => f.slug === bg.origin_feat) ?? null
+      : null),
+    [bg, opts]);
+  // Only backgrounds that name no feat (legacy 2014 entries) offer a choice.
+  const needsBgFeat = !!bg && !grantedBgFeat && (opts?.feats.length ?? 0) > 0;
   const raceFeat = race?.feat_choice ?? null;   // "origin" | "any" | null
   const raceFeatPool = useMemo(() => {
     if (!raceFeat || !opts) return [];
     return raceFeat === "any" ? opts.feats : originFeats;
   }, [raceFeat, opts, originFeats]);
+
+  // The background's Origin feat is granted, not chosen — bind it (and clear
+  // the previous one's answers) whenever the background changes.
+  useEffect(() => {
+    setD((cur) => ({
+      ...cur, featBg: grantedBgFeat?.slug,
+      featSkills: [], featTools: [], featLanguages: [],
+      featAbility: undefined, featOptions: [],
+      miClass: undefined, miCantrips: [], miSpells: [],
+    }));
+  }, [grantedBgFeat]);
 
   // 2024 ability boosts come from the background's listed abilities (3 of them;
   // a legacy background with none falls back to "any ability"). +1/+1/+1 is only
@@ -446,9 +467,15 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
       const stats: Record<string, number> = {};
       for (const a of ABILITIES) stats[ABILITY_FULL[a]] = finalScore(a) ?? 10;
       // A feat that grants an ability increase folds into the final stats.
+      // The schema names abilities in lowercase ("wis"); ABILITY_FULL is keyed
+      // uppercase, so index it that way or the +1 is silently dropped.
       if (abilityChoice && d.featAbility && (abilityChoice.amount ?? 0) > 0) {
-        const full = ABILITY_FULL[d.featAbility as Ability];
-        if (full) stats[full] = (stats[full] ?? 10) + (abilityChoice.amount ?? 0);
+        const full = ABILITY_FULL[d.featAbility.toUpperCase() as Ability];
+        const cap = abilityChoice.max ?? 20;
+        if (full) {
+          stats[full] = Math.min(cap,
+            (stats[full] ?? 10) + (abilityChoice.amount ?? 0));
+        }
       }
       const feats = [d.featBg, d.featRace].filter(Boolean) as string[];
       const lineageName = race?.lineages?.find((l) => l.slug === d.lineage)?.name;
@@ -689,10 +716,20 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 );
               })}
             </div>
+            {grantedBgFeat && (
+              <>
+                <div className="cf-sub-label" style={{ marginTop: 18 }}>
+                  {bg?.name} grants the {grantedBgFeat.name} feat
+                </div>
+                <div className="cf-granted-feat">
+                  <div className="cf-card-name">{grantedBgFeat.name}</div>
+                  <div className="cf-card-sub">{grantedBgFeat.brief}</div>
+                </div>
+              </>
+            )}
             {needsBgFeat && (
               <FeatPicker
-                title={`Your ${bg?.name ?? "background"} grantS an Origin feat`
-                  .replace("grantS", "grants")}
+                title={`Your ${bg?.name ?? "background"} grants an Origin feat`}
                 feats={originFeats} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featBg}
                 onPick={(slug) => setD({ ...d, featBg: slug,
@@ -732,14 +769,23 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 onToggle={(v) => setD({ ...d, featLanguages: d.featLanguages.includes(v)
                   ? d.featLanguages.filter((x) => x !== v) : [...d.featLanguages, v] })} />
             )}
-            {abilityChoice && (
-              <ChoiceChips single
-                label={abilityChoice.hint || "Choose an ability"}
-                options={choiceOptions(abilityChoice)}
-                chosen={d.featAbility ? [d.featAbility] : []} n={1}
-                onToggle={(v) => setD({ ...d,
-                  featAbility: d.featAbility === v ? undefined : v })} />
-            )}
+            {abilityChoice && (() => {
+              // The schema lists abilities as lowercase codes; show them the
+              // way every other ability in the wizard is shown.
+              const codes = choiceOptions(abilityChoice);
+              const label = (c: string) => ABILITY_LABEL[c] ?? c.toUpperCase();
+              return (
+                <ChoiceChips single
+                  label={abilityChoice.hint || "Choose an ability"}
+                  options={codes.map(label)}
+                  chosen={d.featAbility ? [label(d.featAbility)] : []} n={1}
+                  onToggle={(shown) => {
+                    const code = codes.find((c) => label(c) === shown) ?? shown;
+                    setD({ ...d,
+                      featAbility: d.featAbility === code ? undefined : code });
+                  }} />
+              );
+            })()}
             {optionsChoice && (
               <ChoiceChips
                 label={optionsChoice.hint || `Choose ${optionsChoice.n ?? 1}`}

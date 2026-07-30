@@ -482,6 +482,12 @@ body {
   line-height: 1.5; color: var(--text); }
 .cf-trait-list li { margin-bottom: 5px; }
 .cf-req { color: var(--brass); font-style: italic; font-size: 0.85em; letter-spacing: 0.04em; }
+/* The background's Origin feat is granted, not chosen — shown, not pickable. */
+.cf-granted-feat {
+  border: 1px solid var(--brass); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--brass) 8%, transparent);
+  padding: 10px 12px; max-width: 420px;
+}
 .cf-foot { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
 
 /* ============ Level-up overlay ============ */

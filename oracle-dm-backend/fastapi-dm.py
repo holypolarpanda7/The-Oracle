@@ -10506,11 +10506,25 @@ async def register_character(req: RegisterCharacterRequest):
                     continue  # unknown slug (e.g. owned-ingest feat) — allow
                 met, why = _feat_prereq_met(
                     frow.prerequisite, frow.min_level, fstats,
-                    req.char_class, req.level, race=req.race)
+                    req.char_class, req.level, existing_feats=req.feats,
+                    race=req.race, background=req.background,
+                    options=set(req.feat_options or ()))
                 if not met:
                     raise HTTPException(
                         status_code=400,
                         detail=f"Feat '{frow.name}' — prerequisite not met ({why}).")
+            # A 2024 background grants ONE named Origin feat — it is not a free
+            # pick from the origin pool. Take the client at its word only when
+            # the background names none (legacy 2014 entries).
+            _ensure_local_backgrounds()
+            granted = (_BACKGROUND_KITS.get(
+                (req.background or "").strip().lower(), {}) or {}).get("origin_feat")
+            if granted and granted not in req.feats:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"The {(req.background or '').title()} background grants "
+                            f"the {granted.replace('-', ' ').title()} feat; that is "
+                            "the Origin feat to take."))
 
         # Skill/tool/language proficiencies + feats from the CC wizard, tagged.
         if req.skills or req.feats or req.tools or req.languages:
@@ -10613,14 +10627,24 @@ def _prereq_species_ok(prereq_l: str, race_l: str) -> Optional[bool]:
 def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
                      stats: Dict[str, int], char_class: Optional[str],
                      level: int, existing_feats: Optional[list] = None,
-                     race: Optional[str] = None
+                     race: Optional[str] = None,
+                     background: Optional[str] = None,
+                     options: Optional[set] = None
                      ) -> tuple[bool, Optional[str]]:
     """Check whether a character meets a feat's prerequisites.
 
-    Verifiable prereqs: level minimum, ability-score minimums ('Strength 13'),
-    'Spellcasting' (a spellcasting class), and a SPECIES requirement (XGE racial
-    feats). Unrecognized prereq clauses are NOT blocked (best-effort — we don't
-    silently forbid a legal pick). Returns (met, reason_if_not)."""
+    Prerequisites are written as REQUIREMENTS separated by ';' or ' and ', each
+    of which may offer ALTERNATIVES joined by 'or' — "a Spellcasting or Pact
+    Magic feature, or the Rune Carver background" is one requirement met three
+    different ways, and reading the alternatives as requirements (as this used
+    to) locks a Rune Carver fighter out of the feat their own background grants.
+
+    Verifiable: level minimums, ability-score minimums ('Strength 13'),
+    spellcasting, a SPECIES requirement (XGE racial feats), a prerequisite FEAT
+    ('Mark of Shadow feat', with its option: 'Strike of the Giants (Fire
+    Strike)'), a prerequisite BACKGROUND, and dragonmark exclusivity.
+    Unrecognized clauses are NOT blocked (best-effort — we don't silently
+    forbid a legal pick). Returns (met, reason_if_not)."""
     if level < int(min_level or 1):
         return False, f"requires level {min_level}"
     if not prerequisite:
@@ -10630,6 +10654,10 @@ def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
     if species_ok is False:
         return False, f"requires {prerequisite}"
 
+    held = {slugify(str(f)) for f in (existing_feats or [])}
+    opts = {str(o).strip().lower() for o in (options or ())}
+    bg = (background or "").strip().lower()
+
     def _score(code: str) -> int:
         full = _ABILITY_FULL.get(code, code)
         for k in (code, code.upper(), full, full.capitalize(), full.upper()):
@@ -10637,10 +10665,8 @@ def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
                 return int(stats[k])
         return 0
 
-    for clause in re.split(r"[;,]| and ", prerequisite):
-        c = clause.strip().lower()
-        if not c:
-            continue
+    def _alt_ok(c: str) -> tuple[Optional[bool], Optional[str]]:
+        """(met, why_not) for ONE alternative. None = unparseable, so allow."""
         # ability minimum, e.g. "strength 13" / "dex 13 or higher"
         m = re.search(r"(strength|dexterity|constitution|intelligence|wisdom|"
                       r"charisma|str|dex|con|int|wis|cha)\D*(\d+)", c)
@@ -10649,12 +10675,55 @@ def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
             need = int(m.group(2))
             if code and _score(code) < need:
                 return False, f"needs {m.group(1).title()} {need}+"
-            continue
-        if "spellcast" in c or "cast at least one spell" in c or "cast a spell" in c:
+            return True, None
+        m = re.search(r"level\s*(\d+)", c)
+        if m:
+            need = int(m.group(1))
+            return (True, None) if level >= need else (False, f"requires level {need}")
+        if "spellcast" in c or "pact magic" in c or "cast at least one spell" in c \
+                or "cast a spell" in c:
             if (char_class or "").strip().lower() not in _CASTING_ABILITY:
                 return False, "needs a spellcasting class"
+            return True, None
+        # Dragonmarks are exclusive of one another.
+        if "another dragonmark feat" in c:
+            if any(h.startswith("mark-of-") or h == "aberrant-dragonmark" for h in held):
+                return False, "you already bear a dragonmark"
+            return True, None
+        if "any dragonmark feat" in c:
+            if any(h.startswith("mark-of-") or h == "aberrant-dragonmark" for h in held):
+                return True, None
+            return False, "requires a dragonmark feat"
+        # "<Name> feat", optionally with the option it must have been taken
+        # with: "Strike of the Giants (Fire Strike)".
+        m = re.match(r"(?:the\s+)?(.+?)\s*(?:\(([^)]+)\))?\s*feat\b", c) \
+            or re.match(r"(?:the\s+)?(strike of the giants)\s*\(([^)]+)\)", c)
+        if m and m.group(1):
+            want = slugify(m.group(1))
+            if want and want not in held:
+                return False, f"requires the {m.group(1).strip().title()} feat"
+            if m.group(2) and m.group(2).strip().lower() not in opts:
+                return False, f"requires {m.group(2).strip().title()}"
+            return True, None
+        # "the <Name> background"
+        m = re.match(r"(?:the\s+)?(.+?)\s+background\b", c)
+        if m:
+            return (True, None) if slugify(m.group(1)) == slugify(bg) \
+                else (False, f"requires the {m.group(1).strip().title()} background")
+        return None, None   # unparseable (an armor proficiency, a campaign)
+
+    for requirement in re.split(r";| and ", prerequisite):
+        req = requirement.strip().lower()
+        if not req:
             continue
-        # Unparseable clause (e.g. an armor proficiency): don't block.
+        # 'X, or Y' / 'X or Y' — any one of them satisfies the requirement.
+        # An ability minimum ("dex 13 or higher") is never split: _alt_ok reads
+        # the whole clause, and its regex would survive the split anyway.
+        alts = [a.strip() for a in re.split(r",\s*or\s+|\s+or\s+", req) if a.strip()]
+        verdicts = [_alt_ok(a) for a in alts]
+        if any(v[0] is not False for v in verdicts):
+            continue                       # one alternative passed (or was vague)
+        return False, verdicts[0][1] or f"requires {requirement.strip()}"
     return True, None
 
 
@@ -10903,6 +10972,15 @@ FEAT_CHOICES: Dict[str, Dict[str, Any]] = {
         "from": ["Cloud Strike", "Fire Strike", "Frost Strike", "Hill Strike",
                  "Stone Strike", "Storm Strike"],
         "hint": "Choose your giant strike."},
+    # Half your proficiency bonus, rounded down — one rune from level 1 to 4.
+    # (The count grows later; the level-up swap is the book's own mechanism.)
+    "rune-shaper": {
+        "kind": "options", "n": 1, "tag": "rune",
+        "from": ["Cloud", "Death", "Dragon", "Enemy", "Fire", "Friend",
+                 "Frost", "Hill", "Journey", "King", "Mountain", "Stone",
+                 "Storm"],
+        "hint": "Choose a rune you know.",
+        "also": _spell_ability_choice(["int", "wis", "cha"])},
 
     # ----- epic boons (level 19+; these raise scores to a max of 30) -----
     "boon-of-bloodshed": _plus_one(_ANY_ABILITY, "+1 to any ability.", cap=30),
@@ -11457,22 +11535,20 @@ def _asi_feat_pool(char: Character, level: int) -> list:
         rows = s.exec(select(_Feat).where(
             _Feat.category.in_(["general", "giant", "dragonmark", "epic-boon"]))
             .order_by(_Feat.category, _Feat.name)).all()
-    has_mark = next((t for t in taken if t.startswith("mark-of-")
-                     or t == "aberrant-dragonmark"), None)
+    # Named picks the character already made (a giant strike, a resistance) —
+    # a follow-on feat can require the specific one.
+    picked = {t.split(":", 1)[1].strip().lower()
+              for t in (char.tags or [])
+              if isinstance(t, str) and ":" in t
+              and t.split(":", 1)[0].strip().lower() in
+              ("giant-strike", "feat-option", "resistance")}
     for f in rows:
         if f.index_slug in taken:
             continue
-        met, why = _feat_prereq_met(f.prerequisite, f.min_level or 1, stats,
-                                    char.char_class, level, race=char.race)
-        # Dragonmarks are exclusive, and a Greater Mark only deepens a mark you
-        # already bear. Neither clause is machine-readable in the prereq text.
-        if met and f.category == "dragonmark" and has_mark:
-            met, why = False, "you already bear a dragonmark"
-        if met and f.index_slug.startswith("greater-"):
-            base = f.index_slug.replace("greater-", "", 1)
-            base = "aberrant-dragonmark" if base == "aberrant-mark" else base
-            if base not in taken:
-                met, why = False, "requires the lesser mark first"
+        met, why = _feat_prereq_met(
+            f.prerequisite, f.min_level or 1, stats, char.char_class, level,
+            existing_feats=taken, race=char.race, background=char.background,
+            options=picked)
         out.append({
             "slug": f.index_slug, "name": f.name, "category": f.category,
             "prerequisite": f.prerequisite, "min_level": f.min_level,

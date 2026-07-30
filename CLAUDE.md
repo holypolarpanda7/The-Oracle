@@ -108,7 +108,8 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `npm run build && npx vite preview --port 4173` in `activity-ui/` first, then
   `npx node <script>.mjs`): `feat-choices`, `spell-picker`, `levelup-spells`,
   `reprepare`, `mobile-smoke`, `arena-shot`, `vtt-shot`, `deity-shot`,
-  `race-dup` (species traits render exactly once per viewport), `pframe-shot`
+  `race-dup` (species traits render exactly once per viewport), `granted-feat`
+  (a background grants its Origin feat, choices and all), `pframe-shot`
   (portrait corner ornaments stay corner-sized).
 
 ## Key facts & constraints
@@ -159,6 +160,16 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `ability_increases` or a `feat` (+ `feat_choices`). `FEAT_CHOICES` is the one
   schema for what a feat asks; `_apply_feat` is the one place it is applied, so
   creation and level-up can never drift. The UI half is `FeatChoices.tsx`.
+- **A 2024 background GRANTS its Origin feat** — it is not a pick from the
+  origin pool. CC resolves `background.origin_feat` against the WHOLE feat list
+  (a book background can grant a feat filed elsewhere: Rune Carver → Rune
+  Shaper, a `giant` feat) and shows it as granted; only a background naming no
+  feat offers a free pick. `register_character` enforces the match.
+- **Feat prerequisites are requirements (`;` / ` and `) of alternatives (`or`)**
+  — see `_feat_prereq_met`. Reading the alternatives as requirements locks a
+  Rune Carver fighter out of the feat their own background grants. It resolves
+  prerequisite feats, feat options ("Strike of the Giants (Fire Strike)"),
+  backgrounds, and dragonmark exclusivity; anything it can't parse is allowed.
 - **World persistence** = the graph, not maps. It's append-only: facts are opened/
   closed over in-world days (nothing deleted), and the DM is only ever fed the
   *relevant* subgraph via `get_world_context`, never the whole world.

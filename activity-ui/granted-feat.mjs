@@ -1,20 +1,27 @@
-// E2E: a tool-proficiency feat (Crafter) reveals its 3-artisan-tool picker in
-// the Skills stage and gates Onward until three are chosen.
+// E2E: a background whose granted Origin feat lives OUTSIDE the origin
+// category (Rune Carver -> Rune Shaper, a 'giant' feat) still offers it, and
+// both of that feat's choices are answerable.
 import { chromium, devices } from "playwright";
 const BASE = "http://localhost:4173/";
-const OUT = "./mobile-shots";
+const OUT = "./ui-shots";
 const CC = {
   races: [{ slug: "dwarf", name: "Dwarf", ability_bonuses: {}, choose_bonus: [],
     speed: 30, size: "Medium", darkvision: true, traits: ["Resilience"] }],
   classes: [{ slug: "fighter", name: "Fighter", hit_die: 10, saving_throws: ["STR","CON"],
     skill_choices_n: 2, skill_options: ["Athletics","Acrobatics","Perception","Survival"] }],
   feats: [
-    { slug: "crafter", name: "Crafter", category: "origin", brief: "Tools + discount.",
-      choices: { kind: "tools", n: 3, from: "artisan", hint: "Choose 3 artisan's tools." } },
+    { slug: "rune-shaper", name: "Rune Shaper", category: "giant",
+      prerequisite: "a Spellcasting or Pact Magic feature, or the Rune Carver background",
+      brief: "Comprehend languages, plus runes you inscribe after a long rest.",
+      choices: { kind: "options", n: 1,
+                 from: ["Cloud", "Death", "Dragon", "Fire", "Frost", "Storm"],
+                 hint: "Choose a rune you know.",
+                 also: { kind: "ability", n: 1, from: ["int", "wis", "cha"],
+                         amount: 0, hint: "Choose the spellcasting ability." } } },
     { slug: "alert", name: "Alert", category: "origin", brief: "+initiative.", choices: null },
   ],
-  backgrounds: [{ slug: "guild-artisan", name: "Guild Artisan", skills: ["Insight"],
-    abilities: ["STR","DEX","CON"], origin_feat: "crafter" }],
+  backgrounds: [{ slug: "rune-carver", name: "Rune Carver", skills: ["History"],
+    abilities: ["INT","WIS","CHA"], origin_feat: "rune-shaper" }],
   ability_methods: { standard_array: [15,14,13,12,10,8],
     point_buy: { budget: 27, min: 8, max: 15, costs: { "8": 0 } }, roll: { expr: "4d6kh3", count: 6 } },
   common_items: [], buyable_items: [], starting_gold: { by_class: { fighter: 150 }, default: 100 },
@@ -32,34 +39,34 @@ await page.click(".landing-create");
 await page.waitForSelector(".cf-grid .cf-card");
 await page.getByText("Dwarf", { exact: true }).first().click(); await onward();
 await page.getByText("Fighter", { exact: true }).first().click(); await onward();
-await page.getByText("Guild Artisan", { exact: true }).first().click(); await onward();
+await page.getByText("Rune Carver", { exact: true }).first().click(); await onward();
 await page.getByRole("button", { name: "Point Buy" }).click(); await page.waitForTimeout(150);
 await page.locator(".cf-bonus-row").nth(0).locator(".cf-chip").first().click();
 await page.locator(".cf-bonus-row").nth(1).locator(".cf-chip:not([disabled])").first().click();
 await onward();
 
-// skills: 2 class skills. The background GRANTS Crafter (2024) — it is not a
-// pick from the origin pool — so its tool picker is already on screen.
+// skills: 2 class skills. Rune Shaper is granted by the background even though
+// it is a "giant" feat, not an origin one — the pool it isn't in never mattered.
 await page.locator(".cf-chips .cf-chip.big:not([disabled])").nth(0).click(); await page.waitForTimeout(80);
 await page.locator(".cf-chips .cf-chip.big:not([disabled])").nth(1).click(); await page.waitForTimeout(80);
-check("the background's Origin feat is granted, not offered as a pool",
-  (await page.locator(".cf-granted-feat").count()) === 1
-  && (await page.getByText(/grants the Crafter feat/i).count()) > 0);
-check("no free origin-feat picker alongside it",
-  (await page.getByText(/grants an Origin feat/i).count()) === 0);
-check("Crafter reveals its artisan-tool picker", (await page.getByText(/artisan.?s tools/i).count()) > 0);
-check("Onward gated before tools chosen", (await page.locator(".cf-foot button:not(:disabled)").count()) === 0);
+check("a non-origin granted feat is still offered",
+  (await page.getByText(/grants the Rune Shaper feat/i).count()) > 0);
+check("both of its choices render",
+  (await page.getByText(/Choose a rune you know/i).count()) > 0
+  && (await page.getByText(/Choose the spellcasting ability/i).count()) > 0);
+check("Onward gated before both are answered",
+  (await page.locator(".cf-foot button:not(:disabled)").count()) === 0);
 
-// the tool chips are the small (non-.big) chips under the feat
-for (let i = 0; i < 3; i++) {
-  await page.locator(".cf-chips .cf-chip:not(.big):not([disabled])").nth(i).click();
-  await page.waitForTimeout(80);
-}
-check("Onward unlocks after 3 tools chosen", (await page.locator(".cf-foot button:not(:disabled)").count()) > 0);
-await page.screenshot({ path: `${OUT}/18-feat-tools.png`, fullPage: true });
+await page.getByRole("button", { name: "Fire", exact: true }).click(); await page.waitForTimeout(120);
+check("still gated with only the rune chosen",
+  (await page.locator(".cf-foot button:not(:disabled)").count()) === 0);
+await page.getByRole("button", { name: "WIS", exact: true }).click(); await page.waitForTimeout(150);
+check("Onward unlocks once both are answered",
+  (await page.locator(".cf-foot button:not(:disabled)").count()) > 0);
+await page.screenshot({ path: `${OUT}/rune-carver.png`, fullPage: true });
 
 await browser.close();
-console.log("\n=== feat tool-choice E2E ===");
+console.log("\n=== granted-feat (Rune Carver) E2E ===");
 let f = 0;
 for (const r of results) { console.log(`${r.ok ? "PASS" : "FAIL"}  ${r.n}${r.d ? " — " + r.d : ""}`); if (!r.ok) f++; }
 console.log(`\n${results.length - f}/${results.length} passed`);
