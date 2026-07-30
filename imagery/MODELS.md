@@ -59,3 +59,79 @@ flag) when generating a scene. Default is `False` everywhere, so nothing renders
 mature until a table explicitly opts in AND `checkpoint_mature` is configured.
 Note: this is a shared Discord surface — gate mature output behind explicit,
 adult, opt-in table settings, not a global default.
+
+---
+
+# Layers above the prompt
+
+Everything above tunes *words* and *samplers*. These act on the **model**, and
+they grip where wording slips — the species portraits needed four rounds of
+prompt surgery because style and anatomy were competing for room in one text
+budget, which is a problem no rewording actually solves.
+
+The stack `ComfyClient._build_graph` assembles (each layer skipped when
+unconfigured, so the default graph is byte-identical to before):
+
+```
+checkpoint → LoRA(s) → RescaleCFG → PAG → FreeU → [IP-Adapter] → KSampler
+```
+
+LoRA is first and is the only one that also patches CLIP, so the text encoders
+are rewired onto its CLIP output — a style LoRA that never reached the encoders
+would be half-applied. IP-Adapter is spliced afterwards by `_inject_references`,
+which reads whatever the stack left on the sampler, so the two compose without
+either knowing about the other.
+
+## Measured on this box (RTX 3080 Ti, Juggernaut XL, 768px / 25 steps)
+
+Tested on the **real 166-word species prompt**, not a toy one — at short prompt
+lengths every option looks fine, because the trait clause dominates by default.
+The failure only appears at the length the pipeline actually uses. Probe: a
+goliath, whose "slate blue-grey skin" loses to "tanned human with warpaint".
+
+| Layer | Result | Verdict |
+|---|---|---|
+| baseline | human-brown skin, blue-grey patches — reads as a tattooed human | the failure |
+| **PAG 3.0** | **solid blue-grey over the whole body, heavy brow, giant** | **ON by default** |
+| RescaleCFG 0.7 + cfg 10 | *worse* — fully human skin with face paint | off |
+| PAG + RescaleCFG + cfg 10 | good, but over-contrasted | off |
+| FreeU v2 | oversaturated to neon | off |
+
+**PAG costs +15%, not 2×** — 15.6s → 17.9s, mean of 3. The extra pass is
+cheaper than the arithmetic suggests. Raising CFG (with or without rescale)
+*hurt*: high CFG sharpens whatever reading the model already prefers, and here
+that reading is the wrong one.
+
+## IP-Adapter: already installed, long unused
+
+`ComfyUI_IPAdapter_plus`, `ip-adapter_sdxl_vit-h` and `CLIP-ViT-H-14` are all
+present, and `use_ipadapter` is enabled in `game_settings.json`. Nothing used it
+because identity references meant sourcing reference art per species.
+
+**`--kin` makes the set its own reference.** A lineage takes after its base
+species, and a female takes after the male already on disk — so the three gnomes
+read as one people instead of three independent rolls. Weight defaults to 0.45:
+a lineage that comes back as a copy of its base is as wrong as one that looks
+unrelated. A missing parent is skipped, so a cold run still works (base/male
+renders first, the rest take after it).
+
+```bash
+uv run python -m imagery.species_portraits --lineages --kin --force --species gnome
+```
+
+## LoRA
+
+Wired but **nothing installed** (`ComfyUI/models/loras/` is empty). This is the
+real fix for "the whole set should look like one set": it moves art direction
+out of the prompt entirely, freeing the words for anatomy. Configure as
+
+```python
+loras = [{"name": "my_style_xl.safetensors", "model": 0.8, "clip": 0.8}]
+```
+
+Applied in order; drop the files in `ComfyUI/models/loras/`.
+
+## Not installed
+ControlNet (empty dir) and any detailer — `FaceDetailer` needs the Impact Pack,
+which would be the obvious next win given the art is viewed at ~100px on the CC
+cards, where several faces currently mush.

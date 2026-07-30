@@ -494,6 +494,33 @@ def build_positive(look: Dict[str, str], sex: str, style_prompt: str,
 _REF_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
+def _kin_reference(slug: str, sex: str, race_slug: Optional[str] = None) -> Optional[Path]:
+    """The already-rendered portrait a new one should take after, if any.
+
+    IP-Adapter has been enabled and installed all along with nothing to feed
+    it, because identity references meant sourcing art per species. But the set
+    is its own best reference:
+
+      * a LINEAGE takes after its base species (the forest gnome and the rock
+        gnome should read as the same people as the gnome — which is exactly
+        the note that came back from review), and
+      * the FEMALE of a species takes after the male already on disk, so the
+        two are kin rather than two unrelated renders that share a prompt.
+
+    Returns None when the parent art doesn't exist yet, so a cold run still
+    works — it just renders the base/male first and the rest take after it.
+    """
+    if race_slug and race_slug != slug:
+        base = _OUT_DIR / f"{race_slug}-{sex}.webp"       # lineage → its species
+        if base.is_file():
+            return base
+    if sex == "f":
+        male = _OUT_DIR / f"{race_slug or slug}-m.webp"   # female → the male
+        if male.is_file():
+            return male
+    return None
+
+
 def _find_reference(ref_dir: Optional[Path], slug: str,
                     sex: Optional[str] = None) -> Optional[Path]:
     """A real reference image for this species/sex, if the operator supplied one.
@@ -516,7 +543,8 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
                      ip_weight: Optional[float] = None,
                      lineages: bool = False, base: bool = True,
                      style_ref: Optional[Path] = None,
-                     style_preset: str = "STANDARD (medium strength)") -> int:
+                     style_preset: str = "STANDARD (medium strength)",
+                     kin: bool = False, kin_weight: float = 0.45) -> int:
     cfg = get_config().imagery
     want = ({_ALIASES.get(_norm(s), _norm(s)) for s in slugs} if slugs else None)
 
@@ -539,22 +567,48 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
     skip_grit = use_style_ref
 
     state: Dict[str, object] = {"client": None, "style_ref_name": None}
+    kin_cache: Dict[str, Optional[str]] = {}
     made = 0
     ref_cache: Dict[str, Optional[str]] = {}   # ref path -> uploaded ComfyUI filename
 
     def ensure_client():
         if state["client"] is None:
             c = client_from_config(cfg)
-            if ipadapter or use_style_ref:
+            if ipadapter or use_style_ref or kin:
                 c.use_ipadapter = True
                 if use_style_ref:
                     c.ipadapter_preset = style_preset
-                if ip_weight is not None:
-                    c.ipadapter_weight = float(ip_weight)
+                # Kin references guide, they don't clone — a lineage that comes
+                # back as a copy of its base species is as wrong as one that
+                # looks unrelated. Lower weight than an identity reference.
+                c.ipadapter_weight = float(
+                    ip_weight if ip_weight is not None
+                    else (kin_weight if kin else c.ipadapter_weight))
             if not c.is_available():
                 return None
             state["client"] = c
         return state["client"]
+
+    def kin_ref_files(slug: str, sex: str, race_slug: Optional[str] = None):
+        """Upload the kin portrait for this render, once per file."""
+        if not kin or dry_run:
+            return None
+        path = _kin_reference(slug, sex, race_slug)
+        if path is None:
+            return None
+        key = str(path)
+        if key not in kin_cache:
+            c = ensure_client()
+            if c is None:
+                return None
+            try:
+                kin_cache[key] = c.upload_image(path.read_bytes(),
+                                                f"kin-{path.stem}.webp")
+            except Exception as e:
+                print(f"  (kin ref upload failed for {path.name}: {e})")
+                kin_cache[key] = None
+        name = kin_cache[key]
+        return [name] if name else None
 
     def style_ref_files():
         """Uploaded filename of the global style reference, once, or None."""
@@ -615,6 +669,8 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
                 ref_files = None
                 if use_style_ref:
                     ref_files = None if dry_run else style_ref_files()
+                elif kin:
+                    ref_files = kin_ref_files(slug, sex)
                 else:
                     ref_path = _find_reference(ref_dir, slug, sex)
                     if ref_path is not None and not dry_run:
@@ -644,7 +700,8 @@ def generate_species(slugs: Optional[List[str]] = None, sexes: Optional[List[str
     for race_slug, lin_slug, look in lin_catalog:
         for sex in sexes:
             cute = sex == "f" and _norm(race_slug) in small
-            ref_files = style_ref_files() if (use_style_ref and not dry_run) else None
+            ref_files = (style_ref_files() if (use_style_ref and not dry_run)
+                         else kin_ref_files(lin_slug, sex, race_slug))
             # A lineage inherits its parent species' tier (a red dragonborn
             # is as non-human as a dragonborn).
             if not render(_OUT_DIR / f"{race_slug}-{lin_slug}-{sex}.webp",
@@ -736,6 +793,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "colours, shifter aspects) as <race>-<lineage>-<sex>.webp")
     ap.add_argument("--skip-base", action="store_true",
                     help="skip the base-species pass (use with --lineages for lineages only)")
+    ap.add_argument("--kin", action="store_true",
+                    help="hold a family together with IP-Adapter, using the set's OWN art: "
+                         "a lineage takes after its base species, a female after the male. "
+                         "Render the base/male first (a missing parent is simply skipped).")
+    ap.add_argument("--kin-weight", type=float, default=0.45,
+                    help="how hard a kin reference pulls (default 0.45 — guide, not clone)")
     ap.add_argument("--style-ref", help="one image whose ART STYLE every portrait should "
                     "match (IP-Adapter style-transfer). Grit descriptors are dropped so the "
                     "reference's look leads. Pair with --ip-weight (~0.8-1.0).")
@@ -764,7 +827,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         style_ref = None
     n = generate_species(slugs, sexes, force=a.force, dry_run=a.dry_run, ref_dir=ref_dir,
                          ipadapter=a.ipadapter or bool(ref_dir), ip_weight=a.ip_weight,
-                         lineages=a.lineages, base=not a.skip_base, style_ref=style_ref)
+                         lineages=a.lineages, base=not a.skip_base, style_ref=style_ref,
+                         kin=a.kin, kin_weight=a.kin_weight)
     if not a.dry_run:
         print(f"\nDone — {n} portrait(s) generated into {_OUT_DIR}.")
         print("Review them, then `git add -f` the SRD/PHB ones you want in the repo "

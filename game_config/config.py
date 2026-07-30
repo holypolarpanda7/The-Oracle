@@ -25,7 +25,7 @@ import json
 import os
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 # ----- knob sections -----
 
@@ -270,6 +270,34 @@ class ImageryConfig:
     gen_width: int = 1024
     gen_height: int = 1024
     timeout_seconds: int = 180               # generation can be slow on lowvram
+    # ----- model layers (spliced between the checkpoint and the sampler) -----
+    #
+    # Everything above is prompt-and-sampler tuning. These are the levers that
+    # act on the MODEL itself, and they grip harder than any wording can: the
+    # species portraits needed four rounds of prompt surgery precisely because
+    # style and anatomy were fighting for room in one text budget.
+    #
+    # LoRAs: [{"name": "<file>.safetensors", "model": 0.8, "clip": 0.8}, ...],
+    # applied in order. A STYLE LoRA is the real fix for "the whole set should
+    # look like one set" — it moves art direction out of the prompt entirely,
+    # freeing the words for anatomy. Drop files in ComfyUI/models/loras/.
+    loras: List[Dict[str, Any]] = field(default_factory=list)
+    # RescaleCFG (0..1) lets you raise `cfg_scale` without the blown-out colour
+    # high CFG normally causes. MEASURED WORSE for this pipeline: on the
+    # goliath probe, cfg 10 + rescale 0.7 pushed the render further toward a
+    # tattooed human than the baseline did — high CFG sharpens whatever reading
+    # the model already prefers, and here that reading is "human with warpaint".
+    # Left available; off by default. See imagery/MODELS.md.
+    rescale_cfg: Optional[float] = None
+    # Perturbed Attention Guidance. MEASURED BEST for this pipeline and ON by
+    # default: on a 166-word species prompt — the length where the species
+    # clause normally drowns — it was the only layer that produced solid
+    # blue-grey goliath skin instead of a tattooed human. Costs +15% (15.6s →
+    # 17.9s at 768px/25 steps), not the 2x the extra pass suggests. None = off.
+    pag_scale: Optional[float] = 3.0
+    # FreeU v2 rebalances the UNet skip connections. MEASURED WORSE here:
+    # oversaturated to the point of neon on the same probe. Off by default.
+    freeu: bool = False
     # ----- prompt shaping (operator-controlled) -----
     # House art direction: Hades 2-adjacent (Supergiant) — painterly with bold
     # ink linework, saturated jewel tones, dramatic rim light. Expressed as

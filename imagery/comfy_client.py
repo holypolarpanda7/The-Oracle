@@ -97,6 +97,10 @@ class ComfyClient:
         use_ipadapter: bool = False,
         ipadapter_weight: float = 0.65,
         ipadapter_preset: str = "STANDARD (medium strength)",
+        loras: Optional[list] = None,
+        rescale_cfg: Optional[float] = None,
+        pag_scale: Optional[float] = None,
+        freeu: bool = False,
     ):
         self.base_url = base_url.rstrip("/")
         self.checkpoint = checkpoint
@@ -110,6 +114,10 @@ class ComfyClient:
         self.use_ipadapter = use_ipadapter
         self.ipadapter_weight = ipadapter_weight
         self.ipadapter_preset = ipadapter_preset
+        self.loras = list(loras or [])
+        self.rescale_cfg = rescale_cfg
+        self.pag_scale = pag_scale
+        self.freeu = freeu
         self.client_id = uuid.uuid4().hex
         self._template = self._load_workflow(workflow_path)
 
@@ -194,6 +202,72 @@ class ComfyClient:
             prev_model = [ada_id, 0]
         g[sampler_id]["inputs"]["model"] = prev_model
 
+    def _apply_model_layers(self, g: dict) -> None:
+        """Splice LoRA + guidance patches between the checkpoint and the sampler.
+
+        These act on the MODEL rather than on the words, which is why they grip
+        where prompt wording slips. Order is deliberate:
+
+            checkpoint → LoRA(s) → RescaleCFG → PAG → FreeU → [IP-Adapter] → KSampler
+
+        LoRA comes first and is the only one that also patches CLIP, so the text
+        encoders are rewired onto its CLIP output — a style LoRA that never
+        reached the encoders would be half-applied. IP-Adapter is spliced later
+        by ``_inject_references``, which reads whatever this leaves on the
+        sampler, so the two compose without either knowing about the other.
+
+        Every layer is optional and skipped when unconfigured, so the default
+        graph is byte-identical to before.
+        """
+        sampler_id = next((nid for nid, n in g.items()
+                           if n.get("class_type") == "KSampler"), None)
+        ckpt_id = next((nid for nid, n in g.items()
+                        if n.get("class_type") == "CheckpointLoaderSimple"), None)
+        if sampler_id is None or ckpt_id is None:
+            return
+        model_src = g[sampler_id]["inputs"].get("model")
+        if not model_src:
+            return
+
+        # --- LoRAs (model + clip) ---
+        clip_src = [ckpt_id, 1]
+        for i, lora in enumerate(self.loras or []):
+            name = (lora or {}).get("name") if isinstance(lora, dict) else str(lora)
+            if not name:
+                continue
+            nid = f"80{i}"
+            g[nid] = {"class_type": "LoraLoader", "inputs": {
+                "lora_name": name,
+                "strength_model": float((lora or {}).get("model", 1.0)
+                                        if isinstance(lora, dict) else 1.0),
+                "strength_clip": float((lora or {}).get("clip", 1.0)
+                                       if isinstance(lora, dict) else 1.0),
+                "model": model_src, "clip": clip_src,
+            }}
+            model_src, clip_src = [nid, 0], [nid, 1]
+        # Text encoders must read the LoRA's CLIP, not the checkpoint's.
+        if clip_src != [ckpt_id, 1]:
+            for node in g.values():
+                if node.get("class_type") == "CLIPTextEncode":
+                    node.setdefault("inputs", {})["clip"] = clip_src
+
+        # --- guidance patches (model only) ---
+        if self.rescale_cfg is not None:
+            g["85"] = {"class_type": "RescaleCFG", "inputs": {
+                "model": model_src, "multiplier": float(self.rescale_cfg)}}
+            model_src = ["85", 0]
+        if self.pag_scale is not None:
+            g["86"] = {"class_type": "PerturbedAttentionGuidance", "inputs": {
+                "model": model_src, "scale": float(self.pag_scale)}}
+            model_src = ["86", 0]
+        if self.freeu:
+            g["87"] = {"class_type": "FreeU_V2", "inputs": {
+                "model": model_src,
+                "b1": 1.3, "b2": 1.4, "s1": 0.9, "s2": 0.2}}
+            model_src = ["87", 0]
+
+        g[sampler_id]["inputs"]["model"] = model_src
+
     def _build_graph(
         self, positive: str, negative: str, width: int, height: int, seed: int,
         steps: int, checkpoint: Optional[str] = None,
@@ -222,6 +296,7 @@ class ComfyClient:
             g["6"]["inputs"]["text"] = positive
         if "7" in g and g["7"].get("class_type") == "CLIPTextEncode":
             g["7"]["inputs"]["text"] = negative
+        self._apply_model_layers(g)
         return g
 
     # ----- HTTP -----
@@ -377,4 +452,8 @@ def client_from_config(cfg) -> ComfyClient:
         use_ipadapter=getattr(cfg, "use_ipadapter", False),
         ipadapter_weight=getattr(cfg, "ipadapter_weight", 0.65),
         ipadapter_preset=getattr(cfg, "ipadapter_preset", "STANDARD (medium strength)"),
+        loras=getattr(cfg, "loras", None),
+        rescale_cfg=getattr(cfg, "rescale_cfg", None),
+        pag_scale=getattr(cfg, "pag_scale", None),
+        freeu=getattr(cfg, "freeu", False),
     )
