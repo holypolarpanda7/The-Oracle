@@ -922,7 +922,10 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         )}
       </main>
 
-      <aside className="cf-detail">
+      {/* On the race stage the inline panel carries the same traits, so the
+          narrow layout (where both would stack) hides this one — see
+          `.cf-detail.race-dup` in the phone media block. */}
+      <aside className={`cf-detail ${stage === "race" ? "race-dup" : ""}`}>
         <DetailPanel opts={opts} stage={stage} raceSlug={d.race} clsSlug={d.cls}
                      lineageSlug={d.lineage} hovered={detail} />
       </aside>

@@ -698,8 +698,10 @@ body {
   .cf-main { overflow-y: visible; min-height: 0; }
   .cf-detail { max-height: 44vh; }
   /* Phones: the side description column is buried at the bottom, so show the
-     full racial features inline right under the species cards instead. */
+     full racial features inline right under the species cards instead — and
+     drop the column on the race stage, or the traits read out twice. */
   .cf-inline-detail { display: block; }
+  .cf-detail.race-dup { display: none; }
   .cf-abilities { grid-template-columns: repeat(3, 1fr); max-width: none; }
 
   /* ---- Play surface ---- */
