@@ -4,6 +4,7 @@ import random
 import re
 import time
 import base64
+import threading
 from pathlib import Path
 from typing import Dict, List, Literal, TypedDict, Optional
 import uuid
@@ -1350,6 +1351,128 @@ def process_image_hooks(image_reqs: list[dict], reset_reqs: list[dict],
             continue
         payloads.append(result.payload())
     return payloads
+
+
+# ---- arrival scenes -------------------------------------------------------
+#
+# Arriving somewhere new is ALWAYS worth a picture, and the DM asking for one
+# is not reliable — the imagery guidance says "sparingly", and a busy turn
+# spends its attention elsewhere. So the code keeps its own record of which
+# place a table has already been shown and draws any place it hasn't.
+#
+# Timing: the PC's move into a new location is written by the world extractor,
+# which runs in a worker thread just after the reply goes out, so this check
+# hangs off the END of that task. Activity tables get the picture pushed to
+# their socket the moment it finishes; Discord tables (which only ever see
+# images attached to a /chat reply) pick it up from the pending queue below.
+
+#: session_id -> image payloads rendered off-turn, drained by the next reply.
+_PENDING_TABLE_IMAGES: Dict[str, List[dict]] = {}
+_PENDING_IMAGES_LOCK = threading.Lock()
+
+
+def _take_pending_images(session_id: str) -> List[dict]:
+    """Drain (and clear) images rendered for this table between turns."""
+    with _PENDING_IMAGES_LOCK:
+        return _PENDING_TABLE_IMAGES.pop(session_id, [])
+
+
+def _queue_pending_image(session_id: str, payload: dict) -> None:
+    with _PENDING_IMAGES_LOCK:
+        _PENDING_TABLE_IMAGES.setdefault(session_id, []).append(payload)
+
+
+def _place_scene_request(place) -> Optional[dict]:
+    """An [[IMAGE: place]]-shaped request for a world-graph location entity."""
+    if place is None:
+        return None
+    name = getattr(place, "name", None)
+    if not name:
+        return None
+    attrs = getattr(place, "attributes", None) or {}
+    # Whatever the world graph already knows about the place beats a guess:
+    # its subtype, its terrain, its own description.
+    look = ", ".join(str(v) for v in (
+        getattr(place, "subtype", None),
+        attrs.get("terrain"), attrs.get("look"), attrs.get("description"),
+    ) if v)
+    # Context is the render's cache bucket as well as its mood, so key it on
+    # the season and time of day: the same village in snow is a new picture.
+    context = "arrival"
+    try:
+        from eight_card_system.models import WorldMeta as _WM
+        from survival.weather import season_for_month as _season
+        with Session(world.engine) as s:
+            wm = s.get(_WM, 1)
+        if wm is not None:
+            context = f"{_season(wm.month)}, {wm.time_of_day}"
+    except Exception:
+        pass
+    return {"kind": "place", "subject": name, "context": context,
+            "look": look[:300]}
+
+
+def _scene_place_key(place) -> str:
+    return str(getattr(place, "slug", "") or getattr(place, "name", "") or "")
+
+
+def _maybe_render_arrival(session_id: str) -> None:
+    """Draw the party's location if this table hasn't been shown it yet.
+
+    Safe to call from a worker thread: renders synchronously here, then pushes
+    the frame onto the serving loop. Never raises — a missing picture must not
+    break the turn that triggered it.
+    """
+    cfg = get_config().imagery
+    if not cfg.enabled:
+        return
+    try:
+        state = _load_session_state(session_id)
+        meta = dict(state.get("meta") or {})
+        pc_slug = meta.get("pc_slug")
+        if not pc_slug:
+            return
+        place = world.location_of(pc_slug)
+        key = _scene_place_key(place)
+        if not key or key == meta.get("scene_place"):
+            return
+        rq = _place_scene_request(place)
+        if rq is None:
+            return
+        # Claim the place BEFORE rendering so two turns can't race into two
+        # renders of the same arrival.
+        meta["scene_place"] = key
+        _set_session_meta(session_id, meta)
+        _unload_local_llm()
+        _mark_diffusion_dirty()
+        payloads = process_image_hooks(
+            [rq], [], pc_name=meta.get("character_name"),
+            mature_allowed=_table_is_mature(session_id))
+        if not payloads:
+            return
+        payload = payloads[0]
+        # One transport each, or the table sees the same picture twice: an
+        # Activity table gets it pushed now, a Discord table on its next reply.
+        if _ACTIVITY_SOCKETS.get(session_id):
+            _push_table_image(session_id, payload)
+        else:
+            _queue_pending_image(session_id, payload)
+    except Exception as e:
+        print(f"[arrival-scene] {session_id}: {e}")
+
+
+def _push_table_image(session_id: str, payload: dict) -> None:
+    """Send a rendered picture to an Activity table from any thread."""
+    loop = _MAIN_LOOP
+    if loop is None or not loop.is_running():
+        return
+    ev = {"t": "scene", "url": f"data:{payload.get('mime', 'image/webp')};"
+                              f"base64,{payload.get('b64', '')}",
+          "caption": payload.get("caption") or ""}
+    try:
+        asyncio.run_coroutine_threadsafe(_activity_broadcast(session_id, ev), loop)
+    except Exception as e:
+        print(f"[arrival-scene] push failed: {e}")
 
 
 # Player-driven PORTRAIT updates (explicit request only). The DM re-renders the
@@ -7341,6 +7464,10 @@ def _run_world_extraction(
                 print(f"[world-caps] sweep failed: {e}")
     except Exception as e:
         print(f"[world-extract] {session_id}: unexpected failure: {e}")
+    # The move into a new place has just landed in the graph. Draw it if this
+    # table hasn't seen it — arriving somewhere is always worth a picture, and
+    # waiting for the DM to remember to ask is how you get none.
+    _maybe_render_arrival(session_id)
 
 
 # ----- Single-GPU VRAM time-sharing helpers -----
@@ -9292,6 +9419,11 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         print(f"[imagery] hook processing failed: {e}")
         image_payloads = []
 
+    # Any arrival scene drawn between turns (see _maybe_render_arrival). The
+    # Activity already had it pushed to its socket; this is how a Discord table,
+    # which only ever sees images attached to a reply, gets it.
+    image_payloads = _take_pending_images(req.session_id) + (image_payloads or [])
+
     # Player-driven portrait: re-render to reflect equipped gear, or switch
     # between saved looks (base + gear variants) with no re-render. Explicit
     # player request only — the DM emits the hook when the player asks.
@@ -9856,18 +9988,29 @@ async def enter_world(req: EnterRequest):
     # establishing shot of the starting locale even when it emitted no hook, so
     # the very first thing a player sees is a drawn scene, not a wall of text.
     intro, image_reqs, reset_reqs = extract_image_hooks(intro)
-    if not image_reqs:
-        try:
-            loc = world.location_of(pc_slug)
-            place_name = getattr(loc, "name", None) or "the Silver Tankard"
-        except Exception:
-            place_name = "the Silver Tankard"
-        image_reqs = [{
-            "kind": "place",
-            "subject": place_name,
+    # A hook for the barkeep's face is not an establishing shot. The guarantee
+    # is that the PLACE gets drawn, so only a place/scene hook satisfies it —
+    # and the guaranteed shot goes FIRST, ahead of whatever else was asked for.
+    try:
+        loc = world.location_of(pc_slug)
+    except Exception:
+        loc = None
+    if not any((r.get("kind") or "").strip().lower() in ("place", "scene")
+               for r in image_reqs):
+        opening = _place_scene_request(loc) or {
+            "kind": "place", "subject": "the Silver Tankard",
             "context": f"arrival at {getattr(chosen, 'home_region', 'Greenfields')}",
             "look": "",
-        }]
+        }
+        image_reqs = [opening] + image_reqs
+    # Either way the starting locale has now been drawn — record it, or the
+    # in-play arrival check will draw it a second time after the first turn.
+    try:
+        _m = dict(_load_session_state(session_id).get("meta") or {})
+        _m["scene_place"] = _scene_place_key(loc) or "start"
+        _set_session_meta(session_id, _m)
+    except Exception as e:
+        print(f"[enterworld scene_place error] {e}")
     opening_images: list[dict] = []
     try:
         if image_reqs or reset_reqs:
