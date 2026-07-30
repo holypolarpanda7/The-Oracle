@@ -89,12 +89,14 @@ export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr, 
 
         <div className="pwrap">
           <div className="pframe">
-            <img className="pc tl" src={CORNER} alt="" /><img className="pc tr" src={CORNER} alt="" />
-            <img className="pc bl" src={CORNER} alt="" /><img className="pc br" src={CORNER} alt="" />
             {sheet.portrait
               ? <img src={sheet.portrait} alt={sheet.name} />
               : <div className="noportrait">no portrait yet</div>}
           </div>
+          {/* Corners are siblings of the frame, not children: .pframe clips its
+              overflow, and these are meant to overhang its edges. */}
+          <img className="pc tl" src={CORNER} alt="" /><img className="pc tr" src={CORNER} alt="" />
+          <img className="pc bl" src={CORNER} alt="" /><img className="pc br" src={CORNER} alt="" />
         </div>
 
         {(sheet.portrait || looks.length > 0) && (

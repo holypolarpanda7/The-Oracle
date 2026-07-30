@@ -302,7 +302,9 @@
   position: relative; border: 2px solid var(--gold-dim); border-radius: 4px; overflow: hidden;
   box-shadow: inset 0 0 0 1px rgba(230, 188, 100, 0.22), 0 6px 16px rgba(0, 0, 0, 0.6);
 }
-.play .pframe img { display: block; width: 100%; height: auto; }
+/* The portrait itself only — NOT the four .pc corner ornaments, which are also
+   <img> children here and would otherwise be stretched to the full frame. */
+.play .pframe > img:not(.pc) { display: block; width: 100%; height: auto; }
 .play .pframe .noportrait { aspect-ratio: 1; display: grid; place-items: center;
   color: var(--text-faint); font-style: italic; font-size: 0.72rem; text-align: center; padding: 10px;
   background: radial-gradient(120% 90% at 50% 0%, #1d2540, #0a0e1c 75%); }
