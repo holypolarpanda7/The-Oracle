@@ -104,6 +104,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed)
 - Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
   (a god born in play becomes choosable in CC; an unmade one stops being offered)
+- Activity UI harnesses (Playwright, against the offline demo — run
+  `npm run build && npx vite preview --port 4173` in `activity-ui/` first, then
+  `npx node <script>.mjs`): `feat-choices`, `spell-picker`, `levelup-spells`,
+  `reprepare`, `mobile-smoke`, `arena-shot`, `vtt-shot`, `deity-shot`,
+  `race-dup` (species traits render exactly once per viewport), `pframe-shot`
+  (portrait corner ornaments stay corner-sized).
 
 ## Key facts & constraints
 - **D&D Beyond has NO public write API.** You cannot create/store a character on a
@@ -133,6 +139,26 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   Never let the model author a layout or a distance. This does NOT contradict the
   "hex maps were dropped" rule below — that was a world-map render engine; this is
   an encounter-scale square grid.
+- **Coin is money, not gear.** Book equipment lists write starting coin as a line
+  item ("15 GP"); `_add_inventory_item` folds any coin name into the PURSE so the
+  pack never shows currency next to the sheet's own Gold row.
+- **The free CC trinket is a common WONDROUS item** — not every Common magic item
+  (a potion is drunk once, a scroll burns). The SRD has none, so the pool comes
+  from the gitignored `owned_books/items_overrides.json` slot; an empty pool
+  degrades to a skippable stage.
+- **A new place is always drawn.** `_maybe_render_arrival` (hung off the world
+  extractor) keeps `meta["scene_place"]` and renders any location the table
+  hasn't been shown — the DM's `[[IMAGE: place]]` hook is a bonus, not the
+  mechanism. Activity tables get the frame pushed; Discord tables collect it
+  from `_PENDING_TABLE_IMAGES` on their next reply.
+- **Item pictures are built from the catalog row**, never the bare name: see
+  `_item_art_prompt`. Mundane gear also swaps the ornate house style out, or
+  "Common Clothes" comes back as courtly finery.
+- **Level-up is gated on its choices** the same way the subclass pick is: an ASI
+  level returns `asi_required` + `asi_feats` until the player sends either
+  `ability_increases` or a `feat` (+ `feat_choices`). `FEAT_CHOICES` is the one
+  schema for what a feat asks; `_apply_feat` is the one place it is applied, so
+  creation and level-up can never drift. The UI half is `FeatChoices.tsx`.
 - **World persistence** = the graph, not maps. It's append-only: facts are opened/
   closed over in-world days (nothing deleted), and the DM is only ever fed the
   *relevant* subgraph via `get_world_context`, never the whole world.
