@@ -144,6 +144,14 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
     for (const e of demoArenaApi.fight(ev.environment)) onEvent(e);
     return;
   }
+  if (ev.t === "arena_shop") {
+    for (const e of demoArenaApi.stall()) onEvent(e);
+    return;
+  }
+  if (ev.t === "arena_outfit") {
+    for (const e of demoArenaApi.outfit(ev.cart, ev.equip)) onEvent(e);
+    return;
+  }
   if (ev.t === "arena_leave") {
     for (const e of demoArenaApi.leave()) onEvent(e);
     return;
@@ -212,9 +220,9 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
       t: "narration",
       text: "Kara rises to level 3 — new strength settles into old scars.",
     });
-    // In the Grounds the last level-up is what opens the gate.
+    // In the Grounds the last level-up opens the Quartermaster's stall.
     if (demoArenaApi.climbing()) {
-      for (const e of demoArenaApi.fight()) onEvent(e);
+      for (const e of demoArenaApi.stall()) onEvent(e);
     }
     return;
   }

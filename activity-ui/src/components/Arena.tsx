@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import type { ArenaEnv, ArenaSlot, ArenaState } from "../lib/types";
+import { useEffect, useMemo, useState } from "react";
+import type { ArenaEnv, ArenaEquipLine, ArenaOutfitLine, ArenaSlot,
+              ArenaState } from "../lib/types";
 import { uiTick } from "../lib/sound";
 
 const DOMAIN_LABEL: Record<string, string> = {
@@ -186,11 +187,241 @@ export function Arena({ state, onCreate, onDelete, onBegin, onBack }: {
   );
 }
 
+const RARITY_ORDER = ["common", "uncommon", "rare", "very rare", "legendary"];
+
+/** The Quartermaster's stall: the stipend the Grounds hand out for the level
+ *  being fought at, everything it buys, and what gets strapped on before the
+ *  wards close. Prices and the rarity gate are the server's — this only asks. */
+export function Quartermaster({ state, onOutfit }: {
+  state: ArenaState;
+  onOutfit: (cart: ArenaOutfitLine[], equip: ArenaEquipLine[]) => void;
+}) {
+  const shop = state.shop ?? null;
+  // slug -> what's in the cart; name -> how owned gear is worn.
+  const [cart, setCart] = useState<Record<string, { qty: number; equipped: boolean;
+                                                    attuned: boolean }>>({});
+  const [equip, setEquip] = useState<Record<string, { equipped: boolean;
+                                                      attuned: boolean }>>({});
+  const [filter, setFilter] = useState("");
+  const [kind, setKind] = useState<"all" | "gear" | "magic">("all");
+  const [sent, setSent] = useState(false);
+
+  // Re-opening the stall between bouts restores the loadout you walked out with.
+  useEffect(() => {
+    if (!shop) return;
+    setCart(Object.fromEntries((shop.cart ?? []).map((l) => [
+      l.slug, { qty: l.quantity, equipped: l.equipped, attuned: l.attuned }])));
+    setEquip(Object.fromEntries((shop.pack ?? []).map((p) => [
+      p.name, { equipped: p.equipped, attuned: p.attuned }])));
+    setSent(false);
+  }, [shop?.purse, shop?.items.length, (shop?.cart ?? []).length]);
+
+  const stock = shop?.items ?? [];
+  const bySlug = useMemo(
+    () => Object.fromEntries(stock.map((s) => [s.slug, s])), [stock]);
+
+  const spent = Object.entries(cart).reduce(
+    (sum, [slug, line]) => sum + (bySlug[slug]?.cost_gp ?? 0) * line.qty, 0);
+  const purse = shop?.purse ?? 0;
+  const remaining = purse - spent;
+  const attuneLimit = shop?.attunement_limit ?? 3;
+  const attuned = Object.values(cart).filter((l) => l.attuned).length
+    + Object.values(equip).filter((e) => e.attuned).length;
+
+  const q = filter.trim().toLowerCase();
+  const shown = stock
+    .filter((s) => kind === "all" || s.kind === kind)
+    .filter((s) => !q || s.name.toLowerCase().includes(q))
+    .slice(0, 100);
+
+  if (!shop) return null;
+
+  const setQty = (slug: string, qty: number) => {
+    const it = bySlug[slug];
+    if (!it) return;
+    setCart((c) => {
+      const next = { ...c };
+      if (qty <= 0) delete next[slug];
+      else next[slug] = {
+        qty,
+        // Nobody buys a shield to carry it in a sack, and a wondrous item that
+        // does nothing unattuned may as well not have been bought.
+        equipped: c[slug]?.equipped ?? it.equippable,
+        attuned: c[slug]?.attuned ?? (!!it.attunement && attuned < attuneLimit),
+      };
+      return next;
+    });
+  };
+
+  const step = (slug: string, by: number) =>
+    setQty(slug, (cart[slug]?.qty ?? 0) + by);
+
+  const toggleCart = (slug: string, key: "equipped" | "attuned") =>
+    setCart((c) => (c[slug]
+      ? { ...c, [slug]: { ...c[slug], [key]: !c[slug][key] } } : c));
+
+  const togglePack = (name: string, key: "equipped" | "attuned") =>
+    setEquip((e) => {
+      const cur = e[name] ?? { equipped: false, attuned: false };
+      return { ...e, [name]: { ...cur, [key]: !cur[key] } };
+    });
+
+  const walkOn = () => {
+    if (sent) return;
+    setSent(true);
+    onOutfit(
+      Object.entries(cart).map(([slug, line]) => ({
+        slug, name: bySlug[slug]?.name ?? slug, quantity: line.qty,
+        equipped: line.equipped, attuned: line.attuned })),
+      Object.entries(equip).map(([name, e]) => ({
+        name, equipped: e.equipped, attuned: e.attuned })));
+  };
+
+  return (
+    <div className="levelup-veil">
+      <div className="levelup quartermaster">
+        <div className="levelup-head">
+          <span className="lu-title">The Quartermaster</span>
+          <span className="lu-arc">level {shop.level} stipend</span>
+        </div>
+        <p className="qm-blurb">
+          Conjured coin for a conjured fight — spend it, wear it, and lose it
+          when the run ends. A build is only half a build without the gear it's
+          meant to be holding.
+        </p>
+
+        <div className="gear-budget">
+          <span>Purse <b>{purse.toLocaleString()} gp</b></span>
+          <span className={remaining < 0 ? "over" : ""}>
+            Remaining <b>{remaining.toLocaleString()} gp</b>
+          </span>
+          <span className={attuned > attuneLimit ? "over" : ""}>
+            Attuned <b>{attuned}/{attuneLimit}</b>
+          </span>
+        </div>
+
+        {shop.pack.length > 0 && (
+          <div className="qm-pack">
+            <div className="qm-label">What you already carry</div>
+            <div className="gear-list qm-packlist">
+              {shop.pack.map((p) => {
+                const st = equip[p.name] ?? { equipped: p.equipped, attuned: p.attuned };
+                return (
+                  <div key={p.name} className={`gear-row ${st.equipped || st.attuned ? "in" : ""}`}>
+                    <span className="gear-name">
+                      {p.name}{p.quantity > 1 ? ` ×${p.quantity}` : ""}
+                    </span>
+                    <div className="qm-flags">
+                      <button className={`qm-flag ${st.equipped ? "on" : ""}`}
+                              onClick={() => { uiTick(); togglePack(p.name, "equipped"); }}>
+                        {st.equipped ? "worn" : "stowed"}
+                      </button>
+                      {p.attunement && (
+                        <button className={`qm-flag ${st.attuned ? "on" : ""}`}
+                                disabled={!st.attuned && attuned >= attuneLimit}
+                                onClick={() => { uiTick(); togglePack(p.name, "attuned"); }}>
+                          attuned
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="qm-label">The stall</div>
+        <div className="qm-filters">
+          {(["all", "gear", "magic"] as const).map((k) => (
+            <button key={k} className={`arena-diff${kind === k ? " picked" : ""}`}
+                    onClick={() => { uiTick(); setKind(k); }}>{k}</button>
+          ))}
+          <input className="gear-search" placeholder="search the stall…"
+                 value={filter} onChange={(e) => setFilter(e.target.value)} />
+        </div>
+
+        <div className="gear-list qm-stall">
+          {shown.map((it) => {
+            const line = cart[it.slug];
+            const qty = line?.qty ?? 0;
+            const canAdd = spent + it.cost_gp <= purse;
+            return (
+              <div key={it.slug} className={`gear-row ${qty ? "in" : ""}`}>
+                <span className="gear-name">
+                  {it.name}
+                  {it.rarity && (
+                    <span className={`qm-rarity r${RARITY_ORDER.indexOf(
+                      it.rarity.toLowerCase())}`}>{it.rarity}</span>
+                  )}
+                  {it.attunement && <span className="qm-attune">attunement</span>}
+                  {it.brief && <span className="qm-brief">{it.brief}</span>}
+                </span>
+                <span className="gear-cost">{it.cost_gp.toLocaleString()} gp</span>
+                {qty > 0 && (
+                  <div className="qm-flags">
+                    {it.equippable && (
+                      <button className={`qm-flag ${line?.equipped ? "on" : ""}`}
+                              onClick={() => { uiTick(); toggleCart(it.slug, "equipped"); }}>
+                        {line?.equipped ? "worn" : "stowed"}
+                      </button>
+                    )}
+                    {it.attunement && (
+                      <button className={`qm-flag ${line?.attuned ? "on" : ""}`}
+                              disabled={!line?.attuned && attuned >= attuneLimit}
+                              onClick={() => { uiTick(); toggleCart(it.slug, "attuned"); }}>
+                        attuned
+                      </button>
+                    )}
+                  </div>
+                )}
+                <div className="gear-qty">
+                  <button disabled={qty <= 0}
+                          onClick={() => { uiTick(); step(it.slug, -1); }}>−</button>
+                  <span>{qty}</span>
+                  <button disabled={!canAdd}
+                          onClick={() => { uiTick(); step(it.slug, 1); }}>+</button>
+                </div>
+              </div>
+            );
+          })}
+          {shown.length === 0 && (
+            <p className="cf-hint">
+              Nothing here matches — or the rules library has no priced items yet.
+            </p>
+          )}
+        </div>
+        {stock.length > shown.length && (
+          <p className="cf-hint">
+            Showing {shown.length} of {stock.length} — search to narrow.
+          </p>
+        )}
+
+        {shop.rejected.length > 0 && (
+          <p className="cf-hint qm-rejected">{shop.rejected.join(" · ")}</p>
+        )}
+
+        <div className="lu-actions" style={{ gap: 10 }}>
+          <button className="lu-confirm" disabled={sent}
+                  onClick={() => { uiTick(); setCart({}); }}>
+            Buy nothing
+          </button>
+          <button className="lu-confirm" disabled={sent || remaining < 0}
+                  onClick={() => { uiTick(); walkOn(); }}>
+            {sent ? "The wards close…" : "Step through the gate ➤"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Shown over the play surface once a bout is decided: fight on, or walk out. */
-export function ArenaResult({ state, onAgain, onElsewhere, onLeave }: {
+export function ArenaResult({ state, onAgain, onElsewhere, onOutfit, onLeave }: {
   state: ArenaState;
   onAgain: () => void;
   onElsewhere: (environment: string) => void;
+  onOutfit: () => void;
   onLeave: () => void;
 }) {
   const run = state.run;
@@ -229,6 +460,9 @@ export function ArenaResult({ state, onAgain, onElsewhere, onLeave }: {
             </button>
             <button className="lu-confirm" onClick={() => { uiTick(); setPicking(true); }}>
               Somewhere else
+            </button>
+            <button className="lu-confirm" onClick={() => { uiTick(); onOutfit(); }}>
+              Back to the stall
             </button>
             <button className="lu-confirm" onClick={() => { uiTick(); onLeave(); }}>
               Leave the Grounds

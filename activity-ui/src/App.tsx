@@ -8,7 +8,7 @@ import { Block, makeOracleBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
 import { PortraitStep } from "./components/PortraitStep";
 import { Landing } from "./components/Landing";
-import { Arena, ArenaResult } from "./components/Arena";
+import { Arena, ArenaResult, Quartermaster } from "./components/Arena";
 import { LevelUpOverlay } from "./components/LevelUp";
 import { ReprepareOverlay } from "./components/Reprepare";
 import { PlaySurface } from "./components/PlaySurface";
@@ -397,12 +397,20 @@ export default function App({ session }: { session: Session }) {
 
         {screen === "play" && (
           <>
+            {arenaMode && arena && arena.run?.phase === "outfitting" && (
+              <Quartermaster
+                state={arena}
+                onOutfit={(cart, equip) =>
+                  connRef.current?.send({ t: "arena_outfit", cart, equip })}
+              />
+            )}
             {arenaMode && arena && (
               <ArenaResult
                 state={arena}
                 onAgain={() => connRef.current?.send({ t: "arena_fight" })}
                 onElsewhere={(environment) =>
                   connRef.current?.send({ t: "arena_fight", environment })}
+                onOutfit={() => connRef.current?.send({ t: "arena_shop" })}
                 onLeave={() => {
                   connRef.current?.send({ t: "arena_leave" });
                   setArenaMode(false);

@@ -263,6 +263,47 @@ body {
 .arena-result .arena-envs { max-height: 320px; overflow-y: auto; margin-bottom: 12px; }
 .arena-tally { color: var(--text-dim); font-size: 13px; line-height: 1.6; }
 
+/* ---- the Quartermaster's stall (arena outfitting) ---------------------- */
+.quartermaster { max-width: 780px; width: min(780px, 94vw); }
+.qm-blurb {
+  color: var(--text-dim); font-size: 12.5px; font-style: italic;
+  line-height: 1.6; margin: 0 0 10px;
+}
+.qm-label {
+  font-family: var(--display); letter-spacing: 0.16em; text-transform: uppercase;
+  font-size: 10.5px; color: var(--text-faint); margin: 12px 0 6px;
+}
+.qm-filters { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+.qm-filters .gear-search { margin: 0; flex: 1; }
+.quartermaster .gear-list { max-height: 34vh; }
+.qm-packlist { max-height: 18vh; }
+.quartermaster .gear-row { grid-template-columns: 1fr auto auto auto; }
+.qm-packlist .gear-row { grid-template-columns: 1fr auto; }
+/* A long item name must wrap rather than push the price off the row. */
+.quartermaster .gear-name { min-width: 0; overflow-wrap: anywhere; }
+.qm-flags { display: flex; gap: 6px; }
+.qm-flag {
+  border: 1px solid var(--panel-edge); background: var(--panel);
+  color: var(--text-faint); border-radius: var(--radius);
+  padding: 2px 8px; font-size: 10.5px; letter-spacing: 0.06em; cursor: pointer;
+}
+.qm-flag:hover:not(:disabled) { border-color: var(--brass); color: var(--brass); }
+.qm-flag.on { border-color: var(--brass); color: var(--brass-bright); }
+.qm-flag:disabled { opacity: 0.3; cursor: default; }
+.qm-rarity, .qm-attune {
+  margin-left: 8px; font-size: 10px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.qm-rarity.r1 { color: var(--verdigris, #6fb3a0); }
+.qm-rarity.r2 { color: var(--azure, #6f9bd1); }
+.qm-rarity.r3 { color: var(--amethyst); }
+.qm-rarity.r4 { color: var(--brass-bright); }
+.qm-brief {
+  display: block; font-size: 11px; color: var(--text-faint);
+  font-style: italic; line-height: 1.5; margin-top: 2px;
+}
+.qm-rejected { color: var(--oxblood); }
+
 /* ============ Character creation ============ */
 .create {
   grid-column: 1 / -1;
@@ -744,6 +785,17 @@ body {
   .cf-inline-detail { display: block; }
   .cf-detail.race-dup { display: none; }
   .cf-abilities { grid-template-columns: repeat(3, 1fr); max-width: none; }
+
+  /* ---- The Quartermaster: four columns don't fit a phone, so the name takes
+     its own line and price/flags/quantity share the one below. ---- */
+  .quartermaster { width: 96vw; }
+  .quartermaster .gear-row,
+  .qm-packlist .gear-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .quartermaster .gear-name { flex: 1 1 100%; }
+  .quartermaster .gear-qty { margin-left: auto; }
+  .qm-filters { flex-wrap: wrap; }
+  .qm-filters .gear-search { flex: 1 1 100%; }
+  .quartermaster .gear-list { max-height: 40vh; }
 
   /* ---- Play surface ---- */
   .play { overscroll-behavior: contain; }

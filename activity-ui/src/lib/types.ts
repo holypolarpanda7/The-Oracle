@@ -334,14 +334,66 @@ export interface ArenaRun {
   target_level: number;
   environment: string;
   difficulty: string;
-  /** leveling → the climb; fighting → a live bout; resolved → it's over. */
-  phase: "leveling" | "fighting" | "resolved" | "idle";
+  /** leveling → the climb; outfitting → the Quartermaster's stall;
+   *  fighting → a live bout; resolved → it's over. */
+  phase: "leveling" | "outfitting" | "fighting" | "resolved" | "idle";
   result?: "victory" | "defeat" | "over" | null;
   roster?: string;
   roster_reads?: string;
   roster_xp?: number;
   fights?: number;
   wins?: number;
+}
+
+/** One line on the Quartermaster's board. */
+export interface ArenaStockItem {
+  slug: string; name: string; cost_gp: number;
+  kind: "gear" | "magic";
+  category?: string | null; item_type?: string | null;
+  rarity?: string; attunement?: boolean; brief?: string;
+  /** Worn or wielded rather than stowed — offered with an "on you" toggle. */
+  equippable: boolean;
+}
+
+/** A line in the cart, priced by the server (its prices are the real ones). */
+export interface ArenaCartLine {
+  slug: string; name: string; quantity: number;
+  cost_gp: number; line_gp: number;
+  equipped: boolean; attuned: boolean;
+  kind: "gear" | "magic"; rarity?: string | null;
+  attunement: boolean; equippable: boolean;
+}
+
+/** Gear the fighter already owns that can be strapped on before the bout. */
+export interface ArenaPackItem {
+  name: string; quantity: number;
+  equipped: boolean; attuned: boolean; attunement: boolean;
+  rarity?: string | null;
+}
+
+/** The stall: a stipend for the level being fought at, and what it buys. */
+export interface ArenaShop {
+  level: number;
+  purse: number;
+  spent: number;
+  remaining: number;
+  attunement_limit: number;
+  attuned: number;
+  items: ArenaStockItem[];
+  cart: ArenaCartLine[];
+  pack: ArenaPackItem[];
+  rejected: string[];
+}
+
+/** What the client asks the stall for — the server prices it, not us. */
+export interface ArenaOutfitLine {
+  slug: string; name: string; quantity: number;
+  equipped?: boolean; attuned?: boolean;
+}
+
+/** How a fighter's own gear should be worn walking into the bout. */
+export interface ArenaEquipLine {
+  name: string; equipped: boolean; attuned: boolean;
 }
 
 export interface ArenaState {
@@ -351,6 +403,8 @@ export interface ArenaState {
   max_level: number;
   max_slots: number;
   run: ArenaRun | null;
+  /** Only present while the stall is open (it carries the whole catalog). */
+  shop?: ArenaShop | null;
 }
 
 export type ServerEvent =
@@ -404,6 +458,8 @@ export type ClientEvent =
   | { t: "arena_begin"; slot: number; environment: string; level: number;
       difficulty: string; reuse?: boolean }
   | { t: "arena_fight"; environment?: string; difficulty?: string }
+  | { t: "arena_shop"; environment?: string; difficulty?: string }
+  | { t: "arena_outfit"; cart: ArenaOutfitLine[]; equip: ArenaEquipLine[] }
   | { t: "arena_leave" }
   | { t: "inspect_item"; name: string }
   | { t: "inscribe_spell"; spell: string; book?: string }

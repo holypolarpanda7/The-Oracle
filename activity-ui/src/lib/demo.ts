@@ -1,4 +1,6 @@
-import type { ArenaEnv, ArenaState, CombatState, ServerEvent, VttEffect, VttScene } from "./types";
+import type { ArenaEnv, ArenaEquipLine, ArenaOutfitLine, ArenaShop, ArenaState,
+              ArenaStockItem, CombatState, ServerEvent, VttEffect,
+              VttScene } from "./types";
 
 /** Standalone demo feed — lets the whole UI run with no backend, and doubles
     as living documentation of the event protocol. */
@@ -426,9 +428,64 @@ const demoArenaState: ArenaState = {
   run: null,
 };
 
+/* The Quartermaster's stall, offline: a handful of the real catalog's shapes —
+   priced mundane gear, magic gated by rarity, one thing that wants attunement. */
+const demoStock: ArenaStockItem[] = [
+  { slug: "rope-hempen", name: "Rope, Hempen (50 feet)", cost_gp: 1, kind: "gear",
+    category: "adventuring-gear", item_type: "Standard Gear", equippable: false },
+  { slug: "shield", name: "Shield", cost_gp: 10, kind: "gear",
+    category: "armor", item_type: "Shield", equippable: true },
+  { slug: "longsword", name: "Longsword", cost_gp: 15, kind: "gear",
+    category: "weapon", item_type: "Martial", equippable: true },
+  { slug: "chain-mail", name: "Chain Mail", cost_gp: 75, kind: "gear",
+    category: "armor", item_type: "Heavy", equippable: true },
+  { slug: "plate-armor", name: "Plate Armor", cost_gp: 1500, kind: "gear",
+    category: "armor", item_type: "Heavy", equippable: true },
+  { slug: "potion-of-healing", name: "Potion of Healing", cost_gp: 100,
+    kind: "magic", category: "magic-item", item_type: "Potion", rarity: "common",
+    equippable: false, brief: "You regain 2d4 + 2 hit points when you drink it." },
+  { slug: "cloak-of-protection", name: "Cloak of Protection", cost_gp: 600,
+    kind: "magic", category: "magic-item", item_type: "Wondrous Item",
+    rarity: "uncommon", attunement: true, equippable: true,
+    brief: "+1 bonus to AC and saving throws while you wear it." },
+  { slug: "longsword-1", name: "Longsword +1", cost_gp: 600, kind: "magic",
+    category: "magic-item", item_type: "Weapon", rarity: "uncommon",
+    equippable: true, brief: "+1 bonus to attack and damage rolls." },
+  { slug: "boots-of-striding", name: "Boots of Striding and Springing",
+    cost_gp: 600, kind: "magic", category: "magic-item",
+    item_type: "Wondrous Item", rarity: "uncommon", attunement: true,
+    equippable: true, brief: "Your walking speed becomes 30 feet and you leap far." },
+];
+
+let demoCart: ArenaShop["cart"] = [];
+
+function demoShop(): ArenaShop {
+  const level = demoArenaState.run?.target_level ?? 1;
+  const purse = level <= 1 ? 125 : level <= 4 ? 600 : level <= 10 ? 4800 : 11000;
+  const spent = demoCart.reduce((sum, l) => sum + l.line_gp, 0);
+  return {
+    level, purse, spent, remaining: purse - spent,
+    attunement_limit: 3,
+    attuned: demoCart.filter((l) => l.attuned).length,
+    items: demoStock.filter((i) => i.cost_gp <= purse),
+    cart: demoCart,
+    pack: [
+      { name: "Chain Mail", quantity: 1, equipped: false, attuned: false,
+        attunement: false },
+      { name: "Longsword", quantity: 1, equipped: false, attuned: false,
+        attunement: false },
+      { name: "Shield", quantity: 1, equipped: false, attuned: false,
+        attunement: false },
+    ],
+    rejected: [],
+  };
+}
+
 export const demoArenaApi = {
   state(): ArenaState {
-    return JSON.parse(JSON.stringify(demoArenaState)) as ArenaState;
+    const state = JSON.parse(JSON.stringify(demoArenaState)) as ArenaState;
+    if (state.run?.phase === "outfitting") state.shop = demoShop();
+    return state;
   },
   create(slot: number, name: string, race?: string | null, cls?: string | null) {
     const row = demoArenaState.slots.find((s) => s.slot === slot);
@@ -466,7 +523,43 @@ export const demoArenaApi = {
       out.push(demoLevelUp);
       return out;
     }
-    return [...out, ...this.fight()];
+    return [...out, ...this.stall()];
+  },
+  /** The Quartermaster, between the climb and the sand. */
+  stall(): ServerEvent[] {
+    const run = demoArenaState.run;
+    if (!run) return [];
+    run.phase = "outfitting";
+    run.result = null;
+    return [
+      { t: "narration",
+        text: "*The Quartermaster's stall stands between you and the sand. "
+              + "Conjured coin is yours to spend — buy what this build is meant "
+              + "to be holding, strap it on, and step through.*" },
+      { t: "arena", state: demoArenaApi.state() },
+    ];
+  },
+  /** Buy the cart (the offline stall trusts its own prices) and fight. */
+  outfit(cart: ArenaOutfitLine[], _equip: ArenaEquipLine[]): ServerEvent[] {
+    demoCart = cart.flatMap((line) => {
+      const it = demoStock.find((s) => s.slug === line.slug);
+      if (!it) return [];
+      return [{
+        slug: it.slug, name: it.name, quantity: line.quantity,
+        cost_gp: it.cost_gp, line_gp: it.cost_gp * line.quantity,
+        equipped: !!line.equipped, attuned: !!line.attuned,
+        kind: it.kind, rarity: it.rarity ?? null,
+        attunement: !!it.attunement, equippable: it.equippable,
+      }];
+    });
+    const carried = demoCart.map((l) => l.name).join(", ");
+    return [
+      { t: "narration",
+        text: carried
+          ? `*You leave the stall carrying ${carried}.*`
+          : "*You take nothing from the stall and step through as you are.*" },
+      ...this.fight(),
+    ];
   },
   fight(environment?: string): ServerEvent[] {
     const run = demoArenaState.run;

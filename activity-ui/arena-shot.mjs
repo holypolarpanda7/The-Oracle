@@ -1,5 +1,5 @@
 // Walk the Proving Grounds against the offline demo feed and shoot each step:
-// landing → slots → environments → the bout → the result overlay.
+// landing → slots → environments → the Quartermaster → the bout → the result.
 //
 //   npm run build && npx vite preview --port 4173 &
 //   node arena-shot.mjs
@@ -40,14 +40,27 @@ await shot("4-levelup");
 await page.locator(".lu-option", { hasText: "Gloom Stalker" }).click();
 await page.locator(".lu-option", { hasText: "Cure Wounds" }).first().click();
 await page.click(".lu-confirm:not([disabled])");
+
+// The stall stands between the climb and the sand: buy, wear, step through.
+await page.waitForSelector(".quartermaster", { timeout: 5000 });
+await shot("5-stall");
+await page.locator(".qm-stall .gear-row", { hasText: "Chain Mail" })
+  .locator(".gear-qty button").last().click();
+await page.locator(".qm-stall .gear-row", { hasText: "Cloak of Protection" })
+  .locator(".gear-qty button").last().click();
+await page.locator(".qm-packlist .gear-row", { hasText: "Longsword" })
+  .locator(".qm-flag").first().click();
+await shot("6-stall-loaded");
+
+await page.locator(".quartermaster .lu-confirm", { hasText: "Step through" }).click();
 await page.waitForTimeout(900);
-await shot("5-bout");
+await shot("7-bout");
 
 await page.locator(".promptbar input")
   .fill("I swing at the nearest one.");
 await page.keyboard.press("Enter");
 await page.waitForTimeout(1800);
-await shot("6-result");
+await shot("8-result");
 
 await browser.close();
 console.log("done");
