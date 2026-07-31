@@ -943,8 +943,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                          loras=[_parse_lora(x) for x in a.lora] or None)
     if not a.dry_run:
         print(f"\nDone — {n} portrait(s) generated into {_OUT_DIR}.")
-        print("Review them, then `git add -f` the SRD/PHB ones you want in the repo "
-              "(owned-book species art stays local).")
+        print("Review them, then commit the ones you want — species art is "
+              "tracked normally now, owned-book species included (the art is "
+              "derived from the content, not the content). The DESCRIPTORS in "
+              "owned_books/species_looks.json stay local.")
     return 0
 
 

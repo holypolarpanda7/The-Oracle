@@ -166,6 +166,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     repo code. The public GitHub repo carries only the tooling. Small third-party
     homebrew (Illrigger, Gunslinger) is summarized in own words in seeds — keep those
     concise-mechanical, never verbatim.
+    **Derived ART is not data and IS committed.** A rendered species portrait
+    carries no book text, stat block or mechanics, so all of
+    `activity-ui/public/assets/species/` is tracked, owned-book species
+    included. The line falls between the picture and the words that produced
+    it: the descriptors in `owned_books/species_looks.json` stay local.
   - Retrieval is selective — only fetch rules when the action needs a mechanic; prose
     lore stays out of prompts except brief mechanical facts.
 - **The tactical board is a spotlight, not a stage.** Play stays theater-of-the-

@@ -56,9 +56,11 @@ docs/design/references/*.png
 docs/design/references/*.webp
 docs/design/proofs/
 
-# Generated species portraits (owned-book species must stay local; SRD/PHB ones
-# can be force-added: git add -f activity-ui/public/assets/species/<slug>-*.webp)
-activity-ui/public/assets/species/
+# Generated species portraits ARE committed — all of them, owned-book species
+# included. A rendered portrait is art derived from the content, not the
+# content: no book text, no stat block, no mechanics. What stays local is the
+# text that describes those species (owned_books/species_looks.json), which is
+# still covered by the owned_books/ rule above.
 
 # UI screenshots (local verification only)
 activity-ui/vtt-shots/
