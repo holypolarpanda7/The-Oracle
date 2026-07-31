@@ -55,8 +55,8 @@
         },
         {
           "name": "DarkFanXLGrain.safetensors",
-          "model": 0.2,
-          "clip": 0.2,
+          "model": 0.35,
+          "clip": 0.35,
           "trigger": "dark fantasy art style"
         }
       ]

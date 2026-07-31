@@ -164,6 +164,37 @@ loras_by_kind = {"map": [{"name": "dnd_battlemaps_xl.safetensors", "model": 0.9}
 
 A kind listed in `loras_by_kind` uses its list INSTEAD of `loras`, not on top.
 
+### One seed is not a measurement: `scripts/species_seed_check.py`
+
+A species look is normally judged from a single render per sex — which is how a
+descriptor rewrite gets called fixed when it only got lucky. The goliath rewrite
+oscillated across five passes (tanned human in warpaint → correct grey but
+gaunt → plain pink human → carved gargoyle → pink human again), and *every one
+of those swings looked decisive on one seed*.
+
+```bash
+./.venv/Scripts/python.exe scripts/species_seed_check.py goliath
+```
+
+Renders one species, both sexes, over three seeds, at the live config, straight
+to a sheet. Two lessons came out of it that generalise past the goliath:
+
+* **Never offer an alternative in a descriptor.** "blue-grey (or a dull brick
+  red)" does not make the model choose — it BLENDS, giving brick-red flesh
+  wearing slate patches, which is precisely the warpaint failure the line was
+  written to prevent. Same for "mottled": it asks for the patchiness that reads
+  as paint.
+* **Name the colour in the positive, refuse the substance in the negative.**
+  Stone-colour words strong enough to beat the male bodybuilder prior ("pale
+  weathered granite", "chalky") also summon the material: cracked surfaces,
+  carved planes, a sculpture instead of a person. Softening them to "living
+  warm skin" hands it straight back to a pink human. There is no middle setting
+  on that one dial — the positive has to carry the colour while the negative
+  vetoes statue/marble/sculpture/petrified. Neither half holds alone.
+* A weighted species clause (`:1.35`) **outranks the unweighted sex clause**.
+  The grey palette masculinised goliath women until the female look carried its
+  own `:1.3`.
+
 ### Judging a map LoRA: `scripts/map_lora_probe.py`
 
 A map LoRA that nails a dungeon corridor and then draws a tavern in elevation
@@ -312,12 +343,13 @@ The printed `diff` column is a gate to clear BEFORE any aesthetic call: mean
 absolute pixel difference against that row's weight-0 render. 0.00 means the
 LoRA did nothing.
 
-**Result: `DarkFanXLGrain` at 0.20.** Measured over 7 rows x 4 strengths:
+**Shipped at 0.35** (operator's call — 0.20 was measurably the safe floor but
+read as too subtle in the app). Measured over 7 rows x 4 strengths:
 
 | strength | result |
 |---|---|
-| 0.20 | **grit, contrast and better material texture; the village stays sunlit and every descriptor survives** |
-| 0.35 | barely darker than 0.20, and the goliath's markings turn decorative (swirls) — more warpaint, not more goliath |
+| 0.20 | grit, contrast and better material texture; the village stays sunlit and every descriptor survives — the measured floor |
+| **0.35** | **shipped: visibly darker and grittier, still no descriptor loss** |
 | 0.50 | darker again for no gain; the same drift, further along |
 
 **Nearly the whole effect lands by 0.20.** The village square moves 46.78/255

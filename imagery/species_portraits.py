@@ -293,17 +293,56 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
                   "unmistakably not mortal",
         "male": "a radiant aasimar man, noble calm features, glowing sigils",
         "female": "a radiant aasimar woman, luminous and graceful, glowing sigils"},
+    # This one took five measured passes; the arc is worth keeping, because the
+    # obvious repair at each step caused the next failure.
+    #
+    # The ORIGINAL said "blue-grey (or a dull brick red)" and "mottled with
+    # darker patches" — and so produced the exact thing it was written to
+    # prevent, a tanned human in blue warpaint. A diffusion model handed two
+    # skin colours BLENDS them rather than choosing: brick-red flesh wearing
+    # slate patches, and "mottled" then asked outright for the patchiness that
+    # reads as paint. Never offer an alternative in a descriptor.
+    #
+    # Committing to one colour fixed the WOMEN and left the men pink: "massive
+    # man, colossal muscle" carries a bodybuilder prior that a positive colour
+    # claim does not outrank. Flesh tones had to be named in the NEGATIVE too —
+    # the lesson this module already learned about the firbolg's horns.
+    #
+    # Then the pendulum. Adding "living / warm / soft skin with pores" to stop
+    # the gauntness brought the pink human straight back (twice — passes 3 and
+    # 5). Removing it and leaning on "weathered granite / chalky" got the
+    # pallor right and kept going, into cracked surfaces and carved planes: six
+    # gargoyles. The resolution is NOT a middle setting on one dial. Keep the
+    # strong stone-COLOUR words in the positive, and veto the stone MATERIAL in
+    # the negative (statue/marble/sculpture/petrified). Positive names the
+    # colour, negative refuses the substance; neither alone holds.
     "goliath": {
-        "shared": "a goliath, enormous and towering, skin a cool slate BLUE-GREY "
-                  "(or a dull brick red), never tanned human flesh tones, "
-                  "mottled with darker patches and studded with raised bony "
-                  "lithoderm growths across the brow, jaw and shoulders, bold "
-                  "dark tribal tattoos sweeping across the scalp and face, a "
-                  "bald head, a heavy jutting stony brow ridge, small deep-set "
-                  "eyes, mountain-giant heritage, colossal muscle",
-        "negative": "tan skin, human skin tone, concrete grey, plain grey",
-        "male": "a massive goliath man, jutting jaw, stony ridges",
-        "female": "a towering goliath woman, angular stone-marked features"},
+        "shared": "a goliath, enormous and towering, STONE-GREY SKIN the colour "
+                  "of pale weathered granite, chalky ash-white with cool "
+                  "blue-grey shadows, uniform across face neck and shoulders, "
+                  "never human flesh tones, studded with raised bony "
+                  "lithoderm growths across the brow, jaw and shoulders, a FEW "
+                  "fine thin black rune strokes at the brow and one cheekbone, "
+                  "otherwise bare skin, pale ice-blue eyes under heavy dark "
+                  "brows, a heavy jutting brow ridge, broad angular jaw, heavy "
+                  "powerful features, bald, mountain-giant heritage, colossal "
+                  "muscle",
+        "negative": "tan skin, human skin tone, pink skin, peach skin, "
+                    "caucasian flesh tone, ruddy complexion, sunburnt, brick "
+                    "red skin, mottled skin, two-tone skin, patchy discoloured "
+                    "skin, blue face paint, warpaint, solid black patches, "
+                    "geometric face panels, painted mask, corpse paint, heavy "
+                    "black eye makeup, gaunt, skeletal, stone statue, carved "
+                    "marble, sculpture, gargoyle, cracked stone surface, "
+                    "petrified, concrete grey, flat lifeless grey",
+        "male": "a massive goliath man, jutting jaw, heavy ridged brow",
+        # The stone language masculinises the women outright, and saying
+        # "feminine" plainly was not enough: the shared clause is weighted 1.35
+        # and simply outranks an unweighted sex clause, so two of three seeds
+        # still came back male. This is the ONE look that has to carry its own
+        # CLIP weight to survive its own species descriptor.
+        "female": "(a towering goliath woman, clearly feminine face, soft full "
+                  "lips, large expressive eyes, smooth cheeks, a woman:1.3)"},
 }
 
 _ALIASES = {"half elf": "half-elf", "halfelf": "half-elf",
