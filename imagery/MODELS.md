@@ -194,11 +194,41 @@ a tanned human in warpaint. Structure and age are safe on anything; colouring
 is added only where nothing else claims it.
 
 Verified with six DIFFERENT characters at one FIXED seed, so nothing on the
-sheet comes from the sampler. Honest limits: the win arrives mostly through
-hair, colouring and age. Bone structure still converges — "a broad flat nose"
-is only partly obeyed, and build barely shows at all in a head-and-shoulders
-crop. It is the difference between six brothers and six strangers, not full
-control of a face.
+sheet comes from the sampler.
+
+### Bone structure: the weight is the lever, and the framing is a red herring
+
+The first pass varied hair, colouring and age well and left every face the same
+underlying handsome skull. Probed with three deliberately contradictory
+structures (jowly / hawk-faced / round) at a fixed seed:
+
+| variant | result |
+|---|---|
+| appearance `:1.2` | all three come back the same idealised face |
+| **`:1.35`** | **structure SEPARATES — real jowls, a real hooked nose, a genuinely round young face** |
+| `:1.5` | slightly stronger, then the nose deforms outright |
+
+**Dropping "heroic"/"adventurer" from `_KIND_FRAMING[PC]` did nothing.** It was
+the obvious suspect — it names an idealised protagonist — and it was tested
+twice, at 1.2 and again at 1.35 against the neutral framing, and the sheets are
+indistinguishable. The framing is therefore left ALONE: a change that measures
+as no-change is churn, however good the story for it sounds. The negative was
+also checked and is clean; nothing was pruning irregular faces, they were
+simply never asked for loudly enough.
+
+Weighting a face hard enough to move bone structure has one side effect:
+"bulbous"/"snub" noses come back RED and inflamed with flushed blotchy cheeks,
+a drinker's face. `FACE_NEGATIVE` vetoes the SYMPTOM rather than backing off
+the weight, which would take the structure with it — and any path rendering a
+weighted face must append it (both `generate_portrait` and
+`generate_gear_look` do).
+
+Honest limits, still true after all this: jaw width, face length and age now
+vary properly, but everyone remains reasonably good-looking. The style prompt
+is "graphic-novel key art" and the house LoRA is trained on D&D hero art, so a
+genuinely homely face is not reachable from the prompt alone — it would mean
+changing what the game looks like, which is a bigger decision than face
+variety.
 
 > Mean pixel difference does NOT measure facial variety: the bare and described
 > rows scored 50.20 and 59.96 while showing the same man, because the number

@@ -127,6 +127,29 @@ def _slug(race: str) -> str:
     return (race or "").strip().lower().replace(" ", "-")
 
 
+#: Weight on the appearance clause. Measured on three deliberately
+#: contradictory bone structures (jowly / hawk-faced / round) at a fixed seed:
+#:
+#:   1.2   hair, colouring and age vary; bone structure still converges — all
+#:         three came back the same idealised face
+#:   1.35  structure SEPARATES: real jowls, a real hooked nose, a genuinely
+#:         round young face
+#:   1.5   slightly stronger, but the nose starts to deform outright
+#:
+#: Dropping "heroic"/"adventurer" from the PC framing was the obvious suspect
+#: and did NOTHING — tested twice, at 1.2 and again at 1.35. The weight is the
+#: whole lever, so the framing is left alone.
+APPEARANCE_WEIGHT = 1.35
+
+#: Weighting facial descriptors hard enough to shape bone structure has one
+#: side effect: "bulbous"/"snub" noses come back RED and inflamed, with
+#: flushed blotchy cheeks — a drinker's face. The cure is to veto the symptom
+#: rather than back off the weight, which would take the structure with it.
+#: Append to the negative on any render that carries a weighted face.
+FACE_NEGATIVE = ("red nose, inflamed nose, rosacea, clown nose, blotchy skin, "
+                 "flushed cheeks, sunburn, broken capillaries")
+
+
 def appearance_clause(key: str, race: str = "",
                       described: Optional[str] = None) -> str:
     """The appearance fragment for a portrait prompt, CLIP-weighted.
@@ -135,6 +158,9 @@ def appearance_clause(key: str, race: str = "",
     that have none, not to argue with someone who wrote one. Either way it is
     weighted: unweighted, an explicit "hooked broken nose, receding sandy hair"
     was measurably dropped in favour of the model's preferred handsome hero.
+
+    Anything rendering this MUST also append `FACE_NEGATIVE`, or the weight
+    that buys the bone structure also buys a red nose.
     """
     text = (described or "").strip() or roll_appearance(key, race)
-    return f"({text}:1.2)" if text else ""
+    return f"({text}:{APPEARANCE_WEIGHT})" if text else ""

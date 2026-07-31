@@ -42,6 +42,7 @@ from .models import (
     slugify,
     context_key,
 )
+from .appearance import FACE_NEGATIVE
 from .compress import encode_webp, make_placeholder
 from .comfy_client import ComfyClient, ImageServiceUnavailable, client_from_config
 from .prompt_build import build_prompt
@@ -626,6 +627,7 @@ class ImageStore:
         return self.ensure_image(
             ImageKind.PC, character_name,
             look=look or description, context="portrait", force_new=True,
+            negative_extra=FACE_NEGATIVE,
         )
 
     def get_portrait(self, character_name: str) -> Optional[ImageResult]:
@@ -696,6 +698,7 @@ class ImageStore:
         res = self.ensure_image(
             ImageKind.PC, character_name,
             look=look or description, context=ctx, force_new=True, seed=seed,
+            negative_extra=FACE_NEGATIVE,
         )
         # Stamp the human label as the caption so lists/switchers can name it.
         if res is not None and res.image_id and not res.offline and label:
