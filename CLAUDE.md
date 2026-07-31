@@ -205,6 +205,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   Rune Carver fighter out of the feat their own background grants. It resolves
   prerequisite feats, feat options ("Strike of the Giants (Fire Strike)"),
   backgrounds, and dragonmark exclusivity; anything it can't parse is allowed.
+- **NEVER delete `oracle.db` to wipe the world.** Use
+  `uv run python scripts/world_wipe.py` (prints a plan; `--yes` applies). One
+  database holds three lifecycles, and the file-delete cannot tell them apart:
+  world state (graph, characters, combat, bastions, economy, hazards,
+  reputation, boards) is disposable and re-seeds on boot; the `rules_*` tables
+  are NOT — only the SRD half re-downloads, while the owned-book half (khoravar,
+  kalashtar, hexblood, reborn, the shifter lineages…) has to be re-parsed from
+  the PDF library; and `entity_image` is hours of GPU art with nothing to
+  re-derive it from. The wipe script deletes rows from the world tables only,
+  and **refuses to run on a table it doesn't recognise** — classify any new
+  subsystem's table there rather than letting it guess.
 - **World persistence** = the graph, not maps. It's append-only: facts are opened/
   closed over in-world days (nothing deleted), and the DM is only ever fed the
   *relevant* subgraph via `get_world_context`, never the whole world.
