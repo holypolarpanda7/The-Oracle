@@ -129,6 +129,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   math — run it after touching `vtt/geometry.py` or `vtt/mapgen.py`)
 - Tactical board wiring smoke test: `uv run python scripts/vtt_smoke.py` (drives
   the real chat path with a stubbed LLM: fight → board → hooks → prompt → close)
+- LoRA probes (**Windows interpreter** — they talk to ComfyUI):
+  `./.venv/Scripts/python.exe scripts/style_lora_probe.py` sweeps a HOUSE-STYLE
+  LoRA over every kind it touches at several strengths from one seed;
+  `scripts/map_lora_probe.py` does the same for the `map` kind over all 21
+  archetypes. Both print a pixel-diff column — 0.00 means the LoRA did nothing.
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
   level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed)

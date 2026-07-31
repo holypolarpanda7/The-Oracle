@@ -66,5 +66,6 @@ activity-ui/arena-shots/
 activity-ui/mobile-shots/
 activity-ui/ui-shots/
 
-# Battlemap LoRA probe output (generated art, local only)
+# LoRA probe output (generated art, local only)
 map-probe/
+style-probe/
