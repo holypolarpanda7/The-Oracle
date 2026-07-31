@@ -423,19 +423,36 @@ def small_race_slugs() -> set:
 
 
 def lineages_from_db() -> List[Tuple[str, str, Dict[str, str]]]:
-    """(race_slug, lineage_slug, look) for every DB lineage we have curated art
-    for. Lineages without a look are skipped — the UI falls back to base art."""
+    """(race_slug, lineage_slug, look) for every DB lineage we have art for.
+
+    Looks come from the local override file FIRST, then the in-repo
+    ``LINEAGE_LOOKS``. That split is the whole point: ``LINEAGE_LOOKS`` carries
+    only SRD-safe descriptors and is committed, while a lineage that exists
+    solely because an owned book was ingested (the goliath giant-ancestries,
+    the tiefling legacies) gets its look from gitignored
+    ``owned_books/species_looks.json`` — same policy as every other
+    owned-content slot. Without this the art silently could not exist for them:
+    a lineage with no look is skipped and the UI falls back to base species art.
+
+    Override keys are tried QUALIFIED first (``goliath-frost``) then bare
+    (``frost``), because lineage slugs are not unique across species — the
+    dragonborn colours alone claim ``black``, ``red``, ``white``, and goliath
+    claims ``fire`` and ``stone``.
+    """
     try:
         from sqlmodel import Session, select
         from rules.query import RulesLibrary
         from rules.models import Race
         lib = RulesLibrary()
+        overrides = _load_look_overrides()
         out: List[Tuple[str, str, Dict[str, str]]] = []
         with Session(lib.engine) as s:
             for r in s.exec(select(Race)).all():
                 for lin in (getattr(r, "lineages", None) or []):
                     slug = _norm(lin.get("slug") or "")
-                    look = LINEAGE_LOOKS.get(slug)
+                    look = (overrides.get(f"{_norm(r.index_slug)}-{slug}")
+                            or overrides.get(slug)
+                            or LINEAGE_LOOKS.get(slug))
                     if slug and look:
                         out.append((r.index_slug, slug, look))
         return out
