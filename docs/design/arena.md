@@ -27,8 +27,9 @@ landing → Proving Grounds
   ② pick where you fight (land / sea / air)
   ③ pick a level (1–20) and a difficulty
   → the climb: every level-up choice from 1 to N, in the real level-up overlay
+  → the stall: a stipend for that level, spent on gear, and strapped on
   → the bout: a rostered encounter, seated on a real board, played in prose
-  → the result: again here · somewhere else · leave
+  → the result: again here · somewhere else · back to the stall · leave
 ```
 
 ## What's a slot, and what's a run
@@ -90,6 +91,46 @@ If an environment's own creatures can't fill a fight, the filter drops and the
 roster is marked `conjured`, and the framing says so out loud rather than
 pretending a shark belongs on a sand floor.
 
+## The Quartermaster
+
+A build is only half a build without the gear it's meant to be holding: a
+level-12 paladin who never bought plate is a test of the wrong character, and
+character creation grants a kit but **equips nothing**, so without a stall in
+the way a level-12 fighter walks into the sand with their chain mail still in
+the sack. So between the gate and the sand stands `arena/loadout.py`.
+
+**The stipend is the Grounds', not the world's.** Conjured coin for a conjured
+fight: it never touches the character's purse, and it's gone when the run ends.
+Level 1 is paid the class's own starting gold so a level-1 bout matches what
+creation would have given you; above that, `PURSE_BY_LEVEL` is the Grounds' own
+curve, tuned so each tier can afford the kind of gear that tier is expected to
+be holding — not a table lifted out of any book.
+
+**What's on the board is gated by the level being fought at.** The gate is
+rarity (`RARITY_MIN_LEVEL`: uncommon at 2, rare at 5, very rare at 11, legendary
+at 17); an artifact is never for sale. The catalog rarely prices magic at all,
+so `MAGIC_PRICE_BY_RARITY` is the stall's own conjuring fee — a practice mode
+that can't sell a Cloak of Protection can't test a build that has one. Mundane
+gear is priced from `rules_item` itself, and anything unpriced is never
+silently given away.
+
+**The client asks; the server prices.** `price_cart` is the only thing that
+decides what was actually bought: an item that isn't on the board, a cart bigger
+than the purse, or a fourth attunement is dropped **with a reason** rather than
+granted, because a loadout the client invented would test a character that can't
+exist.
+
+**Re-outfitting is a clean slate.** Everything the stall sold is flagged in the
+inventory, so walking back to it takes the whole loadout back and hands the
+whole stipend over again — the character's own kit is never touched. Between
+bouts the loadout persists; the result overlay's "back to the stall" reopens it.
+
+The stall is also where gear gets **worn**: bought armour and weapons default to
+equipped, anything wanting attunement is attuned up to the limit of three, and
+the fighter's existing pack is listed with the same toggles. All of it runs
+through the same inventory flags the live sheet uses, so `_compute_ac` and the
+DM's equipment guardrails see exactly what a real table would.
+
 ## What the DM is and isn't told
 
 A bout injects `# THE PROVING GROUNDS` into the prompt in place of the world
@@ -115,10 +156,11 @@ The board stays up as an aftermath until the next one replaces it.
 | piece | where |
 | --- | --- |
 | catalog + roster building | `arena/` |
+| stipend curve, stall stock, cart pricing | `arena/loadout.py` |
 | board medium (`swim`/`fly`) | `vtt/mapgen.py`, `vtt/terrain.py` (`^` open sky), `vtt/scene.py` |
-| slots, runs, bouts, outcomes | `_arena_*` in `oracle-dm-backend/fastapi-dm.py` |
-| socket protocol | `arena_state` / `arena_create` / `arena_delete` / `arena_begin` / `arena_fight` / `arena_leave` → `{t:"arena", state}` |
-| the screens | `activity-ui/src/components/Arena.tsx` |
+| slots, runs, bouts, outcomes, the stall | `_arena_*` in `oracle-dm-backend/fastapi-dm.py` |
+| socket protocol | `arena_state` / `arena_create` / `arena_delete` / `arena_begin` / `arena_shop` / `arena_outfit` / `arena_fight` / `arena_leave` → `{t:"arena", state}` (the stall's board rides on `state.shop`, only while it's open) |
+| the screens | `activity-ui/src/components/Arena.tsx` (`Arena`, `Quartermaster`, `ArenaResult`) |
 
 ## Checking it
 

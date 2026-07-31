@@ -113,6 +113,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    exercise CC + level-up + combat/VTT on purpose. See `docs/design/arena.md`.
    - `environments.py` — the catalog (slug → domain, mapgen archetype, medium).
    - `encounters.py` — XP-budgeted roster building from the rules bestiary.
+   - `loadout.py` — the **Quartermaster**: a conjured stipend scaled to the
+     level being fought at, stall stock gated by rarity, and cart pricing. The
+     server prices the cart, never the client; re-outfitting refunds in full.
    - Wiring lives in `_arena_*` in the backend; the screens in `Arena.tsx`.
 
 ## Running
