@@ -83,6 +83,48 @@ def _seed_bestiary(m) -> None:
     m._ARENA_CARDS = []                    # force a reload of the bestiary
 
 
+def _seed_stall(m) -> None:
+    """A handful of priced items for the Quartermaster to sell."""
+    from sqlmodel import Session
+
+    from rules.models import Item
+
+    rows = [
+        # mundane gear the stall prices from the catalog itself
+        dict(index_slug="smoke-chain-mail", name="Smoke Chain Mail",
+             category="armor", item_type="Heavy", cost_gp=75.0,
+             armor_class_base=16, armor_dex_bonus=False),
+        dict(index_slug="smoke-shield", name="Smoke Shield", category="armor",
+             item_type="Shield", cost_gp=10.0, armor_class_base=2),
+        dict(index_slug="smoke-rope", name="Smoke Rope",
+             category="adventuring-gear", item_type="Standard Gear", cost_gp=1.0),
+        dict(index_slug="smoke-unpriced", name="Smoke Curio",
+             category="adventuring-gear", item_type="Standard Gear"),
+        # magic, priced by the Grounds' own fee and gated by rarity
+        dict(index_slug="smoke-cloak", name="Smoke Cloak of Protection",
+             category="magic-item", item_type="Wondrous Item", rarity="uncommon",
+             requires_attunement=True, desc="+1 to AC and saving throws."),
+        dict(index_slug="smoke-ring", name="Smoke Ring of Protection",
+             category="magic-item", item_type="Ring", rarity="rare",
+             requires_attunement=True, desc="+1 to AC and saving throws."),
+        dict(index_slug="smoke-band", name="Smoke Band of Protection",
+             category="magic-item", item_type="Ring", rarity="rare",
+             requires_attunement=True, desc="+1 to AC and saving throws."),
+        dict(index_slug="smoke-crown", name="Smoke Crown", category="magic-item",
+             item_type="Wondrous Item", rarity="legendary",
+             requires_attunement=True, desc="A crown of the old kings."),
+        dict(index_slug="smoke-relic", name="Smoke Relic", category="magic-item",
+             item_type="Wondrous Item", rarity="artifact",
+             desc="Never for sale at any price."),
+    ]
+    with Session(m.engine) as s:
+        for row in rows:
+            s.add(Item(**row))
+        s.commit()
+    m.rules_lib.refresh_index()
+    m._ARENA_STOCK = {}                    # force a reload of the stall
+
+
 def _run_socket(m, *, channel: str, user_id: str, script: list[dict]) -> list[dict]:
     """Play a scripted client against the real Activity WebSocket handler.
 
@@ -133,6 +175,7 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
     from rules.ingest import seed_classes_and_subclasses
     seed_classes_and_subclasses(engine=m.engine)
     _seed_bestiary(m)
+    _seed_stall(m)
 
     user_id = "arena-smoke-user"
     channel = "smoke-channel"
@@ -232,8 +275,8 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
     check("its hit points grew with it", run_hp > 10, f"{run_hp} HP")
     check("the saved character is still level 1", saved_level == 1)
 
-    # ---- 3. a bout seats a rostered fight on the chosen board -----------
-    print("\n\033[1m3. a bout: roster, initiative, and a board of the right place\033[0m")
+    # ---- 3. the Quartermaster: a stipend, a stall, and what gets strapped on ----
+    print("\n\033[1m3. the Quartermaster stands between the gate and the sand\033[0m")
     session_id = m._arena_session_id(channel, user_id)
     m._set_session_meta(session_id, {
         "user_id": user_id, "character_id": run_char.id,
@@ -242,8 +285,119 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
                               "character_name": run_char.name}},
         "arena": {"slot": 1, "character_id": run_char.id, "target_level": target,
                   "environment": "training-yard", "difficulty": "medium",
-                  "phase": "leveling", "fights": 0, "wins": 0},
+                  "phase": "leveling", "fights": 0, "wins": 0,
+                  "cart": [], "spent": 0.0},
     })
+    from arena import loadout as _loadout
+
+    check("the stipend grows with the level fought at",
+          _loadout.purse_for(2) < _loadout.purse_for(11) < _loadout.purse_for(20))
+    check("level 1 is paid what creation would have paid",
+          _loadout.purse_for(1, class_gold=125) == 125)
+
+    m._arena_open_stall(session_id)
+    check("the stall opens as its own phase",
+          m._arena_run(session_id).get("phase") == "outfitting")
+    shop = m._arena_state(user_id, session_id).get("shop") or {}
+    stock_names = {i["name"] for i in shop.get("items") or []}
+    check("the state carries the board while it is open", bool(stock_names))
+    check("with a purse for this level",
+          shop.get("purse") == _loadout.purse_for(target), str(shop.get("purse")))
+    check("mundane gear is priced from the catalog",
+          any(i["name"] == "Smoke Chain Mail" and i["cost_gp"] == 75.0
+              for i in shop["items"]))
+    check("magic is priced by the Grounds' own fee",
+          any(i["name"] == "Smoke Cloak of Protection"
+              and i["cost_gp"] == _loadout.MAGIC_PRICE_BY_RARITY["uncommon"]
+              for i in shop["items"]))
+    check("rarity is gated by the level being fought at",
+          "Smoke Ring of Protection" not in stock_names
+          and "Smoke Crown" not in stock_names, str(sorted(stock_names)))
+    check("an artifact is never for sale", "Smoke Relic" not in stock_names)
+    check("and unpriced gear is never silently free",
+          "Smoke Curio" not in stock_names)
+    check("what the fighter already owns is offered to strap on",
+          any(p["name"] for p in shop.get("pack") or []),
+          str([p["name"] for p in shop.get("pack") or []]))
+
+    with Session(m.engine) as s:
+        ch = s.get(m.Character, run_char.id)
+        ac_before = m._compute_ac(ch)
+        kit_names = {i["name"] for i in m._inventory_items(ch)}
+    res = m._arena_apply_loadout(session_id, [
+        {"slug": "smoke-chain-mail", "name": "Smoke Chain Mail",
+         "quantity": 1, "equipped": True},
+        {"slug": "smoke-shield", "name": "Smoke Shield",
+         "quantity": 1, "equipped": True},
+        {"slug": "smoke-rope", "name": "Smoke Rope", "quantity": 2},
+        {"slug": "smoke-crown", "name": "Smoke Crown",   # gated out at level 4
+         "quantity": 1},
+    ], [])
+    check("the loadout applied", res.get("ok"), str(res.get("reason")))
+    check("the cart is priced by the server",
+          res.get("spent") == 75.0 + 10.0 + 2.0, str(res.get("spent")))
+    check("and what the level can't buy is refused, not granted",
+          any("Smoke Crown" in r for r in res.get("rejected") or []),
+          str(res.get("rejected")))
+    with Session(m.engine) as s:
+        ch = s.get(m.Character, run_char.id)
+        inv = {i["name"]: i for i in m._inventory_items(ch)}
+        ac_after = m._compute_ac(ch)
+    check("the gear is in the pack", "Smoke Chain Mail" in inv and "Smoke Rope" in inv)
+    check("quantities carry", inv.get("Smoke Rope", {}).get("quantity") == 2)
+    check("worn gear is worn", inv.get("Smoke Chain Mail", {}).get("equipped") is True)
+    check("and the armor actually changes the fighter's AC",
+          ac_after > ac_before, f"{ac_before} → {ac_after}")
+
+    # Re-outfitting is a clean slate: the conjured coin was never real, so the
+    # whole stipend is there again — a level-4 purse buys the uncommon cloak
+    # only if the plate goes back on the shelf.
+    res2 = m._arena_apply_loadout(session_id, [
+        {"slug": "smoke-cloak", "name": "Smoke Cloak of Protection",
+         "quantity": 1, "attuned": True},
+    ], [])
+    with Session(m.engine) as s:
+        ch = s.get(m.Character, run_char.id)
+        inv2 = {i["name"]: i for i in m._inventory_items(ch)}
+    check("re-outfitting takes the last loadout back",
+          "Smoke Chain Mail" not in inv2 and "Smoke Cloak of Protection" in inv2,
+          str(sorted(inv2)))
+    check("and refunds it in full — the whole purse is there again",
+          res2.get("spent") == 600.0 == float(shop["purse"]), str(res2.get("spent")))
+    check("attuned gear is attuned",
+          inv2.get("Smoke Cloak of Protection", {}).get("attuned") is True)
+    check("the fighter's own kit is never taken back",
+          kit_names <= set(inv2), str(sorted(kit_names - set(inv2))))
+
+    # The attunement limit is the rules' limit, not a suggestion.
+    stock20 = m._arena_stock(20)
+    priced = _loadout.price_cart(
+        [{"slug": "smoke-cloak", "attuned": True},
+         {"slug": "smoke-ring", "attuned": True},
+         {"slug": "smoke-band", "attuned": True},
+         {"slug": "smoke-crown", "attuned": True}],
+        stock20, 200000)
+    check("no one attunes to more than three things",
+          sum(1 for ln in priced.lines if ln["attuned"]) == _loadout.ATTUNEMENT_LIMIT,
+          str([(ln["name"], ln["attuned"]) for ln in priced.lines]))
+    check("but the fourth is still bought, just not attuned",
+          len(priced.lines) == 4)
+    broke = _loadout.price_cart([{"slug": "smoke-crown", "quantity": 1}],
+                                stock20, 100)
+    check("a cart bigger than the purse is clamped, not honoured",
+          not broke.lines and broke.rejected)
+    unknown = _loadout.price_cart([{"name": "A Sword Of My Own Invention"}],
+                                  stock20, 100)
+    check("and an item the stall never stocked is refused",
+          not unknown.lines and unknown.rejected)
+
+    # Put the fighter back in fighting shape for the bouts below.
+    m._arena_apply_loadout(session_id, [
+        {"slug": "smoke-chain-mail", "quantity": 1, "equipped": True},
+    ], [])
+
+    # ---- 4. a bout seats a rostered fight on the chosen board -----------
+    print("\n\033[1m4. a bout: roster, initiative, and a board of the right place\033[0m")
     res = m._arena_open_fight(session_id, user_id)
     check("the bout opened", res.get("ok"), str(res.get("reason")))
     enc = m.combat.get_active(session_id)
@@ -260,8 +414,8 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
     check("everyone on the board has a token",
           scene is not None and len(m.vtt_engine.tokens(scene.id)) == len(order))
 
-    # ---- 4. the DM is told where it is ---------------------------------
-    print("\n\033[1m4. the DM prompt knows this is the Grounds\033[0m")
+    # ---- 5. the DM is told where it is ---------------------------------
+    print("\n\033[1m5. the DM prompt knows this is the Grounds\033[0m")
     scripted: list[str] = []
 
     def fake_dm(messages):
@@ -292,8 +446,8 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
     check("and nothing is written back to the world", not extractions,
           f"{len(extractions)} extraction(s)")
 
-    # ---- 5. victory is called by the Grounds, not the narration ---------
-    print("\n\033[1m5. the bout ends when one side is down\033[0m")
+    # ---- 6. victory is called by the Grounds, not the narration ---------
+    print("\n\033[1m6. the bout ends when one side is down\033[0m")
     check("mid-fight there is no result", m._arena_outcome(session_id) is None)
     for c in m.combat.order(enc.id):
         if c.kind != "pc":
@@ -310,8 +464,8 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
         check("the fighter is whole again", ch.current_hp == ch.max_hp,
               f"{ch.current_hp}/{ch.max_hp}")
 
-    # ---- 6. another bout, somewhere else, and defeat --------------------
-    print("\n\033[1m6. the next bout can be somewhere else entirely\033[0m")
+    # ---- 7. another bout, somewhere else, and defeat --------------------
+    print("\n\033[1m7. the next bout can be somewhere else entirely\033[0m")
     res = m._arena_open_fight(session_id, user_id, environment="coral-reef",
                               difficulty="hard")
     check("a sea bout opened", res.get("ok"), str(res.get("reason")))
@@ -351,8 +505,8 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
               ch.current_hp == ch.max_hp and ch.level == target)
     check("the loss did not count as a win", m._arena_run(session_id)["wins"] == 1)
 
-    # ---- 7. a sky bout flies -------------------------------------------
-    print("\n\033[1m7. a bout in open air\033[0m")
+    # ---- 8. a sky bout flies -------------------------------------------
+    print("\n\033[1m8. a bout in open air\033[0m")
     res = m._arena_open_fight(session_id, user_id, environment="sky-islands",
                               difficulty="easy")
     check("a sky bout opened", res.get("ok"), str(res.get("reason")))
@@ -365,17 +519,17 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
         check("the fighter can actually move up there",
               len(opts.get("squares") or []) > 0)
 
-    # ---- 8. walking out leaves nothing running -------------------------
-    print("\n\033[1m8. leaving the Grounds\033[0m")
+    # ---- 9. walking out leaves nothing running -------------------------
+    print("\n\033[1m9. leaving the Grounds\033[0m")
     m._arena_leave(session_id)
     check("no board is out", m.vtt_engine.active_scene(session_id) is None)
     check("no fight is running", m.combat.get_active(session_id) is None)
     check("the world never heard about any of it", not extractions)
 
-    # ---- 9. the same thing over the Activity's own socket ---------------
+    # ---- 10. the same thing over the Activity's own socket ---------------
     # Everything above drives the engine directly. This drives the WebSocket
     # handler the browser talks to, so the glue is proven too.
-    print("\n\033[1m9. over the Activity socket, as the client speaks it\033[0m")
+    print("\n\033[1m10. over the Activity socket, as the client speaks it\033[0m")
     sent = _run_socket(m, channel="ws-smoke", user_id=user_id, script=[
         {"t": "arena_state"},
         {"t": "arena_create", "slot": 3, "payload": {
@@ -386,6 +540,9 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
         {"t": "arena_begin", "slot": 3, "environment": "ship-deck",
          "level": 2, "difficulty": "easy"},
         {"t": "levelup_apply"},
+        {"t": "arena_outfit",
+         "cart": [{"slug": "smoke-shield", "quantity": 1, "equipped": True}],
+         "equip": []},
         {"t": "arena_leave"},
     ])
     kinds = [e["t"] for e in sent]
@@ -400,10 +557,19 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
     levelups = [e for e in sent if e["t"] == "levelup"]
     check("the level-up overlay is pushed for the climb",
           any(e.get("data") for e in levelups), str(len(levelups)))
-    check("the last level-up opens the bout by itself",
+    check("the last level-up opens the stall, not the gate",
+          any(e["t"] == "narration" and "Quartermaster" in (e.get("text") or "")
+              for e in sent),
+          str([e.get("text", "")[:40] for e in sent if e["t"] == "narration"]))
+    check("and the stall's board rides along with the state",
+          any((a.get("shop") or {}).get("items") for a in arenas))
+    check("outfitting opens the bout",
           any(e["t"] == "narration" and "wards close" in (e.get("text") or "")
               for e in sent),
           str([e.get("text", "")[:40] for e in sent if e["t"] == "narration"]))
+    check("carrying what was bought into it",
+          any(e["t"] == "narration" and "Smoke Shield" in (e.get("text") or "")
+              for e in sent))
     check("the board is pushed to the client",
           any(e["t"] == "vtt" and e.get("scene") for e in sent))
     check("and the initiative order with it",

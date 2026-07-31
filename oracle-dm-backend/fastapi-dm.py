@@ -92,12 +92,17 @@ from games import (
 import pvp as ipvp
 import revival as irevival
 from arena import (
+    ATTUNEMENT_LIMIT as ARENA_ATTUNEMENT_LIMIT,
     DIFFICULTIES as ARENA_DIFFICULTIES,
     MAX_SLOTS as ARENA_MAX_SLOTS,
     build_roster as arena_build_roster,
+    build_stock as arena_build_stock,
     environment_payload as arena_environment_payload,
+    equippable_name as arena_equippable_name,
     get_environment as arena_get_environment,
     load_cards as arena_load_cards,
+    price_cart as arena_price_cart,
+    purse_for as arena_purse_for,
     sibling_environments as arena_siblings,
 )
 from bastion import (
@@ -15990,7 +15995,7 @@ def _arena_slots(user_id: str) -> list[dict]:
 def _arena_state(user_id: str, session_id: Optional[str] = None) -> dict:
     """Everything the Grounds screen draws."""
     run = _arena_run(session_id)
-    return {
+    state = {
         "slots": _arena_slots(user_id),
         "environments": arena_environment_payload(),
         "difficulties": list(ARENA_DIFFICULTIES),
@@ -15998,6 +16003,15 @@ def _arena_state(user_id: str, session_id: Optional[str] = None) -> dict:
         "max_slots": ARENA_MAX_SLOTS,
         "run": run or None,
     }
+    # The Quartermaster's stall — only while it is open. It carries the whole
+    # catalog, so it is never sent to a client that is mid-fight.
+    if run.get("phase") == "outfitting":
+        try:
+            state["shop"] = _arena_shop_payload(run)
+        except Exception as e:
+            print(f"[arena] building the stall failed: {e}")
+            state["shop"] = None
+    return state
 
 
 def _arena_clear_slot(user_id: str, slot: int, *, include_run: bool = True) -> None:
@@ -16069,6 +16083,198 @@ def _arena_restore(char_id: int) -> None:
         char.updated_at = _utcnow()
         s.add(char)
         s.commit()
+
+
+# ---- the Quartermaster: a stipend, a stall, and a chance to strap it on ----
+# A build is only half a build without the gear it is meant to be holding, so
+# before the wards close the Grounds hand out conjured coin scaled to the level
+# being fought at (arena/loadout.py owns the curve and the prices). The stipend
+# never touches the character's own purse — it is spent, and then it is gone.
+
+_ARENA_STOCK: Dict[int, list] = {}
+
+
+def _arena_stock(level: int) -> list:
+    """What the stall sells at this level, built once per level and kept."""
+    lv = max(1, min(20, int(level or 1)))
+    if lv not in _ARENA_STOCK:
+        try:
+            with Session(rules_lib.engine) as s:
+                _ARENA_STOCK[lv] = arena_build_stock(s, lv)
+        except Exception as e:
+            print(f"[arena] building the stall's stock failed: {e}")
+            _ARENA_STOCK[lv] = []
+    return _ARENA_STOCK[lv]
+
+
+def _arena_purse(char: Character) -> int:
+    """The stipend for this fighter — level 1 matches what creation would give."""
+    return arena_purse_for(char.level,
+                           class_gold=_starting_gold_for(char.char_class))
+
+
+def _arena_pack_row(it: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """One line of gear the fighter already owns, if it can be worn or wielded.
+
+    Character creation grants a kit but equips nothing, so a level-12 fighter
+    can easily be standing in the sand with their chain mail still in the sack.
+    The stall is where that gets fixed.
+    """
+    name = str(it.get("name") or "")
+    if not name:
+        return None
+    try:
+        row = rules_lib.get_item(name)
+    except Exception:
+        row = None
+    attunement = bool(getattr(row, "requires_attunement", False)) if row else False
+    # A kit item or a book weapon the catalog never heard of still hangs off a
+    # body, so the name is asked when the row can't answer.
+    if (_item_family(row, name) != "wearable" and not attunement
+            and not (row is None and arena_equippable_name(name))):
+        return None
+    return {"name": name, "quantity": int(it.get("quantity", 1) or 1),
+            "equipped": bool(it.get("equipped")),
+            "attuned": bool(it.get("attuned")),
+            "attunement": attunement,
+            "rarity": getattr(row, "rarity", None) if row else None}
+
+
+def _arena_shop_payload(run: dict) -> Optional[dict]:
+    """The Quartermaster's board: the stipend, the stall, the cart, the pack."""
+    char_id = run.get("character_id")
+    if not char_id:
+        return None
+    with Session(engine) as s:
+        char = s.get(Character, int(char_id))
+        if char is None:
+            return None
+        purse = _arena_purse(char)
+        pack = [r for r in (_arena_pack_row(it)
+                            for it in _inventory_items(char)
+                            if not it.get("arena")) if r]
+        attuned = _attuned_count(char)
+    cart = list(run.get("cart") or [])
+    spent = float(run.get("spent") or 0.0)
+    return {
+        "level": run.get("target_level"),
+        "purse": purse,
+        "spent": round(spent, 2),
+        "remaining": round(purse - spent, 2),
+        "attunement_limit": ARENA_ATTUNEMENT_LIMIT,
+        "attuned": attuned,
+        "items": [i.payload() for i in _arena_stock(
+            int(run.get("target_level") or 1))],
+        "cart": cart,
+        "pack": pack,
+        "rejected": list(run.get("rejected") or []),
+    }
+
+
+def _arena_open_stall(session_id: str, *, environment: Optional[str] = None,
+                      difficulty: Optional[str] = None) -> str:
+    """Open the Quartermaster between the gate and the sand. Returns the line
+    the table is told while the stall is up."""
+    fields: Dict[str, Any] = {"phase": "outfitting"}
+    if environment and arena_get_environment(environment) is not None:
+        fields["environment"] = environment
+    if difficulty and str(difficulty).lower() in ARENA_DIFFICULTIES:
+        fields["difficulty"] = str(difficulty).lower()
+    run = _arena_set_run(session_id, **fields)
+    char_id = run.get("character_id")
+    purse = 0
+    with Session(engine) as s:
+        char = s.get(Character, int(char_id)) if char_id else None
+        if char is not None:
+            purse = _arena_purse(char)
+    left = round(purse - float(run.get("spent") or 0.0), 2)
+    return ("*The Quartermaster's stall stands between you and the sand. "
+            f"{left:g} gp of conjured coin is yours to spend — buy what this "
+            "build is meant to be holding, strap it on, and step through.*")
+
+
+def _arena_strip_loadout(char_id: int) -> None:
+    """Take back everything the stall ever sold this fighter.
+
+    A run copy that is fought on again ("fight on with the copy already
+    advanced") would otherwise walk into the next run still wearing the last
+    run's conjured gear while the new run's cart reads empty.
+    """
+    with Session(engine) as s:
+        char = s.get(Character, int(char_id))
+        if char is None:
+            return
+        kept = [it for it in _inventory_items(char) if not it.get("arena")]
+        if len(kept) != len(_inventory_items(char)):
+            char.inventory = kept
+            char.updated_at = _utcnow()
+            s.add(char)
+            s.commit()
+
+
+def _arena_apply_loadout(session_id: str, cart: list, equip: list) -> dict:
+    """Buy the cart and strap everything on. Server prices are authoritative.
+
+    Re-outfitting between bouts is a clean slate: everything the stall sold last
+    time is taken back (the coin was never real), so the cart the client sends
+    is always the whole loadout rather than an increment.
+    """
+    run = _arena_run(session_id)
+    char_id = run.get("character_id")
+    if not char_id:
+        return {"ok": False, "reason": "No fighter is standing in the Grounds."}
+    with Session(engine) as s:
+        char = s.get(Character, int(char_id))
+        if char is None:
+            return {"ok": False, "reason": "No fighter is standing in the Grounds."}
+        purse = _arena_purse(char)
+        stock = _arena_stock(char.level)
+
+        # Anything the stall sold for the last bout goes back on the shelf.
+        kept = [it for it in _inventory_items(char) if not it.get("arena")]
+
+        # Strapping on what they already own comes first: it decides how much
+        # attunement is left for anything bought.
+        wanted = {_normalize_item_name(str(e.get("name") or "")): e
+                  for e in (equip or []) if isinstance(e, dict)}
+        attuned_already = 0
+        for it in kept:
+            want = wanted.get(_normalize_item_name(str(it.get("name") or "")))
+            if want is None:
+                attuned_already += 1 if it.get("attuned") else 0
+                continue
+            row = _arena_pack_row(it)
+            if row is None:
+                continue
+            it["equipped"] = bool(want.get("equipped"))
+            it["attuned"] = bool(want.get("attuned")) and row["attunement"]
+            if it["attuned"] and attuned_already >= ARENA_ATTUNEMENT_LIMIT:
+                it["attuned"] = False
+            attuned_already += 1 if it["attuned"] else 0
+
+        priced = arena_price_cart(cart or [], stock, purse,
+                                  attuned_already=attuned_already)
+
+        bought: List[Dict[str, Any]] = []
+        for line in priced.lines:
+            entry: Dict[str, Any] = {"name": line["name"],
+                                     "quantity": line["quantity"], "arena": True}
+            if line.get("equipped"):
+                entry["equipped"] = True
+            if line.get("attuned"):
+                entry["attuned"] = True
+            # Kept separate from an identically named kit item on purpose: the
+            # bought one is flagged, so the next re-outfit takes back exactly
+            # what the stall sold and never the character's own gear.
+            bought.append(entry)
+        char.inventory = kept + bought
+        char.updated_at = _utcnow()
+        s.add(char)
+        s.commit()
+
+    _arena_set_run(session_id, cart=priced.lines, spent=priced.spent,
+                   purse=priced.purse, rejected=priced.rejected)
+    return {"ok": True, **priced.payload()}
 
 
 def _arena_guide(run: dict) -> str:
@@ -16433,9 +16639,13 @@ async def activity_ws(ws: WebSocket, channel: str):
                         "arena": {"slot": slot, "character_id": char.id,
                                   "target_level": target, "environment": env_slug,
                                   "difficulty": tier, "phase": "leveling",
-                                  "fights": 0, "wins": 0},
+                                  "fights": 0, "wins": 0,
+                                  "cart": [], "spent": 0.0},
                     })
                     _arena_restore(char.id)
+                    # A copy being fought on again keeps its own gear, never the
+                    # last run's conjured loadout.
+                    _arena_strip_loadout(char.id)
                     await ws.send_json({"t": "entered", "resumed": False,
                                         "arena": True})
                     if char.level < target:
@@ -16450,19 +16660,64 @@ async def activity_ws(ws: WebSocket, channel: str):
                                      f"{target}. Choose what they become.*")},
                             fallback=ws)
                     else:
-                        res = _arena_open_fight(session_id, user_id)
-                        if not res.get("ok"):
-                            await ws.send_json({"t": "narration",
-                                                "text": f"⚠ {res.get('reason')}"})
-                        else:
-                            await ws.send_json({"t": "narration",
-                                                "text": res["text"]})
+                        await ws.send_json({
+                            "t": "narration",
+                            "text": _arena_open_stall(session_id)})
                     await send_state()
                     await send_arena()
                     continue
 
                 # Everything below acts on a bout already under way.
                 if session_id is None or not _arena_run(session_id):
+                    await send_arena()
+                    continue
+
+                # ---- the Quartermaster ----
+                if kind == "arena_shop":
+                    # Re-opening the stall between bouts: same stipend, and the
+                    # cart is refunded in full when the next loadout is applied.
+                    await ws.send_json({
+                        "t": "narration",
+                        "text": _arena_open_stall(
+                            session_id,
+                            environment=msg.get("environment") or None,
+                            difficulty=msg.get("difficulty") or None)})
+                    await send_arena()
+                    continue
+
+                if kind == "arena_outfit":
+                    # Only ever from the stall: a stale client must not be able
+                    # to re-kit and restart a bout that is already being fought.
+                    if _arena_run(session_id).get("phase") != "outfitting":
+                        await send_arena()
+                        continue
+                    res = _arena_apply_loadout(
+                        session_id, msg.get("cart") or [], msg.get("equip") or [])
+                    if not res.get("ok"):
+                        await ws.send_json({"t": "narration",
+                                            "text": f"⚠ {res.get('reason')}"})
+                        await send_arena()
+                        continue
+                    bought = [f"{ln['name']}"
+                              + (f" ×{ln['quantity']}" if ln["quantity"] > 1 else "")
+                              for ln in res.get("lines") or []]
+                    note = (f"*You leave the stall carrying {', '.join(bought)} — "
+                            f"{res.get('remaining', 0):g} gp unspent.*"
+                            if bought else
+                            "*You take nothing from the stall and step through as "
+                            "you are.*")
+                    await ws.send_json({"t": "narration", "text": note})
+                    for reason in (res.get("rejected") or [])[:4]:
+                        await ws.send_json({"t": "narration", "text": f"⚠ {reason}"})
+                    sheet = _activity_sheet(session_id, user_id)
+                    if sheet:
+                        await ws.send_json({"t": "sheet", "sheet": sheet})
+                    fight = _arena_open_fight(session_id, user_id)
+                    await ws.send_json({
+                        "t": "narration",
+                        "text": (fight["text"] if fight.get("ok")
+                                 else f"⚠ {fight.get('reason')}")})
+                    await send_state()
                     await send_arena()
                     continue
 
@@ -16676,7 +16931,7 @@ async def activity_ws(ws: WebSocket, channel: str):
                     if sheet:
                         await ws.send_json({"t": "sheet", "sheet": sheet})
                     # In the Proving Grounds the climb continues until the
-                    # chosen level, then the bout opens by itself.
+                    # chosen level, and then the Quartermaster's stall opens.
                     run = _arena_run(session_id)
                     if run.get("phase") == "leveling":
                         target = int(run.get("target_level") or 1)
@@ -16691,11 +16946,9 @@ async def activity_ws(ws: WebSocket, channel: str):
                             await send_levelup()
                         else:
                             _arena_restore(char_id)
-                            res = _arena_open_fight(session_id, user_id)
                             await ws.send_json({
                                 "t": "narration",
-                                "text": (res["text"] if res.get("ok")
-                                         else f"⚠ {res.get('reason')}")})
+                                "text": _arena_open_stall(session_id)})
                             await send_state()
                             await ws.send_json({
                                 "t": "arena",
