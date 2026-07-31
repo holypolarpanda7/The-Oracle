@@ -429,6 +429,12 @@ def _load_look_overrides() -> Dict[str, Dict[str, str]]:
 LORA_TRIGGERS = {
     "dd_painterly_clean": "d&d painterly",
     "sdxl-battlemaps": "battlemap",
+    # DarkFanXLGrain captions its 198 images with two tags, and we want only
+    # one of them: "dark fantasy art style" (99) is the look; "grainy texture"
+    # (86) is film grain, which fights the "Clean" in the house LoRA and turns
+    # to plain noise at the 6x downscale a CC card does. Firing half a LoRA on
+    # purpose - name the half you want.
+    "darkfanxlgrain": "dark fantasy art style",
 }
 
 

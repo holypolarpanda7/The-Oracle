@@ -52,6 +52,12 @@
           "model": 0.45,
           "clip": 0.45,
           "trigger": "d&d painterly"
+        },
+        {
+          "name": "DarkFanXLGrain.safetensors",
+          "model": 0.2,
+          "clip": 0.2,
+          "trigger": "dark fantasy art style"
         }
       ]
     }

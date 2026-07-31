@@ -287,6 +287,12 @@ class ImageryConfig:
     # which is what four rounds of species-prompt surgery were really fighting.
     # Resist the urge to vary style per mood; that just makes it look like
     # several games.
+    #
+    # STACKING is how a second style is added — on top of the house LoRA at a
+    # low strength, never instead of it. Live stack: DD_Painterly_Clean @0.45
+    # (the look) + DarkFanXLGrain @0.20 (grit on top). Sweep any candidate with
+    # scripts/style_lora_probe.py and judge it on the BRIGHT rows: a dark style
+    # flatters a crypt no matter how badly it ruins a sunlit village.
     loras: List[Dict[str, Any]] = field(default_factory=list)
     # `loras_by_kind` overrides the house style for a specific ImageKind, and
     # exists for kinds whose JOB is different, not whose mood is. In practice

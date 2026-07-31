@@ -129,7 +129,9 @@ uv run python -m imagery.species_portraits --lineages --kin --force --species gn
 
 ## LoRA — and which situation gets which
 
-Wired but **nothing installed** (`ComfyUI/models/loras/` is empty).
+Three installed: `DD_Painterly_Clean` + `DarkFanXLGrain` as the house stack,
+`SDXL-Battlemaps` for the `map` kind. Each has a probe and a measured strength
+below — none of them was chosen by looking at one render.
 
 The tempting idea is a different LoRA per situation. Mostly resist it. There
 are two kinds of LoRA and they answer different questions:
@@ -269,12 +271,74 @@ safetensors metadata records the training captions:
 * `SDXL-Battlemaps` -> **"battlemap"**, which opens every one of its captions.
   This one was already firing by luck: `_KIND_FRAMING[MAP]` happens to contain
   the word. Now it is explicit rather than accidental.
+* `DarkFanXLGrain` -> two tags, and we deliberately fire only ONE. Its 198
+  captions carry **"dark fantasy art style"** (99) *and* **"grainy texture"**
+  (86). The first is the look we want; the second is film grain, which fights
+  the "Clean" in the house LoRA and degrades to plain noise at the ~6x
+  downscale a CC card does. A LoRA's tags are separable — when one names a
+  quality you do not want, leave it out of the trigger rather than paying for
+  it and then negating it.
 
-**Installed house style: `DD_Painterly_Clean` at 0.45.** Warmer, better-painted
-armour and skin, more D&D-book than the bare checkpoint — and gentle enough
-that it did not overrun the species descriptors (goliath stayed slate blue-grey,
-tiefling stayed purple and horned), which is exactly what a style LoRA at 1.0
-would have wrecked.
+**Installed house style: `DD_Painterly_Clean` at 0.45 + `DarkFanXLGrain` at
+0.20.** The painterly LoRA is warmer, better-painted armour and skin, more
+D&D-book than the bare checkpoint — and gentle enough that it did not overrun
+the species descriptors, which is exactly what a style LoRA at 1.0 would have
+wrecked. The dark-fantasy LoRA is stacked *on top of* it, not instead: it adds
+grit, contrast and menace without owning the look.
+
+### Judging a house-style LoRA: `scripts/style_lora_probe.py`
+
+The house style applies to `pc` `npc` `creature` `place` `item` `scene` at
+once, so a candidate that flatters a crypt and turns the starter village into a
+charnel house is a net loss. One good portrait proves nothing — the probe
+renders a fixed subject set across every kind, at every strength, from the SAME
+seed, so the sheet's columns differ only by the LoRA.
+
+```bash
+./.venv/Scripts/python.exe scripts/style_lora_probe.py --tag darkfan \
+    --lora DD_Painterly_Clean.safetensors:0.45 \
+    --sweep DarkFanXLGrain.safetensors --weight 0 --weight 0.2 --weight 0.35 --weight 0.5
+```
+
+The rows are chosen to put the failure modes on screen, not the flattering
+cases. **Judge a dark style on the BRIGHT rows** — a sunlit village square and
+a plain pair of boots are where it overreaches; the crypt will always look
+better and tells you nothing. The species rows go through the real 166-word
+portrait prompt (`build_positive`), because the descriptor-overrun failure only
+appears at that length. Renders bypass the image DB (`ImageStore._render`), so
+sweeping costs nothing but GPU time.
+
+The printed `diff` column is a gate to clear BEFORE any aesthetic call: mean
+absolute pixel difference against that row's weight-0 render. 0.00 means the
+LoRA did nothing.
+
+**Result: `DarkFanXLGrain` at 0.20.** Measured over 7 rows x 4 strengths:
+
+| strength | result |
+|---|---|
+| 0.20 | **grit, contrast and better material texture; the village stays sunlit and every descriptor survives** |
+| 0.35 | barely darker than 0.20, and the goliath's markings turn decorative (swirls) — more warpaint, not more goliath |
+| 0.50 | darker again for no gain; the same drift, further along |
+
+**Nearly the whole effect lands by 0.20.** The village square moves 46.78/255
+at 0.20 and only 49.23 at 0.50 — the last 0.30 of strength buys ~5% more
+change, all of it in the wrong direction. That is the third time this lesson
+has held here (PAG over high CFG, battlemaps at 0.5 over 0.8): past the point
+where a layer is *working*, more force sharpens the model's own preference
+rather than your instruction. Start low, and stop as soon as it fires.
+
+Where it clearly helps: the owlbear's ruff finally reads as FEATHERS rather
+than more bear fur, and the crypt gains depth. Where it must not hurt, it
+didn't: the village square keeps its blue sky and flower boxes, the boots are
+near-untouched (15.05, the lowest diff on the sheet — the mundane-item style
+override survives), and the tiefling stays purple and horned.
+
+**Unrelated finding, recorded so it is not misread as LoRA damage:** at this
+seed the goliath comes back as tanned skin with blue-grey *patches* — the
+documented pre-existing failure — at weight 0 as well as at every other
+weight. The dark-fantasy LoRA neither causes nor fixes it. PAG is confirmed on
+(3.0) during the probe, so the "solid blue-grey" result recorded above does not
+reproduce on this prompt/seed and is worth a re-measure on its own.
 
 ## Checking a LoRA before you install it
 
@@ -308,14 +372,21 @@ print(np.abs(a - b).mean())        # 0.00 => the LoRA did nothing
 
 Measured here: `DarkFanKrea2` (Flux/Krea keys) scored **0.00/255 mean diff and
 0.0% of pixels changed at BOTH 0.5 and 1.0** — pixel-identical to no LoRA. A
-working one, `DD_Painterly` at 1.0, scored 63.65/255 and 94.9%. Anything parked
-under `ComfyUI/models/_loras-wrong-architecture/` failed this test, and that
-folder's README records the numbers.
+working one, `DD_Painterly` at 1.0, scored 63.65/255 and 94.9%. The file has
+since been deleted rather than parked: a dud LoRA on disk is 230 MB of
+temptation to re-test something already measured. The numbers are the artifact
+worth keeping, not the weights.
+
+The dark-fantasy slot was refilled by a LoRA that PASSES this check —
+`DarkFanXLGrain` has `lora_te1_*`, `lora_te2_*` and `lora_unet_*` keys with
+`ss_base_model_version: sdxl_base_v0-9`, and moved 15-49/255 across the probe
+sheet. Check the header BEFORE the download finishes being interesting:
+"dark fantasy SDXL LoRA" described both files equally well, and only one of
+them was one.
 
 Pony and Illustrious are SDXL-architecture and WILL load on Juggernaut, but are
 tuned for different conditioning; a Pony variant properly belongs on the
-`checkpoint_mature` path, which is Pony. Anything parked under
-`ComfyUI/models/_loras-wrong-architecture/` failed this check.
+`checkpoint_mature` path, which is Pony.
 
 ### Two cautions
 * LoRAs are trained against a checkpoint family. One trained on SDXL/Juggernaut
