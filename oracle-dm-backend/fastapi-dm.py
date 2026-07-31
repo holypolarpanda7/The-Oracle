@@ -154,7 +154,7 @@ from dm_guide import (
     build_encounter,
 )
 from imagery import ImageStore, ImageResult
-from imagery.appearance import appearance_clause
+from imagery.appearance import appearance_prompt, BEAUTY_BANDS
 from vtt import VttEngine
 from vtt import bridge as vtt_bridge
 from vtt.triggers import should_open_scene as vtt_should_open
@@ -302,6 +302,8 @@ async def lifespan(app: FastAPI):
                     ("exhaustion", "INTEGER DEFAULT 0"),
                     ("creature_type", "TEXT DEFAULT 'Humanoid'"),
                     ("immunities", "JSON"),
+                    # How good-looking, as a player CHOICE. NULL = roll one.
+                    ("beauty", "TEXT"),
                     ("rations", "INTEGER DEFAULT 0"),
                     ("water", "INTEGER DEFAULT 0"),
                     ("days_without_food", "INTEGER DEFAULT 0"),
@@ -1044,6 +1046,11 @@ class Character(SQLModel, table=True):
     # every later render, so a re-geared look is the same person in new armour
     # rather than a fresh roll of the dice.
     appearance: Optional[str] = Field(default=None, sa_column=Column(String))
+    # How good-looking, chosen by the PLAYER: one of imagery.appearance's
+    # BEAUTY_BANDS. Left NULL a band is rolled, so a table gets a spread rather
+    # than a cast of models — but nobody is stuck with the house's idea of a
+    # pretty face.
+    beauty: Optional[str] = Field(default=None, sa_column=Column(String))
     # Diffusion seed of the base portrait. Re-used by gear looks so the face
     # carries over instead of drifting between variants.
     portrait_seed: Optional[int] = Field(default=None, sa_column=Column(Integer))
@@ -9001,13 +9008,24 @@ def _portrait_base_look(char: Character) -> str:
         if char.subclass:
             cls = f"{char.subclass} {cls}"
         parts.append(cls)
-    # id over name: a rename must not change someone's face.
-    key = str(getattr(char, "id", None) or char.name or "")
-    face = appearance_clause(key, race=str(char.race or ""),
-                             described=getattr(char, "appearance", None))
+    face, _neg = _portrait_face(char)
     if face:
         parts.append(face)
     return ", ".join(p for p in parts if p)
+
+
+def _portrait_face(char: Character) -> tuple[str, str]:
+    """``(weighted appearance clause, negative extra)`` for this character.
+
+    The two halves MUST be used together: the comeliness band picks its own
+    negative, and rendering the clause under a fixed negative would veto the
+    blotchy skin and broken veins that make a plain face plain.
+    """
+    # id over name: a rename must not change someone's face.
+    key = str(getattr(char, "id", None) or char.name or "")
+    return appearance_prompt(key, race=str(char.race or ""),
+                             described=getattr(char, "appearance", None),
+                             beauty=getattr(char, "beauty", None))
 
 
 # A character keeps ONE base portrait plus up to this many equipped-gear looks
@@ -14331,6 +14349,10 @@ class PortraitGenerateRequest(BaseModel):
     character_id: int
     description: str = ""   # free-text look ("weathered half-elf ranger, green cloak")
     look: str = ""          # optional structured appearance override
+    # How good-looking: one of BEAUTY_BANDS (striking/comely/plain/homely/
+    # weathered). The player's call, not the house style's — left unset, a band
+    # is rolled so a table isn't cast entirely out of models.
+    beauty: str = ""
 
 
 class PortraitUploadRequest(BaseModel):
@@ -14519,15 +14541,26 @@ async def character_portrait_generate(character_id: int, req: PortraitGenerateRe
         # Remember how the player described this face. Every later render —
         # gear looks especially — is built from the stored appearance, so the
         # same person comes back rather than a fresh one in the same armour.
-        if described:
-            char.appearance = described
+        band = (req.beauty or "").strip().lower()
+        if band and band not in BEAUTY_BANDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"beauty must be one of {sorted(BEAUTY_BANDS)}")
+        if described or band:
+            if described:
+                char.appearance = described
+            if band:
+                char.beauty = band
             session.add(char)
             session.commit()
             session.refresh(char)
         name = char.name
         look = _portrait_base_look(char)
+        _face, face_negative = _portrait_face(char)
     _mark_diffusion_dirty()
-    result = image_store.generate_portrait(name, description=req.description, look=look)
+    result = image_store.generate_portrait(name, description=req.description,
+                                           look=look,
+                                           negative_extra=face_negative)
     if result is None:
         raise HTTPException(status_code=503, detail="Imagery is disabled.")
     if result.offline:
@@ -14610,9 +14643,11 @@ def _do_regear(session: Session, char: Character, *,
     # variant is the same face in different gear rather than a fresh roll.
     look = ", ".join(p for p in (_portrait_base_look(char),
                                  _equipped_look(char), extra_desc) if p)
+    _face, face_negative = _portrait_face(char)
     _mark_diffusion_dirty()
     res = image_store.generate_gear_look(
-        char.name, label, look=look, seed=getattr(char, "portrait_seed", None))
+        char.name, label, look=look, seed=getattr(char, "portrait_seed", None),
+        negative_extra=face_negative)
     if res is None:
         return {"status": "disabled"}
     if res.offline:

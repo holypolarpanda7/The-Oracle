@@ -612,7 +612,8 @@ class ImageStore:
         )
 
     def generate_portrait(
-        self, character_name: str, *, description: str = "", look: str = ""
+        self, character_name: str, *, description: str = "", look: str = "",
+        negative_extra: Optional[str] = None,
     ) -> Optional[ImageResult]:
         """Render + store a portrait for a PC (single slot, replaces any prior).
 
@@ -627,7 +628,10 @@ class ImageStore:
         return self.ensure_image(
             ImageKind.PC, character_name,
             look=look or description, context="portrait", force_new=True,
-            negative_extra=FACE_NEGATIVE,
+            # The comeliness band chooses its own negative — a fixed one would
+            # veto the blotchy skin and broken veins that MAKE a plain face.
+            negative_extra=(FACE_NEGATIVE if negative_extra is None
+                            else negative_extra),
         )
 
     def get_portrait(self, character_name: str) -> Optional[ImageResult]:
@@ -679,6 +683,7 @@ class ImageStore:
     def generate_gear_look(
         self, character_name: str, label: str, *,
         look: str = "", description: str = "", seed: Optional[int] = None,
+        negative_extra: Optional[str] = None,
     ) -> Optional[ImageResult]:
         """Render + store an equipped-gear portrait variant (its own slot).
 
@@ -698,7 +703,8 @@ class ImageStore:
         res = self.ensure_image(
             ImageKind.PC, character_name,
             look=look or description, context=ctx, force_new=True, seed=seed,
-            negative_extra=FACE_NEGATIVE,
+            negative_extra=(FACE_NEGATIVE if negative_extra is None
+                            else negative_extra),
         )
         # Stamp the human label as the caption so lists/switchers can name it.
         if res is not None and res.image_id and not res.offline and label:

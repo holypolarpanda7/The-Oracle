@@ -223,12 +223,41 @@ the weight, which would take the structure with it — and any path rendering a
 weighted face must append it (both `generate_portrait` and
 `generate_gear_look` do).
 
-Honest limits, still true after all this: jaw width, face length and age now
-vary properly, but everyone remains reasonably good-looking. The style prompt
-is "graphic-novel key art" and the house LoRA is trained on D&D hero art, so a
-genuinely homely face is not reachable from the prompt alone — it would mean
-changing what the game looks like, which is a bigger decision than face
-variety.
+### Good-looking is a player CHOICE, and an adjective will not buy it
+
+Being handsome was a house default nobody picked. `BEAUTY_BANDS` makes it a
+choice — `striking` / `comely` / `plain` / `homely` / `weathered`, settable per
+character (`Character.beauty`, `POST /character/{id}/portrait/generate`), rolled
+when unset so a table gets a spread instead of a cast of models. Measured roll
+distribution: plain 38%, comely 29%, homely 20%, striking 7%, weathered 6%.
+
+**An abstract comeliness word is a no-op.** "a PLAIN ORDINARY face,
+unremarkable and forgettable, average features" — *with every beauty token
+negated* — rendered the same handsome man as "strikingly beautiful". The model
+has no visual referent for a value judgement. What worked was CONCRETE
+ANATOMY: a thick shapeless nose, a receding chin, protruding ears, crooked
+teeth, thinning hair. Every band is written as features, never as an opinion —
+the same lesson as naming the goliath's colour instead of gesturing at it.
+
+Two levers, and both are needed; each alone is about half the effect:
+
+| | result |
+|---|---|
+| abstract words + beauty negated | no change — still the handsome default |
+| concrete features, no negation | thicker nose and coarser skin, but mild |
+| **concrete features + beauty negated** | **a real gradient end to end** |
+
+`FACE_NEGATIVE` turned out to be an idealising force in its own right: it
+vetoes blotchy skin and broken capillaries, which are precisely the markers of
+a plain face. So it applies ONLY to `striking`/`comely`, and each band carries
+its own negative. That is why `appearance_prompt` returns positive AND negative
+together — a caller that renders the clause under a fixed negative silently
+cancels the band it just asked for.
+
+Remaining limit: at the far end the model resists. `homely` and `weathered`
+land, but a truly unattractive face is still sanded toward "rough-hewn" by
+"graphic-novel key art" plus a LoRA trained on hero art. Going further means
+changing the house style, not the prompt.
 
 > Mean pixel difference does NOT measure facial variety: the bare and described
 > rows scored 50.20 and 59.96 while showing the same man, because the number

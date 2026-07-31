@@ -94,6 +94,22 @@ def _rng(key: str) -> random.Random:
     return random.Random(int.from_bytes(digest[:8], "big"))
 
 
+def roll_beauty(key: str) -> str:
+    """The comeliness band a character gets when nobody chose one.
+
+    Drawn from the same stable key as the face, and gated on the age the face
+    roll produced: "weathered" means sun-damage and deep creases, which is
+    nonsense on someone barely out of their teens.
+    """
+    r = _rng(key)
+    age = r.choice(_AGE)
+    older = any(w in age for w in ("forties", "past fifty", "old"))
+    pool = _BEAUTY_ROLL if older else [b for b in _BEAUTY_ROLL if b != "weathered"]
+    # Draw from a SECOND stream so the band doesn't shift when the trait pools
+    # are edited — a character's face should survive a content tweak.
+    return _rng(key + "|beauty").choice(pool)
+
+
 def roll_appearance(key: str, race: str = "") -> str:
     """A deterministic face for ``key`` — same key, same face, every time.
 
@@ -146,21 +162,97 @@ APPEARANCE_WEIGHT = 1.35
 #: flushed blotchy cheeks — a drinker's face. The cure is to veto the symptom
 #: rather than back off the weight, which would take the structure with it.
 #: Append to the negative on any render that carries a weighted face.
+#:
+#: It is ALSO an idealising force — it vetoes blotchy skin and broken
+#: capillaries, which are exactly the markers that make a face plain. So it is
+#: applied only to the flattering bands; see ``BEAUTY_BANDS``.
 FACE_NEGATIVE = ("red nose, inflamed nose, rosacea, clown nose, blotchy skin, "
                  "flushed cheeks, sunburn, broken capillaries")
 
+#: Negating the beauty vocabulary. On its own this does almost nothing — see
+#: the note on BEAUTY_BANDS — but paired with concrete features it roughly
+#: doubles the effect, so both halves ship together.
+_NOT_PRETTY = ("beautiful, handsome, pretty, glamorous, model good looks, "
+               "idealized, flawless skin, perfect symmetry, chiselled, "
+               "heroic beauty, attractive")
+
+#: How good-looking a character is, as a PLAYER-FACING CHOICE rather than a
+#: house default. Ordered flattering -> not.
+#:
+#: **Abstract comeliness words are no-ops.** "a PLAIN ORDINARY face,
+#: unremarkable and forgettable" — even with every beauty token negated —
+#: measured as the same handsome man as "strikingly beautiful". The model has
+#: no visual referent for a value judgement. Only CONCRETE FEATURES move it: a
+#: thick shapeless nose, a receding chin, protruding ears, thinning hair. Every
+#: band below is therefore written as anatomy, never as an opinion, which is
+#: the same lesson the goliath taught about naming the colour instead of
+#: gesturing at it.
+#:
+#: Each band is (positive features, extra negative, apply FACE_NEGATIVE).
+BEAUTY_BANDS: dict[str, tuple[str, str, bool]] = {
+    "striking": ("fine even features, clear smooth skin, a clean strong "
+                 "jawline, bright clear eyes", "", True),
+    "comely": ("agreeable regular features, clear skin", "", True),
+    "plain": ("a thick shapeless nose, small dull close-set eyes, a weak "
+              "receding chin, thin lips, a low forehead, dull uneven skin, "
+              "patchy stubble", _NOT_PRETTY, False),
+    "homely": ("a large bulbous pitted nose, heavy jowls, protruding ears, "
+               "crooked teeth, a heavy undershot jaw, coarse blotchy skin, "
+               "sparse thinning hair, puffy eyelids", _NOT_PRETTY, False),
+    "weathered": ("leathery sun-damaged skin, deep creases, a coarse "
+                  "broken-veined nose, thinning hair, a hard set mouth",
+                  _NOT_PRETTY, False),
+}
+
+#: What a rolled character gets. Deliberately NOT uniform and deliberately not
+#: centred on flattering: a table where everyone is striking reads as a
+#: catalogue. "weathered" is gated on age below — it is nonsense on a
+#: nineteen-year-old.
+_BEAUTY_ROLL = (["striking"] + ["comely"] * 3 + ["plain"] * 4
+                + ["homely"] * 2 + ["weathered"] * 2)
+
+
+def appearance_prompt(key: str, race: str = "", described: Optional[str] = None,
+                      beauty: Optional[str] = None) -> tuple[str, str]:
+    """``(positive_clause, negative_extra)`` for one character's face.
+
+    Both halves must travel together: the comeliness band picks its own
+    negative, and a caller that renders the clause while appending a fixed
+    negative would veto the very features that make a plain face plain.
+
+    A player's OWN description always wins over the rolled face — the roll
+    exists for characters that have none, not to argue with someone who wrote
+    one. ``beauty`` is likewise a CHOICE and is honoured whether or not they
+    described anything; it is only rolled for a character who specified
+    neither, so the world gets a spread instead of a cast of models.
+    """
+    described = (described or "").strip()
+    text = described or roll_appearance(key, race)
+
+    band = (beauty or "").strip().lower()
+    if band not in BEAUTY_BANDS:
+        # Someone who wrote their own face has already said how comely they
+        # are, in their own words. Only roll one when nothing was said at all.
+        band = "" if described else roll_beauty(key)
+
+    negatives: List[str] = []
+    if band:
+        features, band_neg, use_face_neg = BEAUTY_BANDS[band]
+        text = f"{text}, {features}"
+        if band_neg:
+            negatives.append(band_neg)
+        if use_face_neg:
+            negatives.append(FACE_NEGATIVE)
+    else:
+        negatives.append(FACE_NEGATIVE)
+
+    clause = f"({text}:{APPEARANCE_WEIGHT})" if text else ""
+    return clause, ", ".join(negatives)
+
 
 def appearance_clause(key: str, race: str = "",
-                      described: Optional[str] = None) -> str:
-    """The appearance fragment for a portrait prompt, CLIP-weighted.
-
-    A player's OWN description always wins — the roll exists for the characters
-    that have none, not to argue with someone who wrote one. Either way it is
-    weighted: unweighted, an explicit "hooked broken nose, receding sandy hair"
-    was measurably dropped in favour of the model's preferred handsome hero.
-
-    Anything rendering this MUST also append `FACE_NEGATIVE`, or the weight
-    that buys the bone structure also buys a red nose.
-    """
-    text = (described or "").strip() or roll_appearance(key, race)
-    return f"({text}:{APPEARANCE_WEIGHT})" if text else ""
+                      described: Optional[str] = None,
+                      beauty: Optional[str] = None) -> str:
+    """Just the positive half. Prefer `appearance_prompt` — see its note on why
+    the negative has to travel with it."""
+    return appearance_prompt(key, race, described, beauty)[0]
