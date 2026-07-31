@@ -154,6 +154,7 @@ from dm_guide import (
     build_encounter,
 )
 from imagery import ImageStore, ImageResult
+from imagery.appearance import appearance_clause
 from vtt import VttEngine
 from vtt import bridge as vtt_bridge
 from vtt.triggers import should_open_scene as vtt_should_open
@@ -8977,11 +8978,18 @@ def _clear_long_rest_conditions(char: Character) -> List[str]:
 def _portrait_base_look(char: Character) -> str:
     """The appearance seed anchoring EVERY picture of this PC.
 
-    Gender/race/class/subclass plus the player's own description of the face
-    (``Character.appearance``). The description has to be in here, not just in
-    the one-off request that first summoned a portrait: a later gear look is
-    rendered from this seed alone, and without it the model re-rolls skin and
-    hair and hands back a stranger wearing the right armour.
+    Gender/race/class/subclass plus the face itself. The description has to be
+    in here, not just in the one-off request that first summoned a portrait: a
+    later gear look is rendered from this seed alone, and without it the model
+    re-rolls skin and hair and hands back a stranger wearing the right armour.
+
+    When the player never described a face, one is ROLLED deterministically
+    from the character's identity (``imagery.appearance``). Without it the look
+    is just "male, human, fighter", and six seeds of that measurably came back
+    as six pictures of the same handsome dark-haired man — a thin descriptor
+    lets the model's prior fill the vacuum. Rolling it from a stable key rather
+    than at random keeps the face constant across re-renders and gear looks,
+    which everything downstream depends on.
     """
     parts: List[str] = []
     if getattr(char, "gender", None):
@@ -8993,8 +9001,12 @@ def _portrait_base_look(char: Character) -> str:
         if char.subclass:
             cls = f"{char.subclass} {cls}"
         parts.append(cls)
-    if getattr(char, "appearance", None):
-        parts.append(str(char.appearance).strip())
+    # id over name: a rename must not change someone's face.
+    key = str(getattr(char, "id", None) or char.name or "")
+    face = appearance_clause(key, race=str(char.race or ""),
+                             described=getattr(char, "appearance", None))
+    if face:
+        parts.append(face)
     return ", ".join(p for p in parts if p)
 
 

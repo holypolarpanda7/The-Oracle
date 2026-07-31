@@ -164,6 +164,46 @@ loras_by_kind = {"map": [{"name": "dnd_battlemaps_xl.safetensors", "model": 0.9}
 
 A kind listed in `loras_by_kind` uses its list INSTEAD of `loras`, not on top.
 
+### Same-face syndrome, and why a seed does not cure it
+
+A PC's prompt is `_portrait_base_look`: gender, race, class, appearance. For a
+player who never described a face that is the whole thing — `"male, human,
+fighter"` — and **six different seeds of it came back as six pictures of the
+same slim, handsome, dark-haired man in his late twenties.** A thin descriptor
+lets the model's prior fill the vacuum; the seed only moves pose and lighting,
+not identity.
+
+Worse, an explicit description was largely IGNORED: *"gaunt hollow-cheeked,
+hooked broken nose, receding sandy hair, scar through one eyebrow"* produced
+the same man with grey hair — no gaunt cheeks, no hooked nose, no scar. Hence
+`appearance_clause` weights it `:1.2`, the same trick that stopped the goliath
+women being drawn as men.
+
+`imagery/appearance.py` rolls a face — age, build, face shape, nose, eye set,
+distinguishing mark — **deterministically from the character's identity**, not
+at random. Random would fix the sameness and break something worse: gear looks
+and re-renders are built from this seed, so a face that re-rolls hands back a
+stranger in the right armour. Keyed on character id, not name, so a rename
+doesn't change someone's face.
+
+**The roll only covers what a species descriptor doesn't.** Skin and hair are
+already claimed for every species except the human tier — a tiefling is red
+with dark hair, a goliath is ashen grey — so rolling "auburn hair, olive
+complexion" onto one would re-create the two-colour blend that made the goliath
+a tanned human in warpaint. Structure and age are safe on anything; colouring
+is added only where nothing else claims it.
+
+Verified with six DIFFERENT characters at one FIXED seed, so nothing on the
+sheet comes from the sampler. Honest limits: the win arrives mostly through
+hair, colouring and age. Bone structure still converges — "a broad flat nose"
+is only partly obeyed, and build barely shows at all in a head-and-shoulders
+crop. It is the difference between six brothers and six strangers, not full
+control of a face.
+
+> Mean pixel difference does NOT measure facial variety: the bare and described
+> rows scored 50.20 and 59.96 while showing the same man, because the number
+> tracks background and armour. Look at the sheet.
+
 ### One seed is not a measurement: `scripts/species_seed_check.py`
 
 A species look is normally judged from a single render per sex — which is how a
