@@ -14,8 +14,8 @@ import sys
 
 from sqlmodel import create_engine
 
-from . import (DIFFICULTIES, MAX_SLOTS, build_roster, environments_by_domain,
-               load_cards)
+from . import (DIFFICULTIES, MAX_SLOTS, build_roster, build_stock,
+               environments_by_domain, load_cards, purse_for)
 
 DB = os.getenv("DATABASE_URL", "sqlite:///oracle-dm-backend/oracle.db")
 
@@ -47,6 +47,25 @@ def main() -> int:
             mark = " (conjured)" if roster.conjured else ""
             print(f"  {env.name:24} [{env.mode:4}] {roster.summary()}{mark}")
         print()
+
+    # …and what the Quartermaster would let that fighter walk in holding.
+    from sqlmodel import Session
+    purse = purse_for(level, class_gold=125)
+    try:
+        with Session(engine) as s:
+            stock = build_stock(s, level)
+    except Exception:
+        stock = []                        # no item table yet: say so below
+    print(f"\033[1mTHE QUARTERMASTER\033[0m — {purse:,} gp stipend, "
+          f"{len(stock)} items on the board at level {level}")
+    if stock:
+        dearest = sorted(stock, key=lambda i: -i.cost_gp)[:5]
+        for item in dearest:
+            tag = f" ({item.rarity})" if item.rarity else ""
+            print(f"  {item.name:38} {item.cost_gp:>10,.0f} gp{tag}")
+    else:
+        print("  No priced items in the rules database — run: "
+              "uv run python -m rules.demo")
     return 0
 
 

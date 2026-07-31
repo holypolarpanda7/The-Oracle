@@ -21,6 +21,10 @@ from .encounters import (ArenaRoster, MonsterCard, build_roster, candidates_for,
 from .environments import (DOMAINS, ENVIRONMENTS, Environment,
                            environment_payload, environments_by_domain,
                            get_environment, sibling_environments)
+from .loadout import (ATTUNEMENT_LIMIT, MAGIC_PRICE_BY_RARITY, PURSE_BY_LEVEL,
+                      RARITY_MIN_LEVEL, PricedCart, StockItem, build_stock,
+                      default_flags, equippable_name, price_cart, purse_for,
+                      stock_from_rows)
 
 #: How many characters a player may keep in the Grounds. Slots are overwritable
 #: — a practice character is meant to be thrown away.
@@ -34,4 +38,8 @@ __all__ = [
     "suits_environment", "DOMAINS", "ENVIRONMENTS", "Environment",
     "environment_payload", "environments_by_domain", "get_environment",
     "sibling_environments", "MAX_SLOTS", "DIFFICULTIES",
+    "ATTUNEMENT_LIMIT", "MAGIC_PRICE_BY_RARITY", "PURSE_BY_LEVEL",
+    "RARITY_MIN_LEVEL", "PricedCart", "StockItem", "build_stock",
+    "default_flags", "equippable_name", "price_cart", "purse_for",
+    "stock_from_rows",
 ]
