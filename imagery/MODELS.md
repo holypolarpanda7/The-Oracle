@@ -294,6 +294,24 @@ keys, meta = [k for k in hdr if k != "__metadata__"], hdr.get("__metadata__", {}
   **Will not load on SDXL**, whatever the model page implies.
 * SD1.5 — `lora_te_*` only (one text encoder).
 
+**A mismatched LoRA is a silent no-op, not an error.** `LoraLoader` skips keys
+it cannot match, so the render succeeds and even yields a byte-different file —
+which makes it very easy to conclude it worked. Neither "it rendered" nor "the
+file hash changed" is evidence. The only reliable test is a PIXEL comparison at
+a fixed seed:
+
+```python
+a = np.asarray(Image.open(with_lora).convert("RGB"), float)
+b = np.asarray(Image.open(without).convert("RGB"), float)
+print(np.abs(a - b).mean())        # 0.00 => the LoRA did nothing
+```
+
+Measured here: `DarkFanKrea2` (Flux/Krea keys) scored **0.00/255 mean diff and
+0.0% of pixels changed at BOTH 0.5 and 1.0** — pixel-identical to no LoRA. A
+working one, `DD_Painterly` at 1.0, scored 63.65/255 and 94.9%. Anything parked
+under `ComfyUI/models/_loras-wrong-architecture/` failed this test, and that
+folder's README records the numbers.
+
 Pony and Illustrious are SDXL-architecture and WILL load on Juggernaut, but are
 tuned for different conditioning; a Pony variant properly belongs on the
 `checkpoint_mature` path, which is Pony. Anything parked under
