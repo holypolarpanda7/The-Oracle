@@ -249,6 +249,33 @@ the sheet.
 engine's pitch across the 21 archetypes — never reliably aligned, exactly as
 the arithmetic predicts. It is a pretty texture. Do not measure from it.
 
+## Trigger words
+
+A LoRA trained against a caption tag only half-fires without it. The tag is a
+property of the FILE, so it lives beside the LoRA in config rather than in the
+house style string — swap the LoRA and the tag goes with it. `ComfyClient`
+appends every active LoRA's `trigger` to the positive prompt (appended, not
+prepended, so it can never outrank the weighted subject clause).
+
+```python
+loras = [{"name": "DD_Painterly_Clean.safetensors", "model": 0.45,
+          "clip": 0.45, "trigger": "d&d painterly"}]
+```
+
+Read the tag off the file rather than guessing — `ss_tag_frequency` in the
+safetensors metadata records the training captions:
+
+* `DD_Painterly_Clean` -> **"d&d painterly"**, on all 138 training images.
+* `SDXL-Battlemaps` -> **"battlemap"**, which opens every one of its captions.
+  This one was already firing by luck: `_KIND_FRAMING[MAP]` happens to contain
+  the word. Now it is explicit rather than accidental.
+
+**Installed house style: `DD_Painterly_Clean` at 0.45.** Warmer, better-painted
+armour and skin, more D&D-book than the bare checkpoint — and gentle enough
+that it did not overrun the species descriptors (goliath stayed slate blue-grey,
+tiefling stayed purple and horned), which is exactly what a style LoRA at 1.0
+would have wrecked.
+
 ## Checking a LoRA before you install it
 
 The filename lies about architecture often enough to check. A safetensors

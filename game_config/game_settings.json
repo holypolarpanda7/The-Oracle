@@ -41,10 +41,19 @@
           {
             "name": "SDXL-Battlemaps.safetensors",
             "model": 0.5,
-            "clip": 0.5
+            "clip": 0.5,
+            "trigger": "battlemap"
           }
         ]
-      }
+      },
+      "loras": [
+        {
+          "name": "DD_Painterly_Clean.safetensors",
+          "model": 0.45,
+          "clip": 0.45,
+          "trigger": "d&d painterly"
+        }
+      ]
     }
   }
 }

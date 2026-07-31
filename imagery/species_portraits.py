@@ -423,11 +423,24 @@ def _load_look_overrides() -> Dict[str, Dict[str, str]]:
     return {}
 
 
+#: Trigger words baked into a LoRA's training captions. Without the tag the
+#: LoRA only half-fires (DD_Painterly_Clean carries "d&d painterly" on all 138
+#: of its training images). Read them off a file's ss_tag_frequency metadata.
+LORA_TRIGGERS = {
+    "dd_painterly_clean": "d&d painterly",
+    "sdxl-battlemaps": "battlemap",
+}
+
+
 def _parse_lora(spec: str) -> Dict:
     """``name.safetensors:0.45`` -> a LoRA entry (strength defaults to 0.8)."""
     name, _, strength = spec.partition(":")
     v = float(strength) if strength else 0.8
-    return {"name": name, "model": v, "clip": v}
+    entry = {"name": name, "model": v, "clip": v}
+    trig = LORA_TRIGGERS.get(name.rsplit(".", 1)[0].lower())
+    if trig:
+        entry["trigger"] = trig
+    return entry
 
 
 def _norm(s: str) -> str:

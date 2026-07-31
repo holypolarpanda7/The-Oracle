@@ -297,7 +297,31 @@ class ComfyClient:
         if "7" in g and g["7"].get("class_type") == "CLIPTextEncode":
             g["7"]["inputs"]["text"] = negative
         self._apply_model_layers(g)
+        self._apply_lora_triggers(g)
         return g
+
+    def _apply_lora_triggers(self, g: dict) -> None:
+        """Append each active LoRA's trigger word to the positive prompt.
+
+        Many style LoRAs are trained against a caption tag and only half-fire
+        without it — DD_Painterly_Clean carries "d&d painterly" on all 138 of
+        its training images. The tag lives with the LoRA in config rather than
+        in the house style string, because it belongs to the file: swap the
+        LoRA and the tag has to go with it.
+
+        Appended rather than prepended, so it can't outrank the weighted
+        subject clause the prompt builder puts first.
+        """
+        triggers = [str((l or {}).get("trigger", "")).strip()
+                    for l in (self.loras or []) if isinstance(l, dict)]
+        triggers = [t for t in triggers if t]
+        if not triggers:
+            return
+        for nid in ("6",):
+            node = g.get(nid)
+            if node and node.get("class_type") == "CLIPTextEncode":
+                cur = str(node["inputs"].get("text") or "")
+                node["inputs"]["text"] = ", ".join([p for p in (cur, *triggers) if p])
 
     # ----- HTTP -----
 
