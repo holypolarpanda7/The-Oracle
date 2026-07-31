@@ -197,6 +197,21 @@ That is the acceptance test for any candidate: **does it fix the interiors?**
 The outdoor half needs no help. `_MAP_NEGATIVE` is already fighting this
 battle in the prompt and losing on exactly these seven.
 
+**Result: `SDXL-Battlemaps.safetensors` at 0.5 passes 21 of 21.** Every
+archetype comes back flat overhead in one consistent VTT style — the seven
+elevation/oblique failures are gone. Configured in `game_settings.json` under
+`loras_by_kind.map`.
+
+Strength mattered more than the choice of LoRA:
+
+| strength | result |
+|---|---|
+| 0.8 | interiors fixed, but outdoor terrain went muddy and the tavern came back an abstract red-lit plan |
+| **0.5** | **interiors fixed AND terrain quality kept — tables, bar and chairs in the tavern** |
+
+Higher was worse, the same lesson PAG-vs-CFG taught: more force sharpens the
+model's own preference rather than your instruction. Start low.
+
 `--lora NAME[:STRENGTH]` (also on `species_portraits`) applies a stack for one
 run without touching config, so candidates and strengths can be swept quickly.
 
@@ -229,6 +244,33 @@ HINT — not a verdict. Deciding "ruled grid" vs "row of flagstones" from the
 spectrum alone did not survive real map art: every threshold either missed
 faint grids or called a cave pool one. The number is worth knowing; confirm on
 the sheet.
+
+**Measured with the LoRA in place, the drawn grid lands 5-67% off** the
+engine's pitch across the 21 archetypes — never reliably aligned, exactly as
+the arithmetic predicts. It is a pretty texture. Do not measure from it.
+
+## Checking a LoRA before you install it
+
+The filename lies about architecture often enough to check. A safetensors
+header is readable without loading the file:
+
+```python
+import json, struct
+with open(path, "rb") as f:
+    hdr = json.loads(f.read(struct.unpack("<Q", f.read(8))[0]))
+keys, meta = [k for k in hdr if k != "__metadata__"], hdr.get("__metadata__", {})
+```
+
+* SDXL — `lora_te1_*` AND `lora_te2_*` keys (two text encoders), `input_blocks`,
+  and usually `modelspec.architecture: stable-diffusion-xl-v1-base/lora`.
+* Flux / Krea / other DiT — `transformer.*.lora_A/lora_B`, `double_blocks`.
+  **Will not load on SDXL**, whatever the model page implies.
+* SD1.5 — `lora_te_*` only (one text encoder).
+
+Pony and Illustrious are SDXL-architecture and WILL load on Juggernaut, but are
+tuned for different conditioning; a Pony variant properly belongs on the
+`checkpoint_mature` path, which is Pony. Anything parked under
+`ComfyUI/models/_loras-wrong-architecture/` failed this check.
 
 ### Two cautions
 * LoRAs are trained against a checkpoint family. One trained on SDXL/Juggernaut

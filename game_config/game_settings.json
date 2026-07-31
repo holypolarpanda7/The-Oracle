@@ -35,7 +35,16 @@
       "variant": "off"
     },
     "imagery": {
-      "use_ipadapter": true
+      "use_ipadapter": true,
+      "loras_by_kind": {
+        "map": [
+          {
+            "name": "SDXL-Battlemaps.safetensors",
+            "model": 0.5,
+            "clip": 0.5
+          }
+        ]
+      }
     }
   }
 }
