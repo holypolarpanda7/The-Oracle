@@ -2210,6 +2210,73 @@ def process_puzzle_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list
 #   [[QUEST: advance | <name> | <progress note (logged to the world)>]]
 #   [[QUEST: branch | <parent> | <side-quest name> | <conflict>]]
 #   [[QUEST: resolve | <name> | completed|failed | <outcome>]]
+# LOOT hooks: a piece of gear the world hands over, rolled with the properties
+# its rarity can carry (see loot/affixes.py). The DM names the thing and how
+# fine it is; the CODE decides what it turns out to be, the same division of
+# labour the tactical board uses. Rolled ONCE, when it is handed over.
+#   [[LOOT: <item> | common|uncommon|rare|very rare|legendary]]
+LOOT_HOOK_PATTERN = re.compile(r"\[\[LOOT:(.+?)\]\]", re.IGNORECASE)
+_LOOT_RARITIES = {"common", "uncommon", "rare", "very rare", "legendary"}
+
+
+def extract_loot_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull loot drops out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in LOOT_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        name = (parts[0] or "").strip() if parts else ""
+        if not name:
+            continue
+        rarity = (parts[1].strip().lower() if len(parts) > 1 else "") or "common"
+        if rarity not in _LOOT_RARITIES:
+            rarity = "common"
+        ops.append({"name": name, "rarity": rarity})
+    clean = LOOT_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def apply_loot_hooks(session_id: str, ops: list[dict],
+                     character_id: Optional[int] = None) -> list[str]:
+    """Roll each drop's affixes and put it in the pack. Returns player notes."""
+    if not ops or not character_id:
+        return []
+    from loot import display_name, roll_affixes, describe_affixes
+    notes: list[str] = []
+    day = world.current_day()
+    with Session(engine) as s:
+        char = s.get(Character, character_id)
+        if not char:
+            return []
+        for op in ops:
+            base, rarity = op["name"], op["rarity"]
+            try:
+                row = rules_lib.get_item(base)
+            except Exception:
+                row = None
+            slugs = roll_affixes(
+                base, rarity,
+                item_type=getattr(row, "item_type", None),
+                category=getattr(row, "category", None),
+                # Seeded per drop so the same find is the same gear forever,
+                # and two drops on the same day are still different pieces.
+                seed=f"{session_id}:{base}:{rarity}:{day}:{len(char.inventory or [])}")
+            name = display_name(base, slugs) if slugs else base
+            extra: dict = {"rarity": rarity}
+            if slugs:
+                extra["affixes"] = slugs
+                extra["base"] = base
+            _add_inventory_item(char, name, extra=extra)
+            props = describe_affixes(slugs)
+            note = f"\u2728 **{name}**"
+            if props:
+                note += " \u2014 " + "; ".join(p["name"] for p in props)
+            notes.append(note)
+        s.add(char)
+        s.commit()
+    return notes
+
+
 QUEST_HOOK_PATTERN = re.compile(r"\[\[QUEST:(.+?)\]\]", re.IGNORECASE)
 
 # SUGGEST hook: two to four things a player could do RIGHT NOW, offered as
@@ -7710,6 +7777,16 @@ _WORLD_BUILDING_BLOCK = (
     "  Anyone who matters to the story gets remembered automatically; the rest stay crowd.\n"
     "- 'Signs of:' on an unexplored area names the creatures that hunt there. Foreshadow\n"
     "  them (tracks, kills, distant cries) and draw encounters from that list first.\n"
+    "Treasure — name the thing, let the code decide what it is:\n"
+    "- When the party WINS a piece of gear (a hoard, a fallen foe's blade, a "
+    "reward), emit on its own line: [[LOOT: <item name> | common|uncommon|rare|"
+    "very rare|legendary]].\n"
+    "- Name the base item as the catalog knows it ('Longsword', 'Chain Mail') and "
+    "judge only how FINE it is. The system rolls what properties it carries and "
+    "renames it — do not invent the properties or the magic yourself, and do not "
+    "state its bonuses; describe how it LOOKS and let the pack report the rest.\n"
+    "- Rarity is a real reward curve: common carries nothing, uncommon one "
+    "property, legendary four. Do not hand out a legendary for a bandit.\n"
     "Openings — name what the scene already offers:\n"
     "- End a reply that leaves the players free to choose with, on its own line,\n"
     "  [[SUGGEST: <action> | <action> | <action>]] — two to four SHORT phrases (a\n"
@@ -9265,6 +9342,20 @@ def _character_resource_block(character_id: int) -> str:
                 f"{char.water} loose water)")
             if char.inspiration:
                 lines.append("Has Inspiration.")
+            # Equipped gear's rolled properties: the DM applies these in the
+            # [[ROLL: ...]] hooks it emits, so they must be in view.
+            try:
+                from loot import describe_affixes as _desc
+                for _it in _inventory_items(char):
+                    if not (_it.get("equipped") or _it.get("attuned")):
+                        continue
+                    _props = _desc(_it.get("affixes") or [])
+                    if _props:
+                        lines.append(
+                            f"{_it.get('name')} properties: "
+                            + "; ".join(f"{p['name']} ({p['text']})" for p in _props))
+            except Exception as e:
+                print(f"[affix block error] {e}")
 
             # Current weather at the PC's position: latitude-derived climate
             # from the world globe, falling back to the home_region keyword guess.
@@ -9692,6 +9783,24 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(quest_notes)
         except Exception as e:
             print(f"[quest] hook processing failed: {e}")
+
+    # Loot: gear the world hands over, rolled with the properties its rarity
+    # can carry. The DM names the thing; the code decides what it turns out to be.
+    dm_text, loot_ops = extract_loot_hooks(dm_text)
+    if loot_ops:
+        try:
+            # Resolve locally: the earlier bindings of character_id sit inside
+            # other hooks' conditionals and may never have run this turn.
+            _state = _load_session_state(req.session_id)
+            _cid = (_acting_member(_state.get("meta", {}) or {},
+                                   req.user_id) or {}).get("character_id")
+            if not _cid:
+                _cid = _resolve_session_character(req.session_id, req.user_id)
+            loot_notes = apply_loot_hooks(req.session_id, loot_ops, _cid)
+            if loot_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(loot_notes)
+        except Exception as e:
+            print(f"[loot] hook processing failed: {e}")
 
     # Suggested next actions: chips above the prompt for a player staring at an
     # empty box. Stripped from the prose either way — they are UI, not narration.
@@ -15269,21 +15378,33 @@ def _compute_ac(char: Character) -> int:
             continue
         m = re.search(r"\+(\d)", name)
         plus = int(m.group(1)) if m else 0
+        # Affixes are the other way a piece grants AC (loot/affixes.py). Folded
+        # in here so the sheet, the DM prompt and this calculation can never
+        # disagree about what the armour is worth.
+        try:
+            from loot import mechanical_bonuses as _affix_bonus
+            plus += int(_affix_bonus(it.get("affixes") or []).get("ac", 0))
+        except Exception:
+            pass
         if attuned and "protection" in low:      # Ring/Cloak of Protection
             misc += plus or 1
             continue
         if not equipped:
             continue
         try:
-            row = rules_lib.get_item(name)
+            # By the BASE name: affixes rename a piece ("Sturdy Chain Mail of
+            # Embers"), and looking that up in the catalog misses, which used to
+            # cost the armour its entire AC contribution.
+            row = rules_lib.get_item(str(it.get("base") or name))
         except Exception:
             row = None
         it_type = (getattr(row, "item_type", "") or "").lower() if row else ""
-        if "shield" in low or "shield" in it_type:
+        if "shield" in low or "shield" in it_type or "shield" in str(it.get("base") or "").lower():
             shield = max(shield, 2 + plus)
             continue
         acb = getattr(row, "armor_class_base", None) if row else None
-        if acb is not None or "armor" in it_type or "armor" in low:
+        low_base = str(it.get("base") or name).lower()
+        if acb is not None or "armor" in it_type or "armor" in low or "armor" in low_base:
             acb = acb if acb is not None else 11
             if getattr(row, "armor_dex_bonus", None) is False:
                 dex_part = 0                       # heavy armor
@@ -15437,6 +15558,11 @@ def _activity_inventory(char: Character) -> list[dict]:
             obj["interactive"] = "attunement"
         elif fam and fam != "wearable":
             obj["interactive"] = fam
+        if it.get("affixes"):
+            from loot import describe_affixes as _desc_aff
+            obj["affixes"] = _desc_aff(it["affixes"])
+            if it.get("rarity") and "rarity" not in obj:
+                obj["rarity"] = it["rarity"]
         _art = it.get("art") if isinstance(it.get("art"), dict) else None
         if _art and _art.get("ref"):
             obj["named"] = True
@@ -15778,6 +15904,20 @@ def _activity_item_detail(char: Character, name: str) -> dict:
             break
     if "description" not in detail and inv_item and inv_item.get("notes"):
         detail["description"] = str(inv_item["notes"])
+    # Rolled properties (loot/affixes.py) and the smith's price to reforge each.
+    if inv_item and inv_item.get("affixes"):
+        try:
+            from loot import describe_affixes, mechanical_bonuses, temper_cost_gp
+            rarity = inv_item.get("rarity") or detail.get("rarity")
+            props = describe_affixes(inv_item["affixes"])
+            for pr in props:
+                pr["temper_gp"] = temper_cost_gp(rarity, pr["tier"])
+            detail["affixes"] = props
+            detail["bonuses"] = mechanical_bonuses(inv_item["affixes"])
+            if rarity and "rarity" not in detail:
+                detail["rarity"] = rarity
+        except Exception as e:
+            print(f"[affix detail error] {e}")
     family = _item_family(row, base_name)
     if family == "spellbook":
         detail["interactive"] = "spellbook"
@@ -17937,6 +18077,88 @@ async def activity_ws(ws: WebSocket, channel: str):
                         # looks like.
                         await ws.send_json({"t": "item_art_state",
                                             "name": name, "state": state})
+                continue
+
+            # ---- the forge: reforge one property out of a piece ---------------
+            # Their deepest system, rebuilt: rarity buys SLOTS, and tempering
+            # rerolls one of them. The replacement is a fresh roll of the same
+            # grade and may be worse — that gamble is the point of the forge.
+            # The server prices it and takes the coin; the client never does.
+            if msg.get("t") == "temper_item":
+                name = (msg.get("name") or "").strip()
+                slug = (msg.get("affix") or "").strip()
+                cid = _activity_char_id(session_id, user_id) if session_id else None
+                if not name or not slug or not cid:
+                    continue
+                from loot import (affix_by_slug, describe_affixes, display_name,
+                                  temper_cost_gp, temper_swap)
+                from economy.currency import can_afford, gp_to_cp, subtract_cost
+                with Session(engine) as s_:
+                    ch = s_.get(Character, cid)
+                    entry = _item_entry(ch, name) if ch else None
+                    if not ch or entry is None or not entry.get("affixes"):
+                        await ws.send_json({"t": "item_error", "name": name,
+                                            "detail": "There is nothing here to reforge."})
+                        continue
+                    if slug not in (entry.get("affixes") or []):
+                        await ws.send_json({"t": "item_error", "name": name,
+                                            "detail": "That property is not on this piece."})
+                        continue
+                    aff = affix_by_slug(slug)
+                    rarity = entry.get("rarity")
+                    cost_gp = temper_cost_gp(rarity, aff.tier if aff else 1)
+                    purse = _purse_of(ch)
+                    if not can_afford(purse, gp_to_cp(cost_gp)):
+                        await ws.send_json({
+                            "t": "item_error", "name": name,
+                            "detail": f"The smith wants {cost_gp} gp, and you cannot cover it."})
+                        continue
+                    base = str(entry.get("base") or entry.get("name") or name)
+                    try:
+                        row = rules_lib.get_item(base)
+                    except Exception:
+                        row = None
+                    new_slugs = temper_swap(
+                        list(entry["affixes"]), slug, item_name=base, rarity=rarity,
+                        item_type=getattr(row, "item_type", None),
+                        category=getattr(row, "category", None),
+                        seed=f"temper:{cid}:{base}:{slug}:{world.current_day()}:{len(ch.inventory or [])}")
+                    if new_slugs == list(entry["affixes"]):
+                        await ws.send_json({
+                            "t": "item_error", "name": name,
+                            "detail": "The smith turns it over and shakes their head — "
+                                      "nothing else of that grade will take on this piece."})
+                        continue
+                    _write_purse(ch, subtract_cost(purse, gp_to_cp(cost_gp)))
+                    new_name = display_name(base, new_slugs)
+                    inv = list(ch.inventory or [])
+                    for i, raw in enumerate(inv):
+                        if not isinstance(raw, dict):
+                            continue
+                        if _normalize_item_name(raw.get("name")) != _normalize_item_name(entry.get("name")):
+                            continue
+                        upd = dict(raw)
+                        upd["affixes"] = new_slugs
+                        upd["base"] = base
+                        upd["name"] = new_name
+                        inv[i] = upd
+                        break
+                    ch.inventory = inv
+                    s_.add(ch)
+                    s_.commit()
+                gained = [p for p in describe_affixes(new_slugs)
+                          if p["slug"] not in (entry.get("affixes") or [])]
+                await ws.send_json({
+                    "t": "narration",
+                    "text": (f"*The forge takes {cost_gp} gp and an afternoon. "
+                             f"The {aff.name if aff else 'old property'} is beaten out of it; "
+                             + (f"it comes back **{gained[0]['name']}**." if gained
+                                else "it comes back changed.")
+                             + f" You are carrying **{new_name}**.*")})
+                sheet = _activity_sheet(session_id, user_id)
+                if sheet:
+                    await ws.send_json({"t": "sheet", "sheet": sheet})
+                await ws.send_json({"t": "item_gone", "name": name})
                 continue
 
             # ---- name and describe a piece, and have it drawn -----------------

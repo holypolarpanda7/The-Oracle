@@ -134,6 +134,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   LoRA over every kind it touches at several strengths from one seed;
   `scripts/map_lora_probe.py` does the same for the `map` kind over all 21
   archetypes. Both print a pixel-diff column — 0.00 means the LoRA did nothing.
+- Loot / affix demo: `uv run python -m loot.demo`
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
   level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed)
@@ -191,6 +192,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   entries, CC species/powers, the sheet, and speech blocks. They are DISPLAY
   faces — set on proper nouns only, never body text — and a name whose culture
   can't be placed correctly stays in the house serif.
+- **Rarity buys SLOTS, not bigger numbers.** `loot/affixes.py` gives dropped
+  gear rolled properties: common 0, uncommon 1, rare 2, very rare 3, legendary
+  4. Two invariants keep it 5e rather than ARPG stat soup — a piece never rolls
+  two affixes feeding the SAME numeric bonus (5e tops out at +3, and
+  `mechanical_bonuses` clamps regardless), and never more than one prefix (a
+  second would be invisible in the name). The DM emits `[[LOOT: <item> |
+  <rarity>]]` naming only the base item and how fine it is; the CODE rolls what
+  it turns out to be. Affixes rename the piece, so — exactly like a
+  player-named item — the entry keeps `base` and every mechanical lookup must
+  go through it. `_compute_ac` already lost a suit of armour's entire AC to
+  this once.
 - **Coin is money, not gear.** Book equipment lists write starting coin as a line
   item ("15 GP"); `_add_inventory_item` folds any coin name into the PURSE so the
   pack never shows currency next to the sheet's own Gold row.
