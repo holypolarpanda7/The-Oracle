@@ -558,6 +558,9 @@ class ChatResponse(BaseModel):
     # On a PRIVATE turn, the sanitized line tablemates are allowed to see (e.g.
     # "Kael studies the dice, then makes his bet"). None = nothing shown publicly.
     public: Optional[str] = None
+    # Two to four things the player could do next, offered as one-tap chips.
+    # A nudge, never a menu — typing anything else is always allowed.
+    suggestions: Optional[List[str]] = None
 
 
 class ResetRequest(BaseModel):
@@ -2207,6 +2210,28 @@ def process_puzzle_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list
 #   [[QUEST: branch | <parent> | <side-quest name> | <conflict>]]
 #   [[QUEST: resolve | <name> | completed|failed | <outcome>]]
 QUEST_HOOK_PATTERN = re.compile(r"\[\[QUEST:(.+?)\]\]", re.IGNORECASE)
+
+# SUGGEST hook: two to four things a player could do RIGHT NOW, offered as
+# one-tap chips above the prompt. They are a nudge for someone staring at an
+# empty box, never a menu — the input stays free text, and the DM is told to
+# name openings that already exist in the scene rather than invent new ones.
+#   [[SUGGEST: ask Marla about the mill | follow the tracks | wait for dark]]
+SUGGEST_HOOK_PATTERN = re.compile(r"\[\[SUGGEST:(.+?)\]\]", re.IGNORECASE)
+_SUGGEST_MAX = 4
+_SUGGEST_MAX_LEN = 64
+
+
+def extract_suggest_hooks(text: str) -> tuple[str, list[str]]:
+    """Pull suggested-action chips out of the narration. Returns (clean, actions)."""
+    actions: list[str] = []
+    for m in SUGGEST_HOOK_PATTERN.finditer(text):
+        for part in _split_hook(m.group(1)):
+            part = part.strip(" .")
+            if part and len(part) <= _SUGGEST_MAX_LEN and part not in actions:
+                actions.append(part)
+    clean = SUGGEST_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, actions[:_SUGGEST_MAX]
 _QUEST_HOOK_ACTIONS = {"open", "conflict", "stakes", "patron", "reward",
                        "objective", "lead", "done", "advance", "branch", "resolve",
                        "peril"}
@@ -7684,6 +7709,15 @@ _WORLD_BUILDING_BLOCK = (
     "  Anyone who matters to the story gets remembered automatically; the rest stay crowd.\n"
     "- 'Signs of:' on an unexplored area names the creatures that hunt there. Foreshadow\n"
     "  them (tracks, kills, distant cries) and draw encounters from that list first.\n"
+    "Openings — name what the scene already offers:\n"
+    "- End a reply that leaves the players free to choose with, on its own line,\n"
+    "  [[SUGGEST: <action> | <action> | <action>]] — two to four SHORT phrases (a\n"
+    "  handful of words each), written as things the PLAYER would type.\n"
+    "- They must be openings ALREADY present in the scene you just narrated (an NPC\n"
+    "  standing there, a door, a track in the mud, a thread they raised) — never new\n"
+    "  fiction, and never the only options. Anything they type instead is equally valid.\n"
+    "- Skip the hook entirely when the moment is not theirs: mid-combat on another's\n"
+    "  turn, or while a question you asked is still unanswered.\n"
     "Cartography — maps are earned, never given:\n"
     "- There is NO free world map. A character may draft one only with Cartographer's\n"
     "  Tools in inventory: call for [[ROLL: 1d20+<Wis mod, +PB if proficient with the\n"
@@ -9606,6 +9640,10 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             print(f"[quest] hook processing failed: {e}")
 
+    # Suggested next actions: chips above the prompt for a player staring at an
+    # empty box. Stripped from the prose either way — they are UI, not narration.
+    dm_text, suggestions = extract_suggest_hooks(dm_text)
+
     # World mutations: the DM reflects a threat cleared/worsened so the map's
     # danger actually moves (the fiction is already in the narration).
     dm_text, world_ops = extract_world_hooks(dm_text)
@@ -9872,7 +9910,8 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                         images=image_payloads or None,
                         memorial=memorial_payload,
                         whisper=whisper_notes or None,
-                        public=public_out)
+                        public=public_out,
+                        suggestions=suggestions or None)
 
 
 @app.get("/session/active/{user_id}")
@@ -15763,6 +15802,170 @@ def _activity_locale(session_id: str, user_id: str) -> Optional[dict]:
     return out or None
 
 
+def _activity_pc_entity(session_id: str, user_id: str):
+    """The world entity for the character this player is acting as.
+
+    Owner-scoped, so it must come from ``find_pc`` — two players called "Kara"
+    hold two entities and slugify(name) would collide them.
+    """
+    char_id = _activity_char_id(session_id, user_id)
+    if not char_id:
+        return None
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if not char:
+            return None
+        name = char.name
+    try:
+        ent = world.find_pc(str(user_id), name)
+    except Exception as e:
+        print(f"[activity] pc entity lookup failed: {e}")
+        ent = None
+    return ent if ent is not None else world.get_entity(slugify(name))
+
+
+def _activity_journal(session_id: str, user_id: str) -> dict:
+    """The party's own record of what happened, and the threads still open.
+
+    Pure READ of state that already exists — the append-only ``WorldEvent`` log
+    and the QUEST scaffold entities. Nothing here is stored for the journal's
+    sake, so the journal can never disagree with the world.
+    """
+    pc = _activity_pc_entity(session_id, user_id)
+    pc_id = getattr(pc, "id", None)
+    entries: list[dict] = []
+    quests: list[dict] = []
+
+    try:
+        with Session(world.engine) as s:
+            # Two targeted queries rather than one broad scan: on a busy world
+            # the newest N events overall can easily be another table's.
+            rows = list(s.exec(
+                select(WorldEvent)
+                .where(WorldEvent.session_id == session_id)
+                .order_by(WorldEvent.id.desc()).limit(120)).all())
+            if pc_id is not None:
+                recent = s.exec(select(WorldEvent)
+                                .order_by(WorldEvent.id.desc()).limit(300)).all()
+                rows += [e for e in recent
+                         if pc_id in list(e.involved or [])]
+            # Name the places events happened at, in one lookup.
+            loc_ids = {e.location_id for e in rows if e.location_id}
+            places = {}
+            if loc_ids:
+                places = {p.id: p.name for p in s.exec(
+                    select(WorldEntity).where(WorldEntity.id.in_(loc_ids))).all()}
+        seen: set[int] = set()
+        for ev in sorted(rows, key=lambda e: (e.world_day, e.id or 0), reverse=True):
+            if ev.id in seen:
+                continue
+            seen.add(ev.id)
+            row: dict = {"day": ev.world_day, "text": ev.summary}
+            if ev.location_id and places.get(ev.location_id):
+                row["place"] = places[ev.location_id]
+            entries.append(row)
+            if len(entries) >= 60:
+                break
+    except Exception as e:
+        print(f"[activity] journal events failed: {e}")
+
+    try:
+        with Session(world.engine) as s:
+            rows = s.exec(select(WorldEntity)
+                          .where(WorldEntity.type == EntityType.QUEST)).all()
+            qs = [(e, dict(e.attributes or {})) for e in rows]
+        live = [(e, a) for e, a in qs
+                if a.get("state", QuestState.ACTIVE)
+                in (QuestState.OFFERED, QuestState.ACTIVE)]
+        done = [(e, a) for e, a in qs
+                if a.get("state") in (QuestState.COMPLETED, QuestState.FAILED)]
+        live.sort(key=lambda p: p[1].get("last_touched_day", 0), reverse=True)
+        done.sort(key=lambda p: p[1].get("last_touched_day", 0), reverse=True)
+        for ent, a in live[:12] + done[:5]:
+            row = {"name": ent.name,
+                   "state": a.get("state", QuestState.ACTIVE),
+                   "tier": a.get("tier", "side")}
+            for key in ("conflict", "stakes", "patron", "reward"):
+                if a.get(key):
+                    row[key] = str(a[key])[:200]
+            # Only the steps still open — a checklist of done things is noise.
+            objs = [o.get("text", "") for o in (a.get("objectives") or [])
+                    if isinstance(o, dict) and not o.get("done") and o.get("text")]
+            if objs:
+                row["objectives"] = objs[:5]
+            leads = [str(x) for x in (a.get("leads") or []) if x]
+            if leads:
+                row["leads"] = leads[:4]
+            quests.append(row)
+    except Exception as e:
+        print(f"[activity] journal quests failed: {e}")
+
+    return {"entries": entries, "quests": quests}
+
+
+# The relationship edge is the PERCEIVER's stance: npc -> pc. Any of the three
+# typed categories can hold the ledger, so all three are scanned (a bond that
+# soured into HOSTILE_TO is still a bond, and get_trust alone would miss it).
+_BOND_RELS = (RelationType.KNOWS, RelationType.ALLIED_WITH, RelationType.HOSTILE_TO)
+
+
+def _activity_bonds(session_id: str, user_id: str) -> list[dict]:
+    """Everyone who has an opinion of you, and why.
+
+    A pure read of ``eight_card_system/relationships.py`` — the sentiment,
+    the deed that most drives it, and whether they travel with you.
+    """
+    pc = _activity_pc_entity(session_id, user_id)
+    if pc is None:
+        return []
+    out: list[dict] = []
+    try:
+        from eight_card_system.relationships import band_word
+        companions = {c.get("slug") for c in (world.list_companions(pc.slug) or [])}
+        with Session(world.engine) as s:
+            rels = s.exec(
+                select(WorldRelation).where(
+                    WorldRelation.dst_id == pc.id,
+                    WorldRelation.rel_type.in_(_BOND_RELS),
+                    WorldRelation.valid_to == None)  # noqa: E711
+            ).all()
+            src_ids = {r.src_id for r in rels}
+            ents = {e.id: e for e in s.exec(
+                select(WorldEntity).where(WorldEntity.id.in_(src_ids))).all()
+            } if src_ids else {}
+        for rel in rels:
+            ent = ents.get(rel.src_id)
+            # Deities hold no personal bond, and a PC's view of you is their own
+            # business — this list is the NPCs who know you.
+            if ent is None or ent.type != EntityType.NPC:
+                continue
+            attrs = dict(rel.attributes or {})
+            row: dict = {"name": ent.name, "slug": ent.slug}
+            if ent.subtype:
+                row["role"] = ent.subtype
+            if ent.status and ent.status != "active":
+                row["status"] = ent.status
+            sentiment = attrs.get("sentiment")
+            if sentiment is not None:
+                row["sentiment"] = round(float(sentiment), 1)
+                row["feeling"] = band_word(float(sentiment))
+            trust = attrs.get("trust")
+            if trust is not None:
+                row["attitude"] = attitude_for_trust(int(trust))
+            if attrs.get("reason"):
+                row["reason"] = str(attrs["reason"])[:160]
+            if ent.slug in companions:
+                row["companion"] = True
+            out.append(row)
+    except Exception as e:
+        print(f"[activity] bonds failed: {e}")
+        return []
+    # Strongest feelings first, in either direction — indifference goes last.
+    out.sort(key=lambda r: (0 if r.get("companion") else 1,
+                            -abs(r.get("sentiment") or 0), r["name"]))
+    return out[:40]
+
+
 def _activity_lexicon(session_id: str, pc_name: Optional[str],
                       reply_text: str) -> list[dict]:
     """Names worth colouring: the PC, world-slice entities, and any rules
@@ -17651,6 +17854,24 @@ async def activity_ws(ws: WebSocket, channel: str):
                     continue
                 continue
 
+            # The Chronicle: the party's own record (what happened, what's still
+            # open) and the people who have an opinion of them. Both are reads of
+            # state the world already keeps, so it is fetched on demand rather
+            # than pushed on every turn.
+            if msg.get("t") == "chronicle":
+                try:
+                    jr = _activity_journal(session_id, user_id)
+                    await ws.send_json({"t": "chronicle_data",
+                                        "entries": jr["entries"],
+                                        "quests": jr["quests"],
+                                        "bonds": _activity_bonds(session_id, user_id)})
+                except Exception as e:
+                    print(f"[activity] chronicle failed: {e}")
+                    await ws.send_json({"t": "chronicle_data", "entries": [],
+                                        "quests": [], "bonds": [],
+                                        "error": "The Chronicle is closed to you."})
+                continue
+
             if msg.get("t") != "action" or not (msg.get("text") or "").strip():
                 continue
             text = msg["text"].strip()
@@ -17730,6 +17951,15 @@ async def activity_ws(ws: WebSocket, channel: str):
             if is_private and resp.public:
                 for ev in _activity_segments(resp.public, []):
                     await _activity_broadcast(session_id, ev, fallback=ws)
+
+            # Suggested next actions. They follow the narration's audience: on a
+            # secret turn only the actor sees them, since they describe a scene
+            # the rest of the table was not shown.
+            _sugg = {"t": "suggest", "actions": resp.suggestions or []}
+            if is_private:
+                await ws.send_json(_sugg)
+            else:
+                await _activity_broadcast(session_id, _sugg, fallback=ws)
 
             # Whispers: push each private note to only its recipient's screen(s).
             for note in (resp.whisper or []):
