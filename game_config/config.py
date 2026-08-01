@@ -234,6 +234,17 @@ class ImageryConfig:
     plain, editable strings here — no external content filter is imposed.
     """
     enabled: bool = True
+    # ----- item art: a fixed catalog cost, not a per-item one -----
+    # Item pictures are keyed by item SLUG, so one render of "Longsword" serves
+    # every character in every campaign forever. That makes the whole rules
+    # catalog a bounded, one-time render (see scripts/item_art.py) instead of an
+    # open-ended GPU bill that grows with play.
+    #   "catalog"   — catalog items come only from that pre-rendered pool; an
+    #                 item the catalog does NOT know is the player's own, and is
+    #                 drawn once from THEIR description of it.
+    #   "on_demand" — draw anything the first time it is inspected (the old
+    #                 behaviour; simple, and unbounded).
+    item_art_mode: str = "catalog"
     # ----- generation backend -----
     backend: str = "comfyui"                 # "comfyui" (only backend for now)
     base_url: str = "http://127.0.0.1:8188"  # ComfyUI listen address

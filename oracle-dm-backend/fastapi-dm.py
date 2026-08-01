@@ -8457,6 +8457,58 @@ def _normalize_item_name(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").strip().lower())
 
 
+def _item_entry(char: Character, name: str) -> Optional[Dict[str, Any]]:
+    """The inventory entry a name refers to, matched the same loose way
+    ``_has_inventory_item`` matches (exact first, then containment)."""
+    needle = _normalize_item_name(name)
+    if not needle:
+        return None
+    loose = None
+    for it in _inventory_items(char):
+        nm = _normalize_item_name(str(it.get("name", "")))
+        if not nm:
+            continue
+        if nm == needle:
+            return it
+        if loose is None and (needle in nm or nm in needle):
+            loose = it
+    return loose
+
+
+def _item_base_name(char: Character, name: str) -> str:
+    """The CATALOG name behind a possibly-renamed item.
+
+    A player who names a bought longsword "Dawnbreaker" must not lose its
+    damage dice, weight or cost — the entry keeps ``base`` so every mechanical
+    lookup still resolves, and only the label and the picture become theirs.
+    """
+    entry = _item_entry(char, name) or {}
+    return str(entry.get("base") or name)
+
+
+def _item_art_ref(char: Character, name: str) -> tuple[str, Optional[str]]:
+    """``(image ref, the player's description)`` for this character's copy.
+
+    An ordinary catalog item shares ONE picture with every other copy in the
+    world, keyed by the item's own name — which is exactly why the whole
+    catalog can be pre-rendered once and reused forever. The moment a player
+    names and describes a piece it stops being interchangeable: it gets its own
+    ref and its own render, and the shared catalog picture is left untouched
+    for everyone else who owns a plain one.
+    """
+    entry = _item_entry(char, name) or {}
+    art = entry.get("art") if isinstance(entry.get("art"), dict) else {}
+    ref = (art or {}).get("ref")
+    if ref:
+        return str(ref), (art or {}).get("desc")
+    return name, None
+
+
+def _personal_art_ref(char: Character, title: str) -> str:
+    """A per-character ref for a named piece, stable across re-renders."""
+    return f"{slugify(char.name)}-{slugify(title)}"[:120]
+
+
 def _has_inventory_item(char: Character, name: str) -> bool:
     """True if an item matching ``name`` exists in the character inventory."""
     needle = _normalize_item_name(name)
@@ -15349,11 +15401,12 @@ def _activity_inventory(char: Character) -> list[dict]:
     out: list[dict] = []
     for it in _inventory_items(char):
         name = it.get("name") or "Unknown item"
+        base_name = str(it.get("base") or name)
         obj: dict = {"name": name, "qty": it.get("quantity", 1) or 1}
         row = None
         if lib is not None:
             try:
-                row = lib.get_item(name)
+                row = lib.get_item(base_name)
                 if row:
                     if row.item_type or row.category:
                         obj["type"] = row.item_type or row.category
@@ -15369,12 +15422,15 @@ def _activity_inventory(char: Character) -> list[dict]:
         # Interactive badge: spellbook/charged/consumable/container get their own
         # badge; attunement items are flagged too; plain wearables don't badge
         # (they still expose equip actions on click).
-        fam = _item_family(row, name)
+        fam = _item_family(row, base_name)
         if row is not None and getattr(row, "requires_attunement", False) and fam in (None, "wearable"):
             obj["interactive"] = "attunement"
         elif fam and fam != "wearable":
             obj["interactive"] = fam
-        art = _item_thumb_url(name)
+        _art = it.get("art") if isinstance(it.get("art"), dict) else None
+        if _art and _art.get("ref"):
+            obj["named"] = True
+        art = _item_thumb_url((_art or {}).get("ref") or name)
         if art:
             obj["art"] = art
         if it.get("equipped"):
@@ -15387,7 +15443,7 @@ def _activity_inventory(char: Character) -> list[dict]:
         # The single verb the card shows. The inspector still offers the full
         # set — this is the one you reach for without opening anything.
         try:
-            caps = _item_caps(row, name, it, char, fam)
+            caps = _item_caps(row, base_name, it, char, fam)
             acts = caps.get("actions") or []
             if acts:
                 obj["action"] = acts[0]
@@ -15530,16 +15586,97 @@ def _item_art_prompt(row, name: str) -> tuple[str, Optional[str], str]:
     return ", ".join(look_bits), _MUNDANE_ITEM_STYLE, _MUNDANE_ITEM_NEGATIVE
 
 
-def _item_art(name: str, context: str = "inspect"):
-    """Render/fetch an item's picture, grounded in the catalog row."""
+def _item_art(ref: str, base_name: str, context: str = "inspect",
+              describe: Optional[str] = None):
+    """Render/fetch an item's picture under ``ref``, grounded in the catalog row.
+
+    ``ref`` is the shared item name for an ordinary piece, or a per-character
+    ref for one the player has named. ``describe`` is their own words, which
+    lead the prompt so the picture is of THEIR thing rather than a guess from
+    its name.
+    """
     try:
-        row = rules_lib.get_item(name)
+        row = rules_lib.get_item(base_name)
     except Exception:
         row = None
-    look, style, negative = _item_art_prompt(row, name)
+    look, style, negative = _item_art_prompt(row, base_name)
+    if describe:
+        # Their words lead; the derived look still supplies the framing that
+        # makes it read as an item card. A named, commissioned piece also earns
+        # the ornate treatment even when its stats are plain — that IS the
+        # "higher tier" the player paid for.
+        look = f"{describe.strip()[:300]}, {look}, a treasured named piece, "\
+               "finer craftsmanship than its plain kin"
+        style, negative = None, ""
     return image_store.ensure_image(
-        "item", name, look=look, context=context,
+        "item", ref, look=look, context=context,
         style_prompt=style, negative_extra=negative, drop_stale=True)
+
+
+def _item_art_state(char: Character, name: str) -> str:
+    """What should happen about this item's picture, right now.
+
+    ``have``     — already drawn (shared catalog art, or this character's own).
+    ``render``   — draw on demand (only in the unbounded "on_demand" mode).
+    ``pending``  — a catalog item awaiting the batch pre-render. NOT drawn here:
+                   the catalog is a fixed one-time cost paid by
+                   ``scripts/item_art.py``, never a GPU job per player per item.
+    ``describe`` — nothing in the catalog matches, so it exists only because
+                   this table invented it. Only the player can say what it looks
+                   like, and drawing it is the one render play pays for.
+
+    Naming a piece is offered in EVERY state — ``have`` included. A player who
+    wants their bought longsword to be Dawnbreaker is not blocked by the
+    catalog already having a picture of a longsword.
+    """
+    ref, _desc = _item_art_ref(char, name)
+    try:
+        if image_store.get_any_latest("item", ref) is not None:
+            return "have"
+    except Exception:
+        pass
+    if (get_config().imagery.item_art_mode or "catalog").lower() != "catalog":
+        return "render"
+    if ref != name:
+        # Already a named piece with its own ref. The catalog batch will never
+        # cover it, so it is drawable now — otherwise a failed render would
+        # leave it saying "not yet drawn" forever.
+        return "describe"
+    try:
+        known = rules_lib.get_item(_item_base_name(char, name)) is not None
+    except Exception:
+        known = False
+    return "pending" if known else "describe"
+
+
+def _name_and_describe_item(char: Character, name: str, text: str,
+                            title: Optional[str] = None) -> tuple[str, str]:
+    """Make an item this character's own: their words, and optionally their name
+    for it. Returns ``(new_name, art_ref)``.
+
+    The catalog name is preserved as ``base`` so every mechanical lookup — stats,
+    weight, cost, equip/attune behaviour — keeps resolving after a rename.
+    """
+    entry = _item_entry(char, name)
+    if entry is None:
+        return name, name
+    base = str(entry.get("base") or entry.get("name") or name)
+    new_name = (title or "").strip() or str(entry.get("name") or name)
+    ref = _personal_art_ref(char, new_name)
+    inv = list(char.inventory or [])
+    for i, raw in enumerate(inv):
+        if not isinstance(raw, dict):
+            continue
+        if _normalize_item_name(raw.get("name")) != _normalize_item_name(entry.get("name")):
+            continue
+        updated = dict(raw)
+        updated["name"] = new_name
+        updated["base"] = base
+        updated["art"] = {"ref": ref, "desc": text.strip()[:300]}
+        inv[i] = updated
+        break
+    char.inventory = inv
+    return new_name, ref
 
 
 def _item_stat_lines(row) -> list[str]:
@@ -15604,9 +15741,12 @@ def _activity_item_detail(char: Character, name: str) -> dict:
     item is interactive. Art is (re)generated in the background by the caller."""
     detail: dict = {"name": name}
     item_type = None
+    # A renamed piece ("Dawnbreaker") still resolves its mechanics through the
+    # catalog name it was made from.
+    base_name = _item_base_name(char, name)
     try:
         from rules.query import RulesLibrary
-        row = RulesLibrary(engine=engine).get_item(name)
+        row = RulesLibrary(engine=engine).get_item(base_name)
     except Exception:
         row = None
     if row:
@@ -15628,7 +15768,7 @@ def _activity_item_detail(char: Character, name: str) -> dict:
             break
     if "description" not in detail and inv_item and inv_item.get("notes"):
         detail["description"] = str(inv_item["notes"])
-    family = _item_family(row, name)
+    family = _item_family(row, base_name)
     if family == "spellbook":
         detail["interactive"] = "spellbook"
         detail["spells"] = _spellbook_spells(char)
@@ -17569,20 +17709,85 @@ async def activity_ws(ws: WebSocket, channel: str):
                 if detail is None:
                     continue
                 await ws.send_json({"t": "item_detail", "item": detail})
-                # Generate/fetch the item's picture off the event loop and push it
-                # in when ready, so the modal opens instantly and the art fills in.
+                # The picture is fetched off the event loop and pushed in when
+                # ready, so the modal opens instantly and the art fills in.
                 if get_config().imagery.enabled:
-                    async def _gen_item_art(nm=name):
-                        try:
-                            loop = asyncio.get_event_loop()
-                            res = await loop.run_in_executor(
-                                None, lambda: _item_art(nm))
-                            if res and not getattr(res, "offline", False):
-                                await ws.send_json({"t": "item_image", "name": nm,
-                                                    "url": _img_data_url(res)})
-                        except Exception as e:
-                            print(f"[activity] item art gen: {e}")
-                    asyncio.create_task(_gen_item_art())
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        state = _item_art_state(ch, name) if ch else "pending"
+                        ref, desc = _item_art_ref(ch, name) if ch else (name, None)
+                        base = _item_base_name(ch, name) if ch else name
+                    if state in ("have", "render"):
+                        async def _gen_item_art(nm=name, rf=ref, bs=base, ds=desc):
+                            try:
+                                loop = asyncio.get_event_loop()
+                                res = await loop.run_in_executor(
+                                    None, lambda: _item_art(rf, bs, describe=ds))
+                                if res and not getattr(res, "offline", False):
+                                    await ws.send_json({"t": "item_image", "name": nm,
+                                                        "url": _img_data_url(res)})
+                            except Exception as e:
+                                print(f"[activity] item art gen: {e}")
+                        asyncio.create_task(_gen_item_art())
+                    else:
+                        # No GPU work: either the batch owes us this one, or it
+                        # is the player's own item and only they can say what it
+                        # looks like.
+                        await ws.send_json({"t": "item_art_state",
+                                            "name": name, "state": state})
+                continue
+
+            # ---- name and describe a piece, and have it drawn -----------------
+            # The catalog is pre-rendered in bulk and shared by everyone; this is
+            # the ONE path that spends GPU time during play. It is offered for
+            # any item the character holds — a bought longsword can become
+            # Dawnbreaker — and always produces a picture that belongs to this
+            # character alone, leaving the shared catalog art untouched.
+            if msg.get("t") == "describe_item":
+                name = (msg.get("name") or "").strip()
+                text = (msg.get("text") or "").strip()
+                title = (msg.get("title") or "").strip()
+                cid = _activity_char_id(session_id, user_id) if session_id else None
+                if not name or not cid:
+                    continue
+                if not get_config().imagery.enabled:
+                    await ws.send_json({"t": "item_error", "name": name,
+                                        "detail": "The Oracle draws nothing today."})
+                    continue
+                if len(text) < 8:
+                    await ws.send_json({"t": "item_error", "name": name,
+                                        "detail": "Tell the Oracle a little more."})
+                    continue
+                with Session(engine) as s:
+                    ch = s.get(Character, cid)
+                    if not ch or not _has_inventory_item(ch, name):
+                        await ws.send_json({"t": "item_error", "name": name,
+                                            "detail": "You are not carrying that."})
+                        continue
+                    new_name, ref = _name_and_describe_item(ch, name, text, title)
+                    base = _item_base_name(ch, new_name)
+                    s.add(ch)
+                    s.commit()
+                sheet = _activity_sheet(session_id, user_id)
+                if sheet:
+                    await ws.send_json({"t": "sheet", "sheet": sheet})
+
+                async def _gen_described(nm=new_name, rf=ref, bs=base, desc=text):
+                    try:
+                        loop = asyncio.get_event_loop()
+                        res = await loop.run_in_executor(
+                            None, lambda: _item_art(rf, bs, describe=desc))
+                        if res and not getattr(res, "offline", False):
+                            await ws.send_json({"t": "item_image", "name": nm,
+                                                "url": _img_data_url(res)})
+                        else:
+                            await ws.send_json({"t": "item_error", "name": nm,
+                                                "detail": "The vision would not come."})
+                    except Exception as e:
+                        print(f"[activity] described item art: {e}")
+                        await ws.send_json({"t": "item_error", "name": nm,
+                                            "detail": "The vision would not come."})
+                asyncio.create_task(_gen_described())
                 continue
 
             # ---- inscribe a spell into a spellbook (wizard etc.) ----

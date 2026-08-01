@@ -198,6 +198,20 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - **Item pictures are built from the catalog row**, never the bare name: see
   `_item_art_prompt`. Mundane gear also swaps the ornate house style out, or
   "Common Clothes" comes back as courtly finery.
+- **Item art is a FIXED catalog cost, not a per-player one.** Pictures are keyed
+  by item slug, so one render of "Longsword" serves every character in every
+  campaign forever — the whole 700-item catalog is pre-rendered once by
+  `uv run python scripts/item_art.py --audit` / `--render` (Windows interpreter
+  to reach ComfyUI; ~4h of GPU, resumable). During play `imagery.item_art_mode
+  = "catalog"` means an ordinary item is NEVER drawn on demand: it either has
+  its shared picture or reports `pending` until the batch reaches it.
+  The ONE render play pays for is a piece a player **names and describes**
+  (`describe_item`), which gets its own per-character ref
+  (`kara-emberfall-dawnbreaker`) and leaves the shared catalog art untouched.
+  A renamed piece keeps `base` in its inventory entry, so every mechanical
+  lookup — stats, weight, cost, equip/attune — still resolves through the
+  catalog. Never look an item up by its display name alone; use
+  `_item_base_name`.
 - **Level-up is gated on its choices** the same way the subclass pick is: an ASI
   level returns `asi_required` + `asi_feats` until the player sends either
   `ability_increases` or a `feat` (+ `feat_choices`). `FEAT_CHOICES` is the one
