@@ -183,6 +183,14 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   Never let the model author a layout or a distance. This does NOT contradict the
   "hex maps were dropped" rule below — that was a world-map render engine; this is
   an encounter-scale square grid.
+- **Each culture reads in its own hand.** Six OFL display faces live in
+  `activity-ui/public/assets/fonts/` (keep `ATTRIBUTION.md` beside them — the
+  licence requires it). The server owns the only thing the client cannot know:
+  WHICH culture a name belongs to. That table is `_FAMILY_SCRIPT` /
+  `_SPECIES_SCRIPT` in the backend, surfaced as a `script` field on lexicon
+  entries, CC species/powers, the sheet, and speech blocks. They are DISPLAY
+  faces — set on proper nouns only, never body text — and a name whose culture
+  can't be placed correctly stays in the house serif.
 - **Coin is money, not gear.** Book equipment lists write starting coin as a line
   item ("15 GP"); `_add_inventory_item` folds any coin name into the PURSE so the
   pack never shows currency next to the sheet's own Gold row.

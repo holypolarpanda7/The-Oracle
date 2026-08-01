@@ -11204,6 +11204,8 @@ def cc_options():
             "lineages": getattr(r, "lineages", None) or [],
             "lineage_label": getattr(r, "lineage_label", None),
             "feat_choice": getattr(r, "feat_choice", None),
+            # The cultural hand this species' names are written in.
+            "script": _script_for_species(r.name),
         } for r in races],
         "classes": [{
             "slug": c.index_slug, "name": c.name, "hit_die": c.hit_die,
@@ -11268,7 +11270,15 @@ def _pantheon_options() -> Dict[str, Any]:
     """
     try:
         from eight_card_system import pantheon as _pan
-        return _pan.pantheon_payload(world)
+        payload = _pan.pantheon_payload(world)
+        # Each family reads in its own hand. Decorated here rather than in
+        # pantheon.py so the culture->typeface table has ONE home (see the
+        # cultural-hands section) and the world graph stays presentation-free.
+        for fam in payload.get("families", []):
+            fam["script"] = _script_for_power(fam.get("key"))
+        for power in payload.get("powers", []):
+            power["script"] = _script_for_power(power.get("family"))
+        return payload
     except Exception as e:
         print(f"[pantheon] options unavailable: {e}")
         return {"families": [], "powers": []}
@@ -15837,6 +15847,8 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "gold": (sheet.get("purse") or {}).get("gp"),
         # ---- v1 structured / themeable fields ----
         "race": sheet.get("race"),
+        # The cultural hand this character's own name is written in.
+        "script": _script_for_species(sheet.get("race")),
         "creature_type": sheet.get("creature_type"),
         "immunities": sheet.get("immunities") or [],
         "char_class": sheet.get("char_class"),
@@ -16149,27 +16161,103 @@ def _activity_bonds(session_id: str, user_id: str) -> list[dict]:
     return out[:40]
 
 
+# ===================== Cultural hands =======================================
+#
+# Each culture in the world reads in its own face. The client owns the fonts
+# (activity-ui/public/assets/fonts, all SIL OFL); the server owns the only
+# thing it cannot know — WHICH culture a given name belongs to.
+#
+# These are DISPLAY faces, set on proper nouns only: a god, a species, a person
+# of that culture. Never on body text. A name whose culture we cannot place
+# stays in the house serif, which is the right default rather than a failure.
+
+# Power family (eight_card_system/pantheon.POWER_FAMILIES) -> hand.
+_FAMILY_SCRIPT = {
+    "sovereign": "celestial",     # monumental Roman caps — the worshipped gods
+    "celestial": "celestial",
+    "ymmarch": "dwarven",         # the giant-gods cut theirs in stone
+    "archfey": "fey",
+    "old_gods": "draconic",       # older than letters; an insular, primordial hand
+    "archdevils": "infernal",
+    "demon_lords": "infernal",
+}
+
+# Species/lineage keyword -> hand. Matched as a substring of the lowercased
+# species name, longest key first, so "half-elf" beats "elf" and
+# "shadar-kai" is placed before a bare "kai" ever could be.
+_SPECIES_SCRIPT = {
+    "elf": "elven", "eladrin": "elven", "drow": "elven", "shadar-kai": "elven",
+    "dwarf": "dwarven", "duergar": "dwarven", "goliath": "dwarven",
+    "firbolg": "dwarven", "giant": "dwarven",
+    "dragonborn": "draconic", "kobold": "draconic", "lizardfolk": "draconic",
+    "tiefling": "infernal", "hexblood": "infernal", "yuan-ti": "infernal",
+    "gnome": "fey", "halfling": "fey", "satyr": "fey", "fairy": "fey",
+    "harengon": "fey", "changeling": "fey", "shifter": "fey",
+    "aasimar": "celestial", "kalashtar": "celestial",
+}
+_SPECIES_SCRIPT_KEYS = sorted(_SPECIES_SCRIPT, key=len, reverse=True)
+
+
+def _script_for_species(species: Optional[str]) -> Optional[str]:
+    """The hand a species' names are written in, or None for the house serif."""
+    s = (species or "").strip().lower()
+    if not s:
+        return None
+    for key in _SPECIES_SCRIPT_KEYS:
+        if key in s:
+            return _SPECIES_SCRIPT[key]
+    return None
+
+
+def _script_for_power(family: Optional[str]) -> Optional[str]:
+    return _FAMILY_SCRIPT.get((family or "").strip().lower())
+
+
+def _script_for_entity(ent) -> Optional[str]:
+    """The hand for a world entity: a power by its family, anyone else by the
+    species they belong to (which the extractor stores on the entity)."""
+    if ent is None:
+        return None
+    attrs = getattr(ent, "attributes", None) or {}
+    if (getattr(ent, "type", "") or "") == EntityType.DEITY:
+        return _script_for_power(attrs.get("family"))
+    for key in ("species", "race", "lineage", "culture"):
+        got = _script_for_species(attrs.get(key))
+        if got:
+            return got
+    return None
+
+
 def _activity_lexicon(session_id: str, pc_name: Optional[str],
-                      reply_text: str) -> list[dict]:
+                      reply_text: str, pc_race: Optional[str] = None) -> list[dict]:
     """Names worth colouring: the PC, world-slice entities, and any rules
-    entities (spells/monsters) referenced in the reply."""
+    entities (spells/monsters) referenced in the reply.
+
+    Entries may also carry a ``script`` — the cultural hand the name is written
+    in (see the cultural-hands table above), so a god of the Choir and a dwarven
+    smith do not read in the same face.
+    """
     entries: list[dict] = []
     seen: set[str] = set()
 
-    def add(text: Optional[str], kind: str):
+    def add(text: Optional[str], kind: str, script: Optional[str] = None):
         if not text or len(text) < 3 or text.lower() in seen:
             return
         seen.add(text.lower())
-        entries.append({"text": text, "kind": kind})
+        row = {"text": text, "kind": kind}
+        if script:
+            row["script"] = script
+        entries.append(row)
 
-    add(pc_name, "name")
+    # The PC's own name reads in their species' hand.
+    add(pc_name, "name", _script_for_species(pc_race))
     try:
         ctx, _ = assemble_context(session_id, reply_text[:400])
         for e in getattr(ctx, "entities", []) or []:
             etype = (getattr(e, "type", "") or "").lower()
             kind = "place" if etype in (
                 "place", "settlement", "region", "ward", "building") else "name"
-            add(getattr(e, "name", None), kind)
+            add(getattr(e, "name", None), kind, _script_for_entity(e))
     except Exception:
         pass
     try:
@@ -16238,7 +16326,8 @@ def _speaker_portrait(name: str) -> Optional[str]:
 
 
 def _activity_segments(reply: str, rolls: list[dict],
-                       speakers: Optional[list[str]] = None) -> list[dict]:
+                       speakers: Optional[list[str]] = None,
+                       scripts: Optional[dict] = None) -> list[dict]:
     """Split the reply into narration blocks interleaved with roll cards at
     the exact positions their inline '🎲 …' markers occupy.
 
@@ -16271,6 +16360,9 @@ def _activity_segments(reply: str, rolls: list[dict],
             if who:
                 last_speaker = who
                 ev["who"] = who
+                hand = (scripts or {}).get(who)
+                if hand:
+                    ev["script"] = hand
                 art = _speaker_portrait(who)
                 if art:
                     ev["portrait"] = art
@@ -18267,7 +18359,8 @@ async def activity_ws(ws: WebSocket, channel: str):
             _set_activity_music(channel, resp.music)
 
             pc_name = (sheet or {}).get("name")
-            lex = _activity_lexicon(session_id, pc_name, resp.reply)
+            lex = _activity_lexicon(session_id, pc_name, resp.reply,
+                                    (sheet or {}).get("race"))
             if lex:
                 await _activity_broadcast(session_id, {"t": "lexicon",
                                                        "entries": lex},
@@ -18278,14 +18371,17 @@ async def activity_ws(ws: WebSocket, channel: str):
             # The lexicon's people are exactly the pool of possible speakers:
             # the PC plus whoever the world slice put in the scene.
             speaker_names = [e["text"] for e in lex if e.get("kind") == "name"]
-            for ev in _activity_segments(resp.reply, rolls, speaker_names):
+            speaker_scripts = {e["text"]: e["script"] for e in lex if e.get("script")}
+            for ev in _activity_segments(resp.reply, rolls, speaker_names,
+                                         speaker_scripts):
                 if is_private:
                     ev = {**ev, "secret": True}
                     await ws.send_json(ev)
                 else:
                     await _activity_broadcast(session_id, ev, fallback=ws)
             if is_private and resp.public:
-                for ev in _activity_segments(resp.public, [], speaker_names):
+                for ev in _activity_segments(resp.public, [], speaker_names,
+                                             speaker_scripts):
                     await _activity_broadcast(session_id, ev, fallback=ws)
 
             # Suggested next actions. They follow the narration's audience: on a
