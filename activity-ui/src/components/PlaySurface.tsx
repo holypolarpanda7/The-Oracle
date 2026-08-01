@@ -282,7 +282,7 @@ export function PlaySurface(p: PlayProps) {
               onDismissError={p.onVttDismissError}
             />
           ) : p.sceneUrl ? (
-            <Frame className="scene" panel={scene}>
+            <Frame className="scene" panel={scene} bare>
               <div className="in"><img src={p.sceneUrl} alt="Scene" /></div>
               <span className="tag">Scene · rendered</span>
             </Frame>

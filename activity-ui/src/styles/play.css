@@ -36,8 +36,14 @@
   overflow: hidden auto; scrollbar-width: thin;
   padding: 0 20px; margin: 0 -20px;
 }
-.play aside { display: flex; flex-direction: column; align-self: stretch;
-  min-height: 0; overflow: hidden auto; scrollbar-width: thin; }
+.play aside {
+  display: flex; flex-direction: column; align-self: stretch;
+  min-height: 0; overflow: hidden auto; scrollbar-width: thin;
+  /* The character sheet's crest hangs 33px above the panel on purpose. The
+     scroll box would shear it off, so it gets that room back — the padding
+     and the negative margin cancel, leaving the panel where it was. */
+  padding-top: 30px; margin-top: -30px;
+}
 
 /* ---------- status bar: who you are, where you stand, what hour it is ------ */
 .play .statusbar {
@@ -286,6 +292,8 @@
 .play .scene {
   aspect-ratio: 16 / 8.6; flex: none; max-height: 34vh; align-self: stretch;
 }
+.play .scene.bare { box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5); }
+.play .scene.bare .in { inset: 0; border-radius: 5px; }
 .play .scene .in {
   position: absolute; inset: 12px; border-radius: 3px; overflow: hidden;
   background:
