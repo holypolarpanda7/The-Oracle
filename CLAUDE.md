@@ -138,6 +138,14 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
   level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed)
+- Session-feature smoke tests (all offline, fresh scratch DB, no GPU/LLM):
+  `uv run python scripts/<name>_smoke.py` for `locale` (place/clock/weather/
+  who's here), `chronicle` (journal + quests + bonds), `speech` (dialogue
+  attribution), `itemart` (catalog vs player-named art, and that a renamed
+  piece keeps its stats), `cultural_scripts` (culture -> typeface mapping),
+  `affix` (a drop rolls properties that reach real mechanics), `forge`
+  (tempering needs a smith), `routes` (roads costed from real geography, and
+  no map data leaks)
 - Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
   (a god born in play becomes choosable in CC; an unmade one stops being offered)
 - Activity UI harnesses (Playwright, against the offline demo — run
