@@ -763,6 +763,14 @@ export const demoScript = {
         "\"and the ones that do aren't millers.\"",
     } as ServerEvent,
     {
+      // A rendered establishing shot. In play this is guaranteed on arriving
+      // somewhere new (_maybe_render_arrival) and can also come from an
+      // [[IMAGE: ...]] hook; offline we stand in a shipped background so the
+      // pane is actually exercised.
+      t: "scene",
+      url: "/assets/backgrounds/play-cavern.jpg",
+    } as ServerEvent,
+    {
       t: "suggest",
       actions: ["follow the tracks", "sneak up to the mill door",
                 "call out to whoever is inside"],

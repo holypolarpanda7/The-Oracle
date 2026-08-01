@@ -42,7 +42,8 @@ async function run(name, viewport) {
   await page.screenshot({ path: `${OUT}/${name}-02-roll.png` });
   await page.locator(".scroll").screenshot({ path: `${OUT}/${name}-03-scroll.png` });
 
-  console.log(name, "speech cards:", await page.locator(".speech").count());
+  console.log(name, "speech cards:", await page.locator(".speech").count(),
+              "scene pane:", await page.locator(".scene").count());
   console.log(name,
     "statusbar:", await page.locator(".statusbar").count(),
     "locale:", await page.locator(".locale").count(),

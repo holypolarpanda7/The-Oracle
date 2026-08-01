@@ -279,7 +279,13 @@
 /* ---------- scene ---------- */
 /* Capped so a rendered picture never crowds out the narration; when there is
    no picture the frame is not rendered at all (see PlaySurface). */
-.play .scene { aspect-ratio: 16 / 8.6; flex: none; max-height: 34vh; margin: 0 auto; }
+/* Height-capped so a picture never crowds out the narration, but it must
+   STRETCH to the column: everything inside .scene is absolutely positioned, so
+   `margin: 0 auto` (which makes a flex item shrink-to-fit) collapsed the whole
+   pane to 4x2px. scene-check.mjs now asserts real dimensions. */
+.play .scene {
+  aspect-ratio: 16 / 8.6; flex: none; max-height: 34vh; align-self: stretch;
+}
 .play .scene .in {
   position: absolute; inset: 12px; border-radius: 3px; overflow: hidden;
   background:
