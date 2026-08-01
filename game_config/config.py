@@ -307,10 +307,18 @@ class ImageryConfig:
     loras: List[Dict[str, Any]] = field(default_factory=list)
     # `loras_by_kind` overrides the house style for a specific ImageKind, and
     # exists for kinds whose JOB is different, not whose mood is. In practice
-    # that means "map": a battlemap must be dead-flat overhead with no
-    # perspective (see _MAP_NEGATIVE in prompt_build) — the exact opposite of
-    # the cinematic rim-lit look everything else wants. A battlemap LoRA fights
-    # that battle in the weights instead of the prompt.
+    # that means the two map kinds, which are NOT interchangeable:
+    #   "map"      — a battlemap: one room at 5 ft per square, dead-flat
+    #                overhead, no perspective (see _MAP_NEGATIVE in
+    #                prompt_build). The opposite of the cinematic rim-lit look
+    #                everything else wants, so a battlemap LoRA fights that
+    #                battle in the weights instead of the prompt.
+    #   "worldmap" — the terrain wash under a drafted parchment map: MILES per
+    #                inch, drawn country rather than photographed ground. Runs
+    #                sxz-wowmap, which was trained caption-free (its
+    #                ss_tag_frequency is empty), so it has NO trigger word —
+    #                strength is the only dial, and adding a `trigger` key would
+    #                just push a meaningless token into the prompt.
     #   {"map": [{"name": "dnd_battlemaps_xl.safetensors", "model": 0.9}]}
     # A kind listed here uses ITS list INSTEAD of `loras`, not in addition.
     loras_by_kind: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)

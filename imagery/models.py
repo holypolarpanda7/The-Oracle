@@ -45,8 +45,14 @@ class ImageKind:
     MAP = "map"            # -> a top-down tactical battlemap for a vtt scene,
     #                          keyed by the layout signature so the same room
     #                          re-renders identically (see vtt/art.py)
+    WORLDMAP = "worldmap"  # -> the TERRAIN WASH under a drafted parchment map,
+    #                          keyed by the survey signature. Distinct from MAP:
+    #                          that one is a 5-ft grid of one room, this one is
+    #                          miles of country. Different LoRA, different
+    #                          framing, and never interchangeable — see
+    #                          eight_card_system/mapmaker.py.
 
-    ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE, MAP}
+    ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE, MAP, WORLDMAP}
 
 
 def normalize_kind(kind: str) -> str:
@@ -55,7 +61,9 @@ def normalize_kind(kind: str) -> str:
                "location": ImageKind.PLACE, "person": ImageKind.NPC,
                "character": ImageKind.NPC, "player": ImageKind.PC,
                "portrait": ImageKind.PC, "hero": ImageKind.PC,
-               "battlemap": ImageKind.MAP, "tactical": ImageKind.MAP}
+               "battlemap": ImageKind.MAP, "tactical": ImageKind.MAP,
+               "worldmap": ImageKind.WORLDMAP, "world-map": ImageKind.WORLDMAP,
+               "region-map": ImageKind.WORLDMAP, "chart": ImageKind.WORLDMAP}
     k = aliases.get(k, k)
     return k if k in ImageKind.ALL else ImageKind.CREATURE
 

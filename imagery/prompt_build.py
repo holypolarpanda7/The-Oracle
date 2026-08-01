@@ -38,6 +38,17 @@ _KIND_FRAMING = {
         "flat lay, no perspective, no horizon, tabletop RPG battle map, "
         "even diffuse lighting, full-bleed edge to edge"
     ),
+    # A world map is DRAWN COUNTRY, not photographed ground: miles per inch,
+    # stylised relief, the conventions of a cartographer rather than a camera.
+    # It also carries no writing — every label, dot, road, compass and scale bar
+    # on the finished artifact is inked by mapmaker.py from real coordinates, so
+    # anything the model writes here is a lie drawn over the truth.
+    ImageKind.WORLDMAP: (
+        "hand-drawn fantasy world map, overhead cartographic view, "
+        "stylised painted relief, illustrated terrain on aged parchment, "
+        "muted cartographer's palette, no labels, no writing, "
+        "full-bleed edge to edge"
+    ),
 }
 
 #: Coherence clauses appended for kinds that depict a person. Diffusion models
@@ -65,6 +76,23 @@ _MAP_NEGATIVE = (
     "people, characters, figures, creatures, miniatures, tokens, "
     "grid lines, hex grid, text, labels, legend, compass rose, border, frame, "
     "vignette, watermark, signature, ui, drop shadow"
+)
+
+#: World-map negatives. Mostly about keeping the model's HANDWRITING off the
+#: sheet: the ink layer draws every place name, route and compass from the
+#: world's real coordinates, and a model-invented label underneath it is a
+#: second, wrong map showing through.
+_WORLDMAP_NEGATIVE = (
+    "text, letters, words, labels, place names, writing, calligraphy, legend, "
+    "key, scale bar, compass rose, grid lines, latitude lines, border, frame, "
+    "torn edges, rolled scroll, hands, people, characters, creatures, "
+    "isometric, perspective, horizon, watermark, signature, ui, "
+    # The map LoRA is trained on game-atlas plates and will otherwise dress the
+    # sheet in furniture: a carved title banner across the top, gilt corners, a
+    # framing surround. Every one of those eats the edge of a full-bleed wash
+    # and competes with the ink drawn over it.
+    "ornate border, decorative frame, cartouche, title banner, scroll ends, "
+    "gold filigree, corner ornament, inset panel, vignette"
 )
 
 
@@ -131,6 +159,8 @@ def build_prompt(
 
     if kind == ImageKind.MAP:
         negative_prompt = ", ".join(p for p in (negative_prompt, _MAP_NEGATIVE) if p)
+    elif kind == ImageKind.WORLDMAP:
+        negative_prompt = ", ".join(p for p in (negative_prompt, _WORLDMAP_NEGATIVE) if p)
     elif kind in (ImageKind.PC, ImageKind.NPC):
         negative_prompt = ", ".join(p for p in (negative_prompt, _FIGURE_NEGATIVE) if p)
 

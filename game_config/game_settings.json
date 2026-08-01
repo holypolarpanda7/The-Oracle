@@ -44,6 +44,13 @@
             "clip": 0.5,
             "trigger": "battlemap"
           }
+        ],
+        "worldmap": [
+          {
+            "name": "sxz-wowmap-civit-sdxl.safetensors",
+            "model": 0.5,
+            "clip": 0.5
+          }
         ]
       },
       "loras": [
