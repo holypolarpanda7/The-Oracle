@@ -3,6 +3,9 @@ import { useCallback, useEffect, useRef } from "react";
 interface Opts {
   minW?: number;
   minH?: number;
+  /** "y" drags height only — for panels whose width is set by the column they
+   *  sit in, like the tactical board. */
+  axis?: "both" | "y";
 }
 
 const KEY_PREFIX = "oracle.panel.";
@@ -17,8 +20,10 @@ export function dropPanel(id: string) {
  * localStorage and is restored on mount. Returns a ref for the panel, a
  * pointer-down handler for the grip element, and a reset(). */
 export function useResizable(id: string, opts: Opts = {}) {
-  const { minW = 240, minH = 150 } = opts;
-  const ref = useRef<HTMLDivElement>(null);
+  const { minW = 240, minH = 150, axis = "both" } = opts;
+  // Mutable so a caller can share one element between this and its own ref
+  // (the tactical board needs both).
+  const ref = useRef<HTMLDivElement | null>(null);
   const storeKey = KEY_PREFIX + id;
 
   useEffect(() => {
@@ -41,7 +46,7 @@ export function useResizable(id: string, opts: Opts = {}) {
     document.body.classList.add("rez-active");
     const sx = e.clientX, sy = e.clientY, sw = el.offsetWidth, sh = el.offsetHeight;
     const move = (ev: PointerEvent) => {
-      el.style.width = `${Math.max(minW, sw + ev.clientX - sx)}px`;
+      if (axis !== "y") el.style.width = `${Math.max(minW, sw + ev.clientX - sx)}px`;
       el.style.height = `${Math.max(minH, sh + ev.clientY - sy)}px`;
     };
     const up = () => {
@@ -49,12 +54,14 @@ export function useResizable(id: string, opts: Opts = {}) {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       try {
-        localStorage.setItem(storeKey, JSON.stringify({ w: el.offsetWidth, h: el.offsetHeight }));
+        localStorage.setItem(storeKey, JSON.stringify(
+          axis === "y" ? { h: el.offsetHeight }
+                       : { w: el.offsetWidth, h: el.offsetHeight }));
       } catch { /* quota */ }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
-  }, [minW, minH, storeKey]);
+  }, [minW, minH, storeKey, axis]);
 
   const reset = useCallback(() => {
     const el = ref.current;

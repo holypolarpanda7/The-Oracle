@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CombatState, VttOptions, VttScene, VttToken } from "../lib/types";
+import { useResizable } from "../lib/useResizable";
 import {
   CELL, fitView, paint, pathFromCosts, toScreen, toSquare, type View,
 } from "../lib/vttPaint";
@@ -66,7 +67,13 @@ export interface VttProps {
 
 export function VttOverlay(p: VttProps) {
   const { scene } = p;
-  const wrapRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  // How the board and the chat share the column is a preference, not something
+  // one default can get right: on a short window a big board buries the
+  // narration, on a tall one a small board wastes it. So the player drags the
+  // split and it persists. The canvas already repaints on resize (see the
+  // ResizeObserver below), so this is honest resizing, not a stretched bitmap.
+  const boardR = useResizable("vtt-board", { minH: 220, axis: "y" });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const artRef = useRef<HTMLImageElement | null>(null);
   const [view, setView] = useState<View | null>(null);
@@ -416,7 +423,7 @@ export function VttOverlay(p: VttProps) {
 
       <div
         className="vtt-board"
-        ref={wrapRef}
+        ref={(el) => { wrapRef.current = el; boardR.ref.current = el; }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -430,6 +437,12 @@ export function VttOverlay(p: VttProps) {
           <div className="vtt-error" onClick={p.onDismissError}>{p.error}</div>
         )}
       </div>
+
+      <div
+        className="vtt-grip"
+        title="Drag to give the board more room, or give it back to the chat"
+        onPointerDown={boardR.onGripDown}
+      />
 
       <footer className="vtt-foot">
         {selectedToken ? (

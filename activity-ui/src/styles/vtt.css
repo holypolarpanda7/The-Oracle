@@ -80,7 +80,11 @@
 /* ---------- the board ---------- */
 .play .vtt-board {
   position: relative;
-  height: clamp(300px, 52vh, 620px);
+  /* Sized against what the surface actually has left, not a flat share of the
+     viewport: the status bar, carousel, narration and prompt bar are all fixed
+     costs above and below it. On a tall window the board grows to 640; on a
+     short one it yields rather than pushing the chat off the screen. */
+  height: clamp(260px, calc(100vh - 430px), 660px);
   overflow: hidden;
   cursor: crosshair;
   touch-action: none;
@@ -250,3 +254,24 @@
   .play .vtt-board { height: clamp(240px, 44vh, 420px); }
   .play .vtt-title { font-size: 0.85rem; }
 }
+
+/* ---------- the board / chat split ----------
+   Height only: the board's width belongs to the column it sits in. A short
+   window wants a smaller board than a tall one, and no single default gets
+   that right, so the player drags it and the choice persists. */
+.play .vtt-grip {
+  flex: none; height: 9px; cursor: ns-resize;
+  border-top: 1px solid var(--edge);
+  background:
+    linear-gradient(180deg, rgba(23, 33, 66, 0.7), rgba(9, 12, 21, 0.5));
+  position: relative;
+}
+.play .vtt-grip::after {
+  content: ""; position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 46px; height: 3px; border-radius: 2px;
+  background: var(--gold-dim); opacity: 0.55; transition: opacity 0.15s;
+}
+.play .vtt-grip:hover::after { opacity: 1; background: var(--gold); }
+/* Touch has no hover and no precise drag target — the board sizes itself. */
+@media (hover: none) { .play .vtt-grip { display: none; } }

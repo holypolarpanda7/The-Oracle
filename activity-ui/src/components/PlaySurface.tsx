@@ -251,7 +251,7 @@ export function PlaySurface(p: PlayProps) {
   });
 
   return (
-    <div className="play">
+    <div className={`play${p.vtt ? " boarded" : ""}`}>
       <IconDefs />
       <StatusBar sheet={p.sheet} locale={p.locale} />
       {p.combat && <InitiativeCarousel combat={p.combat} />}
@@ -297,7 +297,7 @@ export function PlaySurface(p: PlayProps) {
             </div>
           </div>
 
-          {p.party.length > 0 && (
+          {p.party.length > 0 && !p.combat && (
             <div className="party">
               {p.party.map((a) => (
                 <div className="ally" key={a.name}>
