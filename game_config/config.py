@@ -350,7 +350,11 @@ class ImageryConfig:
     thumb_width: int = 256
     webp_quality: int = 82
     max_per_bucket: int = 3                  # 3 images per (subject x context)
-    max_total_images: int = 600             # global cap; LRU-evicted beyond this
+    # Global cap, LRU-evicted beyond this. It has to comfortably exceed the
+    # PRE-RENDERED ITEM CATALOG (~709 rows, ~36 MB) or the batch in
+    # scripts/item_art.py becomes a treadmill that evicts its own earlier work —
+    # and takes every map and portrait with it. See eviction_priority below.
+    max_total_images: int = 2400
     # ----- reference-guided scenes (IP-Adapter) -----
     # When on, scene renders pull stored art of named participants (PC
     # portraits, NPC/creature images) as visual references so "Kara casting

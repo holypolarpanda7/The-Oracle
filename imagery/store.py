@@ -32,7 +32,7 @@ def _utcnow() -> datetime:
 from typing import Callable, Optional
 
 from sqlmodel import Session, select
-from sqlalchemy import delete as sa_delete, func
+from sqlalchemy import case, delete as sa_delete, func
 from sqlalchemy.engine import Engine
 from .models import (
     EntityImage,
@@ -769,17 +769,34 @@ class ImageStore:
             s.commit()
         return removed
 
+    # What a kind costs to get back, lowest first. A plain LRU treats every
+    # picture as equally replaceable, which is false: a scene re-renders on the
+    # next arrival and a map is a deterministic PIL redraw, while a player's
+    # portrait and the pre-rendered item catalog are hours of GPU with nothing
+    # to re-derive them from. Without this, bulk-rendering the item catalog
+    # silently evicted every map and portrait in the store.
+    _EVICT_ORDER = {
+        ImageKind.SCENE: 0,     # regenerated automatically on the next arrival
+        ImageKind.MAP: 1,       # deterministic redraw from the layout signature
+        ImageKind.CREATURE: 2,
+        ImageKind.PLACE: 3,
+        ImageKind.ITEM: 4,      # the shared catalog — expensive, and batch-built
+        ImageKind.NPC: 5,
+        ImageKind.PC: 6,        # a player's own face: evict last, always
+    }
+
     def _enforce_global_cap(self, session: Session, cfg) -> int:
-        """LRU-evict oldest, least-used rows beyond the global cap."""
+        """Evict beyond the global cap, cheapest-to-replace kinds first."""
         cap = cfg.max_total_images
         total = session.exec(select(func.count(EntityImage.id))).one()
         if total <= cap:
             return 0
-        # Least valuable first: low use_count, then oldest last_used. Work on
-        # ids only so blobs never leave the DB just to be deleted.
+        # Order by what a row costs to rebuild, then least-used, then oldest.
+        # Work on ids only so blobs never leave the DB just to be deleted.
+        order = case(self._EVICT_ORDER, value=EntityImage.kind, else_=3)
         victim_ids = list(session.exec(
             select(EntityImage.id)
-            .order_by(EntityImage.use_count, EntityImage.last_used_at)
+            .order_by(order, EntityImage.use_count, EntityImage.last_used_at)
             .limit(total - cap)
         ).all())
         if victim_ids:
