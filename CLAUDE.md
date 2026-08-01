@@ -62,6 +62,13 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - `seed.py` — `seed_starter_world` + `place_pc` (starter region "Greenfields").
    - `extraction.py` — second-LLM-call change extractor: `extract_and_apply`
      reads (action + narration + context) → JSON `WorldDelta` → applies it.
+   - `placelore.py` — **the one terrain answer** three renderers share:
+     `character_of(graph, place)` returns a `PlaceCharacter` with `scene_look()`
+     (arrival art), `board_look()` (the battlemap floor) and `map_terrain()`
+     (drawn country). Keeps `terrain` (the land it stands IN) apart from
+     `biome` (the surface it presents) — a tavern is `interior` in `farmland`.
+     A place narration invents with no biome inherits one and it is PERSISTED;
+     never re-derive terrain per render or the scene and the board will drift.
    - `pantheon.py` — the original power families (gods, giant-gods, celestials,
      archfey, old gods, archdevils, demon lords) seeded as DEITY entities, plus
      the DM-gated `apply_divine_event`. **The GRAPH is the live roster** —
@@ -133,7 +140,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `./.venv/Scripts/python.exe scripts/style_lora_probe.py` sweeps a HOUSE-STYLE
   LoRA over every kind it touches at several strengths from one seed;
   `scripts/map_lora_probe.py` does the same for the `map` kind over all 21
-  archetypes. Both print a pixel-diff column — 0.00 means the LoRA did nothing.
+  archetypes; `scripts/worldmap_lora_probe.py` does it for the `worldmap` kind
+  over real survey prompts (that LoRA is caption-free — no trigger word exists,
+  strength is the only dial). All three print a pixel-diff column — 0.00 means
+  the LoRA did nothing. `scripts/map_composite_check.py` renders a real drafted
+  map, wash and ink together, to check labels stay readable over the paint.
 - Loot / affix demo: `uv run python -m loot.demo`
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
@@ -145,7 +156,8 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   piece keeps its stats), `cultural_scripts` (culture -> typeface mapping),
   `affix` (a drop rolls properties that reach real mechanics), `forge`
   (tempering needs a smith), `routes` (roads costed from real geography, and
-  no map data leaks)
+  no map data leaks), `map` (one terrain answer across scene/board/parchment;
+  tool + knowledge gating; a sheet accrues across revisions)
 - Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
   (a god born in play becomes choosable in CC; an unmade one stops being offered)
 - Activity UI harnesses (Playwright, against the offline demo — run
@@ -211,6 +223,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   player-named item — the entry keeps `base` and every mechanical lookup must
   go through it. `_compute_ac` already lost a suit of armour's entire AC to
   this once.
+- **A map is painted country under inked truth.** `eight_card_system/mapmaker.py`
+  draws every dot, name, route, compass and scale bar from real spherical
+  coordinates; the `worldmap` image kind paints only the TERRAIN under it,
+  surveyed in nine sectors from the biomes of the places actually on the sheet
+  (so the knowledge gate governs the country too, and an ignorant cartographer
+  gets vague land). Same doctrine as `vtt/art.py`: the picture is a texture.
+  The model must never write a word — a label it invents is a second, wrong map
+  showing through. Distortion runs BEFORE the survey so a failed draft is wrong
+  self-consistently. Offline degrades to bare parchment, never an exception.
+  **Maps accrue**: `[[MAP: update-success|update-failure]]` re-reads a sheet's
+  own recorded slugs and merges, so revising never loses country — re-surveying
+  by radius alone would drop the far half the moment its owner walked away.
 - **Setting out is a decision, and still not a map.** `[[ROUTES: <dest>]]` makes
   the code cost two or three roads from the world's real coordinates
   (`_routes_to` + `survival/travel.py`): how far, how many days, how dangerous.
