@@ -74,3 +74,4 @@ activity-ui/pack-shots/
 # LoRA probe output (generated art, local only)
 map-probe/
 style-probe/
+activity-ui/affix-shots/
