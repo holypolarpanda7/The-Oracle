@@ -1124,3 +1124,34 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
 .af-temper:hover:not(:disabled) { border-color: var(--gold); color: #fff; }
 .af-temper:disabled { opacity: 0.4; cursor: default; }
 .af-text { margin: 5px 0 0; font-size: 0.86rem; line-height: 1.5; color: #dfe8ea; }
+
+/* ---------- setting out: the roads you know ----------
+   Deliberately NOT a map: how far, how long, how bad the road is — the things
+   a traveller could tell you in a taproom, and nothing a chart would show. */
+.play .routes { flex: none; }
+.play .rt-head {
+  font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--gold-2); margin-bottom: 7px;
+}
+.play .rt-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.play .route {
+  flex: 1 1 190px; display: flex; flex-direction: column; gap: 3px;
+  text-align: left; padding: 9px 12px; cursor: pointer; border-radius: 6px;
+  background: rgba(10, 15, 26, 0.78);
+  border: 1px solid var(--edge); border-left: 3px solid var(--gold-dim);
+  transition: border-color 0.12s, background 0.12s;
+  animation: sugg-in 0.3s ease-out both;
+}
+.play .route:hover:not(:disabled) { border-color: var(--gold); background: rgba(20, 28, 48, 0.9); }
+.play .route:disabled { opacity: 0.45; cursor: default; }
+.play .route.danger-moderate { border-left-color: var(--ember); }
+.play .route.danger-high { border-left-color: var(--crimson); }
+.play .route b { font-family: var(--serif); font-size: 0.94rem; color: #f5efde; }
+.play .rt-cost, .play .rt-danger {
+  font-family: var(--mono); font-style: normal; font-size: 0.52rem;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim);
+}
+.play .rt-danger.low { color: var(--teal); }
+.play .rt-danger.moderate { color: var(--ember); }
+.play .rt-danger.high { color: var(--crimson); }
+.play .rt-blurb { font-size: 0.8rem; font-style: italic; line-height: 1.4; color: #c7d2d8; }

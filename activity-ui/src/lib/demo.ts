@@ -796,6 +796,30 @@ export const demoScript = {
         },
       ];
     }
+    if (/travel|journey|set out|road to|ride to|go to|head to|leave for/i.test(action)) {
+      return [
+        {
+          t: "narration",
+          text:
+            "You could be on the road within the hour. The carter at the gate " +
+            "knows three ways to Millbrook, and has opinions about all of them.",
+        },
+        {
+          t: "routes",
+          routes: [
+            { id: "the-high-road", label: "the high road", destination: "Millbrook",
+              miles: 25.1, days: 1.4, terrain: "grassland", danger: "low", nav_dc: 10,
+              blurb: "Patrolled and well-kept. Longer, and you will meet other travellers." },
+            { id: "the-old-track", label: "the old track", destination: "Millbrook",
+              miles: 18.6, days: 1, terrain: "forest", danger: "moderate", nav_dc: 15,
+              blurb: "The way most take. Rutted, and quiet in the wrong places." },
+            { id: "the-shortcut", label: "the shortcut", destination: "Millbrook",
+              miles: 13.4, days: 0.7, terrain: "forest", danger: "high", nav_dc: 15,
+              blurb: "Half-forgotten, and it cuts hard through country that has no reason to be kind." },
+          ],
+        },
+      ];
+    }
     if (/shoot|attack|fire|loose|stab|strike|swing|kill/i.test(action)) {
       if (demoCombatStage === 0) {
         demoCombatStage = 1;

@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { connect, type Connection } from "./lib/connection";
 import type {
   Ally, ArenaState, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry,
-  ChronicleData, Locale, RepData, ServerEvent, SheetData, VttOptions, VttScene,
+  ChronicleData, Locale, RepData, RouteRow, ServerEvent, SheetData, VttOptions,
+  VttScene,
 } from "./lib/types";
 import { Block, isTyped, makeOracleBlock, makeSpeechBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
@@ -42,6 +43,7 @@ export default function App({ session }: { session: Session }) {
   const [sheet, setSheet] = useState<SheetData | null>(null);
   const [locale, setLocale] = useState<Locale | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [routes, setRoutes] = useState<RouteRow[]>([]);
   const [chronicle, setChronicle] = useState<ChronicleData | null>(null);
   const [party, setParty] = useState<Ally[]>([]);
   const [combat, setCombat] = useState<CombatState | null>(null);
@@ -201,6 +203,9 @@ export default function App({ session }: { session: Session }) {
         case "suggest":
           setSuggestions(ev.actions);
           break;
+        case "routes":
+          setRoutes(ev.routes);
+          break;
         case "chronicle_data":
           setChronicle({ entries: ev.entries, quests: ev.quests,
                          bonds: ev.bonds, standing: ev.standing ?? [],
@@ -289,8 +294,10 @@ export default function App({ session }: { session: Session }) {
     const text = (override ?? input).trim();
     if (!text || busy) return;
     if (override === undefined) setInput("");
-    // The chips describe the scene that just ended; the next reply brings its own.
+    // The chips and roads describe the scene that just ended; the next reply
+    // brings its own.
     setSuggestions([]);
+    setRoutes([]);
     connRef.current?.send({ t: "action", text, private: !!secret });
   };
 
@@ -477,6 +484,7 @@ export default function App({ session }: { session: Session }) {
               sheet={sheet}
               locale={locale}
               suggestions={suggestions}
+              routes={routes}
               sceneUrl={sceneUrl}
               party={party}
               combat={combat}

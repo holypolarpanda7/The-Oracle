@@ -7,7 +7,8 @@ import { useResizable, resetAllPanels, dropPanel } from "../lib/useResizable";
 import { InitiativeCarousel } from "./InitiativeCarousel";
 import { VttOverlay } from "./VttOverlay";
 import type {
-  Ally, CombatState, Locale, RollResult, SheetData, VttOptions, VttScene,
+  Ally, CombatState, Locale, RollResult, RouteRow, SheetData, VttOptions,
+  VttScene,
 } from "../lib/types";
 
 function hpMood(hp: number, max: number): string {
@@ -200,6 +201,8 @@ export interface PlayProps {
   onVttDismissError: () => void;
   /** Things the Oracle says you could do now — a nudge, never a menu. */
   suggestions: string[];
+  /** Ways of getting somewhere, when the Oracle offered to set out. */
+  routes: RouteRow[];
   input: string;
   setInput: (v: string) => void;
   submit: (secret?: boolean, text?: string) => void;
@@ -305,6 +308,35 @@ export function PlaySurface(p: PlayProps) {
                   {a.condition && <div className="cond">{a.condition}</div>}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Setting out is a decision. The code costed these from the world's
+              real geography; picking one sends it as your action. Note what is
+              NOT here: no map, no coordinates — only what a traveller could
+              tell you (see eight_card_system/mapmaker.py). */}
+          {p.routes.length > 0 && !p.busy && (
+            <div className="routes">
+              <div className="rt-head">
+                The road to {p.routes[0].destination}
+              </div>
+              <div className="rt-row">
+                {p.routes.map((r) => (
+                  <button
+                    className={`route danger-${r.danger}`}
+                    key={r.id}
+                    disabled={p.rateWait > 0}
+                    onClick={() => send(`We take ${r.label} to ${r.destination}.`)}
+                  >
+                    <b>{r.label}</b>
+                    <em className="rt-cost">
+                      {r.miles} mi · {r.days} {r.days === 1 ? "day" : "days"}
+                    </em>
+                    <em className={`rt-danger ${r.danger}`}>{r.danger} danger</em>
+                    <span className="rt-blurb">{r.blurb}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 

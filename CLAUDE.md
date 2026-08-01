@@ -203,6 +203,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   player-named item — the entry keeps `base` and every mechanical lookup must
   go through it. `_compute_ac` already lost a suit of armour's entire AC to
   this once.
+- **Setting out is a decision, and still not a map.** `[[ROUTES: <dest>]]` makes
+  the code cost two or three roads from the world's real coordinates
+  (`_routes_to` + `survival/travel.py`): how far, how many days, how dangerous.
+  The payload carries NO coordinates or bearings — only what a traveller could
+  tell you in a taproom. This is the same line `mapmaker.py` draws; keep it.
 - **Coin is money, not gear.** Book equipment lists write starting coin as a line
   item ("15 GP"); `_add_inventory_item` folds any coin name into the PURSE so the
   pack never shows currency next to the sheet's own Gold row.

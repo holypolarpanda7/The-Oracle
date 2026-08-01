@@ -112,6 +112,20 @@ export interface ChronicleData {
   error?: string;
 }
 
+/** One way of getting somewhere. NOT a map: no coordinates, no bearing — only
+ *  what a traveller could tell you in a taproom. */
+export interface RouteRow {
+  id: string;
+  label: string;
+  destination: string;
+  miles: number;
+  days: number;
+  terrain: string;
+  danger: string;
+  nav_dc?: number;
+  blurb: string;
+}
+
 export interface SpellSlotRow { level: number; total: number; used: number; }
 export interface ResourceRow { name: string; total: number; used: number; die?: string; }
 export interface SheetFeature {
@@ -544,6 +558,7 @@ export type ServerEvent =
   | { t: "sheet"; sheet: SheetData }
   | { t: "locale"; locale: Locale }
   | { t: "suggest"; actions: string[] }
+  | { t: "routes"; routes: RouteRow[] }
   | ({ t: "chronicle_data" } & ChronicleData)
   | ({ t: "reprepare_data" } & RepData)
   | { t: "party"; members: Ally[] }

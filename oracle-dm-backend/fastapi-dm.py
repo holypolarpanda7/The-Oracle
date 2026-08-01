@@ -562,6 +562,9 @@ class ChatResponse(BaseModel):
     # Two to four things the player could do next, offered as one-tap chips.
     # A nudge, never a menu — typing anything else is always allowed.
     suggestions: Optional[List[str]] = None
+    # Ways of getting somewhere, when the DM offered to set out. Costed by the
+    # code from real geography; the player picks one.
+    routes: Optional[List[Dict[str, Any]]] = None
 
 
 class ResetRequest(BaseModel):
@@ -2210,6 +2213,80 @@ def process_puzzle_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list
 #   [[QUEST: advance | <name> | <progress note (logged to the world)>]]
 #   [[QUEST: branch | <parent> | <side-quest name> | <conflict>]]
 #   [[QUEST: resolve | <name> | completed|failed | <outcome>]]
+# ROUTES hooks: setting out is a DECISION, not a fade to black.
+#
+# Their game makes you pick a road, each with its own encounters. Ours does the
+# same, with one rule kept: this is NOT a map. A route only exists between two
+# places this character actually KNOWS, and it reports what a traveller could
+# tell you in a taproom — how far, how long, how bad the road is — never
+# coordinates or a bearing. See eight_card_system/mapmaker.py.
+#   [[ROUTES: <destination>]]
+ROUTES_HOOK_PATTERN = re.compile(r"\[\[ROUTES:(.+?)\]\]", re.IGNORECASE)
+
+# How a road's danger reads, and what it costs to take it. The safe way round
+# is longer; the direct way is direct.
+_ROUTE_KINDS = (
+    ("the high road", 1.35, "low",
+     "Patrolled and well-kept. Longer, and you will meet other travellers."),
+    ("the old track", 1.0, "moderate",
+     "The way most take. Rutted, and quiet in the wrong places."),
+    ("the shortcut", 0.72, "high",
+     "Half-forgotten, and it cuts hard through country that has no reason to be kind."),
+)
+
+
+def _place_terrain(ent) -> str:
+    attrs = (getattr(ent, "attributes", None) or {})
+    return str(attrs.get("terrain") or attrs.get("biome") or "grassland")
+
+
+def extract_routes_hooks(text: str) -> tuple[str, list[str]]:
+    """Pull route offers out of the narration. Returns (clean, destinations)."""
+    dests: list[str] = []
+    for m in ROUTES_HOOK_PATTERN.finditer(text):
+        name = (_split_hook(m.group(1))[0] or "").strip()
+        if name and name not in dests:
+            dests.append(name)
+    clean = ROUTES_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, dests[:2]
+
+
+def _routes_to(pc_slug: str, destination: str) -> list[dict]:
+    """Two or three ways to get there, costed from the world's real geography."""
+    from eight_card_system import geo
+    from survival.travel import navigation_dc, travel as survival_travel_calc
+    here = world.location_of(pc_slug)
+    there = world.get_entity(destination)
+    if here is None or there is None or here.id == there.id:
+        return []
+    a, b = world.coords_of(here.slug), world.coords_of(there.slug)
+    if not a or not b:
+        return []
+    miles = geo.distance_mi(a, b)
+    if miles <= 0.5:
+        return []
+    terrain = _place_terrain(there)
+    danger_here = str((there.attributes or {}).get("danger") or "moderate")
+    out: list[dict] = []
+    for label, factor, danger, blurb in _ROUTE_KINDS:
+        dist = round(miles * factor, 1)
+        leg = survival_travel_calc(dist, pace="normal", terrain=terrain)
+        out.append({
+            "id": label.replace(" ", "-"),
+            "label": label,
+            "destination": there.name,
+            "miles": dist,
+            "days": max(0.5, round(leg["days"], 1)),
+            "terrain": terrain,
+            # The road's own danger, floored by how bad the destination is.
+            "danger": danger if danger != "low" or danger_here == "low" else "moderate",
+            "nav_dc": navigation_dc(terrain).get("dc"),
+            "blurb": blurb,
+        })
+    return out
+
+
 # LOOT hooks: a piece of gear the world hands over, rolled with the properties
 # its rarity can carry (see loot/affixes.py). The DM names the thing and how
 # fine it is; the CODE decides what it turns out to be, the same division of
@@ -7787,6 +7864,13 @@ _WORLD_BUILDING_BLOCK = (
     "state its bonuses; describe how it LOOKS and let the pack report the rest.\n"
     "- Rarity is a real reward curve: common carries nothing, uncommon one "
     "property, legendary four. Do not hand out a legendary for a bandit.\n"
+    "Setting out — travel is a decision, not a fade to black:\n"
+    "- When the party commits to travelling somewhere they KNOW, emit on its own "
+    "line: [[ROUTES: <destination>]]. The system costs the ways of getting there "
+    "from the world's real geography and offers them; do NOT invent distances, "
+    "travel times, or how many days the road takes.\n"
+    "- Once they pick a road, narrate that journey and its hazards honestly — the "
+    "shortcut IS more dangerous, and the world clock really does turn.\n"
     "Openings — name what the scene already offers:\n"
     "- End a reply that leaves the players free to choose with, on its own line,\n"
     "  [[SUGGEST: <action> | <action> | <action>]] — two to four SHORT phrases (a\n"
@@ -9802,6 +9886,10 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             print(f"[loot] hook processing failed: {e}")
 
+    # Routes: the DM offered to set out, so the code costs the ways of getting
+    # there from the world's real geography and the player picks one.
+    dm_text, route_dests = extract_routes_hooks(dm_text)
+
     # Suggested next actions: chips above the prompt for a player staring at an
     # empty box. Stripped from the prose either way — they are UI, not narration.
     dm_text, suggestions = extract_suggest_hooks(dm_text)
@@ -10068,12 +10156,24 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
     except Exception as e:
         print(f"[memorial] check failed: {e}")
 
+    routes_out: list[dict] = []
+    if route_dests:
+        try:
+            _meta = _load_session_state(req.session_id).get("meta", {}) or {}
+            _pc = (_acting_member(_meta, req.user_id) or {}).get("pc_slug") \
+                or _meta.get("pc_slug")
+            for _d in route_dests:
+                routes_out.extend(_routes_to(_pc, _d) if _pc else [])
+        except Exception as e:
+            print(f"[routes] failed: {e}")
+
     return ChatResponse(reply=dm_text, music=music_query,
                         images=image_payloads or None,
                         memorial=memorial_payload,
                         whisper=whisper_notes or None,
                         public=public_out,
-                        suggestions=suggestions or None)
+                        suggestions=suggestions or None,
+                        routes=routes_out or None)
 
 
 @app.get("/session/active/{user_id}")
@@ -18722,6 +18822,12 @@ async def activity_ws(ws: WebSocket, channel: str):
             # Suggested next actions. They follow the narration's audience: on a
             # secret turn only the actor sees them, since they describe a scene
             # the rest of the table was not shown.
+            _routes = {"t": "routes", "routes": resp.routes or []}
+            if is_private:
+                await ws.send_json(_routes)
+            else:
+                await _activity_broadcast(session_id, _routes, fallback=ws)
+
             _sugg = {"t": "suggest", "actions": resp.suggestions or []}
             if is_private:
                 await ws.send_json(_sugg)
