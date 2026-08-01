@@ -244,12 +244,23 @@ export default function App({ session }: { session: Session }) {
           break;
         case "item_image":
           setItemView((v) =>
+            v && (v.name === ev.name || v.renaming)
+              ? { ...v, name: ev.name, drawing: false, artState: undefined,
+                  detail: { ...(v.detail ?? { name: ev.name }), image: ev.url } }
+              : v);
+          break;
+        case "item_art_state":
+          // No picture, and the server is telling us WHY: either the catalog
+          // pre-render has not reached this one, or it is the player's own
+          // invention and only they can describe it.
+          setItemView((v) =>
             v && v.name === ev.name
-              ? { ...v, detail: { ...(v.detail ?? { name: ev.name }), image: ev.url } }
+              ? { ...v, loading: false, artState: ev.state }
               : v);
           break;
         case "item_error":
-          setItemView((v) => (v ? { ...v, loading: false, error: ev.detail } : v));
+          setItemView((v) => (v ? { ...v, loading: false, drawing: false,
+                                    error: ev.detail } : v));
           break;
         case "item_gone":
           setItemView((v) => (v && v.name === ev.name ? null : v));
@@ -292,6 +303,13 @@ export default function App({ session }: { session: Session }) {
   const itemAction = (name: string, action: string, target?: string) => {
     setItemView((v) => (v ? { ...v, loading: true, error: undefined } : v));
     connRef.current?.send({ t: "item_action", name, action, target });
+  };
+  const describeItem = (name: string, text: string, title?: string) => {
+    // A rename means the next item_image arrives under a DIFFERENT name, so the
+    // inspector has to know to accept it.
+    setItemView((v) => (v ? { ...v, drawing: true, error: undefined,
+                              renaming: !!title && title !== name } : v));
+    connRef.current?.send({ t: "describe_item", name, text, title });
   };
   const portraitAction = (
     action: "regear" | "select" | "delete",
@@ -516,6 +534,7 @@ export default function App({ session }: { session: Session }) {
               onClose={() => setItemView(null)}
               onInscribe={inscribeSpell}
               onAction={itemAction}
+              onDescribe={describeItem}
               inventory={sheet?.inventory.map((it) => (typeof it === "string" ? it : it.name))}
             />
           </>

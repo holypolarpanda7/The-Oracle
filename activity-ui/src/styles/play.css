@@ -1025,3 +1025,19 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
   .chr-veil { padding: 12px; }
   .chr { width: 100%; max-height: 94%; padding: 18px 14px 14px; }
 }
+
+/* ---------- "make it yours": name + describe a piece ----------
+   Ordinary items share one pre-rendered picture across the whole world; this
+   is the one place play spends GPU time, and it produces art that belongs to
+   this character's piece alone. */
+.namer { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--edge); }
+.nm-title, .nm-look {
+  width: 100%; margin-bottom: 8px; padding: 8px 11px; outline: none;
+  font-family: var(--serif); font-size: 0.88rem; color: var(--text);
+  background: rgba(8, 11, 20, 0.8); border: 1px solid var(--edge); border-radius: 5px;
+}
+.nm-look { resize: vertical; line-height: 1.45; }
+.nm-title:focus, .nm-look:focus { border-color: var(--gold); }
+.nm-title::placeholder, .nm-look::placeholder { color: var(--text-faint); font-style: italic; }
+.nm-row { display: flex; gap: 8px; }
+.nm-note { margin: 8px 0 0; font-size: 0.76rem; font-style: italic; color: var(--text-faint); }

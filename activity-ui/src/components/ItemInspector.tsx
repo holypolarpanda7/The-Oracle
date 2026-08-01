@@ -6,6 +6,14 @@ export interface ItemView {
   detail?: ItemDetail;
   loading: boolean;
   error?: string;
+  /** What the server says about this item's picture:
+   *  "pending"  — an ordinary catalog item the batch pre-render has not reached
+   *  "describe" — nothing in the catalog matches, so only you can say what it is */
+  artState?: "pending" | "describe";
+  /** True while a described render is in flight. */
+  drawing?: boolean;
+  /** A rename is in flight, so the reply will carry a new name. */
+  renaming?: boolean;
 }
 
 const LEVELS = ["Cantrip", "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th"];
@@ -14,15 +22,21 @@ function spellLevel(l?: number | null): string {
   return LEVELS[l] ?? `L${l}`;
 }
 
-export function ItemInspector({ view, onClose, onInscribe, onAction, inventory }: {
+export function ItemInspector({ view, onClose, onInscribe, onAction, onDescribe,
+                                inventory }: {
   view: ItemView | null;
   onClose: () => void;
   onInscribe: (book: string, spell: string) => void;
   onAction: (name: string, action: string, target?: string) => void;
+  /** Make a piece yours: your name for it, and what it looks like. */
+  onDescribe: (name: string, text: string, title?: string) => void;
   inventory?: string[];
 }) {
   const [spellInput, setSpellInput] = useState("");
   const [storeSel, setStoreSel] = useState("");
+  const [naming, setNaming] = useState(false);
+  const [title, setTitle] = useState("");
+  const [look, setLook] = useState("");
   if (!view) return null;
   const d = view.detail;
   const isBook = d?.interactive === "spellbook";
@@ -44,7 +58,12 @@ export function ItemInspector({ view, onClose, onInscribe, onAction, inventory }
         <div className="item-art">
           {d?.image
             ? <img src={d.image} alt={view.name} />
-            : <div className="item-art-ph">{view.loading ? "conjuring likeness…" : "✦"}</div>}
+            : <div className="item-art-ph">
+                {view.drawing ? "conjuring likeness…"
+                  : view.artState === "describe" ? "no likeness — describe it below"
+                  : view.artState === "pending" ? "not yet drawn"
+                  : view.loading ? "conjuring likeness…" : "✦"}
+              </div>}
         </div>
 
         <div className="item-body">
@@ -102,6 +121,54 @@ export function ItemInspector({ view, onClose, onInscribe, onAction, inventory }
               ))}
             </div>
           ) : null}
+
+          {/* Make it yours. An ordinary item shares one picture with every
+              other copy in the world; naming and describing a piece gives it
+              its own, and keeps its stats. Always available — a bought
+              longsword can become Dawnbreaker — and required for anything the
+              catalog has never heard of. */}
+          <div className="namer">
+            {naming ? (
+              <>
+                <div className="sb-title">Make it yours</div>
+                <input
+                  className="nm-title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder={`Name it (or keep "${view.name}")`}
+                  maxLength={60}
+                />
+                <textarea
+                  className="nm-look"
+                  value={look}
+                  onChange={(e) => setLook(e.target.value)}
+                  placeholder="What does it look like? Its make, its metal, its scars…"
+                  rows={3}
+                  maxLength={300}
+                />
+                <div className="nm-row">
+                  <button
+                    className="iact use"
+                    disabled={look.trim().length < 8 || view.drawing}
+                    onClick={() => {
+                      onDescribe(view.name, look.trim(), title.trim() || undefined);
+                      setNaming(false);
+                      setTitle("");
+                      setLook("");
+                    }}
+                  >{view.drawing ? "Conjuring…" : "Have it drawn"}</button>
+                  <button className="iact" onClick={() => setNaming(false)}>Cancel</button>
+                </div>
+                <p className="nm-note">
+                  This draws a picture that belongs to your piece alone.
+                </p>
+              </>
+            ) : (
+              <button className="iact" onClick={() => { setNaming(true); setTitle(""); }}>
+                {view.artState === "describe" ? "✦ Describe it" : "✦ Name & describe it"}
+              </button>
+            )}
+          </div>
 
           {isBook && (
             <div className="spellbook">

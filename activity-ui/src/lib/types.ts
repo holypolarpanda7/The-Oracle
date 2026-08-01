@@ -508,6 +508,7 @@ export type ServerEvent =
   | { t: "scene"; url: string }
   | { t: "item_detail"; item: ItemDetail }
   | { t: "item_image"; name: string; url: string }
+  | { t: "item_art_state"; name: string; state: "pending" | "describe" }
   | { t: "item_error"; detail: string }
   | { t: "item_gone"; name: string }
   | { t: "levelup"; data: LevelUpData | null }
@@ -528,6 +529,7 @@ export type ClientEvent =
       feat?: string; feat_choices?: FeatPicks }
   | { t: "reprepare" }
   | { t: "chronicle" }
+  | { t: "describe_item"; name: string; text: string; title?: string }
   | { t: "reprepare_apply"; spells: string[] }
   | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload }
