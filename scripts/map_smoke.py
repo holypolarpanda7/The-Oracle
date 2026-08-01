@@ -164,11 +164,12 @@ m._set_session_meta(sid, {"pc_slug": pc.slug, "character_id": char_id,
 
 clean, ops = m.extract_map_hooks("You sketch the valley.\n"
                                  "[[MAP: draft-success | Greenfields]]\nDone.")
-check("[[" not in clean and ops == [{"action": "draft-success", "area": "Greenfields"}],
-      "the draft hook parses and is stripped")
+check("[[" not in clean and ops == [{"action": "draft-success",
+                                     "area": "Greenfields", "scale": ""}],
+      f"the draft hook parses and is stripped ({ops})")
 _, ops_u = m.extract_map_hooks("[[MAP: update-success | Greenfields]]")
-check(ops_u == [{"action": "update-success", "area": "Greenfields"}],
-      "the update hook parses")
+check(ops_u == [{"action": "update-success", "area": "Greenfields", "scale": ""}],
+      f"the update hook parses ({ops_u})")
 
 # No tools -> no map, however well they rolled.
 check(m.process_map_hooks([{"action": "draft-success", "area": "Greenfields"}], sid) == [],
@@ -242,6 +243,141 @@ m._set_session_meta("guild:other", {"pc_slug": pc2.slug, "character_id": bram_id
 check(m.process_map_hooks([{"action": "update-success", "area": "Greenfields"}],
                           "guild:other") == [],
       "you cannot revise a map you do not have")
+
+# ------------------------------------------------------ 7. granularity
+print("\n7. a sheet holds only what it can carry")
+check(mapmaker.prominence_of({"scale": "city"}) >
+      mapmaker.prominence_of({"scale": "village"}) >
+      mapmaker.prominence_of({"scale": "building"}),
+      "prominence ranks the world's furniture")
+check(mapmaker.prominence_of({"scale": "poi", "prominence": 5}) == 5,
+      "a famous ruin can outrank its own size")
+check(mapmaker.map_scale("known world").name == "world"
+      and mapmaker.map_scale("").name == "local"
+      and mapmaker.map_scale("nonsense").name == "local",
+      "scale names resolve, and anything odd falls back to local")
+
+# Build a crowded world: many hamlets, a few towns, one city, one region.
+from eight_card_system import census  # noqa: E402  (kept near its use)
+crowd = []
+for i in range(40):
+    crowd.append({"name": f"Hamlet {i}", "slug": f"hamlet-{i}",
+                  "coords": geo.from_origin("north", 3 + i * 4),
+                  "scale": "village", "rumored": False, "biome": "farmland"})
+for i in range(4):
+    crowd.append({"name": f"Town {i}", "slug": f"town-{i}",
+                  "coords": geo.from_origin("east", 20 + i * 40),
+                  "scale": "town", "rumored": False, "biome": "hills"})
+crowd.append({"name": "Highhold", "slug": "highhold",
+              "coords": geo.from_origin("west", 120),
+              "scale": "city", "rumored": False, "biome": "hills"})
+crowd.append({"name": "The Amber Vales", "slug": "amber-vales",
+              "coords": geo.from_origin("south", 200),
+              "scale": "region", "rumored": False, "biome": "farmland"})
+crowd.append({"name": "The Weeping Stone", "slug": "weeping-stone",
+              "coords": geo.from_origin("northeast", 90), "scale": "poi",
+              "prominence": 5, "rumored": False, "biome": "hills"})
+origin = (geo.ORIGIN_LAT, geo.ORIGIN_LON)
+
+local = mapmaker.select_features(crowd, origin, mapmaker.map_scale("local"))
+world_sheet = mapmaker.select_features(crowd, origin, mapmaker.map_scale("world"))
+check(len(local) <= mapmaker.map_scale("local").feature_cap,
+      f"a local sheet stays under its cap ({len(local)} features)")
+check(len(world_sheet) <= mapmaker.map_scale("world").feature_cap,
+      f"a world sheet stays under its cap ({len(world_sheet)} features)")
+check(len(world_sheet) < len(crowd),
+      "a world sheet is not simply everything")
+check(not any(p["slug"] == "highhold" for p in local),
+      "a sheet of one valley doesn't show a city 120 miles off")
+check(all(geo.distance_mi(origin, p["coords"]) <= mapmaker.map_scale("local").radius_mi
+          for p in local),
+      "everything on a local sheet is genuinely local")
+kinds = {p["scale"] for p in world_sheet}
+check("village" not in kinds,
+      f"zooming out drops hamlets rather than shrinking them ({sorted(kinds)})")
+check(any(p["slug"] == "highhold" for p in world_sheet),
+      "...but keeps the city")
+check(any(p["slug"] == "weeping-stone" for p in world_sheet),
+      "...and a renowned landmark, whatever its size")
+check(all(p["scale"] != "region" or True for p in world_sheet)
+      and any(p["slug"] == "amber-vales" for p in world_sheet),
+      "...and neighbouring regions")
+
+# The ruler has to be readable at both extremes.
+check(mapmaker._scale_bar_miles(20) <= 10 < mapmaker._scale_bar_miles(3000),
+      "the scale bar adapts instead of drawing 10 miles across a continent")
+
+big = mapmaker.render_map(crowd, origin, title="The Known World",
+                          seed="smoke:world", paint_terrain=False,
+                          scale=mapmaker.map_scale("world"))
+check(big[:8] == b"\x89PNG\r\n\x1a\n", "a world sheet renders")
+
+# ------------------------------------------------------ 8. purposed maps
+print("\n8. a found map is FOR something")
+goal = {"name": "The Drowned Vault", "slug": "drowned-vault",
+        "coords": geo.from_origin("east", 55), "scale": "dungeon",
+        "rumored": False, "biome": "swamp"}
+feats = mapmaker.treasure_features(crowd + [goal], origin, goal)
+check(len(feats) == 1 + mapmaker.TREASURE_LANDMARKS,
+      f"a chart carries its goal and a few landmarks ({len(feats)})")
+check(feats[0]["mark"] == "goal" and feats[0]["slug"] == "drowned-vault",
+      "the goal is the marked feature")
+check(sum(1 for p in feats if p.get("mark") == "goal") == 1,
+      "exactly one cross")
+# The landmarks must be USEFUL — on the way east, not the city 120 mi west.
+lands = {p["slug"] for p in feats[1:]}
+check("highhold" not in lands,
+      f"a prominent city in the wrong direction is not a landmark ({sorted(lands)})")
+check(any(s.startswith("town-") for s in lands),
+      "...but places along the way are")
+
+# The cap must never eat the cross.
+tiny = mapmaker.select_features(crowd + [{**goal, "mark": "goal"}], origin,
+                                mapmaker.map_scale("world"))
+check(any(p.get("mark") == "goal" for p in tiny),
+      "a humble goal survives even a world sheet's cut")
+
+chart = mapmaker.render_map(feats, origin, title="Map to The Drowned Vault",
+                            seed="smoke:treasure", paint_terrain=False,
+                            purpose=mapmaker.PURPOSE_TREASURE)
+check(chart[:8] == b"\x89PNG\r\n\x1a\n", "a treasure chart renders")
+
+# End to end through the hook, including the scale field.
+_, t_ops = m.extract_map_hooks("[[MAP: treasure | a smuggler's chart | Duskwood]]")
+check(t_ops == [{"action": "treasure", "area": "a smuggler's chart",
+                 "goal": "Duskwood"}], f"the treasure hook parses ({t_ops})")
+_, s_ops = m.extract_map_hooks("[[MAP: draft-success | my travels | world]]")
+check(s_ops == [{"action": "draft-success", "area": "my travels",
+                 "scale": "world"}], f"the scale field parses ({s_ops})")
+
+out_t = m.process_map_hooks(
+    [{"action": "treasure", "area": "a smuggler's chart", "goal": "Duskwood"}], sid)
+check(len(out_t) == 1 and out_t[0]["caption"] == "a smuggler's chart",
+      f"the chart is handed over under its own name ({out_t and out_t[0]['caption']})")
+with Session(m.engine) as s:
+    ch = s.get(m.Character, char_id)
+    tm = next((i["map"] for i in m._inventory_items(ch)
+               if isinstance(i.get("map"), dict)
+               and i["map"].get("purpose") == "treasure"), None)
+    check(tm is not None, "the chart is in the pack, marked as purposed")
+    if tm:
+        check(tm["provenance"] == "found" and "duskwood" in tm["places"],
+              "it records what it leads to")
+        check(len(tm["places"]) <= 1 + mapmaker.TREASURE_LANDMARKS,
+              f"and stays small ({len(tm['places'])} sites)")
+
+# A goal with no position cannot be drawn rather than being invented somewhere.
+check(m._treasure_goal("A Place That Does Not Exist") is None,
+      "a chart to nowhere is refused")
+
+# A revision keeps the sheet's own grain.
+with Session(m.engine) as s:
+    ch = s.get(m.Character, char_id)
+    surv = next(i for i in m._inventory_items(ch)
+                if isinstance(i.get("map"), dict)
+                and i["map"].get("purpose") == "survey")
+    check(surv["map"].get("scale") == "local",
+          f"the survey sheet recorded its scale ({surv['map'].get('scale')})")
 
 print("\nFAILS:", fails or "none")
 sys.exit(1 if fails else 0)

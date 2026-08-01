@@ -60,6 +60,178 @@ _SCALE_R = {"region": 0, "settlement": 7, "town": 7, "city": 9, "village": 5,
             "district": 3, "building": 3, "poi": 4, "wilds": 4, "dungeon": 5}
 
 
+# ---------------------------------------------------------------------------
+# Granularity: what belongs on THIS sheet
+# ---------------------------------------------------------------------------
+#
+# A map of the known world and a map of one valley are not the same drawing at
+# different zooms — they hold different THINGS. A world map that tried to carry
+# every mapped site would put six thousand miles of dots on 768 pixels and
+# arrive as mush, and the honest reason is physical: a sheet holds roughly
+# twenty labels before it stops being readable.
+#
+# So each place has a PROMINENCE — how far away it is still worth drawing — and
+# each sheet scale admits a minimum prominence plus a hard feature cap. Zooming
+# out doesn't shrink the dots, it drops the small ones.
+
+#: Place scale/subtype -> prominence. Higher survives further out.
+PROMINENCE = {
+    # the shape of the world
+    "plane": 5, "continent": 5, "region": 5,
+    # things a traveller a province away has heard of
+    "city": 4,
+    "town": 3, "settlement": 3,
+    # local landmarks
+    "village": 2, "dungeon": 2, "wilds": 2,
+    "poi": 1, "district": 1,
+    # interiors: only ever on a sheet of the place they're in
+    "building": 0, "room": 0, "tavern": 0, "inn": 0, "market": 0,
+    "temple": 0, "shrine": 0, "shop": 0, "hall": 0, "house": 0,
+}
+DEFAULT_PROMINENCE = 1
+
+
+@dataclass(frozen=True)
+class MapScale:
+    """One sheet's reach and how much detail survives at that reach."""
+    name: str
+    radius_mi: float
+    min_prominence: int
+    feature_cap: int
+    label: str
+    #: Whether region-scale places are drawn ON this sheet or merely title it.
+    wants_regions: bool = False
+
+
+#: The four sheets anyone actually draws. ``world`` reaches far enough to wrap
+#: the globe, so "everything I know" is genuinely everything — but admits only
+#: regions and cities, which is why it stays readable.
+MAP_SCALES: dict[str, MapScale] = {
+    "local": MapScale("local", 25.0, 0, 16, "the country hereabouts"),
+    "regional": MapScale("regional", 60.0, 1, 18, "the region"),
+    "provincial": MapScale("provincial", 250.0, 2, 20, "the provinces",
+                           wants_regions=True),
+    "world": MapScale("world", geo.WORLD_CIRCUMFERENCE_MI / 2.0, 3, 22,
+                      "the known world", wants_regions=True),
+}
+DEFAULT_SCALE = "local"
+
+
+def map_scale(name: Optional[str]) -> MapScale:
+    """Resolve a scale name, tolerating whatever the DM typed."""
+    key = (name or "").strip().lower()
+    aliases = {"": DEFAULT_SCALE, "draft": "local", "area": "local",
+               "region": "regional", "province": "provincial",
+               "kingdom": "provincial", "continent": "world",
+               "known world": "world", "globe": "world"}
+    key = aliases.get(key, key)
+    return MAP_SCALES.get(key, MAP_SCALES[DEFAULT_SCALE])
+
+
+def prominence_of(place: dict) -> int:
+    """How far out this place is still worth drawing.
+
+    ``attributes["prominence"]`` overrides the scale-derived default, which is
+    how a famous ruin earns a place on a world map that drops every village:
+    prominence is about RENOWN, and only correlates with size.
+    """
+    override = place.get("prominence")
+    if override is not None:
+        try:
+            return max(0, min(5, int(override)))
+        except (TypeError, ValueError):
+            pass
+    return PROMINENCE.get(str(place.get("scale", "")).strip().lower(),
+                          DEFAULT_PROMINENCE)
+
+
+def select_features(places: list[dict], center: tuple[float, float],
+                    scale: MapScale) -> list[dict]:
+    """Cut a site list down to what this sheet can actually carry.
+
+    Three cuts, in this order for a reason: reach, so a sheet of one valley
+    never shows a city four provinces away; then prominence, so zooming out
+    drops villages rather than shrinking them; then the cap, by prominence and
+    then nearness, so an over-full sheet keeps the landmarks that orient the
+    reader instead of whichever rows the database returned first.
+
+    The reach cut usually finds nothing to do — the normal path already gathers
+    by ``scale.radius_mi`` — but it means the scale alone decides what a sheet
+    holds, whoever assembled the list.
+    """
+    # A marked goal is the reason the sheet exists; it is never cut, for being
+    # a humble little cave or for lying past the sheet's nominal reach.
+    kept = [p for p in places
+            if p.get("mark") == "goal"
+            or (prominence_of(p) >= scale.min_prominence
+                and geo.distance_mi(center, p["coords"]) <= scale.radius_mi)]
+    if len(kept) <= scale.feature_cap:
+        return kept
+    kept.sort(key=lambda p: (p.get("mark") != "goal", -prominence_of(p),
+                             geo.distance_mi(center, p["coords"])))
+    return kept[:scale.feature_cap]
+
+
+# ---------------------------------------------------------------------------
+# Purpose: what this sheet is FOR
+# ---------------------------------------------------------------------------
+#
+# A treasure map is not a survey with a cross added. It was drawn by someone
+# with one thing to communicate, and it carries the few landmarks needed to
+# walk to that thing and nothing else — which is also why it's worth having:
+# the sheet is evidence of a specific secret, not general knowledge.
+
+PURPOSE_SURVEY = "survey"
+PURPOSE_TREASURE = "treasure"
+
+#: How many landmarks a purposed sheet keeps besides its goal. Small on
+#: purpose: the drawer wanted the finder to reach ONE place.
+TREASURE_LANDMARKS = 4
+
+#: Ruler steps a cartographer would actually draw, so the bar reads as a round
+#: number at every sheet scale rather than "37 miles".
+_BAR_STEPS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000)
+
+
+def _scale_bar_miles(reach_mi: float) -> float:
+    """A round ruler length that spans a useful fraction of the sheet."""
+    target = max(0.5, reach_mi / 3.0)
+    for step in _BAR_STEPS:
+        if step >= target:
+            return float(step)
+    return float(_BAR_STEPS[-1])
+
+
+def treasure_features(places: list[dict], center: tuple[float, float],
+                      goal: dict, *, landmarks: int = TREASURE_LANDMARKS) -> list[dict]:
+    """The few sites a map to ONE place needs: the goal, and the way there.
+
+    Landmarks are picked for usefulness on that journey, not renown: preference
+    goes to what lies along the corridor between the reader's starting point
+    and the cross. A prominent city off in the opposite direction tells the
+    finder nothing, which is exactly why a treasure map isn't a survey with an
+    X added.
+    """
+    gx, gy = _project(center, goal["coords"])
+    leg = math.hypot(gx, gy) or 1.0
+
+    def usefulness(p: dict) -> float:
+        px, py = _project(center, p["coords"])
+        # Distance from the straight line start -> goal, as a fraction of the
+        # leg. Anything beyond the goal or behind the reader scores poorly.
+        along = (px * gx + py * gy) / (leg * leg)
+        off = abs(px * gy - py * gx) / leg
+        detour = off / leg + (0.0 if 0.0 <= along <= 1.0 else 1.0)
+        return detour - 0.15 * prominence_of(p)
+
+    goal_key = str(goal.get("slug") or goal.get("name"))
+    others = [p for p in places
+              if str(p.get("slug") or p.get("name")) != goal_key]
+    others.sort(key=usefulness)
+    marked = {**goal, "mark": "goal", "rumored": False}
+    return [marked] + others[:max(0, landmarks)]
+
+
 def _font(size: int):
     """A legible label face, falling back to the bitmap default.
 
@@ -280,19 +452,31 @@ def render_map(
     store=None,
     paint_terrain: bool = True,
     area: str = "",
+    scale: Optional[MapScale] = None,
+    purpose: str = PURPOSE_SURVEY,
 ) -> bytes:
     """Draw a parchment map PNG of ``places`` around ``center``.
 
     Each place: {"name", "coords": (lat, lon), "scale": str, "rumored": bool,
-    "biome": str}. ``biome`` is optional and only feeds the painted terrain.
+    "biome": str, "prominence": int|None, "mark": str}. ``biome`` only feeds
+    the painted terrain; ``mark="goal"`` draws the cross on a treasure map.
     ``flawed=True`` applies the failed-draft distortion: a global rotation,
     per-place jitter, and (when there's enough to lose) one dropped place —
     all deterministic for ``seed``.
+
+    ``scale`` decides how much detail survives: a sheet of the known world
+    admits only regions and cities, because twenty-odd labels is all a sheet
+    can carry before it stops being readable. Callers that already selected
+    their features (a treasure map) pass the places they want and the cut is a
+    no-op.
 
     ``paint_terrain`` asks for the diffusion wash under the ink; it degrades
     silently to bare parchment whenever art isn't available, so no caller has
     to care whether there's a GPU up.
     """
+    scale = scale or MAP_SCALES[DEFAULT_SCALE]
+    if purpose == PURPOSE_SURVEY:
+        places = select_features(places, center, scale)
     rng = random.Random(f"map:{seed}")
     pts = []
     for p in places:
@@ -340,6 +524,44 @@ def render_map(
         d.text(xy, text, fill=fill, font=(_TITLE_FONT if large else _LABEL_FONT),
                stroke_width=2, stroke_fill=_PARCHMENT)
 
+    # Where names have already been written, so two can't be printed on top of
+    # each other. Reserve the sheet's own furniture up front — the title block,
+    # the compass and the scale bar are not negotiable.
+    taken: list[tuple[float, float, float, float]] = [
+        (0, 0, size * 0.75, 58),                     # title + subtitle
+        (size - 90, 20, size, 100),                  # compass rose
+        (0, size - 50, size * 0.6, size),            # scale bar
+    ]
+
+    def _fits(box) -> bool:
+        x0, y0, x1, y1 = box
+        if x0 < 4 or y0 < 4 or x1 > size - 4 or y1 > size - 4:
+            return False
+        return not any(x0 < b[2] and b[0] < x1 and y0 < b[3] and b[1] < y1
+                       for b in taken)
+
+    def place_label(x, y, r, text, fill) -> bool:
+        """Write a name in the first spot that's clear, or not at all.
+
+        Decluttering rather than drawing everything: on a wide sheet the sites
+        bunch up, and two names printed over each other cost BOTH of them. The
+        caller writes the most prominent places first, so when something has to
+        go unlabelled it's the hamlet that loses its name, not the city.
+        """
+        for dx, dy in ((r + 4, -7), (-r - 4, -7), (0, r + 3), (0, -r - 17)):
+            ax = x + dx if dx >= 0 else x + dx
+            box = d.textbbox((ax, y + dy), text, font=_LABEL_FONT,
+                             stroke_width=2, anchor=None)
+            if dx < 0:  # left placement: right-align the text against the dot
+                w = box[2] - box[0]
+                box = (box[0] - w, box[1], box[2] - w, box[3])
+                ax -= w
+            if _fits(box):
+                ink_text((ax, y + dy), text, fill)
+                taken.append(box)
+                return True
+        return False
+
     # Routes: faint lines from the center to each site (traveler's sketch).
     # A hairline vanishes into painted terrain, so the ink thickens when there
     # is country underneath it.
@@ -359,16 +581,41 @@ def render_map(
         else:
             d.line([cx, cy, x, y], fill=_INK if wash else _FAINT, width=route_w)
 
+    # Marks first, in one pass, reserving each one's footprint — otherwise a
+    # long name happily runs straight over the next town's dot, which reads as
+    # two places at the same spot.
+    marks: list[tuple[dict, float, float, float]] = []
     for p in pts:
         x, y = to_px(p["x"], p["y"])
-        r = _SCALE_R.get(str(p.get("scale", "poi")).lower(), 4)
         color = _RUMOR if p.get("rumored") else _INK
-        if p.get("rumored"):
-            d.ellipse([x - r, y - r, x + r, y + r], outline=color, width=2)
+        if p.get("mark") == "goal":
+            # The cross. Deliberately NOT a dot with a name beside it — a
+            # treasure map's whole point is that it marks a spot without
+            # explaining it, and whoever drew it wasn't labelling their secret.
+            r = max(_SCALE_R.get(str(p.get("scale", "poi")).lower(), 4) + 4, 9)
+            d.line([x - r, y - r, x + r, y + r], fill=_INK, width=3)
+            d.line([x - r, y + r, x + r, y - r], fill=_INK, width=3)
         else:
-            d.ellipse([x - r, y - r, x + r, y + r], fill=color)
+            r = _SCALE_R.get(str(p.get("scale", "poi")).lower(), 4)
+            if r:
+                if p.get("rumored"):
+                    d.ellipse([x - r, y - r, x + r, y + r], outline=color, width=2)
+                else:
+                    d.ellipse([x - r, y - r, x + r, y + r], fill=color)
+        taken.append((x - r - 1, y - r - 1, x + r + 1, y + r + 1))
+        marks.append((p, x, y, r))
+
+    # Then the names, most prominent first: when the sheet runs out of clear
+    # space, the hamlet goes unlabelled rather than the city.
+    for p, x, y, r in sorted(marks, key=lambda t: (t[0].get("mark") != "goal",
+                                                   -prominence_of(t[0]))):
+        if p.get("mark") == "goal":
+            if p.get("label"):
+                place_label(x, y, r, str(p["label"]), _INK)
+            continue
+        color = _RUMOR if p.get("rumored") else _INK
         label = p["name"] + (" (rumored)" if p.get("rumored") else "")
-        ink_text((x + r + 3, y - 6), label, color)
+        place_label(x, y, r, label, color)
 
     # "You are here" center mark (the drafting spot).
     d.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], outline=_INK, width=2)
@@ -380,10 +627,12 @@ def render_map(
     d.polygon([(nx - 5, ny - 10), (nx + 5, ny - 10), (nx, ny - 22)], fill=_INK)
     ink_text((nx - 4, ny + 22), "N", _INK)
 
-    # Scale bar (10 miles).
-    bar = 10 * px_per_mi
-    d.line([pad, size - 34, pad + bar, size - 34], fill=_INK, width=2)
-    ink_text((pad, size - 30), "10 miles", _INK)
+    # Scale bar, sized to the sheet. A fixed ten miles is a sub-pixel smear on
+    # a map of the known world and runs off the edge of a tavern's back garden.
+    bar_mi = _scale_bar_miles(reach)
+    d.line([pad, size - 34, pad + bar_mi * px_per_mi, size - 34],
+           fill=_INK, width=2)
+    ink_text((pad, size - 30), f"{bar_mi:g} miles", _INK)
 
     ink_text((pad, 20), title, _INK, large=True)
     if subtitle:
@@ -471,6 +720,7 @@ def gather_places_by_slug(graph, slugs) -> list[dict]:
                 "scale": (e.attributes or {}).get("scale") or e.subtype or "poi",
                 "rumored": e.status == "unexplored",
                 "biome": placelore._biome_of(e),
+                "prominence": (e.attributes or {}).get("prominence"),
             })
     return out
 
@@ -491,7 +741,7 @@ def merge_places(existing: list[dict], found: list[dict]) -> list[dict]:
 
 def gather_mappable_places(
     graph, center_ref, *, radius_mi: float, include_rumored: bool = False,
-    known_ids: Optional[set[int]] = None,
+    known_ids: Optional[set[int]] = None, include_regions: bool = False,
 ) -> tuple[Optional[tuple[float, float]], list[dict]]:
     """Places with coords within radius of an anchor entity's position.
 
@@ -500,6 +750,11 @@ def gather_mappable_places(
     someone else exploring the region doesn't put it in YOUR head. A
     map-maker's purchased map passes no filter (their knowledge, not yours)
     and includes unexplored stubs as rumors when ``include_rumored``.
+
+    ``include_regions`` admits region-scale places. Off by default because a
+    region TITLES a local sheet rather than sitting on it as a dot — but on a
+    provincial or world sheet the regions are the main thing being drawn, so
+    the wide scales ask for them.
     """
     from sqlmodel import Session, select
     from . import placelore
@@ -526,8 +781,8 @@ def gather_mappable_places(
             if known_ids is not None and e.id not in known_ids:
                 continue
             scale = str((e.attributes or {}).get("scale") or e.subtype or "").lower()
-            if scale == "region":
-                continue  # regions title maps; they aren't dots on them
+            if scale == "region" and not include_regions:
+                continue  # regions title a local sheet; they aren't dots on it
             out.append({
                 "name": e.name,
                 "slug": e.slug,
@@ -538,5 +793,6 @@ def gather_mappable_places(
                 # so a tavern contributes the farmland it stands in, not its
                 # floorboards (see placelore's terrain/surface split).
                 "biome": placelore._biome_of(e),
+                "prominence": (e.attributes or {}).get("prominence"),
             })
     return center, out

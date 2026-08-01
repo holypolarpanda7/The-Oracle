@@ -235,6 +235,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   **Maps accrue**: `[[MAP: update-success|update-failure]]` re-reads a sheet's
   own recorded slugs and merges, so revising never loses country — re-surveying
   by radius alone would drop the far half the moment its owner walked away.
+- **A sheet holds only what it can carry, and is FOR something.** Zooming out
+  DROPS features, it doesn't shrink them: every place has a `prominence`
+  (`attributes["prominence"]` overrides the scale-derived default, so a famous
+  ruin outranks its size), and each `MapScale` — local/regional/provincial/world,
+  a third field on the hook — sets a reach, a minimum prominence and a hard
+  feature cap. The cap is physical: ~20 labels is all 768px holds, so labels are
+  decluttered and the least prominent lose their names first. A map's PURPOSE
+  decides its contents: `[[MAP: treasure | <object> | <goal place>]]` draws an
+  unlabelled cross plus only the landmarks along the corridor to it (a prominent
+  city the wrong way is no help), never a survey with an X added. A revision
+  keeps the sheet's own scale and purpose.
 - **Setting out is a decision, and still not a map.** `[[ROUTES: <dest>]]` makes
   the code cost two or three roads from the world's real coordinates
   (`_routes_to` + `survival/travel.py`): how far, how many days, how dangerous.

@@ -1633,19 +1633,68 @@ def process_portrait_hooks(session_id: str, user_id: Optional[str],
 MAP_HOOK_PATTERN = re.compile(r"\[\[MAP:(.+?)\]\]", re.IGNORECASE)
 
 MAP_ACTIONS = ("draft-success", "draft-failure", "purchase",
-               "update-success", "update-failure")
+               "update-success", "update-failure", "treasure")
 
 
 def extract_map_hooks(text: str) -> tuple[str, list[dict]]:
+    """Parse MAP hooks. Third field is the sheet's SCALE, or a treasure's goal.
+
+    ``[[MAP: draft-success | the Amber Downs | regional]]``
+    ``[[MAP: treasure | a smuggler's chart | The Drowned Vault]]``
+    """
     ops: list[dict] = []
     for m in MAP_HOOK_PATTERN.finditer(text):
         parts = [p.strip() for p in m.group(1).split("|")]
         action = (parts[0] if parts else "").lower()
-        if action in MAP_ACTIONS:
-            ops.append({"action": action,
-                        "area": parts[1] if len(parts) > 1 else ""})
+        if action not in MAP_ACTIONS:
+            continue
+        third = parts[2] if len(parts) > 2 else ""
+        op = {"action": action, "area": parts[1] if len(parts) > 1 else ""}
+        if action == "treasure":
+            op["goal"] = third
+        else:
+            op["scale"] = third
+        ops.append(op)
     clean = MAP_HOOK_PATTERN.sub("", text)
     return clean.strip(), ops
+
+
+def _treasure_goal(goal_ref: str) -> Optional[Dict[str, Any]]:
+    """The place a treasure map's cross marks, as a renderable site dict.
+
+    The goal is usually somewhere nobody has been — that is the point of the
+    chart — so it may be an unexplored frontier stub, or a place the DM has
+    only just named. Either is fine; what it must have is COORDINATES, since
+    the cross is inked from them like every other mark on the sheet. A goal
+    with no position on the globe can't be drawn, and inventing one here would
+    put treasure at a spot the world doesn't agree exists.
+    """
+    from eight_card_system import geo, placelore
+    if not goal_ref:
+        return None
+    ent = world.get_entity(goal_ref)
+    if ent is None:
+        matches = world.find_entities_by_name(goal_ref)
+        ent = next((e for e in matches if e.type == "place"), None)
+    if ent is None or ent.type != "place":
+        return None
+    attrs = ent.attributes or {}
+    coords = geo.coords_from_attrs(attrs)
+    if coords is None:
+        # Small child places inherit their parent's position; resolve it the
+        # same way the graph does rather than guessing.
+        coords = world.coords_of(ent.slug)
+    if coords is None:
+        return None
+    return {
+        "name": ent.name,
+        "slug": ent.slug,
+        "coords": tuple(coords),
+        "scale": attrs.get("scale") or ent.subtype or "poi",
+        "rumored": False,
+        "biome": placelore._biome_of(ent),
+        "prominence": attrs.get("prominence"),
+    }
 
 
 def _find_map_item(inv: List[Dict[str, Any]], area: str) -> Optional[Dict[str, Any]]:
@@ -1702,18 +1751,42 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
             action, area = op["action"], op["area"] or "the surrounding lands"
             revising: Optional[Dict[str, Any]] = None
             revision = 1
-            if action.startswith("draft") or action.startswith("update"):
+            purpose = mapmaker.PURPOSE_SURVEY
+            if action == "treasure":
+                # A found or bought chart to ONE place. Not a survey with a
+                # cross added: it carries the goal and only the landmarks a
+                # reader needs to walk there.
+                purpose = mapmaker.PURPOSE_TREASURE
+                flawed = False
+                goal_ref = op.get("goal") or ""
+                goal = _treasure_goal(goal_ref)
+                if goal is None:
+                    print(f"[map] no place '{goal_ref}' to mark treasure at")
+                    continue
+                scale = mapmaker.map_scale(op.get("scale") or "regional")
+                center, nearby = mapmaker.gather_mappable_places(
+                    world, pc_slug, radius_mi=scale.radius_mi, include_rumored=True,
+                    include_regions=scale.wants_regions)
+                if center is None:
+                    print("[map] the reader isn't anywhere the chart can start from")
+                    continue
+                places = mapmaker.treasure_features(nearby, center, goal)
+                subtitle = "a hand that meant this to be followed"
+            elif action.startswith("draft") or action.startswith("update"):
                 if not _has_inventory_item(char, mapmaker.TOOLS_ITEM):
                     print(f"[map] {char.name} lacks {mapmaker.TOOLS_ITEM} — {action} refused")
                     continue
                 flawed = action.endswith("failure")
+                scale = mapmaker.map_scale(op.get("scale"))
                 # You can only draw what you KNOW: visited places and places
                 # learned of in play (knows_about). Someone else's discoveries
-                # don't appear on your parchment.
+                # don't appear on your parchment. A wider sheet is compiled from
+                # memory rather than surveyed from a hilltop, so its reach is
+                # the SCALE's, not the drafting radius.
                 known = mapmaker.known_place_ids(world, pc_slug)
                 center, places = mapmaker.gather_mappable_places(
-                    world, pc_slug, radius_mi=mapmaker.DRAFT_RADIUS_MI,
-                    known_ids=known)
+                    world, pc_slug, radius_mi=scale.radius_mi, known_ids=known,
+                    include_regions=scale.wants_regions)
                 subtitle = f"drafted by {char.name}, {world.current_date_str()}"
             else:  # purchase
                 price = mapmaker.MAP_PRICE_GP
@@ -1722,9 +1795,10 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
                     continue
                 char.gp -= price
                 flawed = False
+                scale = mapmaker.map_scale(op.get("scale") or "regional")
                 center, places = mapmaker.gather_mappable_places(
-                    world, pc_slug, radius_mi=mapmaker.PURCHASE_RADIUS_MI,
-                    include_rumored=True)
+                    world, pc_slug, radius_mi=scale.radius_mi,
+                    include_rumored=True, include_regions=scale.wants_regions)
                 subtitle = "by a map-maker's practiced hand"
 
             if action.startswith("update"):
@@ -1745,6 +1819,11 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
                     center = (float(anchor["lat"]), float(anchor["lon"]))
                 area = held.get("area") or area
                 revision = int(held.get("revision", 1) or 1) + 1
+                # A sheet keeps its own grain across revisions. Redrawing a
+                # world map at local detail would bury it under every hamlet
+                # its owner has since walked through.
+                scale = mapmaker.map_scale(held.get("scale"))
+                purpose = held.get("purpose") or mapmaker.PURPOSE_SURVEY
                 # A good hand at the table corrects what the last pass got
                 # wrong; a bad one spoils a sheet that WAS sound. Either way
                 # the whole sheet takes the new verdict — you cannot tell which
@@ -1755,16 +1834,26 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
             if center is None or not places:
                 print(f"[map] nothing mappable around {pc_slug}")
                 continue
-            title = (revising or {}).get("name") or f"Map of {area}"
+            if revising is not None:
+                title = revising.get("name") or f"Map of {area}"
+            elif action == "treasure":
+                # Verbatim: the DM names the OBJECT here ("a smuggler's
+                # chart"), and a generated "Map to <goal>" title would print
+                # the very secret the unlabelled cross exists to keep.
+                title = area
+            else:
+                title = f"Map of {area}"
             png = mapmaker.render_map(
                 places, center, title=title, flawed=flawed,
                 # The revision is in the seed, so a corrected sheet is visibly
                 # a different drawing rather than the same distortion again.
                 seed=f"{pc_slug}:{day}:{area}:{revision}", subtitle=subtitle,
-                area=area)
-            if action == "purchase" and pc_slug:
-                # Buying the map IS gaining the knowledge: every charted site
+                area=area, scale=scale, purpose=purpose)
+            if action in ("purchase", "treasure") and pc_slug:
+                # Acquiring the map IS gaining the knowledge: every charted site
                 # (rumored ones included) becomes drawable on your own drafts.
+                # A treasure chart teaches its landmarks AND that something is
+                # out there — finding out what is the quest.
                 for p in places:
                     if p.get("slug"):
                         world.add_relation(pc_slug, RelationType.KNOWS_ABOUT, p["slug"])
@@ -1773,7 +1862,10 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
                 "day": int((revising or {}).get("map", {}).get("day", day)),
                 "updated_day": day,
                 "revision": revision,
-                "provenance": "purchased" if action == "purchase" else "drafted",
+                "provenance": {"purchase": "purchased", "treasure": "found"}.get(
+                    action, "drafted"),
+                "purpose": purpose,
+                "scale": scale.name,
                 # The truth lives in the data; the player never sees it.
                 "reliable": not flawed,
                 "center": {"lat": center[0], "lon": center[1]},
@@ -8010,6 +8102,12 @@ _WORLD_BUILDING_BLOCK = (
     "  tools> | Cartography (Wisdom) | DC 15]] (advantage if also proficient in a\n"
     "  relevant skill such as Survival). Then, from the resolved roll, emit on its own\n"
     "  line: [[MAP: draft-success | <area>]] or [[MAP: draft-failure | <area>]].\n"
+    "- A sheet has a SCALE, given as a third field: local (a day's walk, the\n"
+    "  default) | regional | provincial | world. Ask which they mean when it isn't\n"
+    "  obvious — 'a map of everything I know' is [[MAP: draft-success | my travels |\n"
+    "  world]]. A wider sheet is NOT a zoomed-out local one: it carries only what\n"
+    "  matters at that reach (a world sheet shows regions and cities, never inns),\n"
+    "  so narrate the drafter deciding what to leave off.\n"
     "- NEVER reveal that a failed map is wrong. Hand it over with the same confidence —\n"
     "  its owner discovers the errors by getting lost. Describe drafting time honestly\n"
     "  (an hour or more of careful sightlines and measurements).\n"
@@ -8026,6 +8124,13 @@ _WORLD_BUILDING_BLOCK = (
     "  already charted and gains whatever they have learned since; a success also\n"
     "  quietly corrects an earlier bad draft, and a failure spoils a sheet that was\n"
     "  sound. Say none of that — they are simply working on their map.\n"
+    "- A map found in a chest or bought off a fence is PURPOSED — it was drawn by\n"
+    "  someone with one thing to say. Emit [[MAP: treasure | <what the object is> |\n"
+    "  <the place it leads to>]]. The system draws the cross and only the few\n"
+    "  landmarks needed to walk there; it will NOT name the goal, because whoever\n"
+    "  drew it wasn't labelling their secret. The goal must be a place that exists\n"
+    "  in the world with a position — introduce it first (say which direction and\n"
+    "  roughly how far) and then hand over the chart.\n"
     "Commerce — merchants' stock lines are ground truth:\n"
     "- NPCs with a 'stock (this week)' line sell exactly those items at exactly those\n"
     "  prices. Haggle in the fiction, but when a deal is STRUCK, emit on its own line:\n"
