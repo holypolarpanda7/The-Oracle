@@ -3052,6 +3052,37 @@ _ITEM_OVERRIDE_FIELDS = {
 }
 
 
+_CLASS_OVERRIDE_FIELDS = {
+    "name": "name", "hit_die": "hit_die", "primary_ability": "primary_ability",
+    "subclass_label": "subclass_label", "subclass_level": "subclass_level",
+    "spellcasting_ability": "spellcasting_ability",
+    "skill_choices_n": "skill_choices_n", "skill_options": "skill_options",
+    "saving_throws": "saving_throws", "description": "description",
+    "raw": "raw",
+}
+
+
+def ingest_classes_overrides(engine=None, database_url=None,
+                             workspace: Path = WORKSPACE) -> dict:
+    """Apply curated CLASS overrides (owned_books/classes_overrides.json).
+
+    Exists because a class from a book the user owns cannot live where the
+    third-party homebrew classes live. ``rules/ingest.py`` carries Illrigger and
+    Gunslinger as own-worded seeds IN THE REPO, which CLAUDE.md allows for small
+    third-party homebrew — but the same file may not carry a WotC book's class,
+    since book-derived data (summaries included) never enters the repo. The
+    loader is tooling and is committed; the entry it reads is gitignored.
+
+    Entry: {slug, name, hit_die, primary_ability, subclass_label,
+    subclass_level, spellcasting_ability, skill_choices_n, skill_options,
+    saving_throws, description}.
+    """
+    from .models import DndClass
+    return _apply_table_overrides(DndClass, "classes_overrides.json",
+                                  _CLASS_OVERRIDE_FIELDS,
+                                  engine, database_url, workspace)
+
+
 def ingest_subclasses_overrides(engine=None, database_url=None,
                                 workspace: Path = WORKSPACE) -> dict:
     """Apply curated subclass overrides (owned_books/subclasses_overrides.json).
@@ -3166,6 +3197,9 @@ def main(argv: list[str]) -> None:
         # they win over anything the bulk parsers produced.
         print("[owned] species overrides:", ingest_species_overrides())
         print("[owned] feat overrides:", ingest_feats_overrides())
+        # Classes before subclasses: a subclass with no class row to hang off
+        # is invisible to character creation.
+        print("[owned] class overrides:", ingest_classes_overrides())
         print("[owned] subclass overrides:", ingest_subclasses_overrides())
         print("[owned] spell overrides:", ingest_spells_overrides())
         print("[owned] monster overrides:", ingest_monsters_overrides())

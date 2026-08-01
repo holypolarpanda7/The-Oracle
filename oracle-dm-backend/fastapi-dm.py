@@ -493,6 +493,7 @@ async def lifespan(app: FastAPI):
         try:
             from rules.owned_ingest import (ingest_species_overrides,
                                              ingest_feats_overrides,
+                                             ingest_classes_overrides,
                                              ingest_subclasses_overrides,
                                              ingest_spells_overrides,
                                              ingest_monsters_overrides,
@@ -506,7 +507,10 @@ async def lifespan(app: FastAPI):
             fo = ingest_feats_overrides(engine=engine)
             if fo.get("feat_overrides_applied") or fo.get("feat_overrides_new"):
                 print(f"[Startup] Feat overrides: {fo}")
-            for label, fn in (("Subclass", ingest_subclasses_overrides),
+            # Class before subclass: a subclass whose class row doesn't exist
+            # yet is invisible to character creation.
+            for label, fn in (("Class", ingest_classes_overrides),
+                              ("Subclass", ingest_subclasses_overrides),
                               ("Spell", ingest_spells_overrides),
                               ("Monster", ingest_monsters_overrides),
                               ("Item", ingest_items_overrides),
@@ -514,6 +518,9 @@ async def lifespan(app: FastAPI):
                 res = fn(engine=engine)
                 if any(v for k, v in res.items() if k.endswith(("_applied", "_new"))):
                     print(f"[Startup] {label} overrides: {res}")
+            # Classes are in place; read any per-class slot progressions they
+            # declare (see _CLASS_SLOT_OVERRIDES).
+            _load_class_slot_overrides()
         except Exception as e:
             print(f"[Startup] Overrides skipped: {e}")
     except Exception as e:
@@ -15601,12 +15608,52 @@ _PACT_SLOTS = {
 _FULL_CASTERS = {"bard", "cleric", "druid", "sorcerer", "wizard"}
 _HALF_CASTERS = {"paladin", "ranger", "artificer"}
 
+#: Per-class slot rows that deviate from the tables above, loaded from the
+#: rules DB at startup: ``rules_class.raw["slots_by_level"]``, keyed by class
+#: level. Lives in DATA rather than here because the classes that need it come
+#: from books the repo may not carry numbers for — an owned class declares its
+#: own progression in its (gitignored) override entry and this reads it.
+#:
+#: The Artificer needs exactly one row: it casts from level 1, where the
+#: paladin/ranger half-caster table is still empty. Without this a level-1
+#: Artificer has no spell slots at all.
+_CLASS_SLOT_OVERRIDES: dict[str, dict[int, list[int]]] = {}
+
+
+def _load_class_slot_overrides() -> None:
+    """Read per-class slot deviations out of the rules DB. Best effort."""
+    try:
+        from rules.models import DndClass as _Cls
+        with Session(rules_lib.engine) as s:
+            for row in s.exec(select(_Cls)).all():
+                raw = row.raw if isinstance(row.raw, dict) else {}
+                table = raw.get("slots_by_level")
+                if not isinstance(table, dict):
+                    continue
+                parsed = {}
+                for k, v in table.items():
+                    try:
+                        parsed[int(k)] = [int(n) for n in v]
+                    except (TypeError, ValueError):
+                        continue
+                if parsed:
+                    _CLASS_SLOT_OVERRIDES[row.index_slug.lower()] = parsed
+        if _CLASS_SLOT_OVERRIDES:
+            print(f"[Startup] Class slot overrides: "
+                  f"{ {k: sorted(v) for k, v in _CLASS_SLOT_OVERRIDES.items()} }")
+    except Exception as e:
+        print(f"[Startup] Class slot overrides skipped: {e}")
+
 
 def _spell_slots_for(char_class: Optional[str], level: int,
                      used: Optional[dict] = None) -> list[dict]:
     cls = (char_class or "").strip().lower()
     lvl = max(1, min(20, int(level or 1)))
     used_map = {int(k): int(v) for k, v in (used or {}).items()}
+    override = _CLASS_SLOT_OVERRIDES.get(cls, {}).get(lvl)
+    if override is not None:
+        return [{"level": i, "total": c, "used": min(c, used_map.get(i, 0))}
+                for i, c in enumerate(override, start=1) if c > 0]
     if cls in _FULL_CASTERS:
         counts = _FULL_CASTER_SLOTS.get(lvl, [])
     elif cls in _HALF_CASTERS:
