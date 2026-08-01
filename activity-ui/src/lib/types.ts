@@ -79,10 +79,36 @@ export interface BondRow {
   companion?: boolean;
 }
 
+/** Where you stand with a faction that has noticed you. */
+export interface StandingRow {
+  faction: string;
+  slug: string;
+  renown: number;
+  standing?: string;
+  perks?: string;
+  next?: string;
+  needed?: number;
+  note?: string;
+}
+
+/** One thing the world contains, as far as THIS character knows it. */
+export interface CodexRow {
+  name: string;
+  slug: string;
+  kind: string;        // deity | place | faction | npc | lore
+  subtype?: string;
+  status?: string;
+  script?: Script;
+  note?: string;
+  group?: string;      // power family, or region
+}
+
 export interface ChronicleData {
   entries: JournalEntry[];
   quests: QuestRow[];
   bonds: BondRow[];
+  standing: StandingRow[];
+  codex: CodexRow[];
   error?: string;
 }
 

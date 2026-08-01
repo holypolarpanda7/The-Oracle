@@ -159,6 +159,33 @@ const demoChronicle: ChronicleData = {
     { name: "The Hooded Stranger", slug: "hooded-stranger", sentiment: -0.3,
       feeling: "neutral" },
   ],
+  standing: [
+    { faction: "The Greenfields Watch", slug: "greenfields-watch", renown: 7,
+      standing: "accepted", next: "respected", needed: 3,
+      perks: "A trusted associate; access to a safehouse, gear at fair prices.",
+      note: "They still speak of the barn fire." },
+    { faction: "The Coinwright's Hall", slug: "coinwrights-hall", renown: 2,
+      standing: "known", next: "accepted", needed: 3,
+      perks: "Recognised by rank-and-file; minor favours and rumours." },
+  ],
+  codex: [
+    { name: "Serath the Dawnmother", slug: "serath", kind: "deity",
+      script: "celestial", group: "The Sovereign Powers",
+      note: "The kindly mother of dawn and the fields; the common faith of farming folk." },
+    { name: "Vashra the Unlit", slug: "vashra", kind: "deity",
+      script: "infernal", group: "The Lords of the Nine",
+      note: "Named in a cult-scrawl beneath the mill." },
+    { name: "Greenfields", slug: "greenfields", kind: "place", subtype: "village",
+      note: "A farming village on the eastern road; the mill feeds it." },
+    { name: "Wispering Mill", slug: "wispering-mill", kind: "place", subtype: "poi",
+      note: "Sails torn, turning anyway in a wind you cannot feel." },
+    { name: "The Greenfields Watch", slug: "greenfields-watch", kind: "faction",
+      note: "Farmhands with spears who muster when the horn sounds." },
+    { name: "Old Marla", slug: "old-marla", kind: "npc", subtype: "miller",
+      script: "dwarven", note: "Keeps the mill, and her own counsel." },
+    { name: "The goblins carry gear no goblin made", slug: "fine-longbow",
+      kind: "lore", note: "A longbow far too fine for either of them." },
+  ],
 };
 
 /* Demo initiative carousel: first attack opens the fight, the next one downs

@@ -43,4 +43,15 @@ await page.waitForTimeout(400);
 console.log("bonds:", await page.locator(".chr-bond").count());
 await page.screenshot({ path: `${OUT}/4-bonds.png` });
 
+await page.locator(".chr-tab", { hasText: /Standing/i }).click();
+await page.waitForTimeout(400);
+console.log("standing:", await page.locator(".chr-standing").count());
+await page.screenshot({ path: `${OUT}/5-standing.png` });
+
+await page.locator(".chr-tab", { hasText: /Codex/i }).click();
+await page.waitForTimeout(400);
+console.log("codex:", await page.locator(".chr-codex").count(),
+            "groups:", await page.locator(".chr-body .chr-head").count());
+await page.screenshot({ path: `${OUT}/6-codex.png` });
+
 await browser.close();

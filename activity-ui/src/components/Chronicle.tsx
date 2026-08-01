@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { BondRow, ChronicleData, JournalEntry, QuestRow } from "../lib/types";
+import type { BondRow, ChronicleData, CodexRow, JournalEntry, QuestRow,
+              StandingRow } from "../lib/types";
 
 /**
  * The Chronicle — the party's own record, and the people who have an opinion
@@ -9,7 +10,12 @@ import type { BondRow, ChronicleData, JournalEntry, QuestRow } from "../lib/type
  * disagree with the world it reports on.
  */
 
-type Tab = "journal" | "bonds";
+type Tab = "journal" | "bonds" | "standing" | "codex";
+
+const CODEX_GROUP: Record<string, string> = {
+  deity: "Powers", place: "Places", faction: "Factions",
+  npc: "People", lore: "Things learned",
+};
 
 function DayGroup({ day, rows }: { day: number; rows: JournalEntry[] }) {
   return (
@@ -70,6 +76,64 @@ function Bond({ b, onInspect }: { b: BondRow; onInspect: (n: string) => void }) 
   );
 }
 
+function Standing({ s }: { s: StandingRow }) {
+  // Renown is only legible against the next rung, so the bar measures the gap
+  // rather than an absolute the player has no scale for.
+  const span = (s.needed ?? 0) + 1;
+  const pct = s.next ? Math.max(6, Math.round(100 / span)) : 100;
+  return (
+    <div className="chr-standing">
+      <div className="chr-qhead">
+        <b>{s.faction}</b>
+        {s.standing && <em className={`chr-qtag st-${s.standing}`}>{s.standing}</em>}
+        <em className="chr-renown">{s.renown} renown</em>
+      </div>
+      {s.perks && <p className="chr-qline">{s.perks}</p>}
+      {s.next && (
+        <>
+          <div className="chr-rbar"><span style={{ width: `${pct}%` }} /></div>
+          <p className="chr-qline leads">
+            {s.needed} more to be {s.next}.
+          </p>
+        </>
+      )}
+      {s.note && <p className="chr-qline leads">{s.note}</p>}
+    </div>
+  );
+}
+
+function Codex({ rows, onInspect }: {
+  rows: CodexRow[];
+  onInspect: (n: string) => void;
+}) {
+  const groups: { key: string; rows: CodexRow[] }[] = [];
+  for (const r of rows) {
+    const last = groups[groups.length - 1];
+    if (last && last.key === r.kind) last.rows.push(r);
+    else groups.push({ key: r.kind, rows: [r] });
+  }
+  return (
+    <>
+      {groups.map((g) => (
+        <div key={g.key}>
+          <div className="chr-head">{CODEX_GROUP[g.key] ?? g.key}</div>
+          {g.rows.map((r) => (
+            <button className="chr-codex" key={r.slug} onClick={() => onInspect(r.name)}>
+              <span className="chr-bhead">
+                <b className={r.script ? `script-${r.script}` : undefined}>{r.name}</b>
+                {r.subtype && <em className="chr-brole">{r.subtype}</em>}
+                {r.status && <em className="chr-btag gone">{r.status}</em>}
+              </span>
+              {r.group && <em className="chr-brole">{r.group}</em>}
+              {r.note && <span className="chr-why">{r.note}</span>}
+            </button>
+          ))}
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function Chronicle({ data, onClose, onInspect }: {
   data: ChronicleData | null;
   onClose: () => void;
@@ -101,6 +165,14 @@ export function Chronicle({ data, onClose, onInspect }: {
                   onClick={() => setTab("bonds")}>
             Bonds{data.bonds.length ? ` · ${data.bonds.length}` : ""}
           </button>
+          <button className={`chr-tab${tab === "standing" ? " on" : ""}`}
+                  onClick={() => setTab("standing")}>
+            Standing{data.standing.length ? ` · ${data.standing.length}` : ""}
+          </button>
+          <button className={`chr-tab${tab === "codex" ? " on" : ""}`}
+                  onClick={() => setTab("codex")}>
+            Codex{data.codex.length ? ` · ${data.codex.length}` : ""}
+          </button>
         </div>
 
         {data.error && <p className="chr-none">{data.error}</p>}
@@ -131,6 +203,24 @@ export function Chronicle({ data, onClose, onInspect }: {
             {data.bonds.length === 0
               ? <p className="chr-none">No one has formed an opinion of you yet.</p>
               : data.bonds.map((b) => <Bond b={b} key={b.slug} onInspect={onInspect} />)}
+          </div>
+        )}
+
+        {tab === "standing" && (
+          <div className="chr-body">
+            {data.standing.length === 0
+              ? <p className="chr-none">No faction has taken notice of you.</p>
+              : data.standing.map((s) => <Standing s={s} key={s.slug} />)}
+          </div>
+        )}
+
+        {tab === "codex" && (
+          <div className="chr-body">
+            {data.codex.length === 0
+              ? <p className="chr-none">
+                  You have learned nothing of this world yet. It fills as you go.
+                </p>
+              : <Codex rows={data.codex} onInspect={onInspect} />}
           </div>
         )}
       </div>

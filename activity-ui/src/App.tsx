@@ -203,7 +203,8 @@ export default function App({ session }: { session: Session }) {
           break;
         case "chronicle_data":
           setChronicle({ entries: ev.entries, quests: ev.quests,
-                         bonds: ev.bonds, error: ev.error });
+                         bonds: ev.bonds, standing: ev.standing ?? [],
+                         codex: ev.codex ?? [], error: ev.error });
           break;
         case "party":
           setParty(ev.members);
@@ -511,7 +512,7 @@ export default function App({ session }: { session: Session }) {
               onSetDnr={setDnr}
               onReprepare={() => connRef.current?.send({ t: "reprepare" })}
               onChronicle={() => {
-                setChronicle({ entries: [], quests: [], bonds: [] });
+                setChronicle({ entries: [], quests: [], bonds: [], standing: [], codex: [] });
                 connRef.current?.send({ t: "chronicle" });
               }}
             />

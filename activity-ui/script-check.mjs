@@ -86,6 +86,20 @@ if (!/^Oracle/.test(result.seen.elvenInProse || "")) fails.push("elven name in p
 // The one that matters most: display faces must never touch body text.
 if (/^Oracle/.test(result.seen.bodyProse || "")) fails.push("BODY PROSE picked up a display face");
 
+// The Chronicle's codex names must keep their hands too — a font-family on a
+// container rule out-specifies the .script-* class and flattens them silently,
+// which has already happened twice.
+await page.locator("button", { hasText: /Chronicle/i }).click();
+await page.waitForTimeout(700);
+await page.locator(".chr-tab", { hasText: /Codex/i }).click();
+await page.waitForTimeout(400);
+const codex = await page.evaluate(() => {
+  const el = document.querySelector(".chr-codex b[class*='script-']");
+  return el ? getComputedStyle(el).fontFamily.split(",")[0].replace(/"/g, "") : null;
+});
+console.log("codex name font:", codex);
+if (!/^Oracle/.test(codex || "")) fails.push("codex names lost their hand");
+
 console.log("\nFAILS:", fails.length ? fails : "none");
 await browser.close();
 process.exit(fails.length ? 1 : 0);

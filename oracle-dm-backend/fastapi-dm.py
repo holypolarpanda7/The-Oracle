@@ -16161,6 +16161,116 @@ def _activity_bonds(session_id: str, user_id: str) -> list[dict]:
     return out[:40]
 
 
+def _activity_standing(session_id: str, user_id: str) -> list[dict]:
+    """Where this character stands with the factions who have noticed them.
+
+    A pure read of ``reputation/`` — renown, the standing it buys, the perks
+    that standing carries, and how far the next one is.
+    """
+    char_id = _activity_char_id(session_id, user_id)
+    if not char_id:
+        return []
+    try:
+        from reputation.logic import describe_standing
+        with Session(engine) as s:
+            rows = s.exec(select(Reputation).where(
+                Reputation.character_id == char_id)).all()
+        out = []
+        for r in rows:
+            d = describe_standing(r.renown)
+            if not d.get("enabled"):
+                return []
+            row = {"faction": r.faction_name or r.faction_slug,
+                   "slug": r.faction_slug, "renown": r.renown,
+                   "standing": d.get("standing"), "perks": d.get("perks")}
+            nxt = d.get("next") or {}
+            if nxt.get("standing"):
+                row["next"] = nxt["standing"]
+                row["needed"] = nxt.get("needed")
+            if r.notes:
+                row["note"] = str(r.notes)[:160]
+            out.append(row)
+        out.sort(key=lambda r: (-int(r.get("renown") or 0), r["faction"]))
+        return out
+    except Exception as e:
+        print(f"[activity] standing failed: {e}")
+        return []
+
+
+# What a codex entry looks like per entity type. Powers and places carry the
+# most for a reader; anything else is a name and what you know of it.
+_CODEX_TYPES = (EntityType.DEITY, EntityType.PLACE, EntityType.FACTION,
+                EntityType.NPC, EntityType.LORE)
+
+
+def _activity_codex(session_id: str, user_id: str) -> list[dict]:
+    """The world as this character knows it — and ONLY as they know it.
+
+    Gated on what the graph says they have actually met, visited or learned
+    about: a codex that listed every god and every town would be a strategy
+    guide, not a character's own knowledge. Entities are drawn from open
+    ``knows_about`` edges plus everything currently in their local slice.
+    """
+    pc = _activity_pc_entity(session_id, user_id)
+    if pc is None:
+        return []
+    known_ids: set[int] = set()
+    try:
+        with Session(world.engine) as s:
+            # Anything explicitly learned…
+            for rel in s.exec(select(WorldRelation).where(
+                    WorldRelation.src_id == pc.id,
+                    WorldRelation.rel_type.in_(
+                        [RelationType.KNOWS_ABOUT, RelationType.KNOWS,
+                         RelationType.WORSHIPS, RelationType.MEMBER_OF]),
+                    WorldRelation.valid_to == None)).all():   # noqa: E711
+                known_ids.add(rel.dst_id)
+            # …and anything that has an opinion of them, or shares their place.
+            for rel in s.exec(select(WorldRelation).where(
+                    WorldRelation.dst_id == pc.id,
+                    WorldRelation.valid_to == None)).all():   # noqa: E711
+                known_ids.add(rel.src_id)
+            here = s.exec(select(WorldRelation).where(
+                WorldRelation.src_id == pc.id,
+                WorldRelation.rel_type == RelationType.LOCATED_IN,
+                WorldRelation.valid_to == None)).first()      # noqa: E711
+            if here is not None:
+                known_ids.add(here.dst_id)
+            known_ids.discard(pc.id)
+            if not known_ids:
+                return []
+            ents = s.exec(select(WorldEntity).where(
+                WorldEntity.id.in_(known_ids),
+                WorldEntity.type.in_(list(_CODEX_TYPES)))).all()
+    except Exception as e:
+        print(f"[activity] codex failed: {e}")
+        return []
+
+    out: list[dict] = []
+    for e in ents:
+        attrs = e.attributes or {}
+        row: dict = {"name": e.name, "slug": e.slug, "kind": e.type}
+        if e.subtype:
+            row["subtype"] = e.subtype
+        if e.status and e.status != "active":
+            row["status"] = e.status
+        script = _script_for_entity(e)
+        if script:
+            row["script"] = script
+        for key in ("blurb", "description", "lore", "domains", "look"):
+            if attrs.get(key):
+                row["note"] = str(attrs[key])[:240]
+                break
+        if e.type == EntityType.DEITY and attrs.get("family_label"):
+            row["group"] = str(attrs["family_label"])
+        elif attrs.get("region"):
+            row["group"] = str(attrs["region"])
+        out.append(row)
+    order = {t: i for i, t in enumerate(_CODEX_TYPES)}
+    out.sort(key=lambda r: (order.get(r["kind"], 9), r["name"]))
+    return out[:120]
+
+
 # ===================== Cultural hands =======================================
 #
 # Each culture in the world reads in its own face. The client owns the fonts
@@ -18289,11 +18399,14 @@ async def activity_ws(ws: WebSocket, channel: str):
                     await ws.send_json({"t": "chronicle_data",
                                         "entries": jr["entries"],
                                         "quests": jr["quests"],
-                                        "bonds": _activity_bonds(session_id, user_id)})
+                                        "bonds": _activity_bonds(session_id, user_id),
+                                        "standing": _activity_standing(session_id, user_id),
+                                        "codex": _activity_codex(session_id, user_id)})
                 except Exception as e:
                     print(f"[activity] chronicle failed: {e}")
                     await ws.send_json({"t": "chronicle_data", "entries": [],
-                                        "quests": [], "bonds": [],
+                                        "quests": [], "bonds": [], "standing": [],
+                                        "codex": [],
                                         "error": "The Chronicle is closed to you."})
                 continue
 
