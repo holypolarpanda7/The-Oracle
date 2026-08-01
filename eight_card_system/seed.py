@@ -124,6 +124,9 @@ def seed_minimal_world(graph: WorldGraph) -> dict:
         attributes={
             "description": "A patchwork of farmland and low hills at the frontier's edge.",
             "scale": "region",
+            # The region's terrain is what every place inside it inherits when
+            # narration invents one without a biome (see placelore.py).
+            "biome": "farmland",
             "settlement_budget": {"town": 1, "village": 2},
             "coords": geo.coords_attr(geo.ORIGIN_LAT, geo.ORIGIN_LON),
         },
@@ -179,6 +182,9 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         attributes={
             "description": "A patchwork of farmland and low hills at the frontier's edge.",
             "scale": "region",
+            # The region's terrain is what every place inside it inherits when
+            # narration invents one without a biome (see placelore.py).
+            "biome": "farmland",
             "settlement_budget": {"town": 1, "village": 2},
             "coords": geo.coords_attr(geo.ORIGIN_LAT, geo.ORIGIN_LON),
         },
@@ -225,6 +231,7 @@ def seed_starter_world(graph: WorldGraph) -> dict:
         attributes={
             "description": "An old forest east of Millbrook where the light never quite reaches.",
             "scale": "wilds",
+            "biome": "forest",
             "danger": "moderate",
             "coords": geo.coords_attr(*geo.from_origin("east", 10.0)),
             # Rare, persistent arcane features (a list) — the DM can reflavor, add,
