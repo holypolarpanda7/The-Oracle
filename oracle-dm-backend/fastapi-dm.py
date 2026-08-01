@@ -122,6 +122,7 @@ from survival import (
     short_rest as survival_short_rest,
     long_rest as survival_long_rest,
     encumbrance_status,
+    carrying_capacity,
     generate_weather,
     hazards_from_weather,
     active_hazard_tags,
@@ -15319,10 +15320,27 @@ def _consumable_effect(name: str) -> Optional[dict]:
     return None
 
 
+def _item_thumb_url(name: str) -> Optional[str]:
+    """URL of an ALREADY-RENDERED picture of this item, or None.
+
+    Deliberately never triggers a render — the pack is opened constantly and
+    each miss would be a GPU job. Art appears once the inspector has drawn the
+    item. A URL rather than a data URI: 24 inlined base64 images would bloat
+    every sheet push, and the browser caches these.
+    """
+    try:
+        res = image_store.get_any_latest("item", name)
+        return f"/imagery/image/{res.image_id}?thumb=true" if res and res.image_id else None
+    except Exception:
+        return None
+
+
 def _activity_inventory(char: Character) -> list[dict]:
     """Inventory as inspectable item objects: name, qty, and (when the catalog
     knows the item) type/rarity/brief + an ``interactive`` flag for special
-    items like spellbooks. Full description + art are fetched on inspect."""
+    items like spellbooks. Also carries a thumbnail, live equipped/attuned
+    state, and the ONE verb the grid card offers. The full description and a
+    freshly-rendered picture still come from inspect."""
     try:
         from rules.query import RulesLibrary
         lib = RulesLibrary(engine=engine)
@@ -15356,6 +15374,25 @@ def _activity_inventory(char: Character) -> list[dict]:
             obj["interactive"] = "attunement"
         elif fam and fam != "wearable":
             obj["interactive"] = fam
+        art = _item_thumb_url(name)
+        if art:
+            obj["art"] = art
+        if it.get("equipped"):
+            obj["equipped"] = True
+        if it.get("attuned"):
+            obj["attuned"] = True
+        weight = float(it.get("weight", 0) or 0)
+        if weight:
+            obj["weight"] = round(weight, 2)
+        # The single verb the card shows. The inspector still offers the full
+        # set — this is the one you reach for without opening anything.
+        try:
+            caps = _item_caps(row, name, it, char, fam)
+            acts = caps.get("actions") or []
+            if acts:
+                obj["action"] = acts[0]
+        except Exception:
+            pass
         out.append(obj)
     return out
 
@@ -15633,6 +15670,10 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         active_portrait = getattr(char, "active_portrait", None) or image_store.BASE_CONTEXT
         inventory = _activity_inventory(char)
         ac_val = _compute_ac(char)
+        # Carried load against SRD capacity (Strength score x 15), so the pack
+        # header can say what the sheet already knows.
+        carried = round(_carried_weight(char), 1)
+        capacity = round(carrying_capacity(_ability_score(char, "strength")), 0)
     bits = [f"Level {sheet['level']} {sheet['char_class'] or '?'}"]
     if sheet.get("subclass"):
         bits[0] += f" ({sheet['subclass']})"
@@ -15650,7 +15691,9 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "stats": {a[:3].upper(): v["score"] for a, v in sheet["abilities"].items()},
         "skills": [c for c in (sheet.get("conditions") or [])] or
                   [s for s in (sheet.get("spells") or [])][:6],
-        "inventory": inventory[:24],
+        "inventory": inventory[:48],
+        "carried": carried,
+        "capacity": capacity,
         "gold": (sheet.get("purse") or {}).get("gp"),
         # ---- v1 structured / themeable fields ----
         "race": sheet.get("race"),
@@ -15997,16 +16040,101 @@ def _activity_lexicon(session_id: str, pc_name: Optional[str],
     return entries[:40]
 
 
-def _activity_segments(reply: str, rolls: list[dict]) -> list[dict]:
+# Who is speaking: a quoted line, and the name that carries it. Attribution is
+# deliberately conservative — a paragraph only becomes a SPEECH block when it is
+# mostly quotation AND a known name appears in the prose around the quote. Every
+# unattributed or mixed paragraph stays plain narration, so the worst case is
+# the surface we already had rather than words put in the wrong mouth.
+_QUOTE_RE = re.compile(r"[“\"]([^”\"]{2,})[”\"]")
+# A paragraph is a line of dialogue when it is mostly quotation, OR when what
+# is left outside the quotes is only a dialogue tag ("…," Marla says.). The
+# second test matters more than the first: a short line with an attribution
+# reads as speech even though the tag outweighs the words spoken. Prose that
+# merely quotes a sign or a rumour fails both and stays narration.
+_SPEECH_SHARE = 0.5
+_SPEECH_TAG_MAX = 60
+
+
+def _speech_paragraph(para: str, names: list[str],
+                      last: Optional[str]) -> Optional[str]:
+    """The speaker of a dialogue paragraph, or None if it isn't one.
+
+    Returns the attributed name; ``""`` means "a spoken line whose speaker we
+    could not name", which still deserves the dialogue treatment.
+    """
+    quotes = list(_QUOTE_RE.finditer(para))
+    if not quotes:
+        return None
+    body = para.strip()
+    quoted = sum(len(m.group(0)) for m in quotes)
+    # Look for a name in the parts that are NOT inside the quotes — "Marla
+    # says" attributes; a name spoken INSIDE the quote does not.
+    outside = _QUOTE_RE.sub(" ", para)
+    if (quoted / max(1, len(body)) < _SPEECH_SHARE
+            and len(outside.strip()) > _SPEECH_TAG_MAX):
+        return None
+    best: Optional[str] = None
+    for nm in names:
+        if re.search(rf"\b{re.escape(nm)}\b", outside, re.IGNORECASE):
+            # Longest match wins: "Old Marla" beats "Marla".
+            if best is None or len(nm) > len(best):
+                best = nm
+    if best:
+        return best
+    # A bare quoted line continues the exchange it belongs to.
+    return last if last else ""
+
+
+def _speaker_portrait(name: str) -> Optional[str]:
+    """An already-rendered portrait of a speaker, or None. Never renders."""
+    for kind in ("npc", "pc"):
+        try:
+            res = image_store.get_any_latest(kind, name)
+            if res and res.image_id:
+                return f"/imagery/image/{res.image_id}?thumb=true"
+        except Exception:
+            pass
+    return None
+
+
+def _activity_segments(reply: str, rolls: list[dict],
+                       speakers: Optional[list[str]] = None) -> list[dict]:
     """Split the reply into narration blocks interleaved with roll cards at
-    the exact positions their inline '🎲 …' markers occupy."""
+    the exact positions their inline '🎲 …' markers occupy.
+
+    Paragraphs that are a line of dialogue become their own ``speech`` blocks,
+    carrying the speaker and (when one has already been drawn) their portrait —
+    the client can then give each voice its own card instead of rendering a
+    wall of prose.
+    """
     events: list[dict] = []
     rest = reply
+    # Longest first so "Old Marla" is matched before "Marla".
+    names = sorted({n for n in (speakers or []) if len(n) >= 3},
+                   key=len, reverse=True)
+    last_speaker: Optional[str] = None
 
     def push_text(chunk: str):
+        nonlocal last_speaker
         chunk = chunk.strip()
-        if chunk:
-            events.append({"t": "narration", "text": chunk})
+        if not chunk:
+            return
+        for para in re.split(r"\n\s*\n", chunk):
+            para = para.strip()
+            if not para:
+                continue
+            who = _speech_paragraph(para, names, last_speaker)
+            if who is None:
+                events.append({"t": "narration", "text": para})
+                continue
+            ev: dict = {"t": "speech", "text": para}
+            if who:
+                last_speaker = who
+                ev["who"] = who
+                art = _speaker_portrait(who)
+                if art:
+                    ev["portrait"] = art
+            events.append(ev)
 
     for r in rolls:
         marker = r.pop("marker", None)
@@ -17942,14 +18070,17 @@ async def activity_ws(ws: WebSocket, channel: str):
 
             # The narration. On a secret turn it's the actor's alone (their own
             # socket); the table sees only resp.public. Otherwise broadcast it.
-            for ev in _activity_segments(resp.reply, rolls):
+            # The lexicon's people are exactly the pool of possible speakers:
+            # the PC plus whoever the world slice put in the scene.
+            speaker_names = [e["text"] for e in lex if e.get("kind") == "name"]
+            for ev in _activity_segments(resp.reply, rolls, speaker_names):
                 if is_private:
                     ev = {**ev, "secret": True}
                     await ws.send_json(ev)
                 else:
                     await _activity_broadcast(session_id, ev, fallback=ws)
             if is_private and resp.public:
-                for ev in _activity_segments(resp.public, []):
+                for ev in _activity_segments(resp.public, [], speaker_names):
                     await _activity_broadcast(session_id, ev, fallback=ws)
 
             # Suggested next actions. They follow the narration's audience: on a
