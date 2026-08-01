@@ -120,6 +120,10 @@ function demoItemDetail(name: string): ItemDetail {
 }
 
 function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
+  if (ev.t === "chronicle") {
+    onEvent({ t: "chronicle_data", ...demoScript.chronicle });
+    return;
+  }
   // ---- the Proving Grounds (offline): the same contract, scripted ----
   if (ev.t === "arena_state") {
     onEvent({ t: "arena", state: demoArenaApi.state() });

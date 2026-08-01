@@ -1,5 +1,5 @@
 import type { ArenaEnv, ArenaEquipLine, ArenaOutfitLine, ArenaShop, ArenaState,
-              ArenaStockItem, CombatState, ServerEvent, VttEffect,
+              ArenaStockItem, ChronicleData, CombatState, ServerEvent, VttEffect,
               VttScene } from "./types";
 
 /** Standalone demo feed — lets the whole UI run with no backend, and doubles
@@ -101,6 +101,47 @@ const locale: ServerEvent = {
       { name: "Hooded Stranger", kind: "npc", role: "traveller" },
     ],
   },
+};
+
+/* The Chronicle, offline. Mirrors `_activity_journal` + `_activity_bonds`. */
+const demoChronicle: ChronicleData = {
+  entries: [
+    { day: 341, text: "Quest begun: The Mill That Grinds No Grain", place: "Wispering Mill" },
+    { day: 341, text: "Kara traded a silver ring to Old Marla for directions.", place: "Greenfields" },
+    { day: 340, text: "Brother Aldous was wounded driving off a goblin raid.", place: "Greenfields" },
+    { day: 338, text: "The party arrived in Greenfields from the eastern road.", place: "Greenfields" },
+    { day: 337, text: "Pip drank from a still pool and has not been right since." },
+  ],
+  quests: [
+    {
+      name: "The Mill That Grinds No Grain", state: "active", tier: "main",
+      conflict: "Someone is working the mill at midnight, and the village needs it stopped.",
+      stakes: "Every night it turns, another field goes to blight.",
+      patron: "Old Marla", reward: "The miller's stake in the harvest",
+      objectives: ["Get inside the mill unseen", "Find out who is grinding, and what"],
+      leads: ["The torn sails were cut, not weathered"],
+    },
+    {
+      name: "A Longbow Too Fine", state: "offered", tier: "rumor",
+      conflict: "Goblins are carrying gear no goblin could have made.",
+    },
+    {
+      name: "The Goblin Raid on Greenfields", state: "completed", tier: "side",
+      conflict: "Raiders bled the village's stores through the autumn.",
+    },
+  ],
+  bonds: [
+    { name: "Brother Aldous", slug: "brother-aldous", role: "cleric", companion: true,
+      sentiment: 6.2, feeling: "allied", reason: "Kara carried him out of the burning barn." },
+    { name: "Old Marla", slug: "old-marla", role: "miller", sentiment: 3.1,
+      feeling: "warm", attitude: "friendly", reason: "Paid honestly, and listened." },
+    { name: "Garrick Vane", slug: "garrick-vane", role: "reeve", sentiment: -4.4,
+      feeling: "hostile", reason: "Kara named him a coward in front of the whole hall." },
+    { name: "Pip", slug: "pip", role: "scout", companion: true, sentiment: 1.8,
+      feeling: "warm" },
+    { name: "The Hooded Stranger", slug: "hooded-stranger", sentiment: -0.3,
+      feeling: "neutral" },
+  ],
 };
 
 /* Demo initiative carousel: first attack opens the fight, the next one downs
@@ -633,6 +674,7 @@ export const demoArenaApi = {
 };
 
 export const demoScript = {
+  chronicle: demoChronicle,
   hello: {
     t: "hello",
     channel: "demo",
@@ -659,6 +701,11 @@ export const demoScript = {
         "A goblin warrior's tracks cross the mud " +
         "at your feet, fresh enough that water still seeps into them.",
     } as ServerEvent,
+    {
+      t: "suggest",
+      actions: ["follow the tracks", "sneak up to the mill door",
+                "call out to whoever is inside"],
+    } as ServerEvent,
   ],
   respond(action: string): ServerEvent[] {
     if (/level ?up/i.test(action)) {
@@ -680,6 +727,11 @@ export const demoScript = {
             "The mill door hangs open, and inside, two shapes hunch over something " +
             "that gleams — a goblin warrior and its mate, arguing in whispers over " +
             "a longbow far too fine for either of them.",
+        },
+        {
+          t: "suggest",
+          actions: ["shoot the nearer goblin", "listen to what they are saying",
+                    "back away quietly"],
         },
       ];
     }

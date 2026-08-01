@@ -147,7 +147,8 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (a background grants its Origin feat, choices and all), `pframe-shot`
   (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
   at desktop and phone: status bar, "here & now" rail, narration column, roll
-  card).
+  card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
+  journal and bonds tabs).
 
 ## Key facts & constraints
 - **D&D Beyond has NO public write API.** You cannot create/store a character on a

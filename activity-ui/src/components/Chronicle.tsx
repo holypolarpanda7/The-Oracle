@@ -1,0 +1,139 @@
+import { useState } from "react";
+import type { BondRow, ChronicleData, JournalEntry, QuestRow } from "../lib/types";
+
+/**
+ * The Chronicle — the party's own record, and the people who have an opinion
+ * of them. Both tabs are pure reads of state the world already keeps: the
+ * append-only WorldEvent log, the QUEST scaffold, and the relationship
+ * ledgers. Nothing is stored for the Chronicle's sake, so it can never
+ * disagree with the world it reports on.
+ */
+
+type Tab = "journal" | "bonds";
+
+function DayGroup({ day, rows }: { day: number; rows: JournalEntry[] }) {
+  return (
+    <div className="chr-day">
+      <div className="chr-daymark">Day {day}</div>
+      {rows.map((e, i) => (
+        <p className="chr-entry" key={i}>
+          {e.place && <span className="chr-where">{e.place} · </span>}
+          {e.text}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function Quest({ q }: { q: QuestRow }) {
+  const closed = q.state === "completed" || q.state === "failed";
+  return (
+    <div className={`chr-quest ${q.state} ${q.tier}`}>
+      <div className="chr-qhead">
+        <b>{q.name}</b>
+        <em className={`chr-qtag ${q.tier}`}>{q.tier}</em>
+        {closed && <em className={`chr-qtag ${q.state}`}>{q.state}</em>}
+      </div>
+      {q.conflict && <p className="chr-qline">{q.conflict}</p>}
+      {q.stakes && <p className="chr-qline stakes">If ignored: {q.stakes}</p>}
+      {(q.objectives ?? []).length > 0 && (
+        <ul className="chr-objs">
+          {q.objectives!.map((o, i) => <li key={i}>{o}</li>)}
+        </ul>
+      )}
+      {(q.leads ?? []).length > 0 && (
+        <p className="chr-qline leads">Leads: {q.leads!.join(" · ")}</p>
+      )}
+      <div className="chr-qfoot">
+        {q.patron && <em>from {q.patron}</em>}
+        {q.reward && <em>reward: {q.reward}</em>}
+      </div>
+    </div>
+  );
+}
+
+function Bond({ b, onInspect }: { b: BondRow; onInspect: (n: string) => void }) {
+  return (
+    <button className="chr-bond" onClick={() => onInspect(b.name)}>
+      <span className="chr-bhead">
+        <b>{b.name}</b>
+        {b.companion && <em className="chr-btag comp">travels with you</em>}
+        {b.status && <em className="chr-btag gone">{b.status}</em>}
+      </span>
+      <span className="chr-bmeta">
+        {b.role && <em className="chr-brole">{b.role}</em>}
+        {b.feeling && <em className={`chr-feel ${b.feeling}`}>{b.feeling}</em>}
+        {b.attitude && !b.feeling && <em className="chr-feel">{b.attitude}</em>}
+      </span>
+      {b.reason && <span className="chr-why">“{b.reason}”</span>}
+    </button>
+  );
+}
+
+export function Chronicle({ data, onClose, onInspect }: {
+  data: ChronicleData | null;
+  onClose: () => void;
+  onInspect: (name: string) => void;
+}) {
+  const [tab, setTab] = useState<Tab>("journal");
+  if (!data) return null;
+
+  // Entries arrive newest-first; group them under their world day so a long
+  // record reads as a chronicle rather than an undifferentiated list.
+  const days: { day: number; rows: JournalEntry[] }[] = [];
+  for (const e of data.entries) {
+    const last = days[days.length - 1];
+    if (last && last.day === e.day) last.rows.push(e);
+    else days.push({ day: e.day, rows: [e] });
+  }
+  const live = data.quests.filter((q) => q.state === "offered" || q.state === "active");
+  const closed = data.quests.filter((q) => q.state === "completed" || q.state === "failed");
+
+  return (
+    <div className="chr-veil" onClick={onClose}>
+      <div className="chr" onClick={(e) => e.stopPropagation()}>
+        <button className="chr-close" onClick={onClose} aria-label="Close">✕</button>
+        <div className="chr-title">The Chronicle</div>
+        <div className="chr-tabs">
+          <button className={`chr-tab${tab === "journal" ? " on" : ""}`}
+                  onClick={() => setTab("journal")}>Journal</button>
+          <button className={`chr-tab${tab === "bonds" ? " on" : ""}`}
+                  onClick={() => setTab("bonds")}>
+            Bonds{data.bonds.length ? ` · ${data.bonds.length}` : ""}
+          </button>
+        </div>
+
+        {data.error && <p className="chr-none">{data.error}</p>}
+
+        {tab === "journal" && (
+          <div className="chr-body">
+            {live.length > 0 && (
+              <>
+                <div className="chr-head">Open threads</div>
+                {live.map((q) => <Quest q={q} key={q.name} />)}
+              </>
+            )}
+            {closed.length > 0 && (
+              <>
+                <div className="chr-head">Settled</div>
+                {closed.map((q) => <Quest q={q} key={q.name} />)}
+              </>
+            )}
+            <div className="chr-head">What happened</div>
+            {days.length === 0
+              ? <p className="chr-none">Nothing is written here yet.</p>
+              : days.map((d) => <DayGroup day={d.day} rows={d.rows} key={d.day} />)}
+          </div>
+        )}
+
+        {tab === "bonds" && (
+          <div className="chr-body">
+            {data.bonds.length === 0
+              ? <p className="chr-none">No one has formed an opinion of you yet.</p>
+              : data.bonds.map((b) => <Bond b={b} key={b.slug} onInspect={onInspect} />)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

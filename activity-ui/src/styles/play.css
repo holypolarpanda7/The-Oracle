@@ -409,6 +409,28 @@
 .play .scroll .rollcard.ok .rc-stamp { color: #0c6f5c; }
 .play .scroll .rollcard.failure .rc-stamp { color: #9c3b32; }
 
+/* ---------- suggested actions ----------
+   Openings the Oracle named in the scene it just narrated. A nudge for someone
+   staring at an empty box — the input below still takes anything at all. */
+.play .suggests { flex: none; display: flex; flex-wrap: wrap; gap: 7px; }
+.play .sugg {
+  font-family: var(--serif); font-size: 0.82rem; font-style: italic;
+  color: var(--gold-2); cursor: pointer; padding: 6px 13px; border-radius: 999px;
+  background: rgba(20, 28, 48, 0.75);
+  border: 1px solid var(--gold-dim);
+  box-shadow: inset 0 0 0 1px rgba(230, 188, 100, 0.1);
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+  animation: sugg-in 0.3s ease-out both;
+}
+.play .sugg:nth-child(2) { animation-delay: 0.05s; }
+.play .sugg:nth-child(3) { animation-delay: 0.1s; }
+.play .sugg:nth-child(4) { animation-delay: 0.15s; }
+@keyframes sugg-in { from { opacity: 0; transform: translateY(5px); } }
+.play .sugg:hover:not(:disabled) {
+  border-color: var(--teal); color: #eafffb; background: rgba(26, 44, 56, 0.9);
+}
+.play .sugg:disabled { opacity: 0.4; cursor: default; }
+
 /* ---------- prompt bar ---------- */
 .play .promptbar {
   /* Pinned to the foot of the stage: whatever else is on screen — a board, a
@@ -606,7 +628,9 @@
 .play .tile .ico { width: 18px; height: 18px; }
 
 /* ---------- rail menu (bottom-anchored) ---------- */
-.play .menu { display: flex; gap: 10px; margin-top: auto; padding-top: 22px; }
+.play .menu { display: flex; flex-wrap: wrap; gap: 10px; margin-top: auto; padding-top: 22px; }
+.play .mbtn.wide { flex-basis: 100%; color: var(--gold-2); }
+.play .mbtn.wide:hover { border-color: var(--gold); color: #fff6df; }
 .play .mbtn { flex: 1; cursor: pointer; font-family: var(--serif); text-transform: uppercase; letter-spacing: 0.12em;
   font-size: 0.74rem; font-weight: 700; color: var(--text); padding: 12px; border-radius: 5px;
   background: linear-gradient(180deg, #182036, #101627); border: 1px solid var(--edge);
@@ -769,3 +793,131 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
   font-weight: 700; cursor: pointer; padding: 0 16px; border-radius: 5px; color: #1a1608;
   background: radial-gradient(circle at 35% 30%, var(--gold-2), var(--gold)); border: none; }
 .cw-store button:disabled { opacity: 0.4; cursor: default; }
+
+/* ---------- The Chronicle (journal + bonds) ----------
+   Both tabs are pure reads of world state: the append-only event log, the
+   QUEST scaffold, and the relationship ledgers. */
+.chr-veil {
+  position: absolute; inset: 0; z-index: 30; display: grid; place-items: center;
+  padding: 24px; background: rgba(4, 6, 12, 0.72);
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+  animation: veil-fade 0.2s ease-out;
+}
+.chr {
+  position: relative; display: flex; flex-direction: column;
+  width: min(760px, 96%); max-height: 88%; padding: 20px 22px 18px;
+  font-family: var(--serif); color: var(--text);
+  background: linear-gradient(180deg, rgba(19, 26, 46, 0.98), rgba(9, 12, 22, 0.98));
+  border: 1px solid var(--gold-dim); border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(230, 188, 100, 0.16),
+              inset 0 0 40px rgba(0, 0, 0, 0.6), 0 22px 60px rgba(0, 0, 0, 0.6);
+  animation: item-rise 0.22s ease-out;
+}
+.chr-close {
+  position: absolute; top: 8px; right: 10px; z-index: 2; border: none;
+  background: none; color: var(--text-dim); font-size: 1.1rem; cursor: pointer;
+  line-height: 1;
+}
+.chr-close:hover { color: var(--teal); }
+.chr-title {
+  font-size: 1.24rem; color: #f5efde; letter-spacing: 0.03em;
+  text-shadow: 0 2px 6px #000; margin-bottom: 12px;
+}
+.chr-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--edge); flex: none; }
+.chr-tab {
+  flex: 1; text-align: center; border: none; background: none; cursor: pointer;
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.11em;
+  font-size: 0.6rem; color: #aeb9c6; padding: 9px 2px;
+  border-bottom: 2px solid transparent; text-shadow: 0 1px 3px #000;
+}
+.chr-tab.on {
+  color: var(--teal); border-bottom-color: var(--teal);
+  text-shadow: 0 0 8px rgba(36, 224, 184, 0.6);
+}
+.chr-body { overflow: hidden auto; scrollbar-width: thin; padding: 14px 2px 4px; min-height: 0; }
+.chr-head {
+  font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--gold-2); opacity: 0.85;
+  margin: 16px 0 9px; padding-bottom: 5px; border-bottom: 1px solid var(--edge);
+}
+.chr-body > .chr-head:first-child { margin-top: 0; }
+.chr-none { margin: 0; font-size: 0.88rem; font-style: italic; color: var(--text-faint); }
+
+/* --- journal: quests --- */
+.chr-quest {
+  margin-bottom: 9px; padding: 10px 12px; border-radius: 6px;
+  background: rgba(10, 15, 26, 0.66);
+  border: 1px solid var(--edge); border-left: 3px solid var(--gold-dim);
+}
+.chr-quest.main { border-left-color: var(--gold); }
+.chr-quest.rumor { border-left-color: var(--amethyst); }
+.chr-quest.completed, .chr-quest.failed { opacity: 0.62; }
+.chr-quest.completed { border-left-color: var(--teal); }
+.chr-quest.failed { border-left-color: var(--crimson); }
+.chr-qhead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.chr-qhead b { font-size: 0.98rem; color: #f5efde; text-shadow: 0 1px 4px #000; }
+.chr-qtag {
+  font-family: var(--mono); font-style: normal; font-size: 0.5rem;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim);
+  padding: 2px 6px; border-radius: 3px; border: 1px solid var(--edge);
+}
+.chr-qtag.main { color: var(--gold-2); border-color: var(--gold-dim); }
+.chr-qtag.rumor { color: #d9b8ff; border-color: color-mix(in srgb, var(--amethyst) 45%, var(--edge)); }
+.chr-qtag.completed { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 45%, var(--edge)); }
+.chr-qtag.failed { color: var(--crimson); border-color: color-mix(in srgb, var(--crimson) 45%, var(--edge)); }
+.chr-qline { margin: 6px 0 0; font-size: 0.87rem; line-height: 1.5; color: #dfe8ea; }
+.chr-qline.stakes { color: var(--ember); font-style: italic; }
+.chr-qline.leads { color: var(--text-dim); font-size: 0.8rem; }
+.chr-objs { margin: 7px 0 0; padding-left: 18px; }
+.chr-objs li { font-size: 0.85rem; line-height: 1.5; color: #c7d2d8; }
+.chr-qfoot { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 7px; }
+.chr-qfoot em {
+  font-family: var(--mono); font-style: normal; font-size: 0.54rem;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint);
+}
+
+/* --- journal: the record --- */
+.chr-day { margin-bottom: 12px; }
+.chr-daymark {
+  font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--teal); margin-bottom: 5px;
+}
+.chr-entry {
+  margin: 0 0 5px; padding-left: 12px; font-size: 0.88rem; line-height: 1.55;
+  color: #dfe8ea; border-left: 1px solid var(--edge);
+}
+.chr-where { color: var(--gold-2); font-variant: small-caps; letter-spacing: 0.03em; }
+
+/* --- bonds --- */
+.chr-bond {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left;
+  margin-bottom: 7px; padding: 9px 12px; cursor: pointer; border-radius: 6px;
+  background: rgba(10, 15, 26, 0.66); border: 1px solid var(--edge);
+  transition: border-color 0.12s, background 0.12s;
+}
+.chr-bond:hover { border-color: var(--gold); background: rgba(20, 28, 48, 0.85); }
+.chr-bhead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.chr-bhead b { font-family: var(--serif); font-size: 0.96rem; font-weight: 400; color: #f5efde; }
+.chr-btag {
+  font-family: var(--mono); font-style: normal; font-size: 0.5rem;
+  letter-spacing: 0.1em; text-transform: uppercase; padding: 2px 6px;
+  border-radius: 3px; border: 1px solid var(--edge); color: var(--text-dim);
+}
+.chr-btag.comp { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 45%, var(--edge)); }
+.chr-btag.gone { color: var(--crimson); border-color: color-mix(in srgb, var(--crimson) 45%, var(--edge)); }
+.chr-bmeta { display: flex; flex-wrap: wrap; gap: 10px; }
+.chr-brole, .chr-feel {
+  font-family: var(--mono); font-style: normal; font-size: 0.54rem;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint);
+}
+.chr-feel.warm, .chr-feel.allied, .chr-feel.devoted { color: var(--teal); }
+.chr-feel.wary { color: var(--ember); }
+.chr-feel.hostile, .chr-feel.loathes { color: var(--crimson); }
+.chr-why {
+  font-size: 0.84rem; font-style: italic; line-height: 1.45; color: #c7d2d8;
+  margin-top: 2px;
+}
+@media (max-width: 560px) {
+  .chr-veil { padding: 12px; }
+  .chr { width: 100%; max-height: 94%; padding: 18px 14px 14px; }
+}

@@ -40,6 +40,46 @@ export interface Locale {
   present?: Presence[];
 }
 
+/** One line of the party's record — a world event they were part of. */
+export interface JournalEntry {
+  day: number;
+  text: string;
+  place?: string;
+}
+
+/** A thread the party has open (or has closed), from the QUEST scaffold. */
+export interface QuestRow {
+  name: string;
+  state: string;           // offered | active | completed | failed
+  tier: string;            // main | side | rumor
+  conflict?: string;
+  stakes?: string;
+  patron?: string;
+  reward?: string;
+  objectives?: string[];   // only the steps still open
+  leads?: string[];
+}
+
+/** Someone who has an opinion of you, and why. */
+export interface BondRow {
+  name: string;
+  slug: string;
+  role?: string;
+  status?: string;         // absent when they're alive and about
+  sentiment?: number;
+  feeling?: string;        // loathes | hostile | wary | neutral | warm | allied | devoted
+  attitude?: string;       // 5e social scale, when trust has been tracked
+  reason?: string;         // the deed that most drives how they feel
+  companion?: boolean;
+}
+
+export interface ChronicleData {
+  entries: JournalEntry[];
+  quests: QuestRow[];
+  bonds: BondRow[];
+  error?: string;
+}
+
 export interface SpellSlotRow { level: number; total: number; used: number; }
 export interface ResourceRow { name: string; total: number; used: number; die?: string; }
 export interface SheetFeature {
@@ -442,6 +482,8 @@ export type ServerEvent =
   | { t: "roll"; roll: RollResult }
   | { t: "sheet"; sheet: SheetData }
   | { t: "locale"; locale: Locale }
+  | { t: "suggest"; actions: string[] }
+  | ({ t: "chronicle_data" } & ChronicleData)
   | ({ t: "reprepare_data" } & RepData)
   | { t: "party"; members: Ally[] }
   | { t: "combat"; encounter: CombatState | null }
@@ -474,6 +516,7 @@ export type ClientEvent =
       ability_increases?: Record<string, number>;
       feat?: string; feat_choices?: FeatPicks }
   | { t: "reprepare" }
+  | { t: "chronicle" }
   | { t: "reprepare_apply"; spells: string[] }
   | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload }

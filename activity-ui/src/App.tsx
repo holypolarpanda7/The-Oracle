@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { connect, type Connection } from "./lib/connection";
 import type {
   Ally, ArenaState, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry,
-  Locale, RepData, ServerEvent, SheetData, VttOptions, VttScene,
+  ChronicleData, Locale, RepData, ServerEvent, SheetData, VttOptions, VttScene,
 } from "./lib/types";
 import { Block, makeOracleBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
@@ -12,6 +12,7 @@ import { Arena, ArenaResult, Quartermaster } from "./components/Arena";
 import { LevelUpOverlay } from "./components/LevelUp";
 import { ReprepareOverlay } from "./components/Reprepare";
 import { PlaySurface } from "./components/PlaySurface";
+import { Chronicle } from "./components/Chronicle";
 import { ItemInspector, type ItemView } from "./components/ItemInspector";
 import { levelChime, rollThunk } from "./lib/sound";
 import type { Session } from "./lib/session";
@@ -40,6 +41,8 @@ export default function App({ session }: { session: Session }) {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [sheet, setSheet] = useState<SheetData | null>(null);
   const [locale, setLocale] = useState<Locale | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [chronicle, setChronicle] = useState<ChronicleData | null>(null);
   const [party, setParty] = useState<Ally[]>([]);
   const [combat, setCombat] = useState<CombatState | null>(null);
   // The tactical board: present only while the Oracle has one out.
@@ -190,6 +193,13 @@ export default function App({ session }: { session: Session }) {
         case "locale":
           setLocale(ev.locale);
           break;
+        case "suggest":
+          setSuggestions(ev.actions);
+          break;
+        case "chronicle_data":
+          setChronicle({ entries: ev.entries, quests: ev.quests,
+                         bonds: ev.bonds, error: ev.error });
+          break;
         case "party":
           setParty(ev.members);
           break;
@@ -258,10 +268,12 @@ export default function App({ session }: { session: Session }) {
     return () => conn.close();
   }, []);
 
-  const submit = (secret?: boolean) => {
-    const text = input.trim();
+  const submit = (secret?: boolean, override?: string) => {
+    const text = (override ?? input).trim();
     if (!text || busy) return;
-    setInput("");
+    if (override === undefined) setInput("");
+    // The chips describe the scene that just ended; the next reply brings its own.
+    setSuggestions([]);
     connRef.current?.send({ t: "action", text, private: !!secret });
   };
 
@@ -436,6 +448,7 @@ export default function App({ session }: { session: Session }) {
               blocks={blocks}
               sheet={sheet}
               locale={locale}
+              suggestions={suggestions}
               sceneUrl={sceneUrl}
               party={party}
               combat={combat}
@@ -473,6 +486,15 @@ export default function App({ session }: { session: Session }) {
               onPortrait={portraitAction}
               onSetDnr={setDnr}
               onReprepare={() => connRef.current?.send({ t: "reprepare" })}
+              onChronicle={() => {
+                setChronicle({ entries: [], quests: [], bonds: [] });
+                connRef.current?.send({ t: "chronicle" });
+              }}
+            />
+            <Chronicle
+              data={chronicle}
+              onClose={() => setChronicle(null)}
+              onInspect={inspectItem}
             />
             {repData && (
               <ReprepareOverlay

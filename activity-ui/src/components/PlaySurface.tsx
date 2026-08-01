@@ -177,9 +177,12 @@ export interface PlayProps {
   onVttMove: (tokenId: number, x: number, y: number) => void;
   onVttPing: (x: number, y: number) => void;
   onVttDismissError: () => void;
+  /** Things the Oracle says you could do now — a nudge, never a menu. */
+  suggestions: string[];
   input: string;
   setInput: (v: string) => void;
-  submit: (secret?: boolean) => void;
+  submit: (secret?: boolean, text?: string) => void;
+  onChronicle: () => void;
   busy: boolean;
   rateWait: number;
   onSkip: () => void;
@@ -202,7 +205,7 @@ export function PlaySurface(p: PlayProps) {
   // "Secret" input: the action + the Oracle's answer stay private to you — your
   // tablemates never see it (cheat, lie, a hidden roll).
   const [secret, setSecret] = useState(false);
-  const send = () => { p.submit(secret); setSecret(false); };
+  const send = (text?: string) => { p.submit(secret, text); setSecret(false); };
 
   useEffect(() => {
     const el = txtRef.current;
@@ -275,6 +278,18 @@ export function PlaySurface(p: PlayProps) {
             </div>
           )}
 
+          {/* Openings the Oracle named in the scene it just narrated. One tap
+              sends the phrase as your action; the box below still takes
+              anything at all. */}
+          {p.suggestions.length > 0 && !p.busy && (
+            <div className="suggests">
+              {p.suggestions.map((s) => (
+                <button className="sugg" key={s} disabled={p.rateWait > 0}
+                        onClick={() => send(s)}>{s}</button>
+              ))}
+            </div>
+          )}
+
           {/* Last in the column so the sticky prompt bar has nothing beneath
               it to sit in front of. */}
           <div className={`promptbar${secret ? " secret" : ""}`}>
@@ -296,7 +311,7 @@ export function PlaySurface(p: PlayProps) {
               }
               disabled={p.busy || p.rateWait > 0}
             />
-            <button className="psend" onClick={send} disabled={p.busy || !p.input.trim()} aria-label="Send">➤</button>
+            <button className="psend" onClick={() => send()} disabled={p.busy || !p.input.trim()} aria-label="Send">➤</button>
           </div>
         </div>
 
@@ -305,6 +320,7 @@ export function PlaySurface(p: PlayProps) {
                           onPortrait={p.onPortrait} onSetDnr={p.onSetDnr}
                           onReprepare={p.onReprepare} />
           <div className="menu">
+            <button className="mbtn wide" onClick={p.onChronicle}>📖 The Chronicle</button>
             <button className="mbtn" onClick={resetAllPanels}>⟲ Reset Layout</button>
             <button className="mbtn" onClick={p.onMainMenu}>☰ Main Menu</button>
           </div>
