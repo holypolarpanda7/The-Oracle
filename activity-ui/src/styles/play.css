@@ -342,6 +342,32 @@
 .play .scroll .hl-damage { color: #9c3b32; font-family: var(--mono); font-size: 0.92em; }
 .play .scroll .hl-heal { color: #4a6f2a; font-family: var(--mono); font-size: 0.92em; }
 
+/* ---------- a line of dialogue ----------
+   The server attributes spoken paragraphs to a speaker (see _activity_segments)
+   and each gets its own card with a portrait tab, so a conversation reads as
+   an exchange rather than a wall of quoted prose. */
+.play .scroll .speech {
+  display: flex; gap: 10px; margin: 4px 0 12px; padding: 8px 12px 8px 10px;
+  max-width: 68ch; border-radius: 5px;
+  background: rgba(120, 90, 30, 0.09);
+  border: 1px solid #b6a271; border-left: 3px solid #8c6a20;
+}
+.play .scroll .sp-face {
+  flex: none; width: 38px; height: 38px; border-radius: 5px; object-fit: cover;
+  border: 1px solid #8c7a46; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+}
+.play .scroll .sp-face.empty {
+  display: grid; place-items: center; font-family: var(--serif); font-size: 1.1rem;
+  color: #6c531e; background: rgba(120, 96, 40, 0.16);
+}
+.play .scroll .sp-body { min-width: 0; }
+.play .scroll .sp-who {
+  font-family: var(--mono); font-size: 0.55rem; letter-spacing: 0.14em;
+  text-transform: uppercase; color: #7a4b12; margin-bottom: 3px;
+}
+.play .scroll .speech p { margin: 0; max-width: none; color: #4a3410; }
+.play .scroll .speech.secret { border-left-color: #8a63c4; background: rgba(120, 84, 176, 0.08); }
+
 /* ---------- roll card inside the scroll ----------
    A check is the moment the dice decide something, so it stops being an inline
    chip: the total is large, the maths is broken into chips you can actually
@@ -599,6 +625,84 @@
 .play .stat .k { font-family: var(--mono); font-size: 0.54rem; letter-spacing: 0.12em; color: #9fb0bd; }
 .play .stat .v { font-size: 1.16rem; color: #eef4f4; }
 .play .stat .m { font-family: var(--mono); font-size: 0.58rem; color: var(--teal); }
+
+/* ---------- the pack: a grid of things, not a list of words ---------- */
+.play .packhead {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 9px;
+}
+.play .ph-gold, .play .ph-load {
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.08em;
+  padding: 4px 8px; border-radius: 4px; color: var(--gold-2);
+  background: rgba(8, 11, 20, 0.6); border: 1px solid var(--gold-dim);
+}
+.play .ph-load { color: #c7d2d8; border-color: var(--edge); }
+.play .ph-load.over { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 50%, var(--edge)); }
+.play .ph-find {
+  flex: 1; min-width: 90px; padding: 5px 9px; outline: none;
+  font-family: var(--serif); font-size: 0.8rem; color: var(--text);
+  background: rgba(8, 11, 20, 0.8); border: 1px solid var(--edge); border-radius: 4px;
+}
+.play .ph-find:focus { border-color: var(--gold); }
+.play .ph-find::placeholder { color: var(--text-faint); font-style: italic; }
+
+.play .invgrid {
+  /* 84px keeps three to a row inside the 340px sheet rail; wider panels simply
+     fit more. */
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 7px;
+  align-items: stretch;
+}
+.play .invgrid .lore { grid-column: 1 / -1; }
+.play .icard {
+  /* Full row height, with the verb pushed to the foot — otherwise the buttons
+     sit at whatever height each card's name happened to end at. */
+  display: flex; flex-direction: column; height: 100%;
+  overflow: hidden; border-radius: 5px;
+  background: rgba(10, 15, 26, 0.72); border: 1px solid var(--edge);
+  transition: border-color 0.12s;
+}
+.play .icard:hover { border-color: var(--gold); }
+.play .icard.interactive { border-color: color-mix(in srgb, var(--amethyst) 45%, var(--edge)); }
+.play .icard.worn { border-color: color-mix(in srgb, var(--teal) 45%, var(--edge)); }
+.play .ic-face {
+  position: relative; aspect-ratio: 1; width: 100%; padding: 0; cursor: pointer;
+  border: none; border-bottom: 1px solid var(--edge); overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 0%, #1d2540, #0a0e1c 75%);
+}
+.play .ic-face img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.play .ic-noart { display: grid; place-items: center; width: 100%; height: 100%;
+  font-size: 1.3rem; opacity: 0.55; }
+.play .ic-qty, .play .ic-worn {
+  position: absolute; font-family: var(--mono); font-style: normal;
+  font-size: 0.5rem; letter-spacing: 0.06em; padding: 1px 4px; border-radius: 3px;
+  background: rgba(6, 9, 16, 0.85); text-shadow: 0 1px 2px #000;
+}
+.play .ic-qty { top: 3px; right: 3px; color: var(--gold-2); }
+.play .ic-worn { bottom: 3px; left: 3px; color: var(--teal); text-transform: uppercase; }
+.play .ic-name {
+  display: flex; align-items: flex-start; gap: 5px; flex: 1;
+  width: 100%; text-align: left;
+  padding: 5px 6px; cursor: pointer; border: none; background: none;
+  font-family: var(--serif); font-size: 0.72rem; line-height: 1.25; color: var(--text);
+  /* Two lines, then ellipsis — a long name must not set the row's height. */
+  overflow: hidden;
+}
+.play .ic-label {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-word;
+}
+.play .ic-name .gem { flex: none; margin-top: 4px; }
+.play .ic-name:hover { color: #fff; }
+.play .ic-act {
+  width: 100%; margin-top: auto; padding: 4px; cursor: pointer; border: none;
+  border-top: 1px solid var(--edge); background: rgba(20, 28, 48, 0.8);
+  font-family: var(--mono); font-size: 0.5rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--gold-2);
+}
+.play .ic-act:hover { background: rgba(30, 42, 70, 0.95); color: #fff; }
+.play .ic-act.use { color: #d6fff4; }
+.play .ic-act.attune, .play .ic-act.unattune { color: #e7dcff; }
+.play .ic-act.expend { color: #ffe6c9; }
+.play .ic-act.unequip, .play .ic-act.recharge { color: var(--text-dim); }
 
 .play .inv { display: flex; flex-direction: column; gap: 5px; }
 .play .item { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;

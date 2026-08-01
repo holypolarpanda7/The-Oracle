@@ -4,7 +4,7 @@ import type {
   Ally, ArenaState, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry,
   ChronicleData, Locale, RepData, ServerEvent, SheetData, VttOptions, VttScene,
 } from "./lib/types";
-import { Block, makeOracleBlock } from "./components/Narration";
+import { Block, isTyped, makeOracleBlock, makeSpeechBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
 import { PortraitStep } from "./components/PortraitStep";
 import { Landing } from "./components/Landing";
@@ -180,6 +180,10 @@ export default function App({ session }: { session: Session }) {
         case "narration":
           setBlocks((b) => [...b, makeOracleBlock(ev.text, lexRef.current, ev.secret)]);
           break;
+        case "speech":
+          setBlocks((b) => [...b, makeSpeechBlock(ev.text, lexRef.current, ev.who,
+                                                  ev.portrait, ev.secret)]);
+          break;
         case "whisper":
           setBlocks((b) => [...b, { kind: "whisper", text: ev.text }]);
           break;
@@ -302,10 +306,10 @@ export default function App({ session }: { session: Session }) {
   };
 
   const skipAll = () =>
-    setBlocks((bs) => bs.map((b) => (b.kind === "oracle" ? { ...b, done: true } : b)));
+    setBlocks((bs) => bs.map((b) => (isTyped(b) ? { ...b, done: true } : b)));
 
   const markDone = (i: number) =>
-    setBlocks((bs) => bs.map((b, j) => (j === i && b.kind === "oracle" ? { ...b, done: true } : b)));
+    setBlocks((bs) => bs.map((b, j) => (j === i && isTyped(b) ? { ...b, done: true } : b)));
 
   return (
     <div className="table">
@@ -483,6 +487,7 @@ export default function App({ session }: { session: Session }) {
                 }
               }}
               onInspect={inspectItem}
+              onItemAction={(name, action) => itemAction(name, action)}
               onPortrait={portraitAction}
               onSetDnr={setDnr}
               onReprepare={() => connRef.current?.send({ t: "reprepare" })}

@@ -32,26 +32,36 @@ const sheet: ServerEvent = {
     stats: { STR: 10, DEX: 16, CON: 14, INT: 12, WIS: 11, CHA: 18 },
     skills: ["Persuasion +7", "Performance +7", "Perception +3", "Deception +7"],
     inventory: [
-      { name: "Rapier", qty: 1, type: "Martial", brief: "A finesse blade — quick, precise, a duelist's friend." },
+      { name: "Rapier", qty: 1, type: "Martial", weight: 2, equipped: true,
+        action: { id: "unequip", label: "Unequip" },
+        brief: "A finesse blade — quick, precise, a duelist's friend." },
       { name: "Spellbook", qty: 1, type: "Wondrous", interactive: "spellbook",
         brief: "A leather tome of inscribed magic." },
       { name: "Wand of Magic Missiles", qty: 1, type: "Wand", rarity: "Uncommon", interactive: "charged",
+        weight: 1, action: { id: "expend", label: "Expend a charge" },
         brief: "7 charges; looses glowing darts of force." },
       { name: "Potion of Healing", qty: 2, type: "Potion", rarity: "Common", interactive: "consumable",
+        weight: 0.5, action: { id: "use", label: "Drink" },
         brief: "Regain 2d4 + 2 hit points when drunk." },
       { name: "Potion of Heroism", qty: 1, type: "Potion", rarity: "Rare", interactive: "consumable",
+        weight: 0.5, action: { id: "use", label: "Drink" },
         brief: "10 temporary hit points and fearless resolve for 1 hour." },
       { name: "Ring of Protection", qty: 1, type: "Ring", rarity: "Rare", interactive: "attunement",
+        attuned: true, action: { id: "unattune", label: "Break Attunement" },
         brief: "+1 to AC and saving throws while attuned." },
       { name: "Bag of Holding", qty: 1, type: "Wondrous", rarity: "Uncommon", interactive: "container",
         brief: "An extradimensional storage space." },
       { name: "Cloak of Billowing", qty: 1, type: "Wondrous", rarity: "Common",
         brief: "Billows dramatically as a bonus action." },
       { name: "Lute", qty: 1, type: "Instrument", brief: "A bard's most trusted companion." },
-      { name: "Leather Armor", qty: 1, type: "Light Armor" },
-      { name: "Rations", qty: 5, type: "Gear", interactive: "consumable" },
+      { name: "Leather Armor", qty: 1, type: "Light Armor", weight: 10, equipped: true,
+        action: { id: "unequip", label: "Unequip" } },
+      { name: "Rations", qty: 5, type: "Gear", interactive: "consumable", weight: 2,
+        action: { id: "use", label: "Use" } },
     ],
     gold: 37,
+    carried: 24.5,
+    capacity: 150,
     race: "Dragonborn",
     char_class: "Bard",
     subclass: "College of Lore",
@@ -696,10 +706,14 @@ export const demoScript = {
       text:
         "The road out of Greenfields narrows where the alder trees crowd close, " +
         "and the Wispering Mill rises ahead — sails torn, turning anyway in a wind " +
-        "you cannot feel. Old Marla warned you about this place over her cups: " +
-        "\"Millers grind no grain at midnight, and the ones that do aren't millers.\" " +
-        "A goblin warrior's tracks cross the mud " +
-        "at your feet, fresh enough that water still seeps into them.",
+        "you cannot feel. A goblin warrior's tracks cross the mud at your feet, " +
+        "fresh enough that water still seeps into them.",
+    } as ServerEvent,
+    {
+      t: "speech",
+      who: "Old Marla",
+      text: "\"Millers grind no grain at midnight,\" she told you over her cups, " +
+        "\"and the ones that do aren't millers.\"",
     } as ServerEvent,
     {
       t: "suggest",

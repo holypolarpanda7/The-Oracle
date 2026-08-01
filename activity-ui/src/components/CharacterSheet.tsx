@@ -36,16 +36,20 @@ function featIcon(kind?: string): string {
 
 type Tab = "stats" | "inv" | "origin" | "feat";
 
-export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr, onReprepare }: {
+export function CharacterSheet({ sheet, panel, onInspect, onItemAction, onPortrait,
+                                 onSetDnr, onReprepare }: {
   sheet: SheetData | null;
   panel: PanelHandle;
   onInspect: (name: string) => void;
+  /** Fire an item's verb straight from its card, without opening the inspector. */
+  onItemAction: (name: string, action: string) => void;
   onPortrait: (action: "regear" | "select" | "delete",
                opts?: { context?: string; replace_context?: string; detail?: string }) => void;
   onSetDnr?: (dnr: boolean) => void;
   onReprepare?: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("stats");
+  const [itemFilter, setItemFilter] = useState("");
   // Portrait look-switcher state: which look is active + the two transient modes
   // (waiting on a render, or picking a look to replace when at the gear cap).
   const active = sheet?.active_portrait ?? "portrait";
@@ -65,6 +69,17 @@ export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr, 
       </Frame>
     );
   }
+
+  // Legacy string entries still appear in older sessions' payloads.
+  const items: InventoryItem[] = sheet.inventory.map(
+    (raw) => (typeof raw === "string" ? { name: raw } : raw));
+  const needle = itemFilter.trim().toLowerCase();
+  const shownItems = needle
+    ? items.filter((it) =>
+        it.name.toLowerCase().includes(needle) ||
+        (it.type ?? "").toLowerCase().includes(needle) ||
+        (it.rarity ?? "").toLowerCase().includes(needle))
+    : items;
 
   const parsed = parseSubtitle(sheet.subtitle);
   const race = sheet.race ?? parsed.race;
@@ -236,34 +251,56 @@ export function CharacterSheet({ sheet, panel, onInspect, onPortrait, onSetDnr, 
         </div>
 
         <div className={`tabpane ${tab === "inv" ? "on" : ""}`}>
-          <div className="inv">
-            {sheet.inventory.length
-              ? sheet.inventory.map((raw, i) => {
-                  const it: InventoryItem = typeof raw === "string" ? { name: raw } : raw;
-                  return (
-                    <button
-                      className={`item ${it.interactive ? "interactive" : ""}`}
-                      key={i}
-                      title={it.brief || it.type || "Inspect"}
-                      onClick={() => onInspect(it.name)}
-                    >
-                      <span className="gem" style={{ color: gemColor(it.rarity) }} />
-                      <span className="iname">{it.name}</span>
-                      {it.interactive && (
-                        <span className="ibadge">{ITEM_BADGE[it.interactive] ?? "◆"}</span>
+          <div className="packhead">
+            {sheet.gold !== undefined && <span className="ph-gold">🪙 {sheet.gold} gp</span>}
+            {sheet.carried !== undefined && sheet.capacity ? (
+              <span className={`ph-load${sheet.carried > sheet.capacity ? " over" : ""}`}>
+                ⚖ {sheet.carried} / {sheet.capacity} lb
+              </span>
+            ) : null}
+            <input
+              className="ph-find"
+              value={itemFilter}
+              onChange={(e) => setItemFilter(e.target.value)}
+              placeholder="Search the pack…"
+              aria-label="Search inventory"
+            />
+          </div>
+          <div className="invgrid">
+            {shownItems.length
+              ? shownItems.map((it, i) => (
+                  <div
+                    className={`icard${it.interactive ? " interactive" : ""}`
+                               + (it.equipped || it.attuned ? " worn" : "")}
+                    key={`${it.name}-${i}`}
+                    title={it.brief || it.type || "Inspect"}
+                  >
+                    <button className="ic-face" onClick={() => onInspect(it.name)}>
+                      {it.art
+                        ? <img src={it.art} alt="" loading="lazy" />
+                        : <span className="ic-noart">
+                            {ITEM_BADGE[it.interactive ?? ""] ?? "◆"}
+                          </span>}
+                      {it.qty && it.qty > 1 ? <em className="ic-qty">×{it.qty}</em> : null}
+                      {(it.equipped || it.attuned) && (
+                        <em className="ic-worn">{it.attuned ? "attuned" : "worn"}</em>
                       )}
-                      {it.qty && it.qty > 1 ? <span className="q">×{it.qty}</span> : null}
                     </button>
-                  );
-                })
-              : <p className="lore">Your pack is empty.</p>}
-            {sheet.gold !== undefined && (
-              <div className="item static">
-                <span className="gem" style={{ color: "var(--gold)" }} />
-                <span className="iname">Gold</span>
-                <span className="q">{sheet.gold} gp</span>
-              </div>
-            )}
+                    <button className="ic-name" onClick={() => onInspect(it.name)}>
+                      <span className="gem" style={{ color: gemColor(it.rarity) }} />
+                      <span className="ic-label">{it.name}</span>
+                    </button>
+                    {it.action && (
+                      <button
+                        className={`ic-act ${it.action.id}`}
+                        onClick={() => onItemAction(it.name, it.action!.id)}
+                      >{it.action.label}</button>
+                    )}
+                  </div>
+                ))
+              : <p className="lore">
+                  {itemFilter ? "Nothing by that name." : "Your pack is empty."}
+                </p>}
           </div>
         </div>
 

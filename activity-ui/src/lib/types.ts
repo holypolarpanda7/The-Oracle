@@ -95,6 +95,14 @@ export interface InventoryItem {
   rarity?: string;
   brief?: string;         // hover tooltip
   interactive?: string;   // family badge: spellbook | charged | consumable | container | attunement
+  /** Thumbnail of an already-rendered picture. Absent until the item has been
+   *  drawn — the pack never triggers a render just by being opened. */
+  art?: string;
+  equipped?: boolean;
+  attuned?: boolean;
+  weight?: number;
+  /** The one verb the card offers; the inspector still has the full set. */
+  action?: { id: string; label: string };
 }
 
 export interface SpellEntry { name: string; level?: number | null; }
@@ -143,6 +151,8 @@ export interface SheetData {
   skills: string[];
   inventory: (string | InventoryItem)[]; // strings (legacy) or rich item objects
   gold?: number;
+  carried?: number;       // lb carried
+  capacity?: number;      // lb you can carry (SRD: Strength score x 15)
   // ---- v1 additions (all optional; the UI degrades gracefully when absent) ----
   gender?: string | null;          // gender identity (free-form)
   race?: string | null;
@@ -478,6 +488,7 @@ export type ServerEvent =
   | { t: "lexicon"; entries: LexEntry[] }
   | { t: "player"; text: string; who?: string; secret?: boolean }
   | { t: "narration"; text: string; secret?: boolean }
+  | { t: "speech"; text: string; who?: string; portrait?: string; secret?: boolean }
   | { t: "whisper"; text: string }
   | { t: "roll"; roll: RollResult }
   | { t: "sheet"; sheet: SheetData }

@@ -6,12 +6,27 @@ import { typeBlip } from "../lib/sound";
 export type Block =
   | { kind: "player"; text: string; who?: string; secret?: boolean }
   | { kind: "oracle"; spans: Span[]; done: boolean; secret?: boolean }
+  /** A line of dialogue the server attributed to a speaker. */
+  | { kind: "speech"; who?: string; portrait?: string;
+      spans: Span[]; done: boolean; secret?: boolean }
   | { kind: "whisper"; text: string }
   | { kind: "roll"; roll: RollResult };
+
+/** Blocks that reveal with the typewriter, and so must take their turn. */
+export function isTyped(b: Block): b is Extract<Block, { done: boolean }> {
+  return b.kind === "oracle" || b.kind === "speech";
+}
 
 export function makeOracleBlock(text: string, lexicon: LexEntry[],
                                 secret = false): Block {
   return { kind: "oracle", spans: markText(text, lexicon), done: false, secret };
+}
+
+export function makeSpeechBlock(text: string, lexicon: LexEntry[],
+                                who?: string, portrait?: string,
+                                secret = false): Block {
+  return { kind: "speech", who, portrait, spans: markText(text, lexicon),
+           done: false, secret };
 }
 
 /** Reveal pacing: base cadence per character, with breath at punctuation. */

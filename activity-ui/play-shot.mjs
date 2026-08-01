@@ -21,7 +21,12 @@ async function run(name, viewport) {
   await page.waitForTimeout(500);
   const btn = page.locator("button", { hasText: /enter/i }).first();
   if (await btn.count()) await btn.click().catch(() => {});
-  await page.waitForTimeout(3000);
+  await page.waitForTimeout(1200);
+  // Only ONE block may be typing at a time: a reply now arrives as several
+  // blocks (prose, dialogue, rolls), and without gating they all animate at once.
+  const carets = await page.locator(".scroll .caret").count();
+  console.log(name, "carets mid-reveal:", carets, carets <= 1 ? "OK" : "FAIL");
+  await page.waitForTimeout(2600);
   // Skip the typewriter so the prose is fully rendered in the shot.
   await page.locator(".scroll .txt").click();
   await page.waitForTimeout(400);
@@ -37,6 +42,7 @@ async function run(name, viewport) {
   await page.screenshot({ path: `${OUT}/${name}-02-roll.png` });
   await page.locator(".scroll").screenshot({ path: `${OUT}/${name}-03-scroll.png` });
 
+  console.log(name, "speech cards:", await page.locator(".speech").count());
   console.log(name,
     "statusbar:", await page.locator(".statusbar").count(),
     "locale:", await page.locator(".locale").count(),

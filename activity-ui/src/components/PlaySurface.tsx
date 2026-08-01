@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Frame } from "./Frame";
 import { CharacterSheet } from "./CharacterSheet";
 import { IconDefs } from "./icons";
-import { RevealedSpans, type Block } from "./Narration";
+import { RevealedSpans, isTyped, type Block } from "./Narration";
 import { useResizable, resetAllPanels, dropPanel } from "../lib/useResizable";
 import { InitiativeCarousel } from "./InitiativeCarousel";
 import { VttOverlay } from "./VttOverlay";
@@ -75,6 +75,21 @@ function renderBlock(b: Block, i: number, onBlockDone: (i: number) => void) {
   }
   if (b.kind === "roll") {
     return <RollCard roll={b.roll} key={i} />;
+  }
+  if (b.kind === "speech") {
+    return (
+      <div className={`speech${b.secret ? " secret" : ""}`} key={i}>
+        {b.portrait
+          ? <img className="sp-face" src={b.portrait} alt="" />
+          : b.who ? <span className="sp-face empty">{b.who.slice(0, 1)}</span> : null}
+        <div className="sp-body">
+          {b.who && <div className="sp-who">{b.who}</div>}
+          <p>
+            <RevealedSpans spans={b.spans} done={b.done} onDone={() => onBlockDone(i)} />
+          </p>
+        </div>
+      </div>
+    );
   }
   return (
     <p key={i} className={b.secret ? "secret" : undefined}>
@@ -189,6 +204,7 @@ export interface PlayProps {
   onBlockDone: (i: number) => void;
   onMainMenu: () => void;
   onInspect: (name: string) => void;
+  onItemAction: (name: string, action: string) => void;
   onPortrait: (action: "regear" | "select" | "delete",
                opts?: { context?: string; replace_context?: string; detail?: string }) => void;
   onSetDnr: (dnr: boolean) => void;
@@ -206,6 +222,14 @@ export function PlaySurface(p: PlayProps) {
   // tablemates never see it (cheat, lie, a hidden roll).
   const [secret, setSecret] = useState(false);
   const send = (text?: string) => { p.submit(secret, text); setSecret(false); };
+
+  // A reply now arrives as several blocks (prose, dialogue, roll cards), and
+  // they must take their turn: without this every block mounts at once and
+  // types simultaneously. Everything up to and including the first unfinished
+  // block is shown; the rest appear as each one completes (or all at once when
+  // the player clicks to skip).
+  const pending = p.blocks.findIndex((b) => isTyped(b) && !b.done);
+  const revealed = pending === -1 ? p.blocks : p.blocks.slice(0, pending + 1);
 
   useEffect(() => {
     const el = txtRef.current;
@@ -259,7 +283,7 @@ export function PlaySurface(p: PlayProps) {
             <div className="txt" ref={txtRef} onClick={p.onSkip} title="Click to reveal instantly">
               <div className="who">The Oracle Speaks</div>
               {p.blocks.length
-                ? p.blocks.map((b, i) => renderBlock(b, i, p.onBlockDone))
+                ? revealed.map((b, i) => renderBlock(b, i, p.onBlockDone))
                 : <p className="awaiting">The tale awaits your first deed…</p>}
             </div>
           </div>
@@ -317,6 +341,7 @@ export function PlaySurface(p: PlayProps) {
 
         <aside>
           <CharacterSheet sheet={p.sheet} panel={sheetR} onInspect={p.onInspect}
+                          onItemAction={p.onItemAction}
                           onPortrait={p.onPortrait} onSetDnr={p.onSetDnr}
                           onReprepare={p.onReprepare} />
           <div className="menu">
