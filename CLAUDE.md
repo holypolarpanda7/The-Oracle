@@ -145,7 +145,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `reprepare`, `mobile-smoke`, `arena-shot`, `vtt-shot`, `deity-shot`,
   `race-dup` (species traits render exactly once per viewport), `granted-feat`
   (a background grants its Origin feat, choices and all), `pframe-shot`
-  (portrait corner ornaments stay corner-sized).
+  (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
+  at desktop and phone: status bar, "here & now" rail, narration column, roll
+  card).
 
 ## Key facts & constraints
 - **D&D Beyond has NO public write API.** You cannot create/store a character on a

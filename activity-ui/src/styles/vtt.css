@@ -7,6 +7,10 @@
   position: relative;
   display: flex;
   flex-direction: column;
+  /* The stage is a flex column, and `overflow: hidden` below would otherwise
+     let the board be squeezed to nothing by the narration beneath it. The
+     board sets its own height; it never flexes. */
+  flex: none;
   border: 1px solid color-mix(in srgb, var(--gold-dim) 70%, var(--edge));
   border-radius: 6px;
   overflow: hidden;

@@ -67,6 +67,7 @@ activity-ui/vtt-shots/
 activity-ui/arena-shots/
 activity-ui/mobile-shots/
 activity-ui/ui-shots/
+activity-ui/play-shots/
 
 # LoRA probe output (generated art, local only)
 map-probe/

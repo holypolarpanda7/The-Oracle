@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { connect, type Connection } from "./lib/connection";
 import type {
   Ally, ArenaState, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry,
-  RepData, ServerEvent, SheetData, VttOptions, VttScene,
+  Locale, RepData, ServerEvent, SheetData, VttOptions, VttScene,
 } from "./lib/types";
 import { Block, makeOracleBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
@@ -39,6 +39,7 @@ export default function App({ session }: { session: Session }) {
   const [characters, setCharacters] = useState<CharacterSummary[]>([]);
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [sheet, setSheet] = useState<SheetData | null>(null);
+  const [locale, setLocale] = useState<Locale | null>(null);
   const [party, setParty] = useState<Ally[]>([]);
   const [combat, setCombat] = useState<CombatState | null>(null);
   // The tactical board: present only while the Oracle has one out.
@@ -185,6 +186,9 @@ export default function App({ session }: { session: Session }) {
           break;
         case "sheet":
           setSheet(ev.sheet);
+          break;
+        case "locale":
+          setLocale(ev.locale);
           break;
         case "party":
           setParty(ev.members);
@@ -431,6 +435,7 @@ export default function App({ session }: { session: Session }) {
             <PlaySurface
               blocks={blocks}
               sheet={sheet}
+              locale={locale}
               sceneUrl={sceneUrl}
               party={party}
               combat={combat}

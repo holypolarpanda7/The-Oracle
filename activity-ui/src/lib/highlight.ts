@@ -19,6 +19,21 @@ const DMG_RE =
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// Spoken lines inside the narration. Voice-coding dialogue is the single
+// biggest legibility win in a wall of prose, but a quote usually CONTAINS
+// lexicon matches, and spans are flat — so speech is tracked as character
+// ranges and folded onto whatever class each span already earned, rather
+// than being a span of its own that would swallow the highlights inside it.
+const SPEECH_RE = /[“"]([^”"]{2,})[”"]/g;
+
+function speechRanges(text: string): [number, number][] {
+  const out: [number, number][] = [];
+  for (const m of text.matchAll(SPEECH_RE)) {
+    out.push([m.index!, m.index! + m[0].length]);
+  }
+  return out;
+}
+
 /** Split narration text into styled spans using the session lexicon.
     Longest names first so "Gloom Stalker" beats "Gloom". */
 export function markText(text: string, lexicon: LexEntry[]): Span[] {
@@ -52,14 +67,35 @@ export function markText(text: string, lexicon: LexEntry[]): Span[] {
   }
   ms.sort((a, b) => a.start - b.start || b.end - a.end);
 
+  // Speech boundaries are cut points too, so a span never straddles the
+  // opening or closing quote and end up half-spoken.
+  const quotes = speechRanges(text);
+  const inSpeech = (i: number) => quotes.some(([a, b]) => i >= a && i < b);
+  const cuts = new Set<number>();
+  for (const [a, b] of quotes) { cuts.add(a); cuts.add(b); }
+
   const spans: Span[] = [];
+  const push = (start: number, end: number, cls?: string) => {
+    // Split plain runs at every quote boundary they cross.
+    const inner = [...cuts].filter((c) => c > start && c < end).sort((a, b) => a - b);
+    let from = start;
+    for (const c of [...inner, end]) {
+      if (c <= from) continue;
+      const speech = inSpeech(from);
+      const full = cls ? (speech ? `${cls} in-speech` : cls)
+                       : (speech ? "hl-speech" : undefined);
+      spans.push({ text: text.slice(from, c), cls: full });
+      from = c;
+    }
+  };
+
   let pos = 0;
   for (const m of ms) {
     if (m.start < pos) continue; // overlapped by an earlier, longer match
-    if (m.start > pos) spans.push({ text: text.slice(pos, m.start) });
-    spans.push({ text: text.slice(m.start, m.end), cls: m.cls });
+    if (m.start > pos) push(pos, m.start);
+    push(m.start, m.end, m.cls);
     pos = m.end;
   }
-  if (pos < text.length) spans.push({ text: text.slice(pos) });
+  if (pos < text.length) push(pos, text.length);
   return spans;
 }
