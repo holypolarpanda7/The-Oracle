@@ -63,6 +63,20 @@ await page.waitForTimeout(300);
 await page.screenshot({ path: `${OUT}/7-deities.png` });
 console.log("  shot 7-deities");
 
+// The stub above was captured from the real backend before cultural hands
+// existed. Decorate it exactly the way the /cc/deities endpoint now does, so
+// the shot shows what players see. Mirrors _FAMILY_SCRIPT in the backend.
+const FAMILY_SCRIPT = {
+  sovereign: "celestial", celestial: "celestial", ymmarch: "dwarven",
+  archfey: "fey", old_gods: "draconic", archdevils: "infernal",
+  demon_lords: "infernal",
+};
+for (const f of CC_OPTIONS.deities.families) f.script = FAMILY_SCRIPT[f.key];
+for (const p of CC_OPTIONS.deities.powers) p.script = FAMILY_SCRIPT[p.family];
+for (const r of CC_OPTIONS.races) {
+  r.script = { Dwarf: "dwarven", Elf: "elven", Dragonborn: "draconic" }[r.name];
+}
+
 // pick a family, then a power
 await page.locator(".cf-chip", { hasText: "Twofold Court" }).click();
 await page.waitForTimeout(250);

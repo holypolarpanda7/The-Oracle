@@ -1,9 +1,15 @@
 /** Typed events on the session WebSocket (server -> client). */
 export type LexKind = "name" | "magic" | "item" | "place";
 
+/** The cultural hand a name is written in (see assets/fonts/ATTRIBUTION.md).
+ *  Absent means the house serif, which is the right default for most names. */
+export type Script = "celestial" | "dwarven" | "elven" | "draconic"
+                   | "infernal" | "fey";
+
 export interface LexEntry {
   text: string;
   kind: LexKind;
+  script?: Script;
 }
 
 export interface RollResult {
@@ -156,6 +162,8 @@ export interface SheetData {
   // ---- v1 additions (all optional; the UI degrades gracefully when absent) ----
   gender?: string | null;          // gender identity (free-form)
   race?: string | null;
+  /** The cultural hand this character's own name is written in. */
+  script?: Script;
   creature_type?: string | null;   // "Humanoid" for most; Construct/Undead/etc. for some species
   immunities?: string[];           // condition/effect immunities from species traits
   char_class?: string | null;
@@ -488,7 +496,8 @@ export type ServerEvent =
   | { t: "lexicon"; entries: LexEntry[] }
   | { t: "player"; text: string; who?: string; secret?: boolean }
   | { t: "narration"; text: string; secret?: boolean }
-  | { t: "speech"; text: string; who?: string; portrait?: string; secret?: boolean }
+  | { t: "speech"; text: string; who?: string; portrait?: string;
+      script?: Script; secret?: boolean }
   | { t: "whisper"; text: string }
   | { t: "roll"; roll: RollResult }
   | { t: "sheet"; sheet: SheetData }
@@ -643,6 +652,8 @@ export interface CCOptions {
     lineages?: { slug: string; name: string; traits: string[];
                  darkvision?: boolean; speed?: number }[];
     lineage_label?: string | null;
+    /** The cultural hand this species' names are written in. */
+    script?: Script;
     feat_choice?: "origin" | "any" | null;
   }[];
   classes: {
@@ -680,6 +691,7 @@ export interface CCOptions {
 /** A god, archfey, archdevil, demon prince or elder power a character may name. */
 export interface Power {
   slug?: string | null;
+  script?: Script;
   name: string;
   title?: string;
   alignment?: string;
@@ -699,7 +711,7 @@ export interface Power {
 
 export interface PowerFamily {
   key: string; label: string; plane?: string; power_class?: string;
-  worship?: string; blurb?: string; count: number;
+  worship?: string; blurb?: string; count: number; script?: Script;
 }
 
 export interface Pantheon {

@@ -83,7 +83,11 @@ function renderBlock(b: Block, i: number, onBlockDone: (i: number) => void) {
           ? <img className="sp-face" src={b.portrait} alt="" />
           : b.who ? <span className="sp-face empty">{b.who.slice(0, 1)}</span> : null}
         <div className="sp-body">
-          {b.who && <div className="sp-who">{b.who}</div>}
+          {b.who && (
+            <div className={`sp-who${b.script ? ` script-${b.script}` : ""}`}>
+              {b.who}
+            </div>
+          )}
           <p>
             <RevealedSpans spans={b.spans} done={b.done} onDone={() => onBlockDone(i)} />
           </p>
@@ -114,7 +118,9 @@ function StatusBar({ sheet, locale }: { sheet: SheetData | null; locale: Locale 
         ? <img className="sb-face" src={sheet.portrait} alt="" />
         : <span className="sb-face empty" />}
       <span className="sb-id">
-        <b className="sb-name">{sheet?.name ?? "—"}</b>
+        <b className={`sb-name${sheet?.script ? ` script-${sheet.script}` : ""}`}>
+          {sheet?.name ?? "—"}
+        </b>
         {sheet?.subtitle && <em className="sb-sub">{sheet.subtitle}</em>}
       </span>
       <span className="sb-world">

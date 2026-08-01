@@ -365,6 +365,18 @@
   font-family: var(--mono); font-size: 0.55rem; letter-spacing: 0.14em;
   text-transform: uppercase; color: #7a4b12; margin-bottom: 3px;
 }
+/* A speaker who has a culture signs the tab in their OWN hand — which has to
+   out-specify the mono treatment above, and drop the uppercasing that would
+   flatten a display face. */
+.play .scroll .sp-who[class*="script-"] {
+  font-size: 0.88rem; letter-spacing: 0.03em; text-transform: none;
+}
+.play .scroll .sp-who.script-celestial { font-family: var(--script-celestial); }
+.play .scroll .sp-who.script-dwarven   { font-family: var(--script-dwarven); }
+.play .scroll .sp-who.script-elven     { font-family: var(--script-elven); }
+.play .scroll .sp-who.script-draconic  { font-family: var(--script-draconic); }
+.play .scroll .sp-who.script-infernal  { font-family: var(--script-infernal); }
+.play .scroll .sp-who.script-fey       { font-family: var(--script-fey); }
 .play .scroll .speech p { margin: 0; max-width: none; color: #4a3410; }
 .play .scroll .speech.secret { border-left-color: #8a63c4; background: rgba(120, 84, 176, 0.08); }
 

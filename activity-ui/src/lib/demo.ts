@@ -7,9 +7,15 @@ import type { ArenaEnv, ArenaEquipLine, ArenaOutfitLine, ArenaShop, ArenaState,
 const lexicon: ServerEvent = {
   t: "lexicon",
   entries: [
-    { text: "Kara Emberfall", kind: "name" },
-    { text: "Kara", kind: "name" },
-    { text: "Old Marla", kind: "name" },
+    // Cultural hands: a dragonborn bard, a dwarven miller, an elven ranger and
+    // a god of the Choir do not read in the same face.
+    { text: "Kara Emberfall", kind: "name", script: "draconic" },
+    { text: "Kara", kind: "name", script: "draconic" },
+    { text: "Old Marla", kind: "name", script: "dwarven" },
+    { text: "Sylvaine", kind: "name", script: "elven" },
+    { text: "Vashra the Unlit", kind: "name", script: "infernal" },
+    { text: "Aurelion", kind: "name", script: "celestial" },
+    { text: "Thistlewick", kind: "name", script: "fey" },
     { text: "goblin warrior", kind: "name" },
     { text: "Vicious Mockery", kind: "magic" },
     { text: "Bardic Inspiration", kind: "magic" },
@@ -63,6 +69,7 @@ const sheet: ServerEvent = {
     carried: 24.5,
     capacity: 150,
     race: "Dragonborn",
+    script: "draconic",
     char_class: "Bard",
     subclass: "College of Lore",
     background: "Entertainer",
@@ -707,11 +714,14 @@ export const demoScript = {
         "The road out of Greenfields narrows where the alder trees crowd close, " +
         "and the Wispering Mill rises ahead — sails torn, turning anyway in a wind " +
         "you cannot feel. A goblin warrior's tracks cross the mud at your feet, " +
-        "fresh enough that water still seeps into them.",
+        "fresh enough that water still seeps into them. Sylvaine reads them " +
+        "twice; Thistlewick will not come nearer, and swears by Aurelion that " +
+        "Vashra the Unlit has been here before you.",
     } as ServerEvent,
     {
       t: "speech",
       who: "Old Marla",
+      script: "dwarven",
       text: "\"Millers grind no grain at midnight,\" she told you over her cups, " +
         "\"and the ones that do aren't millers.\"",
     } as ServerEvent,

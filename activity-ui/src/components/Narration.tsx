@@ -7,7 +7,7 @@ export type Block =
   | { kind: "player"; text: string; who?: string; secret?: boolean }
   | { kind: "oracle"; spans: Span[]; done: boolean; secret?: boolean }
   /** A line of dialogue the server attributed to a speaker. */
-  | { kind: "speech"; who?: string; portrait?: string;
+  | { kind: "speech"; who?: string; portrait?: string; script?: string;
       spans: Span[]; done: boolean; secret?: boolean }
   | { kind: "whisper"; text: string }
   | { kind: "roll"; roll: RollResult };
@@ -24,9 +24,9 @@ export function makeOracleBlock(text: string, lexicon: LexEntry[],
 
 export function makeSpeechBlock(text: string, lexicon: LexEntry[],
                                 who?: string, portrait?: string,
-                                secret = false): Block {
-  return { kind: "speech", who, portrait, spans: markText(text, lexicon),
-           done: false, secret };
+                                script?: string, secret = false): Block {
+  return { kind: "speech", who, portrait, script,
+           spans: markText(text, lexicon), done: false, secret };
 }
 
 /** Reveal pacing: base cadence per character, with breath at punctuation. */

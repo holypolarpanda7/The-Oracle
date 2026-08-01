@@ -182,7 +182,8 @@ export default function App({ session }: { session: Session }) {
           break;
         case "speech":
           setBlocks((b) => [...b, makeSpeechBlock(ev.text, lexRef.current, ev.who,
-                                                  ev.portrait, ev.secret)]);
+                                                  ev.portrait, ev.script,
+                                                  ev.secret)]);
           break;
         case "whisper":
           setBlocks((b) => [...b, { kind: "whisper", text: ev.text }]);

@@ -45,4 +45,42 @@
 
   --frame-w: 3px;
   --radius: 4px;
+
+  /* ---- cultural hands ----
+     Each culture reads in its own face. Display faces only: set on proper
+     nouns (a god, a species, a place, a person of that culture) and NEVER on
+     body text, which stays in --serif. See public/assets/fonts/ATTRIBUTION.md
+     for the fonts and their OFL notice. */
+  --script-celestial: "OracleCelestial", var(--serif);
+  --script-dwarven: "OracleDwarven", var(--serif);
+  --script-elven: "OracleElven", var(--serif);
+  --script-draconic: "OracleDraconic", var(--serif);
+  --script-infernal: "OracleInfernal", var(--serif);
+  --script-fey: "OracleFey", var(--serif);
 }
+
+/* Names are short, so the whole face is worth loading up front, but `swap`
+   means a name never blocks on it — it renders in the house serif and
+   re-sets when the hand arrives. */
+@font-face { font-family: "OracleCelestial"; src: url("/assets/fonts/celestial.woff2") format("woff2");
+  font-weight: 600; font-display: swap; }
+@font-face { font-family: "OracleDwarven"; src: url("/assets/fonts/dwarven.woff2") format("woff2");
+  font-weight: 400; font-display: swap; }
+@font-face { font-family: "OracleElven"; src: url("/assets/fonts/elven.woff2") format("woff2");
+  font-weight: 600; font-display: swap; }
+@font-face { font-family: "OracleDraconic"; src: url("/assets/fonts/draconic.woff2") format("woff2");
+  font-weight: 400; font-display: swap; }
+@font-face { font-family: "OracleInfernal"; src: url("/assets/fonts/infernal.woff2") format("woff2");
+  font-weight: 600; font-display: swap; }
+@font-face { font-family: "OracleFey"; src: url("/assets/fonts/fey.woff2") format("woff2");
+  font-weight: 700; font-display: swap; }
+
+/* The hands themselves. Sizes are nudged per face so they sit on the same
+   optical line as the surrounding serif — these faces have very different
+   x-heights and a raw swap makes names jump. */
+.script-celestial { font-family: var(--script-celestial); letter-spacing: 0.04em; }
+.script-dwarven   { font-family: var(--script-dwarven); font-size: 0.94em; }
+.script-elven     { font-family: var(--script-elven); font-size: 1.06em; letter-spacing: 0.02em; }
+.script-draconic  { font-family: var(--script-draconic); font-size: 0.96em; }
+.script-infernal  { font-family: var(--script-infernal); font-size: 1.04em; }
+.script-fey       { font-family: var(--script-fey); font-size: 0.98em; }

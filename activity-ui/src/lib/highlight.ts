@@ -44,6 +44,9 @@ export function markText(text: string, lexicon: LexEntry[]): Span[] {
     ? new RegExp(`\\b(${byLen.map((e) => esc(e.text)).join("|")})s?\\b`, "gi")
     : null;
   const kindOf = new Map(byLen.map((e) => [e.text.toLowerCase(), e.kind]));
+  // The cultural hand a name is set in, alongside its semantic colour.
+  const scriptOf = new Map(
+    byLen.filter((e) => e.script).map((e) => [e.text.toLowerCase(), e.script!]));
 
   // Collect all matches (lexicon + damage numbers), resolve overlaps
   // by earliest start, then longest.
@@ -53,7 +56,11 @@ export function markText(text: string, lexicon: LexEntry[]): Span[] {
     for (const m of text.matchAll(lexRe)) {
       const base = m[1].toLowerCase();
       const kind = kindOf.get(base) ?? kindOf.get(base.replace(/s$/, ""));
-      if (kind) ms.push({ start: m.index!, end: m.index! + m[0].length, cls: KIND_CLS[kind] });
+      const script = scriptOf.get(base) ?? scriptOf.get(base.replace(/s$/, ""));
+      if (kind) {
+        const cls = KIND_CLS[kind] + (script ? ` script-${script}` : "");
+        ms.push({ start: m.index!, end: m.index! + m[0].length, cls });
+      }
     }
   }
   for (const m of text.matchAll(DMG_RE)) {

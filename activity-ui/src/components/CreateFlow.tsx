@@ -96,7 +96,9 @@ function DeityPicker({ pantheon, value, onPick }: {
                   className={`cf-deity-card ${value === p.name ? "picked" : ""}`}
                   onClick={() => { uiTick(); onPick(p.name); }}>
             <div className="cf-card-name">
-              {p.name}{p.title ? ` ${p.title}` : ""}
+              <span className={p.script ? `script-${p.script}` : undefined}>
+                {p.name}{p.title ? ` ${p.title}` : ""}
+              </span>
               {p.risen && <span className="cf-risen">risen in this age</span>}
             </div>
             <div className="cf-card-sub">{p.domains}</div>
@@ -548,7 +550,9 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                   }}
                 >
                   <SpeciesPortrait slug={r.slug} />
-                  <div className="cf-card-name">{r.name}</div>
+                  <div className={`cf-card-name${r.script ? ` script-${r.script}` : ""}`}>
+                    {r.name}
+                  </div>
                   <div className="cf-card-sub">
                     {r.creature_type && r.creature_type !== "Humanoid"
                       ? `${r.creature_type} · ` : ""}

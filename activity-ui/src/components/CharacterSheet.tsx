@@ -174,7 +174,9 @@ export function CharacterSheet({ sheet, panel, onInspect, onItemAction, onPortra
           </div>
         )}
 
-        <div className="cname">{sheet.name}</div>
+        <div className={`cname${sheet.script ? ` script-${sheet.script}` : ""}`}>
+          {sheet.name}
+        </div>
         <div className="csub">{sheet.subtitle}</div>
 
         {(() => {
