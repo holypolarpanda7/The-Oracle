@@ -15637,6 +15637,132 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
     }
 
 
+def _activity_locale(session_id: str, user_id: str) -> Optional[dict]:
+    """The "here and now" strip: where the PC stands, the world clock, the
+    weather they are standing in, and who else is present.
+
+    Deliberately NOT a map. ``eight_card_system/mapmaker.py`` holds the line
+    that a map is an in-game ARTIFACT you draft or buy, never a UI freebie —
+    so this reports only what a character can tell by standing there and
+    looking around: no coordinates, no bearings, nothing out of sight.
+
+    Weather is generated through the same call the DM prompt uses, so the
+    panel can never disagree with the narration about the sky.
+    """
+    char_id = _activity_char_id(session_id, user_id)
+    if not char_id:
+        return None
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if not char:
+            return None
+        pc_name, home_region = char.name, char.home_region
+    # PC identity is owner-scoped: two players called "Kara" hold two entities
+    # with different slugs, so the slug must come from the entity, never be
+    # re-derived from the name (see seed.place_pc).
+    pc_ent = None
+    try:
+        pc_ent = world.find_pc(str(user_id), pc_name)
+    except Exception as e:
+        print(f"[activity] locale pc lookup failed: {e}")
+    pc_slug = pc_ent.slug if pc_ent is not None else slugify(pc_name)
+    out: dict = {}
+
+    # ---- the world clock -------------------------------------------------
+    day, month = 0, 1
+    try:
+        from eight_card_system.models import (WORLD_MONTHS as _MONTHS,
+                                              WORLD_ERA as _ERA)
+        # _ensure_meta rather than a bare get: on a world whose clock row has
+        # not been written yet the panel should still show day one, not a
+        # header with the date silently missing.
+        with Session(world.engine) as s:
+            wm = world._ensure_meta(s)
+            day, month = wm.world_day, wm.month
+            out["day"] = wm.world_day
+            out["time_of_day"] = wm.time_of_day
+            out["date"] = (f"{wm.day_of_month} {_MONTHS[max(1, min(12, wm.month)) - 1]}, "
+                           f"{wm.year} {_ERA}")
+    except Exception as e:
+        print(f"[activity] locale clock failed: {e}")
+
+    # ---- where you stand -------------------------------------------------
+    place = None
+    try:
+        place = world.location_of(pc_slug)
+    except Exception as e:
+        print(f"[activity] locale place failed: {e}")
+    if place is not None:
+        out["place"] = place.name
+        out["place_kind"] = place.subtype or place.type
+        # The larger place this one sits inside — "Millbrook, in the Greenfields".
+        try:
+            with Session(world.engine) as s:
+                parent = s.exec(
+                    select(WorldEntity)
+                    .join(WorldRelation, WorldRelation.dst_id == WorldEntity.id)
+                    .where(WorldRelation.src_id == place.id,
+                           WorldRelation.rel_type == RelationType.PART_OF,
+                           WorldRelation.valid_to == None)  # noqa: E711
+                ).first()
+            if parent is not None:
+                out["region"] = parent.name
+        except Exception as e:
+            print(f"[activity] locale region failed: {e}")
+
+    # ---- the sky over your head (same source as the DM prompt) -----------
+    try:
+        try:
+            climate = world.location_climate(pc_slug)
+        except Exception:
+            climate = None
+        climate = climate or _region_climate(home_region)
+        weather = generate_weather(day, climate=climate, month=month or 1)
+        out["weather"] = weather["summary"]
+        tags = active_hazard_tags(weather)
+        if tags:
+            out["hazards"] = tags
+    except Exception as e:
+        print(f"[activity] locale weather failed: {e}")
+
+    # ---- who else is standing here ---------------------------------------
+    if place is not None:
+        present: list[dict] = []
+        try:
+            with Session(world.engine) as s:
+                here = s.exec(
+                    select(WorldEntity)
+                    .join(WorldRelation, WorldRelation.src_id == WorldEntity.id)
+                    .where(WorldRelation.dst_id == place.id,
+                           WorldRelation.rel_type == RelationType.LOCATED_IN,
+                           WorldRelation.valid_to == None,  # noqa: E711
+                           WorldEntity.type.in_([EntityType.NPC, EntityType.PC]),
+                           WorldEntity.status == "active")
+                ).all()
+            for ent in here:
+                if ent.slug == pc_slug:
+                    continue
+                row: dict = {"name": ent.name, "kind": ent.type}
+                if ent.subtype:
+                    row["role"] = ent.subtype
+                # How they feel about YOU — the whole point of tracking trust.
+                if ent.type == EntityType.NPC:
+                    try:
+                        trust = world.get_trust(ent.slug, pc_slug)
+                        if trust is not None:
+                            row["attitude"] = attitude_for_trust(trust)
+                    except Exception:
+                        pass
+                present.append(row)
+        except Exception as e:
+            print(f"[activity] locale presence failed: {e}")
+        # Names you know come first; the rest of the room fills in behind.
+        present.sort(key=lambda r: (0 if r.get("attitude") else 1, r["name"]))
+        out["present"] = present[:10]
+
+    return out or None
+
+
 def _activity_lexicon(session_id: str, pc_name: Optional[str],
                       reply_text: str) -> list[dict]:
     """Names worth colouring: the PC, world-slice entities, and any rules
@@ -16548,6 +16674,13 @@ async def activity_ws(ws: WebSocket, channel: str):
                                       fallback=ws)
             await ws.send_json({"t": "lexicon",
                                 "entries": [{"text": sheet["name"], "kind": "name"}]})
+        # The "here and now" strip: place, world clock, weather, who's present.
+        try:
+            loc = _activity_locale(session_id, user_id)
+            if loc:
+                await ws.send_json({"t": "locale", "locale": loc})
+        except Exception as e:
+            print(f"[activity] locale push failed: {e}")
         # Live initiative board for the combat carousel (null clears it).
         try:
             enc = combat.get_active(session_id)

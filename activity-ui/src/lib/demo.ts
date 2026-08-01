@@ -81,6 +81,28 @@ const party: ServerEvent = {
   ],
 };
 
+/* The "here and now" strip. Mirrors the backend's `_activity_locale` — place,
+   world clock, weather and who's standing here, but never a map. */
+const locale: ServerEvent = {
+  t: "locale",
+  locale: {
+    place: "Wispering Mill",
+    place_kind: "poi",
+    region: "The Greenfields",
+    date: "12 Aestral, 1247 AF",
+    time_of_day: "dusk",
+    day: 341,
+    weather: "Overcast and still, a cold drizzle setting in before dark.",
+    hazards: ["dim light"],
+    present: [
+      { name: "Old Marla", kind: "npc", role: "miller", attitude: "friendly" },
+      { name: "Brother Aldous", kind: "pc" },
+      { name: "Pip", kind: "pc" },
+      { name: "Hooded Stranger", kind: "npc", role: "traveller" },
+    ],
+  },
+};
+
 /* Demo initiative carousel: first attack opens the fight, the next one downs
    a goblin, the third ends it. Mirrors the backend's {t:"combat"} events. */
 let demoCombatStage = 0;
@@ -625,6 +647,7 @@ export const demoScript = {
   opening: [
     lexicon,
     sheet,
+    locale,
     party,
     {
       t: "narration",
@@ -632,7 +655,8 @@ export const demoScript = {
         "The road out of Greenfields narrows where the alder trees crowd close, " +
         "and the Wispering Mill rises ahead — sails torn, turning anyway in a wind " +
         "you cannot feel. Old Marla warned you about this place over her cups: " +
-        "millers grind no grain at midnight. A goblin warrior's tracks cross the mud " +
+        "\"Millers grind no grain at midnight, and the ones that do aren't millers.\" " +
+        "A goblin warrior's tracks cross the mud " +
         "at your feet, fresh enough that water still seeps into them.",
     } as ServerEvent,
   ],

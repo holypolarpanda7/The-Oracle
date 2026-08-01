@@ -15,6 +15,31 @@ export interface RollResult {
   success?: boolean; // undefined when no DC (plain damage roll)
 }
 
+/** Someone standing in the same place as you, and how they feel about you. */
+export interface Presence {
+  name: string;
+  kind: string;            // "npc" | "pc"
+  role?: string;           // entity subtype — "innkeeper", "guard"
+  attitude?: string;       // only for NPCs who have met you
+}
+
+/**
+ * The "here and now" strip. NOT a map — the server sends only what a
+ * character can tell by standing there and looking around (see the note on
+ * `_activity_locale`); maps stay in-game artifacts you draft or buy.
+ */
+export interface Locale {
+  place?: string;
+  place_kind?: string;
+  region?: string;
+  date?: string;           // "12 Aestral, 1247 AF"
+  time_of_day?: string;    // "morning"
+  day?: number;
+  weather?: string;
+  hazards?: string[];
+  present?: Presence[];
+}
+
 export interface SpellSlotRow { level: number; total: number; used: number; }
 export interface ResourceRow { name: string; total: number; used: number; die?: string; }
 export interface SheetFeature {
@@ -416,6 +441,7 @@ export type ServerEvent =
   | { t: "whisper"; text: string }
   | { t: "roll"; roll: RollResult }
   | { t: "sheet"; sheet: SheetData }
+  | { t: "locale"; locale: Locale }
   | ({ t: "reprepare_data" } & RepData)
   | { t: "party"; members: Ally[] }
   | { t: "combat"; encounter: CombatState | null }
