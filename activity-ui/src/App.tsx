@@ -306,6 +306,10 @@ export default function App({ session }: { session: Session }) {
     setItemView((v) => (v ? { ...v, loading: true, error: undefined } : v));
     connRef.current?.send({ t: "item_action", name, action, target });
   };
+  const temperItem = (name: string, affix: string) => {
+    setItemView((v) => (v ? { ...v, loading: true, error: undefined } : v));
+    connRef.current?.send({ t: "temper_item", name, affix });
+  };
   const describeItem = (name: string, text: string, title?: string) => {
     // A rename means the next item_image arrives under a DIFFERENT name, so the
     // inspector has to know to accept it.
@@ -537,6 +541,7 @@ export default function App({ session }: { session: Session }) {
               onInscribe={inscribeSpell}
               onAction={itemAction}
               onDescribe={describeItem}
+              onTemper={temperItem}
               inventory={sheet?.inventory.map((it) => (typeof it === "string" ? it : it.name))}
             />
           </>

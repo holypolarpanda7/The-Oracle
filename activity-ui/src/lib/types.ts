@@ -135,6 +135,18 @@ export interface InventoryItem {
   weight?: number;
   /** The one verb the card offers; the inspector still has the full set. */
   action?: { id: string; label: string };
+  /** Rolled properties, when this piece carries any. */
+  affixes?: AffixRow[];
+}
+
+/** A rolled property on a piece of gear (loot/affixes.py). */
+export interface AffixRow {
+  slug: string;
+  name: string;
+  kind: string;          // prefix | suffix
+  tier: number;
+  text: string;
+  temper_gp?: number;    // what a smith charges to reforge this one
 }
 
 export interface SpellEntry { name: string; level?: number | null; }
@@ -160,6 +172,9 @@ export interface ItemDetail {
   can_inscribe?: boolean;
   // container widget
   contents?: { name: string; qty?: number }[];
+  // rolled properties + what they add up to
+  affixes?: AffixRow[];
+  bonuses?: Record<string, unknown>;
 }
 
 /** One saved portrait look: the base + up to 3 equipped-gear variants. */
@@ -565,6 +580,7 @@ export type ClientEvent =
   | { t: "reprepare" }
   | { t: "chronicle" }
   | { t: "describe_item"; name: string; text: string; title?: string }
+  | { t: "temper_item"; name: string; affix: string }
   | { t: "reprepare_apply"; spells: string[] }
   | { t: "enter"; character_name?: string; solo?: boolean }
   | { t: "cc_register"; payload: CCPayload }

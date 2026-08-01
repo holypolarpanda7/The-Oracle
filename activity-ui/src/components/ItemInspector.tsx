@@ -23,13 +23,15 @@ function spellLevel(l?: number | null): string {
 }
 
 export function ItemInspector({ view, onClose, onInscribe, onAction, onDescribe,
-                                inventory }: {
+                                onTemper, inventory }: {
   view: ItemView | null;
   onClose: () => void;
   onInscribe: (book: string, spell: string) => void;
   onAction: (name: string, action: string, target?: string) => void;
   /** Make a piece yours: your name for it, and what it looks like. */
   onDescribe: (name: string, text: string, title?: string) => void;
+  /** Pay a smith to reforge ONE rolled property into a fresh one. */
+  onTemper: (name: string, affix: string) => void;
   inventory?: string[];
 }) {
   const [spellInput, setSpellInput] = useState("");
@@ -118,6 +120,32 @@ export function ItemInspector({ view, onClose, onInscribe, onAction, onDescribe,
                 >
                   {a.label}
                 </button>
+              ))}
+            </div>
+          ) : null}
+
+          {/* Rolled properties. Rarity buys SLOTS, so this list is the real
+              measure of a piece — and each line can be reforged at a price the
+              server sets. */}
+          {d?.affixes?.length ? (
+            <div className="affixes">
+              <div className="sb-title">Properties</div>
+              {d.affixes.map((a) => (
+                <div className={`affix t${a.tier}`} key={a.slug}>
+                  <div className="af-head">
+                    <b>{a.name}</b>
+                    <em className="af-tier">tier {a.tier}</em>
+                    {a.temper_gp !== undefined && (
+                      <button
+                        className="af-temper"
+                        disabled={view.loading}
+                        title={`Reforge this property — the replacement is a fresh roll and may be worse`}
+                        onClick={() => onTemper(view.name, a.slug)}
+                      >reforge · {a.temper_gp} gp</button>
+                    )}
+                  </div>
+                  <p className="af-text">{a.text}</p>
+                </div>
               ))}
             </div>
           ) : null}

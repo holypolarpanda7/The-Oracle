@@ -67,6 +67,23 @@ const demoBag: { name: string; qty: number }[] = [{ name: "Torch", qty: 3 }, { n
 
 function demoItemDetail(name: string): ItemDetail {
   const n = name.toLowerCase();
+  if (/keen rapier/.test(n)) {
+    return {
+      name, type: "Martial", rarity: "Rare",
+      description: "A finesse blade, ground thin and warm to the touch.",
+      stats: ["Damage: 1d8 piercing", "Properties: finesse", "Weight: 2 lb"],
+      equipped: true,
+      actions: [{ id: "unequip", label: "Unequip" }],
+      affixes: [
+        { slug: "keen", name: "Keen", kind: "prefix", tier: 1,
+          text: "Ground to a wicked edge. +1 to attack rolls.", temper_gp: 87 },
+        { slug: "of-the-ember", name: "of the Ember", kind: "suffix", tier: 1,
+          text: "Warm to the touch. Deals an extra 1d4 fire damage on a hit.",
+          temper_gp: 87 },
+      ],
+      bonuses: { attack: 1, damage_dice: ["1d4 fire"] },
+    };
+  }
   if (/spellbook/.test(n)) {
     return { name, type: "Wondrous Item", description: DEMO_BOOK_DESC,
       interactive: "spellbook", spells: [...demoSpells], can_inscribe: true };
