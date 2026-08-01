@@ -16401,6 +16401,47 @@ def _activity_bonds(session_id: str, user_id: str) -> list[dict]:
     return out[:40]
 
 
+# Who can do the work. A forge is a PLACE or a PERSON — a smithy you are
+# standing in, or a smith standing in it with you.
+_SMITH_WORDS = ("smith", "forge", "foundry", "armor", "armour", "weapon",
+                "blacksmith", "artisan", "workshop")
+
+
+def _forge_here(session_id: str, user_id: str) -> Optional[str]:
+    """The name of whoever/whatever could reforge a piece here, or None.
+
+    Tempering is a visit to a craftsman, not an inventory button: without this
+    a player could reroll a legendary standing in a swamp at midnight.
+    """
+    pc = _activity_pc_entity(session_id, user_id)
+    if pc is None:
+        return None
+    try:
+        with Session(world.engine) as s:
+            here = world.location_of(pc.slug)
+            if here is None:
+                return None
+            blob = " ".join(str(x or "") for x in (
+                here.name, here.subtype, (here.attributes or {}).get("look"))).lower()
+            if any(w in blob for w in _SMITH_WORDS):
+                return here.name
+            rows = s.exec(
+                select(WorldEntity)
+                .join(WorldRelation, WorldRelation.src_id == WorldEntity.id)
+                .where(WorldRelation.dst_id == here.id,
+                       WorldRelation.rel_type == RelationType.LOCATED_IN,
+                       WorldRelation.valid_to == None,          # noqa: E711
+                       WorldEntity.type == EntityType.NPC,
+                       WorldEntity.status == "active")).all()
+        for npc in rows:
+            who = f"{npc.name} {npc.subtype or ''}".lower()
+            if any(w in who for w in _SMITH_WORDS):
+                return npc.name
+    except Exception as e:
+        print(f"[forge lookup failed] {e}")
+    return None
+
+
 def _activity_standing(session_id: str, user_id: str) -> list[dict]:
     """Where this character stands with the factions who have noticed them.
 
@@ -18193,6 +18234,14 @@ async def activity_ws(ws: WebSocket, channel: str):
                 from loot import (affix_by_slug, describe_affixes, display_name,
                                   temper_cost_gp, temper_swap)
                 from economy.currency import can_afford, gp_to_cp, subtract_cost
+                # A forge is a place you go to, not a button you own.
+                smith = _forge_here(session_id, user_id)
+                if not smith:
+                    await ws.send_json({
+                        "t": "item_error", "name": name,
+                        "detail": "There is no one here who could do this work. "
+                                  "Find a smith."})
+                    continue
                 with Session(engine) as s_:
                     ch = s_.get(Character, cid)
                     entry = _item_entry(ch, name) if ch else None
@@ -18250,7 +18299,7 @@ async def activity_ws(ws: WebSocket, channel: str):
                           if p["slug"] not in (entry.get("affixes") or [])]
                 await ws.send_json({
                     "t": "narration",
-                    "text": (f"*The forge takes {cost_gp} gp and an afternoon. "
+                    "text": (f"*{smith} takes {cost_gp} gp and an afternoon. "
                              f"The {aff.name if aff else 'old property'} is beaten out of it; "
                              + (f"it comes back **{gained[0]['name']}**." if gained
                                 else "it comes back changed.")
