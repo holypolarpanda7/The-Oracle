@@ -165,10 +165,12 @@ m._set_session_meta(sid, {"pc_slug": pc.slug, "character_id": char_id,
 clean, ops = m.extract_map_hooks("You sketch the valley.\n"
                                  "[[MAP: draft-success | Greenfields]]\nDone.")
 check("[[" not in clean and ops == [{"action": "draft-success",
-                                     "area": "Greenfields", "scale": ""}],
+                                     "area": "Greenfields", "scale": "",
+                                     "boons": []}],
       f"the draft hook parses and is stripped ({ops})")
 _, ops_u = m.extract_map_hooks("[[MAP: update-success | Greenfields]]")
-check(ops_u == [{"action": "update-success", "area": "Greenfields", "scale": ""}],
+check(ops_u == [{"action": "update-success", "area": "Greenfields",
+                 "scale": "", "boons": []}],
       f"the update hook parses ({ops_u})")
 
 # No tools -> no map, however well they rolled.
@@ -348,7 +350,7 @@ check(t_ops == [{"action": "treasure", "area": "a smuggler's chart",
                  "goal": "Duskwood"}], f"the treasure hook parses ({t_ops})")
 _, s_ops = m.extract_map_hooks("[[MAP: draft-success | my travels | world]]")
 check(s_ops == [{"action": "draft-success", "area": "my travels",
-                 "scale": "world"}], f"the scale field parses ({s_ops})")
+                 "scale": "world", "boons": []}], f"the scale field parses ({s_ops})")
 
 out_t = m.process_map_hooks(
     [{"action": "treasure", "area": "a smuggler's chart", "goal": "Duskwood"}], sid)
@@ -378,6 +380,113 @@ with Session(m.engine) as s:
                 and i["map"].get("purpose") == "survey")
     check(surv["map"].get("scale") == "local",
           f"the survey sheet recorded its scale ({surv['map'].get('scale')})")
+
+# --------------------------------------------- 9. what a drafter brings
+print("\n9. the CODE works out the cartography check")
+from eight_card_system import cartography as C  # noqa: E402
+
+plain = C.check_spec(wis_mod=1, proficiency_bonus=2, tags=[])
+check(not plain.proficient and plain.modifier == 1,
+      f"an untrained hand gets Wisdom and nothing else (d20{plain.modifier:+d})")
+trained = C.check_spec(wis_mod=3, proficiency_bonus=3,
+                       tags=["tool:Cartographer's Tools", "skill:Survival"])
+check(trained.proficient and trained.modifier == 6 and trained.advantage,
+      f"tools + Survival: {trained.summary()}")
+expert = C.check_spec(wis_mod=3, proficiency_bonus=3,
+                      tags=["tool:Cartographer's Tools",
+                            "expertise:Cartographer's Tools"])
+check(expert.modifier == 3 + 6, f"expertise doubles the bonus ({expert.modifier})")
+marked = C.check_spec(wis_mod=0, proficiency_bonus=2,
+                      tags=["tool:Cartographer's Tools", "feat:Mark of Finding"])
+check(marked.bonus_dice == ["1d4"], f"a dragonmark adds its die ({marked.bonus_dice})")
+check(any(b.house_rule for b in marked.boons),
+      "...and is flagged as the ruling it is")
+
+# The extension point: the REAL Cartographer artificer text, which grants the
+# tool proficiency the sheet may never have tagged.
+CARTO_TEXT = ("Tool Proficiency. You gain proficiency with Calligrapher's Supplies "
+              "and Cartographer's Tools. Adventurer's Atlas: whenever you finish a "
+              "Long Rest while holding Cartographer's Tools, you create magical maps.")
+UNERRING = "Unerring Path. You can cast Find the Path without expending a spell slot."
+arti = C.check_spec(wis_mod=0, proficiency_bonus=2, tags=[],
+                    feature_texts=[CARTO_TEXT])
+check(arti.proficient,
+      "a subclass that GRANTS the tools is read from its text, not from a tag")
+check(arti.bonus_dice == ["1d4"], "...and its training counts for something")
+lvl15 = C.check_spec(wis_mod=1, proficiency_bonus=5, tags=[],
+                     feature_texts=[CARTO_TEXT, UNERRING], scale="world")
+check("find the path" in lvl15.available and not lvl15.infallible,
+      "Unerring Path is OFFERED, never spent for the player")
+spent = C.check_spec(wis_mod=1, proficiency_bonus=5, tags=[],
+                     feature_texts=[CARTO_TEXT, UNERRING],
+                     declared=["find the path"])
+check(spent.infallible, "...and when spent, the way cannot be drawn wrong")
+
+check(C.check_spec(wis_mod=0, proficiency_bonus=2, scale="world").dc
+      > C.check_spec(wis_mod=0, proficiency_bonus=2, scale="local").dc,
+      "a wider sheet is a harder sheet")
+vantage = C.check_spec(wis_mod=0, proficiency_bonus=2, declared=["fly"])
+check(vantage.reach_multiplier > 1.0,
+      f"a flier surveys further (x{vantage.reach_multiplier:g})")
+check(C.check_spec(wis_mod=0, proficiency_bonus=2,
+                   declared=["a bribe", "wishful thinking"]).modifier == 0,
+      "an unrecognised 'boon' buys nothing")
+
+# ...and the backend rolls it off a real sheet.
+with Session(m.engine) as s:
+    ch = s.get(m.Character, char_id)
+    m._add_tags(ch, "tool", ["Cartographer's Tools"])
+    m._add_tags(ch, "skill", ["Survival"])
+    s.add(ch); s.commit()
+    spec = m._cartography_spec(ch, scale="local")
+    check(spec.proficient and spec.advantage,
+          f"the backend reads the real sheet: {spec.summary()}")
+    rolled = m._roll_cartography(ch, scale="local")
+    check(isinstance(rolled["success"], bool) and rolled["detail"],
+          f"and rolls it: {rolled['detail']}")
+
+# ------------------------------------------- 10. the world buries things
+print("\n10. the world loses treasure on its own account")
+from eight_card_system import hoards  # noqa: E402
+
+buried = None
+for era in range(12):
+    r = hoards.spawn_lost_hoard(m.world, era * hoards.HOARD_INTERVAL_DAYS,
+                                rng=__import__("random").Random(f"smoke{era}"))
+    buried = buried or r
+check(buried is not None, "a hoard eventually gets buried")
+if buried:
+    check(buried["chart"] and buried["chart_town"],
+          f"a chart leaks into {buried['chart_town']}")
+    check(hoards.chart_target(m.world, buried["chart_name"]) == buried["site"],
+          "the chart knows where it leads, by name")
+    check(hoards.chart_target(m.world, "millbrook") is None,
+          "an ordinary thing is not a chart")
+    site = m.world.get_entity(buried["site"])
+    check((site.attributes or {}).get("prominence") == 0,
+          "a buried cache is famous to nobody — it never clutters a survey sheet")
+    check(site.status == "unexplored", "and nobody has been there")
+
+check(len(hoards.open_hoards(m.world)) <= hoards.MAX_OPEN_HOARDS,
+      f"open hoards stay capped ({len(hoards.open_hoards(m.world))})")
+
+# The DM hands over the OBJECT; the code knows the destination.
+if buried:
+    out_c = m.process_map_hooks(
+        [{"action": "treasure", "area": "a weathered chart",
+          "goal": buried["chart_name"]}], sid)
+    check(len(out_c) == 1, "a chart handed over by name renders its map")
+    with Session(m.engine) as s:
+        ch = s.get(m.Character, char_id)
+        rec = next((i["map"] for i in m._inventory_items(ch)
+                    if isinstance(i.get("map"), dict)
+                    and i["map"].get("area") == "a weathered chart"), None)
+        check(rec is not None and buried["site"] in (rec or {}).get("places", []),
+              "and it points at the hoard the world buried")
+
+    check(hoards.claim_hoard(m.world, buried["site"]), "a dug-up hoard is spent")
+    check(not hoards.claim_hoard(m.world, buried["site"]),
+          "...and cannot be spent twice")
 
 print("\nFAILS:", fails or "none")
 sys.exit(1 if fails else 0)

@@ -62,6 +62,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - `seed.py` — `seed_starter_world` + `place_pc` (starter region "Greenfields").
    - `extraction.py` — second-LLM-call change extractor: `extract_and_apply`
      reads (action + narration + context) → JSON `WorldDelta` → applies it.
+   - `hoards.py` — the world buries treasure on its own account: on the entropy
+     cadence a hoard SITE lands out past the party (a real place with real
+     coords, prominence 0 so it never clutters a survey sheet) and a CHART item
+     — which knows its target's slug — surfaces in a settlement. The DM hands
+     over the object; the code knows where it leads, so it can't be leaked.
+   - `cartography.py` — what a character brings to drawing a map, computed from
+     the sheet. Discovery is deliberately OPEN: any feature whose text mentions
+     cartographer's tools or map-making counts, and one that GRANTS the tool
+     proficiency is read from its text (the Artificer's Cartographer subclass
+     arrives through that door, not a name check). Rulings where a book names a
+     neighbouring tool are flagged `house_rule=True` and are meant to be edited.
    - `placelore.py` — **the one terrain answer** three renderers share:
      `character_of(graph, place)` returns a `PlaceCharacter` with `scene_look()`
      (arrival art), `board_look()` (the battlemap floor) and `map_terrain()`
@@ -246,6 +257,16 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   unlabelled cross plus only the landmarks along the corridor to it (a prominent
   city the wrong way is no help), never a survey with an X added. A revision
   keeps the sheet's own scale and purpose.
+- **The code rolls the cartography check, not the LLM.** `[[MAP: draft | <area>
+  | <scale> | <boons>]]` computes the modifier from the real sheet (Wisdom, tool
+  proficiency/expertise, Survival/Nature for advantage, dragonmarks, a
+  cartographer's own training), rolls it and decides. The old
+  `draft-success`/`draft-failure` forms remain for a DM adjudicating it
+  themselves. The ROLL is reported to the table; whether the sheet is any good
+  is never reported — a drafter who knows their map is wrong doesn't have a
+  wrong map. Declared boons are allowlisted: Guidance/Inspiration help the
+  check, a vantage (flight, Clairvoyance, Scrying) WIDENS the survey radius,
+  and Find the Path makes the sheet true regardless of the roll.
 - **Setting out is a decision, and still not a map.** `[[ROUTES: <dest>]]` makes
   the code cost two or three roads from the world's real coordinates
   (`_routes_to` + `survival/travel.py`): how far, how many days, how dangerous.

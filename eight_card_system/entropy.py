@@ -255,6 +255,28 @@ def run_if_due(graph: WorldGraph, *, interval_days: int = ENTROPY_INTERVAL_DAYS)
     for _name, slug, cause in _drift_arcane_sites(graph, today):
         graph.add_event(f"{cause}.", location=slug)
         out["sites_drifted"] += 1
+
+    # The world loses things on its own account. A hoard is buried somewhere out
+    # past the party, and a chart to it surfaces in a town they may never visit —
+    # a rumour that exists whether or not anyone is listening. See hoards.py.
+    try:
+        from . import hoards
+        found = hoards.spawn_lost_hoard(graph, today)
+        if found:
+            out["hoards"] = out.get("hoards", 0) + 1
+            graph.add_event(
+                f"Word travels of {found['story']}, somewhere in the "
+                f"{found['biome']} country {found['direction']} of here.",
+                location=found["site"],
+            )
+            if found.get("chart") and found.get("chart_town"):
+                graph.add_event(
+                    f"{found['chart_name'].capitalize()} changes hands in "
+                    f"{found['chart_town']}.",
+                    involved=[found["chart"]],
+                )
+    except Exception as e:  # noqa: BLE001 — the clock must never break on this
+        print(f"[hoards] spawn pass failed: {e}")
     return out
 
 

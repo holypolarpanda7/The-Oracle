@@ -1,4 +1,5 @@
 import os
+import dataclasses
 import json
 import random
 import re
@@ -1632,15 +1633,21 @@ def process_portrait_hooks(session_id: str, user_id: Optional[str],
 #   [[MAP: update-failure | the lands around Millbrook]]
 MAP_HOOK_PATTERN = re.compile(r"\[\[MAP:(.+?)\]\]", re.IGNORECASE)
 
-MAP_ACTIONS = ("draft-success", "draft-failure", "purchase",
-               "update-success", "update-failure", "treasure")
+MAP_ACTIONS = ("draft", "draft-success", "draft-failure", "purchase",
+               "update", "update-success", "update-failure", "treasure")
 
 
 def extract_map_hooks(text: str) -> tuple[str, list[dict]]:
     """Parse MAP hooks. Third field is the sheet's SCALE, or a treasure's goal.
 
+    ``[[MAP: draft | the Amber Downs | regional | guidance]]``
     ``[[MAP: draft-success | the Amber Downs | regional]]``
     ``[[MAP: treasure | a smuggler's chart | The Drowned Vault]]``
+
+    ``draft``/``update`` let the CODE roll the check off the real sheet; the
+    explicit ``-success``/``-failure`` forms remain for a DM who has already
+    adjudicated it. The fourth field names help in play (a cantrip, a vantage),
+    matched against an allowlist in ``eight_card_system.cartography``.
     """
     ops: list[dict] = []
     for m in MAP_HOOK_PATTERN.finditer(text):
@@ -1654,9 +1661,93 @@ def extract_map_hooks(text: str) -> tuple[str, list[dict]]:
             op["goal"] = third
         else:
             op["scale"] = third
+            op["boons"] = [b.strip().lower()
+                           for b in (parts[3] if len(parts) > 3 else "").split(",")
+                           if b.strip()]
         ops.append(op)
     clean = MAP_HOOK_PATTERN.sub("", text)
     return clean.strip(), ops
+
+
+def _cartography_feature_texts(char: Character) -> List[str]:
+    """Every scrap of this character's rules text that might mention map-work.
+
+    Their subclass's features, and the benefit line of every feat they hold.
+    Handed to ``cartography.check_spec`` as free text rather than parsed here,
+    because the whole point of that module's discovery is that content added to
+    the owned-book overrides later participates without a code change — the
+    Artificer's Cartographer subclass grants its tool proficiency through this
+    path, not through a name check.
+    """
+    texts: List[str] = []
+    try:
+        if char.subclass:
+            row = rules_lib.get_subclass(char.subclass) if hasattr(
+                rules_lib, "get_subclass") else None
+            if row is not None:
+                for attr in ("features", "description"):
+                    v = getattr(row, attr, None)
+                    if isinstance(v, (list, tuple)):
+                        texts.extend(str(x) for x in v)
+                    elif v:
+                        texts.append(str(v))
+    except Exception as e:
+        print(f"[cartography] subclass text unavailable: {e}")
+    try:
+        held = {t.split(":", 1)[1].strip() for t in (char.tags or [])
+                if isinstance(t, str) and t.lower().startswith("feat:")}
+        for name in held:
+            row = rules_lib.get_feat(name) if hasattr(rules_lib, "get_feat") else None
+            if row is not None and getattr(row, "benefit", None):
+                texts.append(str(row.benefit))
+    except Exception as e:
+        print(f"[cartography] feat text unavailable: {e}")
+    return texts
+
+
+def _cartography_spec(char: Character, *, scale: str = "local",
+                      declared: Optional[List[str]] = None):
+    """This character's cartography check, assembled from their real sheet."""
+    from eight_card_system import cartography
+    return cartography.check_spec(
+        wis_mod=_ability_mod(char, "wisdom"),
+        proficiency_bonus=proficiency_bonus_for_level(char.level),
+        tags=char.tags or [],
+        feature_texts=_cartography_feature_texts(char),
+        declared=declared or [],
+        scale=scale,
+    )
+
+
+def _roll_cartography(char: Character, *, scale: str = "local",
+                      declared: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Roll the draft. The CODE decides whether the map came out right.
+
+    This used to be the model's arithmetic — the prompt asked it to work out
+    "1d20+<Wis mod, +PB if proficient>" itself, which meant a feature only
+    counted when the model remembered it. Now the sheet decides, every bonus is
+    named, and the table can see why.
+    """
+    spec = _cartography_spec(char, scale=scale, declared=declared)
+    if spec.infallible:
+        return {"success": True, "spec": spec, "detail":
+                f"{char.name} cannot mistake the way — {spec.summary()}",
+                "total": None}
+    res = ability_check(spec.modifier, dc=spec.dc, advantage=spec.advantage,
+                        label=f"Cartography ({scale})")
+    extra, extra_parts = 0, []
+    for die in spec.bonus_dice:
+        r = dice_roll(die)
+        extra += r.total
+        extra_parts.append(f"{die}[{r.total}]")
+    total = res.total + extra
+    success = total >= spec.dc
+    detail = res.detail
+    if extra_parts:
+        detail = (f"Cartography ({scale}): d20[{res.natural}]"
+                  f"{spec.modifier:+d}+{'+'.join(extra_parts)} = {total} "
+                  f"vs DC {spec.dc} → {'SUCCESS' if success else 'FAIL'}")
+    return {"success": success, "spec": spec, "detail": detail, "total": total}
 
 
 def _treasure_goal(goal_ref: str) -> Optional[Dict[str, Any]]:
@@ -1669,9 +1760,15 @@ def _treasure_goal(goal_ref: str) -> Optional[Dict[str, Any]]:
     with no position on the globe can't be drawn, and inventing one here would
     put treasure at a spot the world doesn't agree exists.
     """
-    from eight_card_system import geo, placelore
+    from eight_card_system import geo, hoards, placelore
     if not goal_ref:
         return None
+    # A CHART knows its own destination. Handing over the object by name is
+    # both easier for the DM and safer: they can't misremember where it leads,
+    # and they never have to type the secret at all.
+    via_chart = hoards.chart_target(world, goal_ref)
+    if via_chart:
+        goal_ref = via_chart
     ent = world.get_entity(goal_ref)
     if ent is None:
         matches = world.find_entities_by_name(goal_ref)
@@ -1724,14 +1821,22 @@ def _find_map_item(inv: List[Dict[str, Any]], area: str) -> Optional[Dict[str, A
                                                       it["map"].get("day", 0)) or 0))
 
 
-def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
+def process_map_hooks(map_ops: list[dict], session_id: str,
+                      notes: Optional[list] = None) -> list[dict]:
     """Turn MAP hooks into rendered parchment artifacts + inventory items.
 
     Enforces the hard prerequisites the prompt also states: drafting needs
     Cartographer's Tools in inventory; purchase needs the coin. A failed
     draft is rendered with deterministic distortion — the caption gives
     nothing away.
+
+    ``notes`` collects the resolved cartography roll for the table to see, the
+    same way a [[ROLL:]] hook's result is shown. The roll is reported; whether
+    the SHEET is any good is not, because a bad draft the drafter knows about
+    isn't a bad draft.
     """
+    if notes is None:
+        notes = []
     if not map_ops:
         return []
     from eight_card_system import mapmaker
@@ -1776,17 +1881,14 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
                 if not _has_inventory_item(char, mapmaker.TOOLS_ITEM):
                     print(f"[map] {char.name} lacks {mapmaker.TOOLS_ITEM} — {action} refused")
                     continue
-                flawed = action.endswith("failure")
                 scale = mapmaker.map_scale(op.get("scale"))
-                # You can only draw what you KNOW: visited places and places
-                # learned of in play (knows_about). Someone else's discoveries
-                # don't appear on your parchment. A wider sheet is compiled from
-                # memory rather than surveyed from a hilltop, so its reach is
-                # the SCALE's, not the drafting radius.
-                known = mapmaker.known_place_ids(world, pc_slug)
-                center, places = mapmaker.gather_mappable_places(
-                    world, pc_slug, radius_mi=scale.radius_mi, known_ids=known,
-                    include_regions=scale.wants_regions)
+                # The roll waits until the scale is final: revising an existing
+                # sheet inherits ITS grain below, and a world sheet is a harder
+                # check than a valley. Gathering waits with it, since a vantage
+                # widens what can be surveyed at all.
+                roll_now = action in ("draft", "update")
+                flawed = action.endswith("failure")
+                center, places = None, []
                 subtitle = f"drafted by {char.name}, {world.current_date_str()}"
             else:  # purchase
                 price = mapmaker.MAP_PRICE_GP
@@ -1801,6 +1903,7 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
                     include_rumored=True, include_regions=scale.wants_regions)
                 subtitle = "by a map-maker's practiced hand"
 
+            kept: list[dict] = []
             if action.startswith("update"):
                 # Revising a sheet the cartographer already owns. The map keeps
                 # everything it has ever charted (re-read from its own recorded
@@ -1813,7 +1916,6 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
                     continue
                 held = revising["map"]
                 kept = mapmaker.gather_places_by_slug(world, held.get("places") or [])
-                places = mapmaker.merge_places(kept, places)
                 anchor = held.get("center") or {}
                 if isinstance(anchor, dict) and "lat" in anchor:
                     center = (float(anchor["lat"]), float(anchor["lon"]))
@@ -1830,6 +1932,33 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
                 # half of your own map is the lie.
                 subtitle = (f"revised by {char.name}, {world.current_date_str()} "
                             f"(revision {revision})")
+
+            if action.startswith("draft") or action.startswith("update"):
+                # Now that the scale is settled, the code owns the mechanics:
+                # what this character actually brings, rolled, and judged.
+                if roll_now:
+                    outcome = _roll_cartography(char, scale=scale.name,
+                                                declared=op.get("boons") or [])
+                    flawed = not outcome["success"]
+                    notes.append(outcome["detail"])
+                    print(f"[map] {outcome['detail']}  |  {outcome['spec'].summary()}")
+                    reach = scale.radius_mi * outcome["spec"].reach_multiplier
+                    if reach != scale.radius_mi:
+                        # The sheet's reach has to grow with the survey, or
+                        # select_features cuts the extra country straight back
+                        # off again at render time.
+                        scale = dataclasses.replace(scale, radius_mi=reach)
+                # You can only draw what you KNOW: visited places and places
+                # learned of in play (knows_about). Someone else's discoveries
+                # don't appear on your parchment. A wider sheet is compiled from
+                # memory rather than surveyed from a hilltop, so its reach is
+                # the SCALE's — and a flier or a scrying eye sees further still.
+                known = mapmaker.known_place_ids(world, pc_slug)
+                surveyed_center, fresh = mapmaker.gather_mappable_places(
+                    world, pc_slug, radius_mi=scale.radius_mi, known_ids=known,
+                    include_regions=scale.wants_regions)
+                center = center or surveyed_center
+                places = mapmaker.merge_places(kept, fresh)
 
             if center is None or not places:
                 print(f"[map] nothing mappable around {pc_slug}")
@@ -8098,10 +8227,19 @@ _WORLD_BUILDING_BLOCK = (
     "  turn, or while a question you asked is still unanswered.\n"
     "Cartography — maps are earned, never given:\n"
     "- There is NO free world map. A character may draft one only with Cartographer's\n"
-    "  Tools in inventory: call for [[ROLL: 1d20+<Wis mod, +PB if proficient with the\n"
-    "  tools> | Cartography (Wisdom) | DC 15]] (advantage if also proficient in a\n"
-    "  relevant skill such as Survival). Then, from the resolved roll, emit on its own\n"
-    "  line: [[MAP: draft-success | <area>]] or [[MAP: draft-failure | <area>]].\n"
+    "  Tools in inventory. Do NOT work out the modifier yourself and do NOT call for a\n"
+    "  [[ROLL:]] — emit [[MAP: draft | <area> | <scale>]] and the system rolls it off\n"
+    "  the real sheet (Wisdom, tool proficiency or expertise, Survival/Nature for\n"
+    "  advantage, a dragonmark, a cartographer's own training) and reports the result.\n"
+    "  If the player spends something to help — Guidance, Bardic Inspiration, Enhance\n"
+    "  Ability, their Inspiration — name it in a fourth field:\n"
+    "  [[MAP: draft | the Amber Downs | regional | guidance]]. A high vantage (flight,\n"
+    "  Clairvoyance, Arcane Eye, Scrying) goes there too and WIDENS what they can\n"
+    "  survey. Find the Path there means the way cannot be drawn wrong at all.\n"
+    "  Narrate the drafting honestly (an hour or more of sightlines and measurements)\n"
+    "  and let the reported roll speak; never announce whether the map is any good.\n"
+    "  ([[MAP: draft-success | <area>]] / draft-failure remain available for when you\n"
+    "  have already decided the outcome yourself.)\n"
     "- A sheet has a SCALE, given as a third field: local (a day's walk, the\n"
     "  default) | regional | provincial | world. Ask which they mean when it isn't\n"
     "  obvious — 'a map of everything I know' is [[MAP: draft-success | my travels |\n"
@@ -8119,8 +8257,9 @@ _WORLD_BUILDING_BLOCK = (
     "  maps also mark RUMORED, uncharted sites — hooks to places no one has explored —\n"
     "  and studying one teaches the buyer those places for their own future drafts.\n"
     "- A map GROWS. When a cartographer who owns one wants to add country they have\n"
-    "  since walked, call for the same Cartography check and emit [[MAP: update-success\n"
-    "  | <area>]] or [[MAP: update-failure | <area>]]. The sheet keeps everything it\n"
+    "  since walked, emit [[MAP: update | <area>]] (same rolled check, and the sheet\n"
+    "  keeps its own scale) — or [[MAP: update-success | <area>]] /\n"
+    "  [[MAP: update-failure | <area>]] if you are calling it yourself. The sheet keeps everything it\n"
     "  already charted and gains whatever they have learned since; a success also\n"
     "  quietly corrects an earlier bad draft, and a failure spoils a sheet that was\n"
     "  sound. Say none of that — they are simply working on their map.\n"
@@ -8131,6 +8270,10 @@ _WORLD_BUILDING_BLOCK = (
     "  drew it wasn't labelling their secret. The goal must be a place that exists\n"
     "  in the world with a position — introduce it first (say which direction and\n"
     "  roughly how far) and then hand over the chart.\n"
+    "- The WORLD buries things on its own. A 'chart' item in the world state is a\n"
+    "  real treasure map already pointing at a real site: name the CHART as the goal\n"
+    "  ([[MAP: treasure | the chart you bought | a smuggler's chart]]) and the system\n"
+    "  reads where it leads — you never need to know, and so can never let it slip.\n"
     "Commerce — merchants' stock lines are ground truth:\n"
     "- NPCs with a 'stock (this week)' line sell exactly those items at exactly those\n"
     "  prices. Haggle in the fiction, but when a deal is STRUCK, emit on its own line:\n"
@@ -9996,7 +10139,15 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         dm_text, map_ops = extract_map_hooks(dm_text)
         if map_ops:
             try:
-                image_payloads.extend(process_map_hooks(map_ops, req.session_id))
+                map_notes: list = []
+                image_payloads.extend(
+                    process_map_hooks(map_ops, req.session_id, map_notes))
+                if map_notes:
+                    # The ROLL is shown, like any other resolved check. What the
+                    # sheet turned out to be worth is never shown — a drafter
+                    # who knows their map is wrong doesn't have a wrong map.
+                    dm_text = (dm_text.rstrip() + "\n\n"
+                               + "\n".join(f"*{n}*" for n in map_notes))
             except Exception as e:
                 print(f"[map] hook processing failed: {e}")
 
