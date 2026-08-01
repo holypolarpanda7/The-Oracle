@@ -157,6 +157,7 @@ from dm_guide import (
 from imagery import ImageStore, ImageResult
 from imagery.appearance import appearance_prompt, BEAUTY_BANDS
 from vtt import VttEngine
+from vtt import archetype_for_place as vtt_archetype_for_place
 from vtt import bridge as vtt_bridge
 from vtt.triggers import should_open_scene as vtt_should_open
 from vtt.triggers import scene_kind_for as vtt_scene_kind_for
@@ -1414,32 +1415,36 @@ def _queue_pending_image(session_id: str, payload: dict) -> None:
 
 
 def _place_scene_request(place) -> Optional[dict]:
-    """An [[IMAGE: place]]-shaped request for a world-graph location entity."""
+    """An [[IMAGE: place]]-shaped request for a world-graph location entity.
+
+    The look and the cache bucket both come from ``placelore.character_of`` —
+    the same seam the tactical board and the drafted map read. That is the
+    whole point: the forest in the arrival shot, the forest floor under the
+    battlemap grid and the green canopy on the parchment are one decision made
+    once, not three renderers guessing separately.
+    """
     if place is None:
         return None
     name = getattr(place, "name", None)
     if not name:
         return None
+    try:
+        from eight_card_system import placelore
+        ch = placelore.character_of(world, getattr(place, "slug", None) or name)
+    except Exception as e:
+        print(f"[place-scene] placelore unavailable: {e}")
+        ch = None
+    if ch is not None:
+        return {"kind": "place", "subject": name,
+                "context": ch.context_key(), "look": ch.scene_look()}
+    # Degraded path: the graph couldn't characterise the place (an entity with
+    # no row, a half-built world). Fall back to its raw attributes.
     attrs = getattr(place, "attributes", None) or {}
-    # Whatever the world graph already knows about the place beats a guess:
-    # its subtype, its terrain, its own description.
     look = ", ".join(str(v) for v in (
         getattr(place, "subtype", None),
         attrs.get("terrain"), attrs.get("look"), attrs.get("description"),
     ) if v)
-    # Context is the render's cache bucket as well as its mood, so key it on
-    # the season and time of day: the same village in snow is a new picture.
-    context = "arrival"
-    try:
-        from eight_card_system.models import WorldMeta as _WM
-        from survival.weather import season_for_month as _season
-        with Session(world.engine) as s:
-            wm = s.get(_WM, 1)
-        if wm is not None:
-            context = f"{_season(wm.month)}, {wm.time_of_day}"
-    except Exception:
-        pass
-    return {"kind": "place", "subject": name, "context": context,
+    return {"kind": "place", "subject": name, "context": "arrival",
             "look": look[:300]}
 
 
@@ -1622,7 +1627,13 @@ def process_portrait_hooks(session_id: str, user_id: Optional[str],
 #   [[MAP: draft-success | the lands around Millbrook]]
 #   [[MAP: draft-failure | the lands around Millbrook]]
 #   [[MAP: purchase | Greenfields]]         (bought from a map-maker, ~25 gp)
+# ...and, because a cartographer keeps working on a sheet they already own:
+#   [[MAP: update-success | the lands around Millbrook]]
+#   [[MAP: update-failure | the lands around Millbrook]]
 MAP_HOOK_PATTERN = re.compile(r"\[\[MAP:(.+?)\]\]", re.IGNORECASE)
+
+MAP_ACTIONS = ("draft-success", "draft-failure", "purchase",
+               "update-success", "update-failure")
 
 
 def extract_map_hooks(text: str) -> tuple[str, list[dict]]:
@@ -1630,11 +1641,38 @@ def extract_map_hooks(text: str) -> tuple[str, list[dict]]:
     for m in MAP_HOOK_PATTERN.finditer(text):
         parts = [p.strip() for p in m.group(1).split("|")]
         action = (parts[0] if parts else "").lower()
-        if action in ("draft-success", "draft-failure", "purchase"):
+        if action in MAP_ACTIONS:
             ops.append({"action": action,
                         "area": parts[1] if len(parts) > 1 else ""})
     clean = MAP_HOOK_PATTERN.sub("", text)
     return clean.strip(), ops
+
+
+def _find_map_item(inv: List[Dict[str, Any]], area: str) -> Optional[Dict[str, Any]]:
+    """The inventory entry for a map of ``area`` — the sheet being revised.
+
+    Takes the caller's OWN item list rather than the character, because
+    ``_inventory_items`` hands back copies: the caller has to hold the list it
+    mutates and assign that same list to ``char.inventory``, or the revision is
+    written to a throwaway dict and silently lost.
+
+    Matches on the recorded area first, then on the item name, then falls back
+    to the character's most recently drawn map: a player saying "I add the
+    ridge to my map" rarely repeats the exact title they were given.
+    """
+    maps = [it for it in inv if isinstance(it.get("map"), dict)]
+    if not maps:
+        return None
+    needle = _normalize_item_name(area or "")
+    if needle:
+        for it in maps:
+            if _normalize_item_name(str(it["map"].get("area", ""))) == needle:
+                return it
+        for it in maps:
+            if needle in _normalize_item_name(str(it.get("name", ""))):
+                return it
+    return max(maps, key=lambda it: int(it["map"].get("updated_day",
+                                                      it["map"].get("day", 0)) or 0))
 
 
 def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
@@ -1662,11 +1700,13 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
             return []
         for op in map_ops[:2]:
             action, area = op["action"], op["area"] or "the surrounding lands"
-            if action.startswith("draft"):
+            revising: Optional[Dict[str, Any]] = None
+            revision = 1
+            if action.startswith("draft") or action.startswith("update"):
                 if not _has_inventory_item(char, mapmaker.TOOLS_ITEM):
-                    print(f"[map] {char.name} lacks {mapmaker.TOOLS_ITEM} — draft refused")
+                    print(f"[map] {char.name} lacks {mapmaker.TOOLS_ITEM} — {action} refused")
                     continue
-                flawed = action == "draft-failure"
+                flawed = action.endswith("failure")
                 # You can only draw what you KNOW: visited places and places
                 # learned of in play (knows_about). Someone else's discoveries
                 # don't appear on your parchment.
@@ -1686,30 +1726,73 @@ def process_map_hooks(map_ops: list[dict], session_id: str) -> list[dict]:
                     world, pc_slug, radius_mi=mapmaker.PURCHASE_RADIUS_MI,
                     include_rumored=True)
                 subtitle = "by a map-maker's practiced hand"
+
+            if action.startswith("update"):
+                # Revising a sheet the cartographer already owns. The map keeps
+                # everything it has ever charted (re-read from its own recorded
+                # slugs, so walking away can't erase the far half) and the fresh
+                # survey only ADDS. Its frame stays where it was first drawn.
+                inv = _inventory_items(char)
+                revising = _find_map_item(inv, area)
+                if revising is None:
+                    print(f"[map] {char.name} has no map of '{area}' to update")
+                    continue
+                held = revising["map"]
+                kept = mapmaker.gather_places_by_slug(world, held.get("places") or [])
+                places = mapmaker.merge_places(kept, places)
+                anchor = held.get("center") or {}
+                if isinstance(anchor, dict) and "lat" in anchor:
+                    center = (float(anchor["lat"]), float(anchor["lon"]))
+                area = held.get("area") or area
+                revision = int(held.get("revision", 1) or 1) + 1
+                # A good hand at the table corrects what the last pass got
+                # wrong; a bad one spoils a sheet that WAS sound. Either way
+                # the whole sheet takes the new verdict — you cannot tell which
+                # half of your own map is the lie.
+                subtitle = (f"revised by {char.name}, {world.current_date_str()} "
+                            f"(revision {revision})")
+
             if center is None or not places:
                 print(f"[map] nothing mappable around {pc_slug}")
                 continue
-            title = f"Map of {area}"
+            title = (revising or {}).get("name") or f"Map of {area}"
             png = mapmaker.render_map(
                 places, center, title=title, flawed=flawed,
-                seed=f"{pc_slug}:{day}:{area}", subtitle=subtitle)
+                # The revision is in the seed, so a corrected sheet is visibly
+                # a different drawing rather than the same distortion again.
+                seed=f"{pc_slug}:{day}:{area}:{revision}", subtitle=subtitle,
+                area=area)
             if action == "purchase" and pc_slug:
                 # Buying the map IS gaining the knowledge: every charted site
                 # (rumored ones included) becomes drawable on your own drafts.
                 for p in places:
                     if p.get("slug"):
                         world.add_relation(pc_slug, RelationType.KNOWS_ABOUT, p["slug"])
-            _add_inventory_item(char, title, extra={
-                "map": {"area": area, "day": day,
-                        "provenance": "drafted" if action.startswith("draft") else "purchased",
-                        # The truth lives in the data; the player never sees it.
-                        "reliable": not flawed}})
+            record = {
+                "area": area,
+                "day": int((revising or {}).get("map", {}).get("day", day)),
+                "updated_day": day,
+                "revision": revision,
+                "provenance": "purchased" if action == "purchase" else "drafted",
+                # The truth lives in the data; the player never sees it.
+                "reliable": not flawed,
+                "center": {"lat": center[0], "lon": center[1]},
+                "places": sorted({str(p["slug"]) for p in places if p.get("slug")}),
+            }
+            if revising is not None:
+                # Same sheet, redrawn — never a second map in the pack. ``inv``
+                # is the list ``revising`` lives in, so assigning it back is
+                # what actually persists the new revision.
+                revising["map"] = record
+                char.inventory = inv
+            else:
+                _add_inventory_item(char, title, extra={"map": record})
             payloads.append({
                 "b64": base64.b64encode(png).decode("ascii"),
                 "mime": "image/png", "kind": "map",
                 "caption": title, "temp": False,
             })
-            print(f"[map] {char.name}: {action} '{title}' "
+            print(f"[map] {char.name}: {action} '{title}' rev {revision} "
                   f"({len(places)} sites{', flawed' if flawed else ''})")
         s.add(char)
         s.commit()
@@ -6028,17 +6111,45 @@ def _vtt_token_image(c) -> Optional[int]:
     return None
 
 
-def _vtt_place_context(ctx_obj) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """(place_slug, place_name, biome) for the party's current location."""
+def _vtt_place_context(ctx_obj) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """(place_slug, place_name, biome, scale) for the party's current location.
+
+    Biome comes from ``placelore``, not raw attributes, so a place narration
+    invented without one still resolves to the country it stands in — and to
+    the SAME country the arrival scene and any drafted map used.
+    """
     try:
         loc = getattr(ctx_obj, "location", None) if ctx_obj else None
         if loc is None:
-            return None, None, None
+            return None, None, None, None
+        slug = getattr(loc, "slug", None)
+        name = getattr(loc, "name", None)
+        try:
+            from eight_card_system import placelore
+            ch = placelore.character_of(world, slug or name)
+        except Exception as e:
+            print(f"[vtt] placelore unavailable: {e}")
+            ch = None
+        if ch is not None:
+            return slug, name, ch.biome, ch.scale
         attrs = getattr(loc, "attributes", None) or {}
         biome = attrs.get("biome") or attrs.get("terrain") or getattr(loc, "subtype", None)
-        return getattr(loc, "slug", None), getattr(loc, "name", None), biome
+        return slug, name, biome, str(attrs.get("scale") or "")
     except Exception:
-        return None, None, None
+        return None, None, None, None
+
+
+def _vtt_place_look(place_slug: Optional[str]) -> str:
+    """The ground texture of a place, for the battlemap prompt. "" if unknown."""
+    if not place_slug:
+        return ""
+    try:
+        from eight_card_system import placelore
+        ch = placelore.character_of(world, place_slug)
+        return ch.board_look() if ch else ""
+    except Exception as e:
+        print(f"[vtt] board look unavailable for '{place_slug}': {e}")
+        return ""
 
 
 def _vtt_open(session_id: str, *, kind: str = "combat",
@@ -6053,13 +6164,18 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
     version arrives on a later push.
     """
     cfg = _vtt_cfg()
-    place_slug, place_name, biome = _vtt_place_context(ctx_obj)
-    hint = archetype or place_name or ""
+    place_slug, place_name, biome, scale = _vtt_place_context(ctx_obj)
+    # The DM's words win where they say anything; where they don't, the world
+    # graph's terrain decides the layout rather than a place NAME that happens
+    # to contain no keyword. "The Grey Tors" is a mountain pass because the
+    # graph says the ground is mountains, not because the name says so.
+    arch = vtt_archetype_for_place(
+        hint=(archetype or place_name or ""), biome=biome, scale=scale,
+        default=getattr(cfg, "default_archetype", "open"))
     scene = vtt_engine.open_scene(
         session_id, kind=kind,
         name=(name or place_name or None),
-        archetype=(archetype or None),
-        place_hint=hint or None,
+        archetype=arch,
         place_slug=place_slug,
         biome=biome,
         width=getattr(cfg, "default_width", 24),
@@ -6086,11 +6202,19 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
 
 
 def _vtt_render_art(map_id: int) -> None:
-    """Background job: paint the battlemap, then push it to the Activity."""
+    """Background job: paint the battlemap, then push it to the Activity.
+
+    The place's ground texture is looked up HERE rather than stored on the
+    board row: this job only ever gets a map id, and re-deriving from the world
+    graph keeps the floor under the grid agreeing with the establishing shot of
+    the same location.
+    """
     try:
         _unload_local_llm()
         _mark_diffusion_dirty()
-        vtt_engine.render_art(map_id)
+        row = vtt_engine.get_scene(map_id)
+        vtt_engine.render_art(
+            map_id, extra=_vtt_place_look(getattr(row, "place_slug", None)))
     except Exception as e:
         print(f"[vtt] battlemap render failed: {e}")
         return
@@ -7896,6 +8020,12 @@ _WORLD_BUILDING_BLOCK = (
     "  for ~25 gp: emit [[MAP: purchase | <region>]] once the sale is agreed. Bought\n"
     "  maps also mark RUMORED, uncharted sites — hooks to places no one has explored —\n"
     "  and studying one teaches the buyer those places for their own future drafts.\n"
+    "- A map GROWS. When a cartographer who owns one wants to add country they have\n"
+    "  since walked, call for the same Cartography check and emit [[MAP: update-success\n"
+    "  | <area>]] or [[MAP: update-failure | <area>]]. The sheet keeps everything it\n"
+    "  already charted and gains whatever they have learned since; a success also\n"
+    "  quietly corrects an earlier bad draft, and a failure spoils a sheet that was\n"
+    "  sound. Say none of that — they are simply working on their map.\n"
     "Commerce — merchants' stock lines are ground truth:\n"
     "- NPCs with a 'stock (this week)' line sell exactly those items at exactly those\n"
     "  prices. Haggle in the fiction, but when a deal is STRUCK, emit on its own line:\n"
