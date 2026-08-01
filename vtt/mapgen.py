@@ -765,6 +765,60 @@ def archetype_for(text: Optional[str], default: str = "open") -> str:
     return default
 
 
+#: Terrain -> the layout family that terrain fights on. Keyed by the world
+#: graph's biome vocabulary (see ``eight_card_system/placelore.py``), but kept
+#: here as plain strings so ``vtt`` stays standalone — the arena uses these
+#: generators with no world graph behind them at all.
+_BIOME_ARCHETYPE = {
+    "forest": "forest", "swamp": "swamp", "mountains": "mountain-pass",
+    "sea": "open-water", "coast": "open", "river": "open",
+    "hills": "open", "farmland": "open", "desert": "open",
+    # built surfaces
+    "urban": "street", "interior": "tavern",
+    "dungeon": "dungeon-room", "underdark": "cave",
+}
+
+
+def archetype_for_place(*, hint: Optional[str] = None, biome: Optional[str] = None,
+                        scale: Optional[str] = None, default: str = "open") -> str:
+    """The layout family for a fight breaking out at a known place.
+
+    Precedence is deliberate:
+
+    1. an explicit ``hint`` — the DM said "a smoky taproom", and the fiction is
+       the DM's to author;
+    2. the place's ``biome`` — what the world graph says the ground actually is.
+       This is the one that stops a brawl in The Grey Tors being fought on a
+       featureless plain just because the name contains no keyword;
+    3. the place's ``scale`` word, for interiors the biome doesn't cover;
+    4. ``default``.
+
+    Note the hint is only honoured when it MATCHES something. A place name is
+    usually passed as the hint, and most names ("Millbrook") key nothing — that
+    is exactly when the biome should decide, so an unmatched hint falls through
+    rather than pinning the default.
+    """
+    if hint:
+        hit = archetype_for(hint, default="")
+        if hit:
+            return hit
+    b = (biome or "").strip().lower()
+    if b in _BIOME_ARCHETYPE:
+        return _BIOME_ARCHETYPE[b]
+    if b:
+        hit = archetype_for(b, default="")
+        if hit:
+            return hit
+    s = (scale or "").strip().lower()
+    if s in _BIOME_ARCHETYPE:
+        return _BIOME_ARCHETYPE[s]
+    if s:
+        hit = archetype_for(s, default="")
+        if hit:
+            return hit
+    return default
+
+
 def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
                  seed: Optional[int] = None,
                  lighting: Optional[str] = None) -> GeneratedMap:

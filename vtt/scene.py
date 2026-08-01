@@ -197,8 +197,15 @@ class VttEngine:
                 .order_by(TacticalMap.created_at.desc())  # type: ignore[attr-defined]
             ).first()
 
-    def render_art(self, map_id: int, gen: Optional[GeneratedMap] = None) -> Optional[int]:
+    def render_art(self, map_id: int, gen: Optional[GeneratedMap] = None,
+                   *, extra: str = "") -> Optional[int]:
         """Render the battlemap background (blocking; call it in a task).
+
+        ``extra`` is the ground texture of the world-graph place this board
+        depicts — the caller's job to look up, because ``vtt`` deliberately
+        knows nothing about the world graph (the arena drives these same
+        generators with no graph at all). Passing it is what makes the
+        battlemap floor match the establishing shot of the same location.
 
         Failure is normal and silent-ish: with no GPU the board just shows tiles.
         """
@@ -210,7 +217,7 @@ class VttEngine:
         self._set_fields(map_id, art_status="pending")
         art = render_battlemap(
             gen, store=self.image_store, name=row.name, biome=row.biome,
-            lighting=row.lighting)
+            lighting=row.lighting, extra=extra)
         self._set_fields(
             map_id,
             background_image_id=art.image_id,
