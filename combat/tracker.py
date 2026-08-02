@@ -223,17 +223,35 @@ class CombatTracker:
         reroll: bool = False,
         rng: Optional[random.Random] = None,
         reset_turn: bool = True,
+        bonus_dice_for=None,
     ) -> list[Combatant]:
         """Roll d20 + DEX mod for combatants (only those unset unless ``reroll``).
 
         ``reset_turn=False`` keeps the current round/turn — for rolling in
-        mid-fight reinforcements without restarting the fight."""
+        mid-fight reinforcements without restarting the fight.
+
+        ``bonus_dice_for(name) -> str`` adds extra dice for a given combatant
+        ("1d4"), which is how a feature that steadies a whole party's nerves
+        reaches the roll. A callback rather than a column: the reason for the
+        bonus lives with whatever granted it, and the tracker stays ignorant of
+        every such feature."""
         rng = rng or random
         with Session(self.engine) as s:
             combatants = self._combatants(s, encounter_id)
             for c in combatants:
                 if reroll or not c.initiative:
-                    c.initiative = rng.randint(1, 20) + c.dex_mod
+                    total = rng.randint(1, 20) + c.dex_mod
+                    if bonus_dice_for is not None:
+                        try:
+                            expr = bonus_dice_for(c.name) or ""
+                            if expr:
+                                n, _, faces = str(expr).lower().partition("d")
+                                for _i in range(max(1, int(n or 1))):
+                                    total += rng.randint(1, max(2, int(faces)))
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[combat] initiative bonus skipped for "
+                                  f"{c.name}: {e}")
+                    c.initiative = total
                     s.add(c)
             enc = s.get(Encounter, encounter_id)
             if enc and reset_turn:

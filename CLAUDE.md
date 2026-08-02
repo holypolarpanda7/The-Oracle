@@ -184,7 +184,8 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (tempering needs a smith), `routes` (roads costed from real geography, and
   no map data leaks), `map` (one terrain answer across scene/board/parchment;
   tool + knowledge gating; a sheet accrues across revisions), `airship`
-  (core/helm/damage/repair/crash/upgrade + passages + mobile bastions)
+  (core/helm/damage/repair/crash/upgrade + passages + mobile bastions), `bonds`
+  (linked creatures: initiative dice, sight through cover, blink, rescue)
 - Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
   (a god born in play becomes choosable in CC; an unmade one stops being offered)
 - Activity UI harnesses (Playwright, against the offline demo — run
@@ -232,6 +233,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     it: the descriptors in `owned_books/species_looks.json` stay local.
   - Retrieval is selective — only fetch rules when the action needs a mechanic; prose
     lore stays out of prompts except brief mechanical facts.
+- **A creature LINK overrules the board on purpose.** `combat/bonds.py` is a
+  generic three-lever link between creatures — bonus initiative dice, mutual
+  sight/targeting *through* cover, and an emergency rescue — scoped to a table
+  and an owner, replaced (never stacked) when re-granted. The Cartographer
+  artificer's Adventurer's Atlas is one CONFIGURATION of it, not a special
+  case in code; the label and the numbers come from the `[[BOND: grant]]` hook.
+  Both overrides are callbacks (`VttEngine(linked=...)`,
+  `roll_initiative(bonus_dice_for=...)`) so `vtt/` and `combat/` keep knowing
+  nothing about any particular feature. `VttEngine.blink` is the matching
+  movement: a short teleport whose long form is gated on the link, and which
+  CHARGES movement (unlike `move_token(teleport=True)`, which is free).
 - **The tactical board is a spotlight, not a stage.** Play stays theater-of-the-
   mind; `vtt/` opens a grid only for moments where position decides the outcome,
   and closes it after. The LLM decides FICTION (a board opens here, the fireball

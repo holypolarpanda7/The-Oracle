@@ -7,6 +7,8 @@ numbers that change mid-fight (HP, temp HP, AC, conditions, concentration).
     from combat import CombatTracker, Encounter, Combatant, Condition
 """
 from .models import Encounter, Combatant, CombatantKind, Condition, CombatLog
+from . import bonds
+from .bonds import CombatBond
 from .tracker import CombatTracker
 from .engine import CombatEngine, PCProfile, PCWeapon, TurnReport
 
@@ -21,4 +23,6 @@ __all__ = [
     "CombatantKind",
     "Condition",
     "CombatLog",
+    "bonds",
+    "CombatBond",
 ]

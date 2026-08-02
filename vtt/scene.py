@@ -82,12 +82,20 @@ class VttEngine:
     def __init__(self, engine: Optional[Engine] = None,
                  database_url: Optional[str] = None,
                  image_store: Any = None,
-                 tracker: Any = None):
+                 tracker: Any = None,
+                 linked: Any = None):
         self.engine = engine or _default_engine(database_url)
         self.image_store = image_store
         # A ``combat.CombatTracker``; optional so the VTT can be used standalone
         # (puzzles, exploration) without a fight in progress.
         self.tracker = tracker
+        # ``linked(session_id, a_ref, b_ref) -> bool``: an optional predicate
+        # saying two creatures perceive each other REGARDLESS of what the board
+        # says. The board still computes sight and cover honestly; this is a
+        # deliberate override on top, for features that link creatures together
+        # (see combat/bonds.py). A callback rather than an import so the VTT
+        # keeps knowing nothing about any particular feature.
+        self.linked = linked
 
     def create_tables(self) -> None:
         SQLModel.metadata.create_all(self.engine)
@@ -707,6 +715,83 @@ class VttEngine:
             out["fall_ft"] = drop
         return out
 
+    def blink(self, token_id: int, x: int, y: int, *,
+              self_range_ft: int = 10, ally_range_ft: int = 5,
+              ally_within_ft: int = 30, cost_fraction: float = 0.5,
+              require_link: bool = True) -> dict:
+        """A short teleport, either near yourself or beside a LINKED creature.
+
+        The shape a "step through your own maps" feature wants: hop a little
+        way on your own, or a long way if a bonded ally is standing where you
+        want to be. Distinct from ``move_token(teleport=True)`` in three ways —
+        it is range-checked against real board distance, it CHARGES movement
+        (a teleport that costs nothing is a different feature), and its long
+        form is gated on the link rather than on line of sight.
+
+        Returns the move result, or ``{"ok": False, "reason": ...}``.
+        """
+        tok = self.get_token(token_id)
+        if not tok:
+            return {"ok": False, "reason": "no such token"}
+        row = self.get_scene(tok.map_id)
+        if row is None or not row.active:
+            return {"ok": False, "reason": "no board is out"}
+        if tok.speed_ft <= 0:
+            return {"ok": False, "reason": f"{tok.name} has no speed to spend"}
+
+        dest = (int(x), int(y))
+        sq = row.square_ft or 5
+        near_self = geo.distance_ft((tok.x, tok.y), dest, square_ft=sq)
+        anchor = None
+        if near_self > self_range_ft:
+            # Look for a linked creature standing beside the destination, close
+            # enough to this one to step through.
+            for other in self.tokens(tok.map_id, include_defeated=False):
+                if other.id == token_id:
+                    continue
+                if geo.distance_ft((other.x, other.y), dest, square_ft=sq) > ally_range_ft:
+                    continue
+                if geo.distance_ft((tok.x, tok.y), (other.x, other.y),
+                                   square_ft=sq) > ally_within_ft:
+                    continue
+                if require_link and not self._is_linked(tok.map_id, tok.name, other.name):
+                    continue
+                anchor = other
+                break
+            if anchor is None:
+                return {"ok": False,
+                        "reason": (f"that's {near_self} ft — {tok.name} can step "
+                                   f"{self_range_ft} ft alone, or beside a linked "
+                                   f"ally within {ally_within_ft} ft")}
+
+        cost = max(sq, int((tok.speed_ft * max(0.0, cost_fraction)) // sq * sq))
+        remaining = max(0, tok.speed_ft - tok.moved_ft)
+        if cost > remaining:
+            return {"ok": False, "cost_ft": cost, "remaining_ft": remaining,
+                    "reason": (f"stepping through costs {cost} ft and "
+                               f"{tok.name} has {remaining} ft left")}
+
+        res = self.move_token(token_id, dest[0], dest[1], teleport=True)
+        if not res.get("ok"):
+            return res
+        # move_token charges nothing for a teleport, so the cost is applied here
+        # — this one is paid for out of the creature's movement.
+        with Session(self.engine) as s:
+            live = s.get(MapToken, token_id)
+            if live:
+                live.moved_ft = min(live.speed_ft * 4, live.moved_ft + cost)
+                s.add(live)
+                s.commit()
+        res.update({"cost_ft": cost,
+                    "remaining_ft": max(0, tok.speed_ft - tok.moved_ft - cost),
+                    "through": anchor.name if anchor else None})
+        self._log(tok.map_id, row.session_id, "move", actor=tok.name,
+                  summary=(f"{tok.name} steps through to {dest[0]},{dest[1]}"
+                           + (f" beside {anchor.name}" if anchor else "")),
+                  payload={"token_id": token_id, "blink": True,
+                           "through": anchor.name if anchor else None})
+        return res
+
     def start_turn(self, map_id: int, token_id: Optional[int] = None,
                    combatant_id: Optional[int] = None) -> Optional[MapToken]:
         """Reset a token's spent movement at the start of its turn."""
@@ -1000,11 +1085,29 @@ class VttEngine:
             geo.footprint(b.x, b.y, size_squares(b.size)),
             row.square_ft)
 
+    def _is_linked(self, map_id: int, a_ref: str, b_ref: str) -> bool:
+        """Do these two perceive each other regardless of the board? Best effort."""
+        if self.linked is None:
+            return False
+        row = self.get_scene(map_id)
+        if row is None:
+            return False
+        try:
+            return bool(self.linked(row.session_id, a_ref, b_ref))
+        except Exception as e:  # noqa: BLE001 — a link check must not break a turn
+            print(f"[vtt] link check failed: {e}")
+            return False
+
     def cover_for(self, map_id: int, attacker_ref: str, target_ref: str) -> str:
         """Cover the target has from this attacker, creatures included."""
         a, b = self.find_token(map_id, attacker_ref), self.find_token(map_id, target_ref)
         row = self.get_scene(map_id)
         if not (a and b and row):
+            return "none"
+        # Linked creatures always have a clean line to each other. The cover
+        # below is computed correctly and then deliberately set aside — that is
+        # what the feature granting the link is FOR.
+        if self._is_linked(map_id, attacker_ref, target_ref):
             return "none"
         g = self.grid_of(row)
         # A creature in the way is half cover (DMG optional rule, widely used).
@@ -1028,6 +1131,8 @@ class VttEngine:
         row = self.get_scene(map_id)
         if not (a and b and row):
             return False
+        if self._is_linked(map_id, a_ref, b_ref):
+            return True
         g = self.grid_of(row)
         blockers = {tuple(p) for eff in self.effects(map_id) if eff.blocks_sight
                     for p in (eff.squares or [])}

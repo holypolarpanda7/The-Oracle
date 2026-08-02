@@ -761,7 +761,32 @@ image_store = ImageStore(engine=engine, world_day_fn=world.current_day)
 # The tactical board: a square grid that opens only for moments where position
 # decides the outcome. It reads the combat tracker (whose turn, who is down) and
 # writes spacing bands back to it, so combat/ never has to know it exists.
-vtt_engine = VttEngine(engine=engine, tracker=combat, image_store=image_store)
+def _bonded_pair(session_id: str, a_ref: str, b_ref: str) -> bool:
+    """Do these two perceive each other regardless of the board? (combat/bonds)"""
+    try:
+        from combat import bonds as _bonds
+        with Session(engine) as s:
+            return _bonds.sees_through(s, session_id, a_ref, b_ref)
+    except Exception as e:  # noqa: BLE001 — never break a turn over a link check
+        print(f"[bonds] link check failed: {e}")
+        return False
+
+
+def _bond_initiative_dice(session_id: str):
+    """A ``name -> dice`` lookup bound to one table, for roll_initiative."""
+    def _dice(name: str) -> str:
+        try:
+            from combat import bonds as _bonds
+            with Session(engine) as s:
+                return _bonds.initiative_dice_for(s, session_id, name)
+        except Exception as e:  # noqa: BLE001
+            print(f"[bonds] initiative bonus skipped for {name}: {e}")
+            return ""
+    return _dice
+
+
+vtt_engine = VttEngine(engine=engine, tracker=combat, image_store=image_store,
+                       linked=_bonded_pair)
 # Explicit, rather than relying on another subsystem's create_all side effect:
 # the board's tables must exist before the first fight opens one.
 try:
@@ -2209,6 +2234,95 @@ def process_trade_hooks(trade_ops: list[dict], session_id: str,
                                  f"takes {stake_gp} gp. Purse: {format_purse(_purse_of(char))}.)*")
         s.add(char)
         s.commit()
+    return notes
+
+
+# A feature that LINKS creatures together for a while (see combat/bonds.py).
+# The Cartographer artificer's Adventurer's Atlas is the case this exists for,
+# but the hook is generic — a telepathic bond or a pack's shared senses use the
+# same three levers, and the label is whatever the DM calls it:
+#   [[BOND: grant | atlas | Vex | Vex, Kara, Bram | 1d4 | sight | 30]]
+#          action | kind | owner | holders | init dice | sight | rescue HP
+#   [[BOND: spend | Kara]]        (a downed holder burns their share)
+#   [[BOND: end | atlas | Vex]]   (the feature is used again, or the maker falls)
+BOND_HOOK_PATTERN = re.compile(r"\[\[BOND:(.+?)\]\]", re.IGNORECASE)
+
+
+def extract_bond_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull creature-link hooks out of the narration."""
+    ops: list[dict] = []
+    for m in BOND_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").lower()
+        if action not in ("grant", "spend", "end"):
+            continue
+        op: dict = {"action": action}
+        if action == "spend":
+            op["holder"] = parts[1] if len(parts) > 1 else ""
+            if not op["holder"]:
+                continue
+        else:
+            op["kind"] = (parts[1] if len(parts) > 1 else "bond").lower() or "bond"
+            op["owner"] = parts[2] if len(parts) > 2 else ""
+            if not op["owner"]:
+                continue
+            if action == "grant":
+                op["holders"] = [h.strip() for h in
+                                 (parts[3] if len(parts) > 3 else "").split(",")
+                                 if h.strip()]
+                if not op["holders"]:
+                    continue
+                op["initiative_dice"] = (parts[4] if len(parts) > 4 else "").strip()
+                op["sight"] = "sight" in (parts[5] if len(parts) > 5 else "").lower()
+                try:
+                    op["rescue_hp"] = int(parts[6]) if len(parts) > 6 and parts[6] else 0
+                except ValueError:
+                    op["rescue_hp"] = 0
+        ops.append(op)
+    return BOND_HOOK_PATTERN.sub("", text).strip(), ops
+
+
+def process_bond_hooks(ops: list[dict], session_id: str) -> list[str]:
+    """Apply link hooks. Returns short notes appended to the narration."""
+    if not ops:
+        return []
+    from combat import bonds as _bonds
+    notes: list[str] = []
+    day = world.current_day()
+    with Session(engine) as s:
+        for op in ops[:4]:
+            action = op["action"]
+            try:
+                if action == "grant":
+                    made = _bonds.grant(
+                        s, session_id=session_id, kind=op["kind"],
+                        owner_ref=op["owner"], holders=op["holders"],
+                        initiative_dice=op.get("initiative_dice", ""),
+                        sees_through_cover=bool(op.get("sight")),
+                        rescue_hp=int(op.get("rescue_hp", 0)), world_day=day)
+                    notes.append(f"_({len(made)} now share {op['owner']}'s "
+                                 f"{op['kind']}.)_")
+                elif action == "end":
+                    n = _bonds.revoke(s, session_id=session_id, kind=op["kind"],
+                                      owner_ref=op["owner"])
+                    if n:
+                        notes.append(f"_({op['owner']}'s {op['kind']} ends.)_")
+                elif action == "spend":
+                    spent = _bonds.spend_rescue(s, session_id, op["holder"])
+                    if spent is None:
+                        notes.append(f"_({op['holder']} has nothing left to burn.)_")
+                    else:
+                        partners = _bonds.rescue_partners(
+                            s, session_id, op["holder"], spent)
+                        where = (f" beside {' or '.join(partners[:2])}"
+                                 if partners else "")
+                        notes.append(f"_({op['holder']} burns their "
+                                     f"{spent.kind} — {spent.rescue_hp} HP"
+                                     f"{where}.)_")
+            except Exception as e:  # noqa: BLE001
+                print(f"[bonds] hook {op} failed: {e}")
     return notes
 
 
@@ -6221,7 +6335,9 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
         # roll_initiative only fills unset rolls, so mid-fight reinforcements
         # get theirs without rerolling everyone else's — and without resetting
         # the round unless the fight just began.
-        order = combat.roll_initiative(enc.id, reset_turn=started_now)
+        order = combat.roll_initiative(
+            enc.id, reset_turn=started_now,
+            bonus_dice_for=_bond_initiative_dice(enc.session_id))
         if started_now:
             line = ", ".join(f"{c.name} {c.initiative}" for c in order)
             notes.append(f"⚔ Initiative — {line}")
@@ -6290,6 +6406,10 @@ _VTT_HOOKS_ACTIVE = (
     "    [[VTT: elevation | 8,9 9,9 | 10]]    a ledge 10 ft up (climbing costs the\n"
     "                                         extra feet; stepping off is a fall)\n"
     "    [[VTT: reveal | 8,8 | 30]]           light up fog of war from a point\n"
+    "    [[VTT: blink | Vex | 14,6]]          a short teleport: 10 ft on its own, or\n"
+    "                                         beside a LINKED ally within 30 ft. Costs\n"
+    "                                         half the creature's speed; the board checks\n"
+    "                                         the range and the link for you\n"
     "    [[VTT: close]]                       the moment has passed — put the board away\n"
     "shape: sphere | cone | line | cube | emanation. 'at' is the origin square; 'size' is the\n"
     "radius (sphere/emanation) or length (cone/line/cube) in feet; 'dir' is degrees\n"
@@ -6565,6 +6685,27 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                     if res.get("fall_ft"):
                         notes.append(f"🗺 {tok.name} drops {res['fall_ft']} ft "
                                      "— falling damage applies.")
+                continue
+
+            if action == "blink":
+                # A short teleport whose long form is gated on a creature LINK
+                # rather than on line of sight (see combat/bonds.py).
+                if len(positional) < 1:
+                    continue
+                tok = vtt_engine.find_token(scene.id, positional[0])
+                sq = _vtt_square(positional[1] if len(positional) > 1 else kv.get("to"))
+                if not tok or not sq:
+                    continue
+                res = vtt_engine.blink(tok.id, sq[0], sq[1])
+                if not res.get("ok"):
+                    notes.append(f"🗺 {tok.name} cannot step through — "
+                                 f"{res.get('reason')}")
+                elif res.get("through"):
+                    notes.append(f"🗺 {tok.name} steps through to "
+                                 f"{res['through']}'s side ({res.get('cost_ft')} ft).")
+                else:
+                    notes.append(f"🗺 {tok.name} blinks {res.get('cost_ft')} ft "
+                                 f"across.")
                 continue
 
             if action == "remove":
@@ -6878,8 +7019,19 @@ def _vtt_board_block(session_id: str) -> Optional[str]:
         scene = vtt_engine.active_scene(session_id)
         if scene is None:
             return None
-        return vtt_engine.render(
+        block = vtt_engine.render(
             scene.id, max_tokens=int(getattr(_vtt_cfg(), "max_board_tokens", 24)))
+        # Live creature links belong on the board block: they change who can
+        # see and target whom, which is exactly what the DM reads this for.
+        try:
+            from combat import bonds as _bonds
+            with Session(engine) as s:
+                lines = _bonds.describe(s, session_id)
+            if lines:
+                block = (block or "") + "\nLinked: " + "; ".join(lines)
+        except Exception as e:  # noqa: BLE001
+            print(f"[bonds] board line skipped: {e}")
+        return block
     except Exception as e:
         print(f"[vtt] board render failed: {e}")
         return None
@@ -7260,7 +7412,9 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             if not ch or ch.current_hp <= 0:
                 return None
             _combat_seat_pc(enc.id, ch)
-        combat.roll_initiative(enc.id, reset_turn=False)
+        combat.roll_initiative(
+            enc.id, reset_turn=False,
+            bonus_dice_for=_bond_initiative_dice(enc.session_id))
         my = next((c for c in combat.order(enc.id)
                    if c.character_id == char_id), None)
         if my is None:
@@ -8261,6 +8415,22 @@ _WORLD_BUILDING_BLOCK = (
     "  fiction, and never the only options. Anything they type instead is equally valid.\n"
     "- Skip the hook entirely when the moment is not theirs: mid-combat on another's\n"
     "  turn, or while a question you asked is still unanswered.\n"
+    "Creature links — features that tie a few characters together:\n"
+    "- Some features (a shared set of enchanted maps, a telepathic bond, a pack's\n"
+    "  linked senses) join creatures for a while and grant them things ordinary\n"
+    "  allies don't have. When one is created, emit on its own line:\n"
+    "  [[BOND: grant | <label> | <who made it> | <holder, holder, ...> | <init dice>\n"
+    "  | sight | <rescue HP>]] — for example\n"
+    "  [[BOND: grant | atlas | Vex | Vex, Kara, Bram | 1d4 | sight | 30]].\n"
+    "  Leave a field blank for a lever the feature doesn't grant.\n"
+    "- The system then does the work: holders roll that die on initiative, they can\n"
+    "  see and TARGET each other regardless of sight and cover (say so when it\n"
+    "  matters — a spell reaching someone behind a wall is worth a sentence), and\n"
+    "  [[VTT: blink]] lets one step through to another's side.\n"
+    "- [[BOND: spend | <holder>]] when a downed holder burns their share to be saved;\n"
+    "  [[BOND: end | <label> | <owner>]] when the feature is used again or its maker\n"
+    "  falls. Re-granting replaces the old link automatically — you needn't end it\n"
+    "  first.\n"
     "Cartography — maps are earned, never given:\n"
     "- There is NO free world map. A character may draft one only with Cartographer's\n"
     "  Tools in inventory. Do NOT work out the modifier yourself and do NOT call for a\n"
@@ -10222,6 +10392,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
 
     # Persist any lasting conditions the DM applied/cleared on the PC so they
     # carry into the next encounter.
+    # Creature links (combat/bonds.py) — applied before conditions so a rescue
+    # that restores hit points lands before anything reads them this turn.
+    dm_text, bond_ops = extract_bond_hooks(dm_text)
+    if bond_ops:
+        try:
+            bond_notes = process_bond_hooks(bond_ops, req.session_id)
+            if bond_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(bond_notes)
+        except Exception as e:
+            print(f"[bonds] hook processing failed: {e}")
+
     dm_text, condition_ops = extract_condition_hooks(dm_text)
     if condition_ops:
         try:
