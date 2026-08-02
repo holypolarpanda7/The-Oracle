@@ -377,6 +377,23 @@ async def lifespan(app: FastAPI):
                         "ALTER TABLE combat_encounter ADD COLUMN pending_reaction JSON")
                     print("[Startup] Migrated combat_encounter: added pending_reaction")
 
+                # Mobile-bastion columns on pre-existing bastion tables: a
+                # bastion built into a vehicle needs somewhere to be and
+                # somewhere to be going (see bastion/mobile.py).
+                bb_existing = {row[1] for row in conn.exec_driver_sql(
+                    'PRAGMA table_info("bastion_bastion")')}
+                if bb_existing:
+                    for col, ddl in [("vehicle_kind", "VARCHAR"),
+                                     ("place_slug", "VARCHAR"),
+                                     ("airship_id", "INTEGER"),
+                                     ("destination_slug", "VARCHAR"),
+                                     ("underway", "INTEGER DEFAULT 0"),
+                                     ("miles_remaining", "FLOAT DEFAULT 0")]:
+                        if col not in bb_existing:
+                            conn.exec_driver_sql(
+                                f"ALTER TABLE bastion_bastion ADD COLUMN {col} {ddl}")
+                            print(f"[Startup] Migrated bastion_bastion: added {col}")
+
                 # 2024 species columns on pre-existing rules_race tables.
                 rr_existing = {row[1] for row in conn.exec_driver_sql(
                     'PRAGMA table_info("rules_race")')}

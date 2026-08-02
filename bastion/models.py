@@ -31,8 +31,31 @@ class Bastion(SQLModel, table=True):
     turns_taken: int = 0          # number of resolved bastion turns
     last_turn_day: Optional[int] = None  # world-day of the last resolved turn
     notes: Optional[str] = None
+
+    # --- mobile bastions (see bastion/mobile.py) ---
+    # A bastion built inside a vehicle travels, provided one of its special
+    # facilities can propel it. It is NOT a separate kind of thing: the same
+    # rows, the same turns, plus a position and a destination.
+    #
+    # ``place_slug`` is its world-graph place — which is what lets the party be
+    # inside it, lets it be somewhere, and lets it move without the world layer
+    # learning a new idea. ``vehicle_kind`` is free text for the fiction
+    # ("airship", "lightning rail cart", "galleon"); ``airship_id`` links the
+    # flying ones to a real vessel in ``airships/`` so hull, stations and core
+    # are tracked properly rather than being narration.
+    vehicle_kind: Optional[str] = None
+    place_slug: Optional[str] = None
+    airship_id: Optional[int] = None
+    destination_slug: Optional[str] = None
+    underway: bool = False
+    miles_remaining: float = 0.0
+
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
+
+    @property
+    def mobile(self) -> bool:
+        return bool(self.vehicle_kind)
 
 
 class FacilityInstance(SQLModel, table=True):

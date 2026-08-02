@@ -135,6 +135,21 @@ Players create a character, "enter the world," and adventure while an LLM narrat
      level being fought at, stall stock gated by rarity, and cart pricing. The
      server prices the cart, never the client; re-outfitting refunds in full.
    - Wiring lives in `_arena_*` in the backend; the screens in `Arena.tsx`.
+8. **`airships/`** — **flying vessels**: a hull with its own AC/HP/damage
+   threshold, crew stations that take damage and die separately from it, an
+   elemental core that gates nearly everything (engaged / suppressed → hovers
+   and crawls / broken → never moves again), piloting checks for anyone without
+   the mark a ship expects, emergency repairs (once per docking), crashes,
+   capped upgrades, and `journey.fly()` passages that report hours and hazards
+   but NEVER coordinates — the same line `mapmaker` and `[[ROUTES]]` hold.
+   The ENGINE is here; the NUMBERS are data (`owned_books/airships_overrides.json`,
+   gitignored) with one self-authored generic vessel in the repo so a bookless
+   checkout still flies. A vessel is also a world-graph PLACE, which is what
+   makes the party, arrival art and movement work aboard it for free; the
+   tactical layer already has `skyship`/`sky-islands` boards in the `fly` medium.
+   Mobile bastions live in `bastion/mobile.py`: a bastion built into a vehicle
+   travels if one of its facilities declares `propulsion`, and several helms
+   crewing in shifts stretch the 8-hour day toward 24.
 
 ## Running
 - Backend: `uv run python oracle-dm-backend/fastapi-dm.py`
@@ -168,7 +183,8 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `affix` (a drop rolls properties that reach real mechanics), `forge`
   (tempering needs a smith), `routes` (roads costed from real geography, and
   no map data leaks), `map` (one terrain answer across scene/board/parchment;
-  tool + knowledge gating; a sheet accrues across revisions)
+  tool + knowledge gating; a sheet accrues across revisions), `airship`
+  (core/helm/damage/repair/crash/upgrade + passages + mobile bastions)
 - Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
   (a god born in play becomes choosable in CC; an unmade one stops being offered)
 - Activity UI harnesses (Playwright, against the offline demo — run
@@ -201,6 +217,14 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     repo code. The public GitHub repo carries only the tooling. Small third-party
     homebrew (Illrigger, Gunslinger) is summarized in own words in seeds — keep those
     concise-mechanical, never verbatim.
+    Paste-and-translate override slots (all gitignored, see
+    `rules/OWNED_IMPORT_FORMAT.md`): species, feats, **classes**, subclasses,
+    spells, monsters, items, puzzles, backgrounds, **bastion facilities**
+    (`bastion_facilities_overrides.json`) and the **airship fleet**
+    (`airships_overrides.json` — vessels, stations and tuning). A class from
+    an owned book goes in the slot, NOT beside Illrigger/Gunslinger in
+    `rules/ingest.py`; those are small third-party homebrew, which the rule
+    allows, and a WotC book's class is not.
     **Derived ART is not data and IS committed.** A rendered species portrait
     carries no book text, stat block or mechanics, so all of
     `activity-ui/public/assets/species/` is tracked, owned-book species

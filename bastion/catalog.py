@@ -100,6 +100,56 @@ FACILITIES: Dict[str, Dict] = {
 }
 
 
+#: Setting-specific facilities live OUTSIDE this file, in the gitignored
+#: ``owned_books/bastion_facilities_overrides.json``. The catalog above is the
+#: baseline every table gets; a facility that only exists in one campaign
+#: setting is book-derived data, and CLAUDE.md keeps that out of the repo. Same
+#: paste-and-translate shape as every other override slot: a JSON array of
+#: entries with the keys used above, plus optional ``prerequisite``,
+#: ``hirelings``, ``propulsion`` and ``notes``.
+_OVERRIDES_FILE = "bastion_facilities_overrides.json"
+
+
+def _owned_books_dir():
+    from pathlib import Path
+    return Path(__file__).resolve().parent.parent / "owned_books"
+
+
+def load_facility_overrides(path=None) -> int:
+    """Merge local facility overrides into ``FACILITIES``. Returns how many.
+
+    Missing file is the normal case (a table with no setting books), so it is a
+    silent no-op rather than an error.
+    """
+    import json
+    p = path or (_owned_books_dir() / _OVERRIDES_FILE)
+    try:
+        if not p.exists():
+            return 0
+        entries = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001 - a bad local file must not stop boot
+        print(f"[bastion] facility overrides skipped: {e}")
+        return 0
+    n = 0
+    for e in entries if isinstance(entries, list) else []:
+        slug = (e or {}).get("slug")
+        if not slug:
+            continue
+        FACILITIES[slug] = {**e, "type": e.get("type", "special"),
+                            "source": e.get("source", OWNED_SOURCE)}
+        n += 1
+    return n
+
+
+def propulsion_facilities() -> List[Dict]:
+    """Facilities that let a bastion MOVE (see bastion/mobile.py).
+
+    Declared by the facility itself rather than by a hard-coded list here, so a
+    setting that adds its own kind of helm works without touching this file.
+    """
+    return [f for f in FACILITIES.values() if f.get("propulsion")]
+
+
 def get_facility(slug: str) -> Optional[Dict]:
     return FACILITIES.get(slug)
 
