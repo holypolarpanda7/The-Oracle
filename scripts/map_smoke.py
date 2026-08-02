@@ -432,6 +432,31 @@ check(C.check_spec(wis_mod=0, proficiency_bonus=2,
                    declared=["a bribe", "wishful thinking"]).modifier == 0,
       "an unrecognised 'boon' buys nothing")
 
+# A subclass row carries its WHOLE progression, so reading it unfiltered hands
+# a level-3 character a level-15 feature. Checked against a real row.
+from rules.models import Subclass as _Sub  # noqa: E402
+with Session(m.rules_lib.engine) as s:
+    if s.exec(select(_Sub).where(_Sub.index_slug == "smoke-cartographer")).first() is None:
+        s.add(_Sub(index_slug="smoke-cartographer", name="Smoke Cartographer",
+                   class_name="Artificer", class_slug="artificer",
+                   description="A test subclass.",
+                   features=[
+                       {"level": 3, "name": "Tools of the Trade",
+                        "summary": "You gain proficiency with Cartographer's Tools."},
+                       {"level": 15, "name": "Unerring Path",
+                        "summary": "You can cast Find the Path without a spell slot."},
+                   ]))
+        s.commit()
+for lvl, want_prof, want_path in ((1, False, False), (3, True, False),
+                                  (14, True, False), (15, True, True)):
+    ch = m.Character(discord_user_id="u9", name="Gauge", char_class="Artificer",
+                     subclass="Smoke Cartographer", level=lvl,
+                     stats={"wisdom": 10}, tags=[])
+    got = m._cartography_spec(ch)
+    check(got.proficient == want_prof and ("find the path" in got.available) == want_path,
+          f"L{lvl}: proficient={got.proficient} (want {want_prof}), "
+          f"Find the Path offered={('find the path' in got.available)} (want {want_path})")
+
 # ...and the backend rolls it off a real sheet.
 with Session(m.engine) as s:
     ch = s.get(m.Character, char_id)

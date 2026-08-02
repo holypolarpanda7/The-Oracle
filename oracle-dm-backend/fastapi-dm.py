@@ -1696,14 +1696,19 @@ def extract_map_hooks(text: str) -> tuple[str, list[dict]]:
 def _cartography_feature_texts(char: Character) -> List[str]:
     """Every scrap of this character's rules text that might mention map-work.
 
-    Their subclass's features, and the benefit line of every feat they hold.
-    Handed to ``cartography.check_spec`` as free text rather than parsed here,
-    because the whole point of that module's discovery is that content added to
-    the owned-book overrides later participates without a code change — the
-    Artificer's Cartographer subclass grants its tool proficiency through this
-    path, not through a name check.
+    Their subclass's features THEY ACTUALLY HAVE, and the benefit line of every
+    feat they hold. Handed to ``cartography.check_spec`` as free text rather
+    than parsed here, because the whole point of that module's discovery is
+    that content added to the owned-book overrides later participates without a
+    code change — the Artificer's Cartographer subclass grants its tool
+    proficiency through this path, not through a name check.
+
+    The level filter is load-bearing: a subclass row carries its whole
+    progression, so reading it unfiltered offers a level-3 Cartographer the
+    Find the Path they don't get until level 15.
     """
     texts: List[str] = []
+    level = int(getattr(char, "level", 1) or 1)
     try:
         if char.subclass:
             row = rules_lib.get_subclass(char.subclass) if hasattr(
@@ -1712,7 +1717,14 @@ def _cartography_feature_texts(char: Character) -> List[str]:
                 for attr in ("features", "description"):
                     v = getattr(row, attr, None)
                     if isinstance(v, (list, tuple)):
-                        texts.extend(str(x) for x in v)
+                        for x in v:
+                            if isinstance(x, dict):
+                                try:
+                                    if int(x.get("level", 1) or 1) > level:
+                                        continue
+                                except (TypeError, ValueError):
+                                    pass
+                            texts.append(str(x))
                     elif v:
                         texts.append(str(v))
     except Exception as e:
