@@ -2368,7 +2368,6 @@ _ITEM_BOOKS = [
     ("*xanathar*.txt", "Owned (Xanathar's Guide to Everything) — local ingest", False, True),
     ("*bigby*.txt", "Owned (Bigby's Glory of the Giants) — local ingest", False, False),
     ("*van-richten*.txt", "Owned (Van Richten's Guide to Ravenloft) — local ingest", False, True),
-    ("*eberron*.txt", "Owned (Eberron: Forge of the Artificer 2025) — local ingest", False, True),
     ("*forgotten-realms*.txt", "Owned (Forgotten Realms 2025) — local ingest", False, True),
     ("*dungeon-master-guide-2024*.txt", "Owned (DMG 2024) — local ingest", True, True),
 ]
@@ -2585,7 +2584,6 @@ def ingest_species(engine=None, database_url=None,
     books = [
         ("*srd-cc-v5-2-1*.txt", "SRD 5.2.1 (CC-BY-4.0) 2024"),
         ("*players-handbook-2024*.txt", "Owned (PHB 2024) — local ingest"),
-        ("*eberron*.txt", "Owned (Eberron: Forge of the Artificer 2025) — local ingest"),
     ]
     # Pre-2024 books use a different block layout ("<NAME> TRAITS" + Size./Speed.).
     books_2014 = [
@@ -2597,7 +2595,7 @@ def ingest_species(engine=None, database_url=None,
     def _absorb(rows, source):
         for r in rows:
             cur = parsed.get(r["slug"])
-            # Prefer the 2024 (SRD/PHB/Eberron) row for a species that appears in
+            # Prefer the 2024 (SRD/PHB) row for a species that appears in
             # both editions; otherwise keep the richest.
             if cur is None or (not str(cur["source"]).count("202") and
                                len(r["traits"]) >= len(cur["traits"])):
