@@ -84,7 +84,8 @@ def canvas_size(width_sq: int, height_sq: int, *, budget_px: int = 1_100_000,
 def build_map_prompt(gen: GeneratedMap, *, name: str = "",
                      biome: Optional[str] = None,
                      lighting: Optional[str] = None,
-                     extra: str = "") -> tuple[str, str, str]:
+                     extra: str = "",
+                     conditions: str = "") -> tuple[str, str, str]:
     """Compose (subject, look, context) for the imagery prompt builder.
 
     ``subject`` is what the room *is*, ``look`` is the terrain the generator
@@ -106,13 +107,20 @@ def build_map_prompt(gen: GeneratedMap, *, name: str = "",
     light_phrase = {"dark": "unlit, deep shadow, cold moonlight",
                     "dim": "low guttering light, long shadows",
                     "bright": "clear even daylight"}.get(light, "clear even daylight")
-    context = ", ".join(p for p in ((biome or "").strip(), light_phrase) if p)
+    # Conditions ride in the CONTEXT, which is also the art cache's bucket key.
+    # That is the whole mechanism for "the same room, in snow": matching
+    # conditions reuse the picture, changed ones earn a new one, and neither
+    # needs a cache-busting decision anywhere else. Interiors report a stable
+    # condition string, so a tavern isn't repainted every time the weather turns.
+    context = ", ".join(p for p in ((biome or "").strip(), light_phrase,
+                                    (conditions or "").strip()) if p)
     return subject, look, context
 
 
 def render_battlemap(gen: GeneratedMap, *, store=None, name: str = "",
                      biome: Optional[str] = None, lighting: Optional[str] = None,
-                     extra: str = "", force_new: bool = False,
+                     extra: str = "", conditions: str = "",
+                     force_new: bool = False,
                      store_width: int = 1280,
                      budget_px: int = 1_100_000) -> BattlemapArt:
     """Render (or reuse) the top-down art for a generated layout.
@@ -121,7 +129,8 @@ def render_battlemap(gen: GeneratedMap, *, store=None, name: str = "",
     ``image_id=None, offline=True`` and the overlay draws tiles instead.
     """
     subject, look, context = build_map_prompt(
-        gen, name=name, biome=biome, lighting=lighting, extra=extra)
+        gen, name=name, biome=biome, lighting=lighting, extra=extra,
+        conditions=conditions)
     ref = layout_signature(gen.grid, gen.archetype, gen.seed)
     w_px, h_px = canvas_size(gen.width, gen.height, budget_px=budget_px)
 

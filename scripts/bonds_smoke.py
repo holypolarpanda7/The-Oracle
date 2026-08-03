@@ -397,5 +397,83 @@ check(not plain_v.swap(held.id, "Kara", "Kara")["ok"],
 check(not plain_v.swap(held.id, "Kara", "Nobody")["ok"],
       "nor with someone who isn't there")
 
+# ------------------------------------ 8. terrain: the grid IS the rule
+print("\n8. the board enforces its own terrain, and tells the AI why")
+from vtt.terrain import required_mode, tile_rule       # noqa: E402
+from vtt.mapgen import generate_map                     # noqa: E402
+from vtt.art import build_map_prompt, layout_signature  # noqa: E402
+from imagery.models import context_key                  # noqa: E402
+
+terr = plain_v.open_scene(SID, kind="combat", archetype="open",
+                          width=12, height=7, seed=1, render_art=False)
+for t in plain_v.tokens(terr.id):
+    plain_v.remove_token(t.id)
+plain_v.set_terrain(terr.id, [(x, y) for x in range(12) for y in range(7)], ".")
+plain_v.set_terrain(terr.id, [(2, 3)], "#")     # wall
+plain_v.set_terrain(terr.id, [(5, 3)], "W")     # deep water
+plain_v.set_terrain(terr.id, [(9, 3)], "x")     # chasm
+walker = plain_v.add_token(terr.id, name="Kara", x=1, y=3, team="party", speed_ft=60)
+
+for label, sq, needs in [("a wall", (2, 3), None), ("deep water", (5, 3), "swim"),
+                         ("a chasm", (9, 3), "fly")]:
+    plain_v.start_turn(terr.id, token_id=walker.id)
+    r = plain_v.move_token(walker.id, sq[0], sq[1])
+    check(not r["ok"], f"a walker cannot enter {label}")
+    check(r.get("needs_mode") == needs,
+          f"...and the refusal names the remedy ({r.get('needs_mode')})")
+    plain_v.update_token(walker.id, x=1, y=3)
+
+# The medium a square DEMANDS is adopted, so nothing has to be told twice.
+plain_v.update_token(walker.id, movement_mode="swim", x=4, y=3)
+plain_v.start_turn(terr.id, token_id=walker.id)
+r = plain_v.move_token(walker.id, 5, 3)
+check(r["ok"], "a swimmer enters the water")
+check(plain_v.get_token(walker.id).movement_mode == "swim",
+      "and the board keeps them swimming")
+plain_v.update_token(walker.id, movement_mode="fly", x=8, y=3)
+plain_v.start_turn(terr.id, token_id=walker.id)
+check(plain_v.move_token(walker.id, 9, 3)["ok"], "a flier crosses the chasm")
+plain_v.update_token(walker.id, movement_mode="fly", x=1, y=3)
+plain_v.start_turn(terr.id, token_id=walker.id)
+check(not plain_v.move_token(walker.id, 2, 3)["ok"],
+      "but nothing flies through a wall")
+
+check(required_mode("W") == "swim" and required_mode("x") == "fly"
+      and required_mode(".") is None,
+      "squares declare the medium they demand")
+board = plain_v.render(terr.id)
+check("deep water (swimmers only" in board and "wall (impassable" in board,
+      "the DM's board legend carries each tile's RULE, not just its name")
+check("Terrain is enforced" in board,
+      "and says plainly that the board will hold them to it")
+
+# ---------------------------------- 9. one picture per room per condition
+print("\n9. battlemap art is reused until something actually changes")
+gen = generate_map("cave", width=20, height=15, seed=42)
+sig = layout_signature(gen.grid, gen.archetype, gen.seed)
+
+
+def bucket(**kw):
+    _, _, ctx = build_map_prompt(gen, name="Sunken Shrine", **kw)
+    return context_key(ctx)
+
+
+summer = bucket(biome="woodland", lighting="bright", conditions="summer")
+check(bucket(biome="woodland", lighting="bright", conditions="summer") == summer,
+      "the same room in the same conditions reuses one picture")
+check(bucket(biome="woodland", lighting="bright", conditions="winter, snow") != summer,
+      "the same room in snow earns its own")
+check(bucket(biome="woodland", lighting="dark", conditions="summer") != summer,
+      "and by night, its own again")
+check(bucket(biome="woodland", lighting="dim", conditions="indoors")
+      == bucket(biome="woodland", lighting="dim", conditions="indoors"),
+      "an interior's bucket is stable — no repaint when the weather turns")
+
+# Terrain changing IS the thing that invalidates the picture.
+before = layout_signature(gen.grid, gen.archetype, gen.seed)
+gen.grid.set(5, 5, "#")
+check(layout_signature(gen.grid, gen.archetype, gen.seed) != before,
+      "a changed square changes the layout signature, so the art regenerates")
+
 print("\nFAILS:", fails or "none")
 sys.exit(1 if fails else 0)

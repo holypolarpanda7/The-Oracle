@@ -6565,6 +6565,36 @@ def _vtt_place_look(place_slug: Optional[str]) -> str:
         return ""
 
 
+def _vtt_place_conditions(place_slug: Optional[str]) -> str:
+    """Season and weather at a place — the battlemap art's cache bucket.
+
+    The same room in snow is a different picture, and the same room in the same
+    weather is the SAME picture: putting the conditions in the context key gets
+    both for free, because that key is what the image store buckets on.
+
+    Deliberately season + precipitation rather than the full clock. Time of day
+    is already carried by the board's ``lighting``, and keying on it twice would
+    quarter the reuse for no visible gain. Indoors reports a stable string, so a
+    taproom is never repainted for weather it can't feel.
+    """
+    if not place_slug:
+        return ""
+    try:
+        from eight_card_system import placelore
+        ch = placelore.character_of(world, place_slug)
+        if ch is None:
+            return ""
+        if ch.indoors:
+            return "indoors"
+        bits = [ch.season]
+        if ch.precipitation and ch.precipitation != "clear":
+            bits.append(ch.precipitation)
+        return ", ".join(b for b in bits if b)
+    except Exception as e:
+        print(f"[vtt] board conditions unavailable for '{place_slug}': {e}")
+        return ""
+
+
 def _vtt_open(session_id: str, *, kind: str = "combat",
               archetype: Optional[str] = None, name: Optional[str] = None,
               ctx_obj=None, encounter_id: Optional[int] = None,
@@ -6626,8 +6656,9 @@ def _vtt_render_art(map_id: int) -> None:
         _unload_local_llm()
         _mark_diffusion_dirty()
         row = vtt_engine.get_scene(map_id)
-        vtt_engine.render_art(
-            map_id, extra=_vtt_place_look(getattr(row, "place_slug", None)))
+        slug = getattr(row, "place_slug", None)
+        vtt_engine.render_art(map_id, extra=_vtt_place_look(slug),
+                              conditions=_vtt_place_conditions(slug))
     except Exception as e:
         print(f"[vtt] battlemap render failed: {e}")
         return

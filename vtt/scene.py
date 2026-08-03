@@ -48,7 +48,7 @@ from .models import (
     TokenKind,
     size_squares,
 )
-from .terrain import Grid, tile
+from .terrain import Grid, tile, required_mode
 
 Square = tuple[int, int]
 
@@ -206,7 +206,7 @@ class VttEngine:
             ).first()
 
     def render_art(self, map_id: int, gen: Optional[GeneratedMap] = None,
-                   *, extra: str = "") -> Optional[int]:
+                   *, extra: str = "", conditions: str = "") -> Optional[int]:
         """Render the battlemap background (blocking; call it in a task).
 
         ``extra`` is the ground texture of the world-graph place this board
@@ -225,7 +225,7 @@ class VttEngine:
         self._set_fields(map_id, art_status="pending")
         art = render_battlemap(
             gen, store=self.image_store, name=row.name, biome=row.biome,
-            lighting=row.lighting, extra=extra)
+            lighting=row.lighting, extra=extra, conditions=conditions)
         self._set_fields(
             map_id,
             background_image_id=art.image_id,
@@ -658,8 +658,19 @@ class VttEngine:
         if not g.in_bounds(*dest):
             return {"ok": False, "reason": "that square is off the map"}
         if not geo._fits(g, dest, n, mode=tok.movement_mode, blocked=hard_blocked):
+            # Say WHY, and say what would fix it. A bare "blocked" makes the
+            # narration guess, and it guesses wrong: water and a wall are not
+            # the same refusal, and one of them has a remedy.
+            need = required_mode(g.get(*dest))
+            if need and need != tok.movement_mode:
+                verb = "swim" if need == "swim" else "fly"
+                return {"ok": False, "needs_mode": need,
+                        "reason": (f"{g.tile_at(*dest).name} — {tok.name} would "
+                                   f"have to {verb} to be there "
+                                   f"([[VTT: token | {tok.name} | {need}]])")}
             return {"ok": False,
-                    "reason": f"{tok.name} can't stand there — it's blocked"}
+                    "reason": (f"{tok.name} can't stand there — "
+                               f"{g.tile_at(*dest).name}")}
 
         # Held fast means Speed 0, and Speed 0 is a movement rule — so it is
         # enforced here rather than left to the DM to remember. A teleport still
@@ -708,11 +719,19 @@ class VttEngine:
         hazards = self._hazards_on(row, g, path[1:] if len(path) > 1 else [])
         entered = self._effects_at(tok.map_id, dest, n)
 
+        # A square that DEMANDS a medium puts the creature in it. Only ever
+        # into, never back out: adopting a medium can unblock a creature, and
+        # dropping one could strand a flier that landed on a ledge. Swimming or
+        # flying over ordinary ground behaves like walking anyway (see
+        # Grid.cost), so the one-way rule costs nothing.
+        adopted = required_mode(g.get(*dest))
         with Session(self.engine) as s:
             live = s.get(MapToken, token_id)
             if not live:
                 return {"ok": False, "reason": "no such token"}
             live.x, live.y = dest
+            if adopted and live.movement_mode != adopted:
+                live.movement_mode = adopted
             if not free and not teleport:
                 live.moved_ft = min(live.speed_ft * 4, live.moved_ft + cost)
             live.updated_at = _now()
@@ -735,6 +754,8 @@ class VttEngine:
                "x": dest[0], "y": dest[1], "remaining_ft": remaining,
                "opportunity": oa, "hazards": hazards,
                "entered": [e["name"] for e in entered]}
+        if adopted and tok.movement_mode != adopted:
+            out["mode"] = adopted
         # Anyone this creature has hold of comes along, and anyone holding IT
         # either follows or loses their grip (checked from the new position).
         towed = self._tow_captives(tok, dest, row, g)
@@ -1586,9 +1607,12 @@ class VttEngine:
             for x in range(g.width):
                 out.append(marks.get((x, y), g.get(x, y)))
             lines.append("".join(out))
-        legend = g.legend()
+        legend = g.legend(rules=True)
         if legend:
             lines.append(f"terrain: {legend}")
+            lines.append("  Terrain is enforced: a creature cannot enter a square "
+                         "its movement forbids, and difficult ground costs double. "
+                         "Narrate within that, and the board will never contradict you.")
 
         # Cover is a fact about a target and ONE attacker, so the board reports
         # it from the acting creature's point of view: on Gruk's turn, every

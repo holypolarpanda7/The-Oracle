@@ -103,6 +103,55 @@ def tile(code: str) -> Tile:
     return TILES.get(code, TILES[FLOOR])
 
 
+def tile_rule(code: str) -> str:
+    """What a square DOES, in a few words — for the DM prompt's legend.
+
+    Derived from the Tile itself rather than written out per code, so a tile
+    added later describes itself correctly without anyone remembering to update
+    a second table.
+    """
+    t = tile(code)
+    if t.move_cost_ft is None:
+        if t.traversable_swimming and t.traversable_flying:
+            base = "swimmers and fliers only"
+        elif t.traversable_swimming:
+            base = "swimmers only — a walker can't be here"
+        elif t.traversable_flying:
+            base = "fliers only — a walker can't be here"
+        else:
+            base = "impassable"
+        if t.cover != "none" and not (t.traversable_swimming or t.traversable_flying):
+            base += f", {t.cover} cover"
+    elif t.move_cost_ft > 5:
+        base = "difficult, costs double"
+        if t.traversable_swimming:
+            base += "; swimmable"
+    else:
+        base = "open"
+    if t.blocks_sight and t.move_cost_ft is None:
+        base += ", blocks sight"
+    if t.hazard:
+        base += ", HAZARD"
+    return base
+
+
+def required_mode(code: str) -> Optional[str]:
+    """The medium a square DEMANDS, if it demands one. None for ordinary ground.
+
+    This is what lets the board move a creature into the right medium instead of
+    expecting the narration to remember: a square of deep water is swum, a
+    square of open sky is flown, and nothing has to be told twice.
+    """
+    t = tile(code)
+    if t.move_cost_ft is not None:
+        return None
+    if t.traversable_swimming:
+        return "swim"
+    if t.traversable_flying:
+        return "fly"
+    return None
+
+
 class Grid:
     """A mutable rectangular grid of tile codes.
 
@@ -211,14 +260,22 @@ class Grid:
         """The board as text — what the DM prompt sees."""
         return "\n".join(self.to_rows())
 
-    def legend(self) -> str:
-        """Legend for the codes actually present, e.g. ``# wall, ~ water``."""
+    def legend(self, *, rules: bool = False) -> str:
+        """Legend for the codes actually present, e.g. ``# wall, ~ water``.
+
+        With ``rules``, each entry also says what the square DOES — which is
+        what the DM prompt needs. Naming a tile without its rule is how a model
+        ends up narrating a wade across deep water that the board then refuses:
+        it could see the ``W``, but nothing told it what a ``W`` costs.
+        """
         seen: list[str] = []
         for row in self.rows:
             for c in row:
                 if c not in seen and c != FLOOR:
                     seen.append(c)
-        return ", ".join(f"{c} {tile(c).name}" for c in seen)
+        if not rules:
+            return ", ".join(f"{c} {tile(c).name}" for c in seen)
+        return "; ".join(f"{c} {tile(c).name} ({tile_rule(c)})" for c in seen)
 
     def describe(self) -> str:
         """A short prose inventory of the terrain, for the art prompt."""

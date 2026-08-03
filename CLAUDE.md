@@ -233,6 +233,22 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     it: the descriptors in `owned_books/species_looks.json` stay local.
   - Retrieval is selective — only fetch rules when the action needs a mechanic; prose
     lore stays out of prompts except brief mechanical facts.
+- **The AI never decides where a creature can be — the grid does.** The art is
+  generated FROM the tile grid, so water on the picture IS water in the rules;
+  `move_token` refuses a square the creature's medium forbids and there is no
+  path for the model to overrule it. Two things make that legible rather than
+  frustrating: the DM board's legend gives each present tile its RULE
+  (`W deep water (swimmers only — a walker can't be here)`), and a refusal
+  names the remedy (`…would have to swim ([[VTT: token | X | swim]])`). A
+  square that DEMANDS a medium is adopted on arrival — one-way only, since
+  adopting can unblock a creature but dropping one could strand a flier.
+- **Battlemap art is reused until something really changed.** The bucket is
+  (layout signature, biome + lighting + CONDITIONS). The signature hashes the
+  tile grid, so painting one square regenerates the picture; the conditions
+  carry season and precipitation, so the same room in snow earns its own art
+  and the same room in the same weather reuses it. Interiors report a stable
+  condition, so a taproom is never repainted for weather it can't feel — and
+  time of day stays OUT of it, because `lighting` already carries it.
 - **Speed 0 is a movement rule, so the BOARD enforces it.** A grappled or
   restrained token can't walk (`[[VTT: grapple/restrain]]`) — but it can still
   teleport, and it can still be shoved, because a grapple holds you rather
