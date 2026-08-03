@@ -792,6 +792,107 @@ class VttEngine:
                            "through": anchor.name if anchor else None})
         return res
 
+    def shove(self, token_id: int, *, away_from: Optional[str] = None,
+              toward: Optional[str] = None, to_square: Optional[Square] = None,
+              distance_ft: int = 10) -> dict:
+        """Forced movement: shunt a creature in a straight line.
+
+        This is NOT the creature moving, and the difference matters in three
+        ways the board has to get right:
+
+        * it ignores the target's own speed entirely — a shove works on
+          something that has already used its movement, or has none;
+        * it provokes **no** opportunity attacks, because the target isn't
+          choosing to go;
+        * it travels in a straight line and STOPS at the first thing in the
+          way, rather than pathing around obstacles the way ``move_token``
+          politely does.
+
+        Direction comes from ``away_from`` / ``toward`` (another creature) or
+        ``to_square``. Reports where it stopped, what stopped it, and any drop
+        it was shoved over — a push off a ledge is a fall, and the DM should
+        hear about it rather than the board silently applying damage.
+        """
+        tok = self.get_token(token_id)
+        if not tok:
+            return {"ok": False, "reason": "no such token"}
+        row = self.get_scene(tok.map_id)
+        if row is None or not row.active:
+            return {"ok": False, "reason": "no board is out"}
+
+        anchor: Optional[Square] = None
+        if to_square is not None:
+            anchor = (int(to_square[0]), int(to_square[1]))
+            pull = True
+        else:
+            ref = toward or away_from
+            other = self.find_token(tok.map_id, ref) if ref else None
+            if other is None:
+                return {"ok": False,
+                        "reason": "say what to push away from, or pull toward"}
+            anchor, pull = (other.x, other.y), toward is not None
+        dx, dy = anchor[0] - tok.x, anchor[1] - tok.y
+        if not pull:
+            dx, dy = -dx, -dy
+        if dx == 0 and dy == 0:
+            return {"ok": False, "reason": "there's no direction to push in"}
+        # One step per square along the dominant axis, diagonals included.
+        norm = max(abs(dx), abs(dy))
+        sx, sy = round(dx / norm), round(dy / norm)
+
+        sq_ft = row.square_ft or 5
+        steps = max(0, int(distance_ft) // sq_ft)
+        g = self.grid_of(row)
+        n = size_squares(tok.size)
+        blocked = self._occupied(tok.map_id, exclude=token_id)
+        start = (tok.x, tok.y)
+        cur = start
+        stopped_by = ""
+        for _ in range(steps):
+            nxt = (cur[0] + sx, cur[1] + sy)
+            if not g.in_bounds(*nxt):
+                stopped_by = "the edge of the map"
+                break
+            if not geo._fits(g, nxt, n, mode=tok.movement_mode, blocked=blocked):
+                who = next((t.name for t in self.tokens(tok.map_id, include_defeated=False)
+                            if t.id != token_id
+                            and nxt in geo.footprint(t.x, t.y, size_squares(t.size))), "")
+                stopped_by = who or "the wall"
+                break
+            cur = nxt
+
+        moved_ft = max(abs(cur[0] - start[0]), abs(cur[1] - start[1])) * sq_ft
+        if cur != start:
+            with Session(self.engine) as s:
+                live = s.get(MapToken, token_id)
+                if live:
+                    live.x, live.y = cur
+                    live.updated_at = _now()
+                    s.add(live)
+                    s.commit()
+            self._bump(tok.map_id)
+            self.recompute_auras(tok.map_id)
+            if row.fog:
+                self.reveal_from_party(tok.map_id)
+
+        verb = "pulled" if pull else "pushed"
+        detail = f"{tok.name} is {verb} {moved_ft} ft"
+        if stopped_by:
+            detail += f", stopping against {stopped_by}"
+        out = {"ok": True, "x": cur[0], "y": cur[1], "moved_ft": moved_ft,
+               "stopped_by": stopped_by, "hit_something": bool(stopped_by),
+               "detail": detail}
+        drop = self._drop_ft(row, start, cur)
+        if drop >= 10 and tok.movement_mode != "fly":
+            out["fall_ft"] = drop
+        # The squares crossed can matter (shoved through a wall of fire).
+        out["entered"] = [e["name"] for e in self._effects_at(tok.map_id, cur, n)]
+        self._log(tok.map_id, row.session_id, "move", actor=tok.name,
+                  summary=detail,
+                  payload={"token_id": token_id, "forced": True,
+                           "from": list(start), "to": list(cur)})
+        return out
+
     def start_turn(self, map_id: int, token_id: Optional[int] = None,
                    combatant_id: Optional[int] = None) -> Optional[MapToken]:
         """Reset a token's spent movement at the start of its turn."""

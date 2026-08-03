@@ -240,5 +240,51 @@ with Session(engine) as s:
     check(n > 0 and not bonds.sees_through(s, SID, "Vex", "Bram"),
           f"when the maker falls, their bonds go with them ({n} ended)")
 
+# ------------------------------------------------- 6. forced movement
+print("\n6. being shoved is not the same as moving")
+open_scene = plain_v.open_scene(SID, kind="combat", archetype="open",
+                                width=20, height=12, seed=5, render_art=False)
+for t in plain_v.tokens(open_scene.id):
+    plain_v.remove_token(t.id)
+pusher = plain_v.add_token(open_scene.id, name="Kara", x=5, y=6,
+                           team="party", speed_ft=30)
+victim = plain_v.add_token(open_scene.id, name="Gruk", x=7, y=6,
+                           team="foe", speed_ft=30)
+
+r = plain_v.shove(victim.id, away_from="Kara", distance_ft=15)
+check(r["ok"] and (r["x"], r["y"]) == (10, 6) and r["moved_ft"] == 15,
+      f"pushed 15 ft in a straight line ({r['x']},{r['y']})")
+r = plain_v.shove(victim.id, toward="Kara", distance_ft=10)
+check(r["ok"] and (r["x"], r["y"]) == (8, 6), f"and pulled back ({r['x']},{r['y']})")
+
+# The target pays nothing: forced movement ignores their speed entirely.
+check(plain_v.get_token(victim.id).moved_ft == 0,
+      "a shove costs the target no movement of their own")
+plain_v.update_token(victim.id, moved_ft=30)   # spent everything
+r = plain_v.shove(victim.id, away_from="Kara", distance_ft=10)
+check(r["ok"] and r["moved_ft"] == 10,
+      "and works on someone who has already used all of theirs")
+
+# It stops at the first thing in the way rather than pathing around it.
+r = plain_v.shove(victim.id, away_from="Kara", distance_ft=500)
+check(r["hit_something"] and "edge" in r["stopped_by"],
+      f"a long push stops at the map edge ({r['stopped_by']})")
+blocker = plain_v.add_token(open_scene.id, name="Wall of Meat", x=6, y=6,
+                            team="foe")
+r = plain_v.shove(victim.id, to_square=(0, 6), distance_ft=500)
+check(r["stopped_by"] == "Wall of Meat",
+      f"and against a creature standing in the way ({r['stopped_by']})")
+check(r["x"] == 7 and r["y"] == 6,
+      f"stopping BEFORE its square, not on it ({r['x']},{r['y']})")
+
+r = plain_v.shove(victim.id, away_from="Nobody At All", distance_ft=10)
+check(not r["ok"], "a push with nothing to push from is refused")
+
+# Token state the board has to know about mid-fight.
+plain_v.update_token(victim.id, size="large", movement_mode="fly", hidden=True)
+t = plain_v.get_token(victim.id)
+check(t.size == "large" and t.movement_mode == "fly" and t.hidden,
+      "a creature can grow, take to the air and go unseen mid-fight")
+
 print("\nFAILS:", fails or "none")
 sys.exit(1 if fails else 0)

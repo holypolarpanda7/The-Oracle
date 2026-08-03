@@ -233,6 +233,13 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     it: the descriptors in `owned_books/species_looks.json` stay local.
   - Retrieval is selective — only fetch rules when the action needs a mechanic; prose
     lore stays out of prompts except brief mechanical facts.
+- **Forced movement is not movement.** `VttEngine.shove` (`[[VTT: push/pull]]`)
+  ignores the target's speed, provokes NO opportunity attack, and travels a
+  straight line stopping at the first obstacle — never `move_token`, which
+  paths around things and charges the victim. 34 ingested features push or
+  pull; before this there was no correct way to say so.
+- **`_VTT_HOOK_ACTIONS` is an allowlist.** A handler with no entry there is
+  silently dropped before the dispatcher ever sees it. Add both, always.
 - **A creature LINK overrules the board on purpose.** `combat/bonds.py` is a
   generic three-lever link between creatures — bonus initiative dice, mutual
   sight/targeting *through* cover, and an emergency rescue — scoped to a table

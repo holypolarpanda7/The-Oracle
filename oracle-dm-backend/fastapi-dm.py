@@ -6357,11 +6357,15 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
 
 VTT_HOOK_PATTERN = re.compile(r"\[\[VTT:(.+?)\]\]", re.IGNORECASE)
 _VTT_HOOK_ACTIONS = {"open", "close", "place", "move", "remove", "effect",
-                     "clear", "terrain", "door", "reveal", "ping", "elevation"}
+                     "clear", "terrain", "door", "reveal", "ping", "elevation",
+                     # A handler with no entry here is silently dropped before
+                     # it ever reaches the dispatcher — add both, always.
+                     "blink", "push", "pull", "token"}
 
 # Bare words a hook may carry instead of key=value, e.g. "difficult".
 _VTT_FLAGS = {"difficult", "blocking", "obscuring", "permanent", "hidden",
-              "concentration", "fly", "swim", "prone", "dash", "teleport"}
+              "concentration", "fly", "swim", "walk", "prone", "dash",
+              "teleport", "invisible", "visible", "seen", "stand", "standing"}
 
 
 def _vtt_cfg():
@@ -6410,6 +6414,16 @@ _VTT_HOOKS_ACTIVE = (
     "                                         beside a LINKED ally within 30 ft. Costs\n"
     "                                         half the creature's speed; the board checks\n"
     "                                         the range and the link for you\n"
+    "    [[VTT: push | Gruk | from=Kara | 10]]  FORCED movement (Thunderwave, a shove, a\n"
+    "                                         Force Demolisher): a straight line away from\n"
+    "                                         Kara, stopping at the first thing in the way.\n"
+    "                                         Costs the target no movement and provokes no\n"
+    "                                         opportunity attack — it isn't their choice\n"
+    "    [[VTT: pull | Gruk | to=Sable | 25]]   the same, dragged toward instead\n"
+    "    [[VTT: token | Vex | size=large]]    what a creature IS on the board changed:\n"
+    "    [[VTT: token | Vex | fly]]           size=tiny|small|medium|large|huge|gargantuan,\n"
+    "    [[VTT: token | Vex | invisible]]     fly|swim|walk, invisible|visible,\n"
+    "    [[VTT: token | Vex | speed=40]]      prone|stand, speed=, reach=\n"
     "    [[VTT: close]]                       the moment has passed — put the board away\n"
     "shape: sphere | cone | line | cube | emanation. 'at' is the origin square; 'size' is the\n"
     "radius (sphere/emanation) or length (cone/line/cube) in feet; 'dir' is degrees\n"
@@ -6706,6 +6720,75 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                 else:
                     notes.append(f"🗺 {tok.name} blinks {res.get('cost_ft')} ft "
                                  f"across.")
+                continue
+
+            if action in ("push", "pull"):
+                # Forced movement: a straight line, no opportunity attacks, and
+                # not paid for out of the target's own speed.
+                if not positional:
+                    continue
+                tok = vtt_engine.find_token(scene.id, positional[0])
+                if not tok:
+                    continue
+                ref = kv.get("from") or kv.get("toward") or kv.get("to") or (
+                    positional[1] if len(positional) > 1 else "")
+                sq = _vtt_square(ref)
+                dist = _iv(kv, "feet", 0) or _iv(kv, "ft", 0) or _iv(kv, "distance", 0)
+                if not dist:
+                    # Any bare number after the name is the distance. Scanning
+                    # from [1:] matters: when the reference came in as a kv
+                    # ("from=Kara"), the distance IS positional[1].
+                    tail = [p for p in positional[1:] if p.strip().isdigit()]
+                    dist = int(tail[0]) if tail else 10
+                pulling = action == "pull" or bool(kv.get("toward") or kv.get("to"))
+                res = vtt_engine.shove(
+                    tok.id, distance_ft=dist,
+                    to_square=sq if (sq and pulling) else None,
+                    toward=(ref if pulling and not sq else None),
+                    away_from=(ref if not pulling else None))
+                if not res.get("ok"):
+                    notes.append(f"🗺 {tok.name} isn't moved — {res.get('reason')}")
+                    continue
+                notes.append(f"🗺 {res['detail']}.")
+                if res.get("fall_ft"):
+                    notes.append(f"🗺 {tok.name} is shoved off a {res['fall_ft']} ft "
+                                 "drop — falling damage applies.")
+                if res.get("entered"):
+                    notes.append(f"🗺 {tok.name} is shoved into "
+                                 f"{', '.join(res['entered'])}.")
+                continue
+
+            if action == "token":
+                # Mid-fight changes to what a creature IS on the board: it grows,
+                # it takes to the air, it goes unseen.
+                if not positional:
+                    continue
+                tok = vtt_engine.find_token(scene.id, positional[0])
+                if not tok:
+                    continue
+                fields: dict = {}
+                if kv.get("size"):
+                    fields["size"] = kv["size"].strip().lower()
+                for mode in ("fly", "swim", "walk"):
+                    if mode in flags or kv.get("move") == mode:
+                        fields["movement_mode"] = mode
+                if "invisible" in flags or "hidden" in flags:
+                    fields["hidden"] = True
+                if "visible" in flags or "seen" in flags:
+                    fields["hidden"] = False
+                if "prone" in flags:
+                    fields["prone"] = True
+                if "stand" in flags or "standing" in flags:
+                    fields["prone"] = False
+                if kv.get("speed"):
+                    fields["speed_ft"] = _iv(kv, "speed", tok.speed_ft)
+                if kv.get("reach"):
+                    fields["reach_ft"] = _iv(kv, "reach", tok.reach_ft)
+                if not fields:
+                    continue
+                vtt_engine.update_token(tok.id, **fields)
+                said = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in fields.items())
+                notes.append(f"🗺 {tok.name}: {said}.")
                 continue
 
             if action == "remove":
