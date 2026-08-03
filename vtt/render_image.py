@@ -71,12 +71,19 @@ def _monogram(name: str) -> str:
 
 
 def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
-                     show_coords: bool = True, max_px: int = 1600) -> bytes:
+                     show_coords: bool = True, max_px: int = 1600,
+                     image_lookup=None) -> bytes:
     """Render a scene ``state()`` dict to PNG bytes.
 
     ``cell`` is shrunk automatically so a very large board still fits inside
     ``max_px`` — Discord scales attachments down anyway, and an unreadable
     2500-px map helps nobody.
+
+    ``image_lookup(image_id) -> bytes | None`` opts this renderer into the
+    painted art: the battlemap is laid under the grid and any wreckage sprite
+    is dropped on the square it belongs to. Without it — or with the GPU cold —
+    the flat tile colours are drawn exactly as before, which is why the board
+    is never broken by missing pictures.
     """
     w_sq = max(1, int(state.get("width", 1)))
     h_sq = max(1, int(state.get("height", 1)))
@@ -114,17 +121,70 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
         return oy + y * cell
 
     # ---- terrain ----
-    terrain = state.get("terrain") or []
-    for y in range(h_sq):
-        row = terrain[y] if y < len(terrain) else ""
-        for x in range(w_sq):
-            code = row[x] if x < len(row) else "."
-            color = _TILE_COLORS.get(code, _TILE_COLORS["."])
-            d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell], fill=color)
-            edge = _EDGE_COLORS.get(code)
-            if edge:
-                d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell],
-                            outline=edge, width=1)
+    # The painted map goes UNDER everything when we have it; the flat tile
+    # colours are the fallback, and they stay authoritative in the sense that
+    # they are what the rules read. The picture is only ever a texture.
+    painted = None
+    if image_lookup is not None and state.get("background_image_id"):
+        try:
+            raw = image_lookup(state["background_image_id"])
+            if raw:
+                painted = Image.open(io.BytesIO(raw)).convert("RGB").resize(
+                    (w_sq * cell, h_sq * cell), Image.LANCZOS)
+        except Exception as e:
+            print(f"[vtt.png] background unavailable: {e}")
+    if painted is not None:
+        img.paste(painted, (ox, oy))
+    else:
+        terrain = state.get("terrain") or []
+        for y in range(h_sq):
+            row = terrain[y] if y < len(terrain) else ""
+            for x in range(w_sq):
+                code = row[x] if x < len(row) else "."
+                color = _TILE_COLORS.get(code, _TILE_COLORS["."])
+                d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell], fill=color)
+                edge = _EDGE_COLORS.get(code)
+                if edge:
+                    d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell],
+                                outline=edge, width=1)
+
+    # ---- wreckage ----
+    # Painted over whatever is beneath it, on the square that was broken. When
+    # no sprite has been drawn yet the square is still correct underneath — the
+    # tile already changed — so this is decoration arriving late, never state.
+    for deb in state.get("debris") or []:
+        x, y = int(deb.get("x", -1)), int(deb.get("y", -1))
+        if not (0 <= x < w_sq and 0 <= y < h_sq):
+            continue
+        sprite = None
+        if image_lookup is not None and deb.get("image_id"):
+            try:
+                raw = image_lookup(deb["image_id"])
+                if raw:
+                    sprite = Image.open(io.BytesIO(raw)).convert("RGBA").resize(
+                        (cell, cell), Image.LANCZOS)
+            except Exception as e:
+                print(f"[vtt.png] debris sprite unavailable: {e}")
+        if sprite is not None:
+            # Feathered, not pasted flat. A diffusion sprite arrives with its
+            # own background, so a hard square reads as a picture stuck on the
+            # map; fading it toward the edges makes it debris LYING on the
+            # floor. Cheap, and it needs no background-removal dependency.
+            mask = Image.new("L", (cell, cell), 0)
+            md = ImageDraw.Draw(mask)
+            steps = max(6, cell // 4)
+            for i in range(steps):
+                t = i / float(steps)
+                inset = int(t * cell * 0.5)
+                md.ellipse([inset, inset, cell - inset, cell - inset],
+                           fill=int(255 * min(1.0, (t + 0.15) * 1.5)))
+            img.paste(sprite.convert("RGB"), (sx(x), sy(y)), mask)
+        else:
+            # No picture: mark the square as wreckage so the change still reads.
+            d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell],
+                        fill=(90, 78, 62, 190))
+        d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell],
+                    outline=(210, 150, 90, 200), width=2)
 
     # ---- effects ----
     for eff in state.get("effects") or []:

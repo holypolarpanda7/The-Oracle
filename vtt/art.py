@@ -227,12 +227,18 @@ def render_debris(becomes: str, *, store=None, material: str = "",
     left = tile(becomes)
     subject = f"{left.art}, the remains of a destroyed {was or 'object'}"
     look = ", ".join(p for p in (material, left.art) if p)
+    # Keyed on the tile's NAME, never its code: codes are punctuation ("/", ",",
+    # "#") and the store's slugifier strips punctuation, so every one of them
+    # collapsed to the same bucket — a smashed door and a smashed crate shared
+    # one picture.
     try:
         res = store.ensure_image(
             "map", subject, look=look, context=context or "wreckage",
-            ref_slug=f"debris-{becomes}-{(material or 'any')}",
-            extra=(_MAP_STYLE + ", a single small pile of wreckage centred on "
-                   "plain ground, seen from directly above, isolated, no scene"),
+            ref_slug=f"debris-{left.name.replace(' ', '-')}-{(material or 'any')}",
+            extra=(_MAP_STYLE + ", a single small heap of broken debris lying "
+                   "on bare ground, seen from directly overhead, centred and "
+                   "isolated, filling the frame, no walls, no room, no scene, "
+                   "no border"),
             width=size_px, height=size_px, store_width=size_px,
             max_per_bucket=1)
     except Exception as e:
