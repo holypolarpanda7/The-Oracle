@@ -377,6 +377,15 @@ async def lifespan(app: FastAPI):
                         "ALTER TABLE combat_encounter ADD COLUMN pending_reaction JSON")
                     print("[Startup] Migrated combat_encounter: added pending_reaction")
 
+                # Damage taken by breakable furniture on pre-existing boards.
+                vm_existing = {row[1] for row in conn.exec_driver_sql(
+                    'PRAGMA table_info("vtt_map")')}
+                for col in ("objects", "debris"):
+                    if vm_existing and col not in vm_existing:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE vtt_map ADD COLUMN {col} JSON")
+                        print(f"[Startup] Migrated vtt_map: added {col}")
+
                 # Board-side conditions on pre-existing token tables: restrained
                 # and grappled both mean Speed 0, which the board enforces.
                 vt_existing = {row[1] for row in conn.exec_driver_sql(
@@ -6374,7 +6383,7 @@ _VTT_HOOK_ACTIONS = {"open", "close", "place", "move", "remove", "effect",
                      # it ever reaches the dispatcher — add both, always.
                      "blink", "push", "pull", "token",
                      "grapple", "release", "restrain", "free", "prone",
-                     "stand", "swap"}
+                     "stand", "swap", "damage"}
 
 # Bare words a hook may carry instead of key=value, e.g. "difficult".
 _VTT_FLAGS = {"difficult", "blocking", "obscuring", "permanent", "hidden",
@@ -6446,6 +6455,13 @@ _VTT_HOOKS_ACTIVE = (
     "    [[VTT: prone | Kara]] / [[VTT: stand | Kara]]     knocked down; getting up costs\n"
     "                                         half her Speed, and crawling costs double\n"
     "    [[VTT: swap | Kara | Sable]]         two creatures change places\n"
+    "    [[VTT: damage | 5,4 | 22 | slashing]]  attack the FURNITURE: a pillar, a door,\n"
+    "                                         a crate, even a wall. Each has its own AC\n"
+    "                                         and hit points (the board reports them); when\n"
+    "                                         it breaks, the cover it gave and the way it\n"
+    "                                         blocked go with it. Objects shrug off poison\n"
+    "                                         and psychic, and stone and metal resist much\n"
+    "                                         of the rest — so tell them to use a hammer\n"
     "    [[VTT: close]]                       the moment has passed — put the board away\n"
     "shape: sphere | cone | line | cube | emanation. 'at' is the origin square; 'size' is the\n"
     "radius (sphere/emanation) or length (cone/line/cube) in feet; 'dir' is degrees\n"
@@ -6670,6 +6686,28 @@ def _vtt_render_art(map_id: int) -> None:
         print(f"[vtt] art push failed: {e}")
 
 
+def _vtt_render_debris(map_id: int) -> None:
+    """Background job: draw sprites for what the party broke, then push."""
+    try:
+        _unload_local_llm()
+        _mark_diffusion_dirty()
+        row = vtt_engine.get_scene(map_id)
+        slug = getattr(row, "place_slug", None)
+        n = vtt_engine.render_debris(
+            map_id, conditions=_vtt_place_conditions(slug))
+        if not n:
+            return
+    except Exception as e:
+        print(f"[vtt] debris render failed: {e}")
+        return
+    try:
+        row = vtt_engine.get_scene(map_id)
+        if row:
+            _push_vtt_state(row.session_id)
+    except Exception as e:
+        print(f"[vtt] debris push failed: {e}")
+
+
 def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                       background_tasks: Optional[BackgroundTasks] = None) -> list[str]:
     """Apply VTT hooks. Returns short notes appended to the narration."""
@@ -6866,6 +6904,35 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                     res = vtt_engine.swap(scene.id, who, other)
                 notes.append("🗺 " + (res.get("detail") if res.get("ok")
                                       else f"{res.get('reason')}"))
+                continue
+
+            if action == "damage":
+                # Smashing the furniture. Cover, sight and movement all read the
+                # tile, so breaking one changes the fight without anything else
+                # being told.
+                if len(positional) < 2:
+                    continue
+                sq = _vtt_square(positional[0])
+                if not sq:
+                    tok = vtt_engine.find_token(scene.id, positional[0])
+                    sq = (tok.x, tok.y) if tok else None
+                if not sq:
+                    continue
+                try:
+                    amount = int(re.sub(r"[^0-9-]", "", positional[1]) or 0)
+                except ValueError:
+                    continue
+                dtype = (positional[2] if len(positional) > 2
+                         else kv.get("type", "")).strip()
+                res = vtt_engine.damage_object(scene.id, sq[0], sq[1], amount,
+                                               damage_type=dtype)
+                notes.append("🗺 " + (res.get("detail") if res.get("ok")
+                                      else res.get("reason", "")))
+                if res.get("broken") and background_tasks is not None \
+                        and getattr(_vtt_cfg(), "render_art", True):
+                    # A one-square sprite, not a re-render of the room. Off the
+                    # reply path all the same — the board is already correct.
+                    background_tasks.add_task(_vtt_render_debris, scene.id)
                 continue
 
             if action == "remove":

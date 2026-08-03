@@ -134,6 +134,17 @@ class TacticalMap(SQLModel, table=True):
     # Doors and other stateful furniture: [{"x","y","state":"open|closed|locked",
     # "dc": int|None, "name": str}]. Terrain holds the code; this holds the state.
     doors: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Damage taken by breakable furniture, keyed "x,y" -> {hp, hp_max, ac,
+    # name, material, resists, immune}. Same split as ``doors`` above: the
+    # TERRAIN holds what a square is, this holds what has happened to it. A
+    # square absent from here is simply undamaged, so a fresh board carries
+    # nothing and only the things players actually hit take up room.
+    objects: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Wreckage drawn over the base art, keyed "x,y" -> {code, image_id,
+    # caption}. Small sprites, not a re-render: the base picture stays pinned
+    # to the layout as GENERATED, and what the party broke is painted on top.
+    # Cleared when the board itself is replaced.
+    debris: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
     # Ambient light for the whole board: bright | dim | dark. Individual light
     # sources are MapEffect rows of kind "light".

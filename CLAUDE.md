@@ -233,6 +233,23 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     it: the descriptors in `owned_books/species_looks.json` stay local.
   - Retrieval is selective — only fetch rules when the action needs a mechanic; prose
     lore stays out of prompts except brief mechanical facts.
+- **Furniture is breakable, and the tile is what changes.** A pillar, door,
+  crate or wall carries AC/HP (`terrain._BREAKABLE`, the project's OWN
+  tuning, not a copied table). `[[VTT: damage | x,y | n | type]]` applies it;
+  at 0 the tile becomes what it leaves behind, so the cover it granted and
+  the way it blocked vanish with it and NOTHING else has to be told — cover,
+  sight and movement all read the tile. State follows the `doors` precedent:
+  terrain holds what a square IS, a JSON column holds what happened to it.
+  Objects are immune to poison and psychic; material decides the rest.
+- **Damage does NOT re-render the battlemap.** The base art is pinned to the
+  layout as GENERATED (a pristine `layout_signature`), because the live grid
+  hashes differently the moment anything breaks and would otherwise repaint
+  the whole room over one square. Wreckage is a small sprite drawn on top,
+  keyed by (what it became, material, board look) so it is SHARED across
+  rooms. Measured warm on this rig: a 320px sprite is 6.1s against 13.5s for
+  a full battlemap — ~2x cheaper, not proportional to pixels, because the
+  per-call overhead dominates (256px measured WORSE than 320px). The real
+  saving is the sharing, exactly as with the item-art catalogue.
 - **The board is THREE-dimensional.** Elevation was stored (`elevation_ft` on
   tokens, a per-square elevation map) and measured by nothing, so a dragon
   hovering 100 ft overhead read as 10 ft away and a wyvern 60 ft up provoked

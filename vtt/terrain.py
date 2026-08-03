@@ -135,6 +135,59 @@ def tile_rule(code: str) -> str:
     return base
 
 
+#: What a destructible square LEAVES BEHIND, and what it takes to break it.
+#:
+#: Keyed by tile code: (becomes, armour class, hit points, material). These are
+#: THE ORACLE'S OWN tuning, not a table copied from anywhere — sensible numbers
+#: for this game, chosen so that smashing a crate is a turn well spent and
+#: breaching a stone wall is a project. Every value is overridable per-square by
+#: whoever places the object, so a table that wants different numbers sets them.
+#:
+#: A code absent from here cannot be broken by ordinary damage. That is
+#: deliberate for floors, water and open sky: there is nothing there to break.
+_BREAKABLE: dict[str, tuple[str, int, int, str]] = {
+    # code:  becomes, AC, HP, material
+    "o": (",", 13, 12, "wood"),      # stacked crates and barrels
+    "n": (".", 12, 10, "wood"),      # overturned furniture
+    "T": (",", 13, 40, "wood"),      # a tree trunk
+    "O": (",", 17, 60, "stone"),     # a carved pillar
+    "w": (",", 15, 30, "stone"),     # a waist-high broken wall
+    "A": (",", 17, 45, "stone"),     # an altar
+    "+": ("/", 15, 25, "wood"),      # a door — smashed OPEN, not to rubble
+    "p": (",", 19, 45, "metal"),     # an iron portcullis
+    "#": (",", 17, 90, "stone"),     # a wall: a breach, if you have the time
+    "R": (",", 17, 150, "stone"),    # a rock face: bring tools
+}
+
+#: Damage every inanimate thing shrugs off. Deliberately just the two that are
+#: uncontroversial for objects — anything more opinionated belongs in per-square
+#: overrides rather than baked in here.
+OBJECT_IMMUNITIES = ("poison", "psychic")
+
+#: Material -> damage types it resists. Our tuning, same as above.
+_MATERIAL_RESISTS = {
+    "stone": ("piercing", "slashing", "lightning"),
+    "metal": ("piercing", "slashing", "cold"),
+    "wood": ("piercing",),
+}
+
+
+def is_breakable(code: str) -> bool:
+    return code in _BREAKABLE
+
+
+def object_stats(code: str) -> Optional[dict]:
+    """Default AC/HP/material for a breakable square, or None."""
+    row = _BREAKABLE.get(code)
+    if row is None:
+        return None
+    becomes, ac, hp, material = row
+    return {"becomes": becomes, "ac": ac, "hp": hp, "hp_max": hp,
+            "material": material, "name": tile(code).name,
+            "resists": list(_MATERIAL_RESISTS.get(material, ())),
+            "immune": list(OBJECT_IMMUNITIES)}
+
+
 def required_mode(code: str) -> Optional[str]:
     """The medium a square DEMANDS, if it demands one. None for ordinary ground.
 

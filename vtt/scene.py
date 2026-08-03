@@ -34,7 +34,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from . import geometry as geo
-from .art import render_battlemap
+from .art import render_battlemap, render_debris, layout_signature
 from .mapgen import GeneratedMap, archetype_for, generate_map
 from .models import (
     EffectKind,
@@ -48,7 +48,7 @@ from .models import (
     TokenKind,
     size_squares,
 )
-from .terrain import Grid, tile, required_mode
+from .terrain import Grid, tile, required_mode, object_stats
 
 Square = tuple[int, int]
 
@@ -222,10 +222,18 @@ class VttEngine:
             return None
         if gen is None:
             gen = self.regenerate(row)
+        # Pin the picture to the layout as GENERATED, not as currently damaged.
+        # Terrain changes hash into the signature, so without this a smashed
+        # pillar would re-render the entire room mid-fight — for one square.
+        # What the party broke is painted on top instead (see debris_for).
+        pristine = generate_map(row.archetype, width=row.width, height=row.height,
+                                seed=row.seed, lighting=row.lighting)
+        ref = layout_signature(pristine.grid, pristine.archetype, pristine.seed)
         self._set_fields(map_id, art_status="pending")
         art = render_battlemap(
             gen, store=self.image_store, name=row.name, biome=row.biome,
-            lighting=row.lighting, extra=extra, conditions=conditions)
+            lighting=row.lighting, extra=extra, conditions=conditions,
+            ref_slug=ref)
         self._set_fields(
             map_id,
             background_image_id=art.image_id,
@@ -382,6 +390,164 @@ class VttEngine:
         self._set_fields(map_id, doors=doors, terrain=g.to_rows())
         self._log(map_id, row.session_id, "door", summary=f"door at {x},{y} {state}")
         return True
+
+    # ----- breakable furniture -------------------------------------------
+
+    def object_at(self, map_id: int, x: int, y: int) -> Optional[dict]:
+        """The breakable thing in a square, with any damage it has taken.
+
+        Lazily derived: a square nobody has hit carries no stored state, so it
+        answers from the tile's defaults. That keeps a fresh board's JSON empty
+        and means terrain painted later is breakable without anyone
+        initialising it.
+        """
+        row = self.get_scene(map_id)
+        if row is None:
+            return None
+        g = self.grid_of(row)
+        if not g.in_bounds(x, y):
+            return None
+        base = object_stats(g.get(x, y))
+        if base is None:
+            return None
+        stored = (row.objects or {}).get(f"{x},{y}")
+        if isinstance(stored, dict):
+            return {**base, **stored}
+        return base
+
+    def damage_object(self, map_id: int, x: int, y: int, amount: int, *,
+                      damage_type: str = "") -> dict:
+        """Hit a breakable square. At 0 it breaks, and the terrain changes.
+
+        The terrain change is the point: cover, sight and movement all read the
+        tile, so a toppled pillar stops granting cover and a smashed door stops
+        blocking the way without anything else being told. That is the same
+        reason the art is generated from the grid — one truth, consulted.
+        """
+        row = self.get_scene(map_id)
+        if row is None:
+            return {"ok": False, "reason": "no board is out"}
+        obj = self.object_at(map_id, x, y)
+        if obj is None:
+            g = self.grid_of(row)
+            what = g.tile_at(x, y).name if g.in_bounds(x, y) else "nothing"
+            return {"ok": False,
+                    "reason": f"there is nothing breakable at {x},{y} ({what})"}
+
+        dtype = (damage_type or "").strip().lower()
+        amount = max(0, int(amount))
+        note = ""
+        if dtype and dtype in [d.lower() for d in obj.get("immune", [])]:
+            return {"ok": False, "immune": True, "hp": obj["hp"],
+                    "reason": f"the {obj['name']} is immune to {dtype} damage"}
+        if dtype and dtype in [d.lower() for d in obj.get("resists", [])]:
+            amount //= 2
+            note = f" (resistant to {dtype})"
+
+        hp = max(0, int(obj["hp"]) - amount)
+        objects = dict(row.objects or {})
+        entry = {k: obj[k] for k in ("hp_max", "ac", "name", "material")
+                 if k in obj}
+        entry["hp"] = hp
+        objects[f"{x},{y}"] = entry
+
+        if hp > 0:
+            self._set_fields(map_id, objects=objects)
+            self._log(map_id, row.session_id, "terrain",
+                      summary=f"{obj['name']} at {x},{y} takes {amount}{note} "
+                              f"({hp}/{obj['hp_max']})")
+            return {"ok": True, "hp": hp, "hp_max": obj["hp_max"],
+                    "broken": False, "name": obj["name"], "ac": obj["ac"],
+                    "detail": (f"The {obj['name']} takes {amount}{note} — "
+                               f"{hp}/{obj['hp_max']}.")}
+
+        # Broken: the square becomes what it leaves behind, and its damage
+        # record goes with it (the rubble is not a damaged pillar).
+        objects.pop(f"{x},{y}", None)
+        g = self.grid_of(row)
+        becomes = obj.get("becomes", ",")
+        g.set(x, y, becomes)
+        self._set_fields(map_id, objects=objects or None, terrain=g.to_rows())
+        # A door that is smashed is a door that is open.
+        if becomes == "/":
+            doors = [dict(d) for d in (row.doors or [])]
+            found = next((d for d in doors if int(d.get("x", -1)) == x
+                          and int(d.get("y", -1)) == y), None)
+            if found is None:
+                found = {"x": x, "y": y, "name": "door", "dc": None}
+                doors.append(found)
+            found["state"] = "broken"
+            self._set_fields(map_id, doors=doors)
+        self._bump(map_id)
+        self.recompute_auras(map_id)
+        # Note the wreckage. The SPRITE is drawn later, off the reply path —
+        # this only records that there is something to draw, so the board is
+        # correct immediately whether or not a GPU ever gets to it.
+        deb = dict(row.debris or {})
+        deb[f"{x},{y}"] = {"code": becomes, "was": obj["name"],
+                           "material": obj.get("material", ""), "image_id": None}
+        self._set_fields(map_id, debris=deb)
+        self._log(map_id, row.session_id, "terrain",
+                  summary=f"{obj['name']} at {x},{y} is destroyed",
+                  payload={"x": x, "y": y, "becomes": becomes})
+        return {"ok": True, "hp": 0, "hp_max": obj["hp_max"], "broken": True,
+                "name": obj["name"], "becomes": tile(becomes).name,
+                "ac": obj["ac"],
+                "detail": (f"The {obj['name']} comes apart, leaving "
+                           f"{tile(becomes).name}.")}
+
+    def render_debris(self, map_id: int, *, conditions: str = "") -> int:
+        """Draw sprites for wreckage that hasn't got one yet. Returns how many.
+
+        Called off the reply path like the battlemap render. Sprites are tiny
+        (one square) and SHARED by what-broke-into-what plus the board's look,
+        so the first shattered pillar pays for every shattered pillar after it.
+        """
+        row = self.get_scene(map_id)
+        if row is None or not row.debris:
+            return 0
+        deb = dict(row.debris)
+        made = 0
+        ctx = ", ".join(p for p in ((row.biome or ""), conditions) if p)
+        for key, entry in deb.items():
+            if not isinstance(entry, dict) or entry.get("image_id"):
+                continue
+            img = render_debris(entry.get("code", ","), store=self.image_store,
+                                material=entry.get("material", ""),
+                                was=entry.get("was", ""), context=ctx)
+            if img:
+                deb[key] = {**entry, "image_id": img}
+                made += 1
+        if made:
+            self._set_fields(map_id, debris=deb)
+            self._bump(map_id)
+        return made
+
+    def debris_for(self, map_id: int) -> list[dict]:
+        """Wreckage on this board, for the client to paint over the base art."""
+        row = self.get_scene(map_id)
+        out = []
+        for key, entry in (row.debris or {}).items() if row else []:
+            try:
+                x, y = (int(v) for v in str(key).split(","))
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                out.append({"x": x, "y": y, **entry})
+        return out
+
+    def breakables(self, map_id: int) -> list[dict]:
+        """Every breakable square on the board, damaged or not."""
+        row = self.get_scene(map_id)
+        if row is None:
+            return []
+        g = self.grid_of(row)
+        out = []
+        for x, y in g.squares():
+            obj = self.object_at(map_id, x, y)
+            if obj:
+                out.append({**obj, "x": x, "y": y})
+        return out
 
     # ================================================================ tokens
 
@@ -1594,6 +1760,7 @@ class VttEngine:
             "fog": row.fog or None,
             "doors": row.doors or [],
             "elevation": row.elevation or {},
+            "debris": self.debris_for(map_id),
             "background_image_id": row.background_image_id,
             "art_status": row.art_status,
             "description": (row.notes or {}).get("description", ""),
@@ -1648,7 +1815,14 @@ class VttEngine:
             lines.append(f"terrain: {legend}")
             lines.append("  Terrain is enforced: a creature cannot enter a square "
                          "its movement forbids, and difficult ground costs double. "
-                         "Narrate within that, and the board will never contradict you.")
+                         "Narrate within that, and the board will never contradict you. "
+                         "Furniture that grants cover can be attacked and broken "
+                         "([[VTT: damage | x,y | amount | type]]).")
+        hurt = [o for o in self.breakables(map_id) if o["hp"] < o["hp_max"]]
+        if hurt:
+            lines.append("damaged: " + "; ".join(
+                f"{o['name']} at {o['x']},{o['y']} ({o['hp']}/{o['hp_max']}, AC {o['ac']})"
+                for o in hurt[:8]))
 
         # Cover is a fact about a target and ONE attacker, so the board reports
         # it from the acting creature's point of view: on Gruk's turn, every

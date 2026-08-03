@@ -120,6 +120,7 @@ def build_map_prompt(gen: GeneratedMap, *, name: str = "",
 def render_battlemap(gen: GeneratedMap, *, store=None, name: str = "",
                      biome: Optional[str] = None, lighting: Optional[str] = None,
                      extra: str = "", conditions: str = "",
+                     ref_slug: Optional[str] = None,
                      force_new: bool = False,
                      store_width: int = 1280,
                      budget_px: int = 1_100_000) -> BattlemapArt:
@@ -131,7 +132,10 @@ def render_battlemap(gen: GeneratedMap, *, store=None, name: str = "",
     subject, look, context = build_map_prompt(
         gen, name=name, biome=biome, lighting=lighting, extra=extra,
         conditions=conditions)
-    ref = layout_signature(gen.grid, gen.archetype, gen.seed)
+    # The caller may pin the art to a layout other than the CURRENT grid —
+    # which is how a board keeps its picture after the party smashes a pillar,
+    # instead of re-rendering the whole room over one changed square.
+    ref = ref_slug or layout_signature(gen.grid, gen.archetype, gen.seed)
     w_px, h_px = canvas_size(gen.width, gen.height, budget_px=budget_px)
 
     if store is None:
@@ -183,3 +187,57 @@ def render_battlemap(gen: GeneratedMap, *, store=None, name: str = "",
         offline=bool(res.offline),
         reused=bool(res.reused),
     )
+
+
+#: Wreckage sprite size, MEASURED rather than assumed. Warm (model already in
+#: VRAM) on this rig: 320px 6.1s, 256px 8.2s, 512px 9.2s, against 13.5s for a
+#: full ~1.1MP battlemap. So a sprite is roughly 2x cheaper — worthwhile, but
+#: nowhere near proportional to the pixels, because a diffusion render carries
+#: fixed per-call overhead that dominates at small sizes. 256px was measurably
+#: WORSE than 320: SDXL is trained at 1024, and very small latents stop paying.
+#:
+#: The real economy is elsewhere. A sprite is keyed by (what it became, its
+#: material, the board's look), so the first shattered pillar pays for every
+#: shattered pillar in every room that looks like it — the same trick that made
+#: the item-art catalogue affordable.
+DEBRIS_PX = 320
+
+
+def render_debris(becomes: str, *, store=None, material: str = "",
+                  context: str = "", was: str = "",
+                  size_px: int = DEBRIS_PX) -> Optional[int]:
+    """A small top-down sprite of what a broken thing left behind.
+
+    Shared, not per-map: rubble keyed by (what it is, what it was, the board's
+    look) is the same picture in every room that looks the same, so the first
+    smashed pillar pays for every smashed pillar after it. That is the item-art
+    economics lesson applied to wreckage.
+
+    Returns an ``entity_image`` id, or None when art is unavailable — the board
+    simply shows the changed TILE in that case, which is already correct.
+    """
+    if store is None:
+        try:
+            from imagery import ImageStore
+            store = ImageStore()
+        except Exception as e:
+            print(f"[vtt.art] imagery unavailable for debris: {e}")
+            return None
+    from .terrain import tile
+    left = tile(becomes)
+    subject = f"{left.art}, the remains of a destroyed {was or 'object'}"
+    look = ", ".join(p for p in (material, left.art) if p)
+    try:
+        res = store.ensure_image(
+            "map", subject, look=look, context=context or "wreckage",
+            ref_slug=f"debris-{becomes}-{(material or 'any')}",
+            extra=(_MAP_STYLE + ", a single small pile of wreckage centred on "
+                   "plain ground, seen from directly above, isolated, no scene"),
+            width=size_px, height=size_px, store_width=size_px,
+            max_per_bucket=1)
+    except Exception as e:
+        print(f"[vtt.art] debris render failed: {e}")
+        return None
+    if res is None or res.offline or not res.image_id:
+        return None
+    return res.image_id

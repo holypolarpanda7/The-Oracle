@@ -538,5 +538,82 @@ check(_geo.distance_ft((0, 0), (3, 0)) == 15
       and _geo.distance_ft((0, 0), (3, 0), dz_ft=5) == 15,
       "and folds into the horizontal one rather than adding to it")
 
+# --------------------------------------- 11. smashing the furniture
+print("\n11. objects can be broken, and breaking them changes the fight")
+from vtt.art import layout_signature                     # noqa: E402
+
+brk = plain_v.open_scene(SID, kind="combat", archetype="open",
+                         width=12, height=8, seed=4, render_art=False)
+for t in plain_v.tokens(brk.id):
+    plain_v.remove_token(t.id)
+plain_v.set_terrain(brk.id, [(x, y) for x in range(12) for y in range(8)], ".")
+plain_v.set_terrain(brk.id, [(5, 4)], "O")      # a pillar
+plain_v.set_terrain(brk.id, [(7, 4)], "+")      # a door
+shooter = plain_v.add_token(brk.id, name="Kara", x=4, y=4, team="party")
+target = plain_v.add_token(brk.id, name="Ogre", x=6, y=4, team="foe")
+
+pillar = plain_v.object_at(brk.id, 5, 4)
+check(pillar and pillar["hp"] > 0 and pillar["ac"] > 0,
+      f"a pillar has AC and hit points ({pillar['ac']}/{pillar['hp']})")
+check(plain_v.object_at(brk.id, 1, 1) is None,
+      "open floor is not a thing you can break")
+check(plain_v.cover_for(brk.id, "Kara", "Ogre") == "three-quarters",
+      "and it gives the ogre cover")
+
+r = plain_v.damage_object(brk.id, 5, 4, 20, damage_type="poison")
+check(not r["ok"] and r.get("immune"), "objects shrug off poison")
+r = plain_v.damage_object(brk.id, 5, 4, 20, damage_type="piercing")
+check(r["ok"] and r["hp"] == pillar["hp_max"] - 10,
+      f"stone resists piercing — 20 becomes 10 ({r['hp']}/{r['hp_max']})")
+r = plain_v.damage_object(brk.id, 5, 4, 20, damage_type="force")
+check(r["hp"] == pillar["hp_max"] - 30, "but force lands in full")
+
+r = plain_v.damage_object(brk.id, 5, 4, 500, damage_type="bludgeoning")
+check(r["ok"] and r["broken"], f"and it comes down: {r['detail']}")
+check(plain_v.cover_for(brk.id, "Kara", "Ogre") == "none",
+      "the cover it gave goes with it — nothing else had to be told")
+
+# A smashed door is an open door.
+check(not plain_v.grid_of(plain_v.get_scene(brk.id)).passable(7, 4),
+      "a closed door blocks the way")
+plain_v.damage_object(brk.id, 7, 4, 999)
+check(plain_v.grid_of(plain_v.get_scene(brk.id)).passable(7, 4),
+      "smashing it opens the way")
+check(any(d.get("state") == "broken"
+          for d in (plain_v.get_scene(brk.id).doors or [])),
+      "and the door remembers it was broken, not merely opened")
+
+# Wreckage is recorded for a sprite, without re-rendering the whole room.
+deb = {(d["x"], d["y"]): d for d in plain_v.debris_for(brk.id)}
+check((5, 4) in deb and deb[(5, 4)]["was"] == "pillar",
+      f"the wreckage is recorded ({sorted(deb)})")
+check(deb[(5, 4)]["image_id"] is None,
+      "with no sprite yet — the board is correct before any GPU runs")
+check("debris" in plain_v.state(brk.id),
+      "and the client is told about it")
+
+row = plain_v.get_scene(brk.id)
+from vtt.mapgen import generate_map as _gen                # noqa: E402
+pristine = _gen(row.archetype, width=row.width, height=row.height,
+                seed=row.seed, lighting=row.lighting)
+live = plain_v.regenerate(row)
+check(layout_signature(pristine.grid, pristine.archetype, pristine.seed)
+      != layout_signature(live.grid, live.archetype, live.seed),
+      "the damaged grid hashes differently from the pristine one...")
+check(layout_signature(pristine.grid, pristine.archetype, pristine.seed)
+      == layout_signature(
+          _gen(row.archetype, width=row.width, height=row.height,
+               seed=row.seed, lighting=row.lighting).grid,
+          row.archetype, row.seed),
+      "...but the PRISTINE signature is stable, so the base art is not "
+      "re-rendered over one smashed square")
+
+# The DM is told what is damaged and what it takes to break it.
+plain_v.set_terrain(brk.id, [(3, 3)], "o")
+plain_v.damage_object(brk.id, 3, 3, 5)
+board = plain_v.render(brk.id)
+check("damaged:" in board and "crate at 3,3" in board,
+      "the board lists damaged furniture with its remaining HP and AC")
+
 print("\nFAILS:", fails or "none")
 sys.exit(1 if fails else 0)
