@@ -55,6 +55,9 @@ def main(argv=None) -> int:
     ap.add_argument("--audit", action="store_true",
                     help="report what's missing without drawing anything")
     ap.add_argument("--render", action="store_true", help="draw the gaps")
+    ap.add_argument("--prune", action="store_true",
+                    help="delete stored debris sprites no longer in the catalogue "
+                         "(a wreckage kind that changed, or a probe's leftovers)")
     ap.add_argument("--contexts", help="comma-separated board looks to cover")
     a = ap.parse_args(argv)
     if not (a.audit or a.render):
@@ -81,6 +84,23 @@ def main(argv=None) -> int:
                 have += 1
             else:
                 missing.append((becomes, material, was, ctx))
+
+    if a.prune:
+        from sqlmodel import Session, select, delete
+        from imagery.models import EntityImage
+        keep = {slugify(f"debris-{tile(b).name.replace(' ', '-')}-{m or 'any'}")
+                for b, m, _ in cat}
+        with Session(store.engine) as sess:
+            rows = [r for r in sess.exec(select(EntityImage).where(
+                EntityImage.ref_slug.like("debris-%"))).all()
+                if r.ref_slug not in keep]
+            for r in rows:
+                sess.delete(r)
+            sess.commit()
+        print(f"pruned {len(rows)} sprite(s) outside the catalogue"
+              + (f": {sorted({r.ref_slug for r in rows})}" if rows else ""))
+        if not a.render:
+            return 0
 
     print(f"already drawn: {have}   missing: {len(missing)}")
     if a.audit and not a.render:

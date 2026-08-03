@@ -148,7 +148,7 @@ def tile_rule(code: str) -> str:
 _BREAKABLE: dict[str, tuple[str, int, int, str]] = {
     # code:  becomes, AC, HP, material
     "o": (",", 13, 12, "wood"),      # stacked crates and barrels
-    "n": (".", 12, 10, "wood"),      # overturned furniture
+    "n": (",", 12, 10, "wood"),      # overturned furniture -> splinters
     "T": (",", 13, 40, "wood"),      # a tree trunk
     "O": (",", 17, 60, "stone"),     # a carved pillar
     "w": (",", 15, 30, "stone"),     # a waist-high broken wall

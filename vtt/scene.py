@@ -483,10 +483,18 @@ class VttEngine:
         # Note the wreckage. The SPRITE is drawn later, off the reply path —
         # this only records that there is something to draw, so the board is
         # correct immediately whether or not a GPU ever gets to it.
-        deb = dict(row.debris or {})
-        deb[f"{x},{y}"] = {"code": becomes, "was": obj["name"],
-                           "material": obj.get("material", ""), "image_id": None}
-        self._set_fields(map_id, debris=deb)
+        #
+        # Nothing is recorded when a break leaves ordinary GROUND: there is no
+        # wreckage to paint, and asking the model for "open floor, the remains
+        # of a destroyed thing" produces a picture of nothing. A smashed door
+        # is NOT that case — it leaves an open doorway with its wreckage still
+        # hanging in the frame, which is worth seeing.
+        if becomes not in (".", "g", "s", "="):
+            deb = dict(row.debris or {})
+            deb[f"{x},{y}"] = {"code": becomes, "was": obj["name"],
+                               "material": obj.get("material", ""),
+                               "image_id": None}
+            self._set_fields(map_id, debris=deb)
         self._log(map_id, row.session_id, "terrain",
                   summary=f"{obj['name']} at {x},{y} is destroyed",
                   payload={"x": x, "y": y, "becomes": becomes})
