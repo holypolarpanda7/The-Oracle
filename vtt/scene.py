@@ -912,7 +912,8 @@ class VttEngine:
             gap = geo.token_distance_ft(
                 geo.footprint(holder.x, holder.y, size_squares(holder.size)),
                 geo.footprint(t.x, t.y, size_squares(t.size)),
-                square_ft=row.square_ft or 5)
+                square_ft=row.square_ft or 5,
+                dz_ft=self.height_gap_ft(row, holder, t))
             if gap > max(5, holder.reach_ft):
                 self.update_token(t.id, grappled_by=None)
                 broken.append(t.name)
@@ -930,7 +931,8 @@ class VttEngine:
         gap = geo.token_distance_ft(
             geo.footprint(a.x, a.y, size_squares(a.size)),
             geo.footprint(b.x, b.y, size_squares(b.size)),
-            square_ft=row.square_ft or 5)
+            square_ft=row.square_ft or 5,
+            dz_ft=self.height_gap_ft(row, a, b))
         if gap > max(5, a.reach_ft):
             return {"ok": False, "reason": (f"{b.name} is {gap} ft away — out of "
                                             f"{a.name}'s reach")}
@@ -1160,9 +1162,15 @@ class VttEngine:
                 continue
             if other.kind in (TokenKind.MARKER, TokenKind.OBJECT):
                 continue
+            reach = other.reach_ft or 5
+            # Height alone can put a mover out of reach: a wyvern sixty feet up
+            # flies over a spearman without ever entering his threatened space,
+            # and the path search below is flat, so it would say otherwise.
+            if self.height_gap_ft(row, other, tok) > reach:
+                continue
             threats[other.id] = (
                 geo.footprint(other.x, other.y, size_squares(other.size)),
-                other.reach_ft or 5)
+                reach)
             names[other.id] = other.name
         ids = geo.opportunity_triggers(
             path, threats, mover_size=size_squares(tok.size),
@@ -1172,6 +1180,24 @@ class VttEngine:
     @staticmethod
     def _height_at(row: TacticalMap, sq: Square) -> int:
         return int((row.elevation or {}).get(f"{sq[0]},{sq[1]}", 0) or 0)
+
+    @staticmethod
+    def token_height_ft(row: TacticalMap, tok: MapToken) -> int:
+        """How high off the board a creature is, in feet.
+
+        Its own ``elevation_ft`` when it has one (a flier holding station, a
+        creature on a rope), otherwise the ground it is standing on. One helper
+        so distance, reach and areas can't disagree about how high something is.
+        """
+        if tok is None:
+            return 0
+        own = int(tok.elevation_ft or 0)
+        return own if own else VttEngine._height_at(row, (tok.x, tok.y))
+
+    @staticmethod
+    def height_gap_ft(row: TacticalMap, a: MapToken, b: MapToken) -> int:
+        """Vertical separation between two creatures."""
+        return abs(VttEngine.token_height_ft(row, a) - VttEngine.token_height_ft(row, b))
 
     def _drop_ft(self, row: TacticalMap, frm: Square, to: Square) -> int:
         """How far down a step goes (0 when level or climbing)."""
@@ -1397,10 +1423,20 @@ class VttEngine:
         if eff is None:
             return []
         cells = {tuple(p) for p in (eff.squares or [])}
+        row = self.get_scene(eff.map_id)
+        # A template's squares are flat, so a creature far above or below the
+        # effect stands in one of them and is caught by a fireball it should
+        # have been well clear of. Its own vertical reach is its radius/length.
+        span = max(int(eff.radius_ft or 0), int(eff.length_ft or 0)) or None
+        origin_h = self._height_at(row, (eff.origin_x, eff.origin_y)) if row else 0
         out = []
         for t in self.tokens(eff.map_id, include_defeated=False):
-            if cells & set(geo.footprint(t.x, t.y, size_squares(t.size))):
-                out.append(t)
+            if not (cells & set(geo.footprint(t.x, t.y, size_squares(t.size)))):
+                continue
+            if span and row is not None:
+                if abs(self.token_height_ft(row, t) - origin_h) > span:
+                    continue
+            out.append(t)
         return out
 
     def tokens_in_area(self, map_id: int, shape: str, x: int, y: int, *,
@@ -1429,7 +1465,7 @@ class VttEngine:
         return geo.token_distance_ft(
             geo.footprint(a.x, a.y, size_squares(a.size)),
             geo.footprint(b.x, b.y, size_squares(b.size)),
-            row.square_ft)
+            row.square_ft, dz_ft=self.height_gap_ft(row, a, b))
 
     def _is_linked(self, map_id: int, a_ref: str, b_ref: str) -> bool:
         """Do these two perceive each other regardless of the board? Best effort."""
@@ -1632,12 +1668,13 @@ class VttEngine:
                     foes, key=lambda o: geo.token_distance_ft(
                         geo.footprint(t.x, t.y, size_squares(t.size)),
                         geo.footprint(o.x, o.y, size_squares(o.size)),
-                        row.square_ft)) if foes else None
+                        row.square_ft,
+                        dz_ft=self.height_gap_ft(row, t, o))) if foes else None
             if ref is not None:
                 d = geo.token_distance_ft(
                     geo.footprint(t.x, t.y, size_squares(t.size)),
                     geo.footprint(ref.x, ref.y, size_squares(ref.size)),
-                    row.square_ft)
+                    row.square_ft, dz_ft=self.height_gap_ft(row, t, ref))
                 cov = self.cover_for(map_id, ref.name, t.name)
                 near = f", {d} ft from {ref.name}"
                 if cov == "total":
@@ -1651,12 +1688,14 @@ class VttEngine:
                 extras.append("prone")
             if t.hidden:
                 extras.append("hidden")
-            ground = self._height_at(row, (t.x, t.y))
-            height = t.elevation_ft or ground
+            height = self.token_height_ft(row, t)
             if height:
                 # High ground isn't advantage in this game — it's a reason to
                 # consider granting cover against anything shooting up at them.
-                extras.append(f"{height} ft up — consider cover from attackers below")
+                # The height is stated because it is now part of every distance
+                # on this board: a creature 60 ft up is 60 ft away.
+                extras.append(f"{height} ft up (counts toward every distance) — "
+                              "consider cover from attackers below")
             standing = g.tile_at(t.x, t.y).name
             if standing not in ("floor", "grass", "road", "sand"):
                 extras.append(f"in {standing}")

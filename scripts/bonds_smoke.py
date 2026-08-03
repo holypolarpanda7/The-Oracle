@@ -475,5 +475,68 @@ gen.grid.set(5, 5, "#")
 check(layout_signature(gen.grid, gen.archetype, gen.seed) != before,
       "a changed square changes the layout signature, so the art regenerates")
 
+# ------------------------------------------- 10. height is a real distance
+print("\n10. the board is three-dimensional")
+sky = plain_v.open_scene(SID, kind="combat", archetype="open",
+                         width=16, height=10, seed=2, render_art=False)
+for t in plain_v.tokens(sky.id):
+    plain_v.remove_token(t.id)
+foot = plain_v.add_token(sky.id, name="Fighter", x=5, y=5, team="party",
+                         speed_ft=30, reach_ft=5)
+drake = plain_v.add_token(sky.id, name="Dragon", x=5, y=5, team="foe",
+                          speed_ft=80, movement_mode="fly", elevation_ft=100)
+check(plain_v.measure(sky.id, "Fighter", "Dragon") == 100,
+      f"a dragon 100 ft overhead is 100 ft away "
+      f"({plain_v.measure(sky.id, 'Fighter', 'Dragon')} ft)")
+plain_v.update_token(drake.id, elevation_ft=0)
+check(plain_v.measure(sky.id, "Fighter", "Dragon") <= 10,
+      "and adjacent again once it lands")
+
+# Height alone puts a mover out of reach.
+plain_v.remove_token(drake.id)
+wy = plain_v.add_token(sky.id, name="Wyvern", x=4, y=5, team="foe",
+                       speed_ft=80, movement_mode="fly", elevation_ft=60)
+plain_v.start_turn(sky.id, token_id=wy.id)
+r = plain_v.move_token(wy.id, 10, 5)
+check(r.get("ok") and not r.get("opportunity"),
+      f"flying 60 ft overhead provokes nothing ({[o['name'] for o in r.get('opportunity', [])]})")
+
+# Areas are flat squares, so height has to exclude what they'd otherwise catch.
+plain_v.remove_token(wy.id)
+roc = plain_v.add_token(sky.id, name="Roc", x=6, y=5, team="foe",
+                        movement_mode="fly", elevation_ft=60)
+burst = plain_v.add_effect(sky.id, "Fireball", kind="area", shape="sphere",
+                           x=5, y=5, radius_ft=20)
+caught = {t.name for t in plain_v.tokens_in_effect(burst.id)}
+check("Fighter" in caught and "Roc" not in caught,
+      f"a fireball on the ground misses a roc 60 ft up ({sorted(caught)})")
+plain_v.update_token(roc.id, elevation_ft=10)
+caught = {t.name for t in plain_v.tokens_in_effect(burst.id)}
+check("Roc" in caught, f"but catches it at 10 ft ({sorted(caught)})")
+
+# Grapple reach is 3D too.
+plain_v.update_token(roc.id, elevation_ft=60)
+check(not plain_v.grapple(sky.id, "Fighter", "Roc")["ok"],
+      "you can't grapple something sixty feet above you")
+# Put it genuinely adjacent: add_token relocates off a blocked square, and
+# update_token refuses x/y on purpose, so the position comes from the board.
+plain_v.update_token(roc.id, elevation_ft=0)
+ft_tok = plain_v.find_token(sky.id, "Fighter")
+for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+    if plain_v.move_token(roc.id, ft_tok.x + dx, ft_tok.y + dy,
+                          teleport=True).get("ok"):
+        break
+res = plain_v.grapple(sky.id, "Fighter", "Roc")
+check(res["ok"], f"but you can once it's on the ground beside you "
+                 f"({res.get('reason', '')})")
+
+# And the pure geometry, so the rule itself is pinned.
+from vtt import geometry as _geo                        # noqa: E402
+check(_geo.distance_ft((0, 0), (0, 0), dz_ft=100) == 100,
+      "straight up is a real distance")
+check(_geo.distance_ft((0, 0), (3, 0)) == 15
+      and _geo.distance_ft((0, 0), (3, 0), dz_ft=5) == 15,
+      "and folds into the horizontal one rather than adding to it")
+
 print("\nFAILS:", fails or "none")
 sys.exit(1 if fails else 0)

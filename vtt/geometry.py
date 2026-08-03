@@ -112,26 +112,50 @@ def distance_squares(a: Square, b: Square, rule: str = CHEBYSHEV) -> float:
     return max(dx, dy)
 
 
+def _with_height(flat_ft: float, dz_ft: float, rule: str = CHEBYSHEV) -> int:
+    """Fold a vertical separation into a horizontal one.
+
+    Height is simply a third axis under the board's own diagonal rule. Under
+    5-5-5 (Chebyshev, the default) that is exactly ``max(horizontal, vertical)``
+    — the standard reading, and the one that makes a creature hovering directly
+    overhead 100 ft away rather than adjacent.
+
+    Under the 5-10-5 variant the same max is used rather than alternating in
+    three dimensions: the exact extension is fiddly, disputed, and never more
+    wrong than the alternative of ignoring height, which is what this replaces.
+    """
+    dz = abs(float(dz_ft or 0.0))
+    if dz <= 0:
+        return int(round(flat_ft))
+    return int(round(max(float(flat_ft), dz)))
+
+
 def distance_ft(a: Square, b: Square, square_ft: int = 5,
-                rule: str = CHEBYSHEV) -> int:
-    return int(round(distance_squares(a, b, rule) * square_ft))
+                rule: str = CHEBYSHEV, dz_ft: float = 0.0) -> int:
+    return _with_height(distance_squares(a, b, rule) * square_ft, dz_ft, rule)
 
 
 def token_distance_ft(a: Sequence[Square], b: Sequence[Square],
-                      square_ft: int = 5, rule: str = CHEBYSHEV) -> int:
+                      square_ft: int = 5, rule: str = CHEBYSHEV,
+                      dz_ft: float = 0.0) -> int:
     """Distance between two *footprints* — the nearest pair of squares wins.
 
     Adjacent medium creatures come out at 5 ft, which is what "in reach" means.
+
+    ``dz_ft`` is how far apart the two are VERTICALLY. Ignoring it is how a
+    dragon hovering directly above a fighter reads as adjacent — and every
+    reach check, weapon range and spell area downstream reads this number.
     """
     if not a or not b:
         return 0
     best = min(distance_squares(p, q, rule) for p in a for q in b)
-    return int(round(best * square_ft))
+    return _with_height(best * square_ft, dz_ft, rule)
 
 
 def in_reach(a: Sequence[Square], b: Sequence[Square], reach_ft: int = 5,
-             square_ft: int = 5, rule: str = CHEBYSHEV) -> bool:
-    return token_distance_ft(a, b, square_ft, rule) <= max(0, reach_ft)
+             square_ft: int = 5, rule: str = CHEBYSHEV,
+             dz_ft: float = 0.0) -> bool:
+    return token_distance_ft(a, b, square_ft, rule, dz_ft) <= max(0, reach_ft)
 
 
 # ------------------------------------------------------------------ raycast

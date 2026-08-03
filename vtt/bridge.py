@@ -134,8 +134,10 @@ def sync_bands(vtt: VttEngine, map_id: int, *, tracker: Any = None) -> None:
             band = "near"
         else:
             nearest = min(foes, key=lambda o: geo.token_distance_ft(
-                fps[t.id], fps[o.id], row.square_ft))
-            d = geo.token_distance_ft(fps[t.id], fps[nearest.id], row.square_ft)
+                fps[t.id], fps[o.id], row.square_ft,
+                dz_ft=vtt.height_gap_ft(row, t, o)))
+            d = geo.token_distance_ft(fps[t.id], fps[nearest.id], row.square_ft,
+                                      dz_ft=vtt.height_gap_ft(row, t, nearest))
             # "Engaged" means either creature can reach the other.
             engaged = d <= max(t.reach_ft or 5, nearest.reach_ft or 5)
             band = geo.band_for_distance(d, nearest.name if engaged else None)
@@ -261,10 +263,14 @@ class BoardSpatial:
         ta, tb = self._tok(a), self._tok(b)
         if ta is None or tb is None:
             return None
+        # Height counts: this is what gates the combat engine's reach checks
+        # and weapon ranges, so a flier overhead has to read as far away.
+        row = self.vtt.get_scene(self.map_id)
+        dz = self.vtt.height_gap_ft(row, ta, tb) if row else 0
         return geo.token_distance_ft(
             geo.footprint(ta.x, ta.y, size_squares(ta.size)),
             geo.footprint(tb.x, tb.y, size_squares(tb.size)),
-            self.square_ft)
+            self.square_ft, dz_ft=dz)
 
     def reach_ft(self, c) -> int:
         t = self._tok(c)

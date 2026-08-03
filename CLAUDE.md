@@ -233,6 +233,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     it: the descriptors in `owned_books/species_looks.json` stay local.
   - Retrieval is selective — only fetch rules when the action needs a mechanic; prose
     lore stays out of prompts except brief mechanical facts.
+- **The board is THREE-dimensional.** Elevation was stored (`elevation_ft` on
+  tokens, a per-square elevation map) and measured by nothing, so a dragon
+  hovering 100 ft overhead read as 10 ft away and a wyvern 60 ft up provoked
+  opportunity attacks. `geo.token_distance_ft(..., dz_ft=)` folds height in
+  as a third axis under the board's own diagonal rule, and
+  `VttEngine.token_height_ft` / `height_gap_ft` are the ONE place height is
+  decided. Every consumer passes it: measure, reach, grapple, opportunity
+  attacks, spell areas (a flat template excludes what's far above its
+  origin), the DM board's distances, and `bridge.BoardSpatial` — which is
+  what gates the combat engine's weapon ranges. This matters most on the
+  four archetypes fought off the ground (`sky-islands`, `skyship`, `reef`,
+  `open-water`) and anywhere airships fly.
 - **The AI never decides where a creature can be — the grid does.** The art is
   generated FROM the tile grid, so water on the picture IS water in the rules;
   `move_token` refuses a square the creature's medium forbids and there is no
