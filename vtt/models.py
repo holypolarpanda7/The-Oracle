@@ -199,6 +199,16 @@ class MapToken(SQLModel, table=True):
     prone: bool = Field(default=False, sa_column=Column(Boolean))
     defeated: bool = Field(default=False, sa_column=Column(Boolean))
 
+    # The conditions that change what a creature can do ON THE BOARD, and so
+    # have to live here rather than only in the combat tracker's condition list.
+    # Restrained and grappled both mean Speed 0 — which is a movement rule, and
+    # the board is what enforces movement.
+    restrained: bool = Field(default=False, sa_column=Column(Boolean))
+    # Name of whoever has hold of this creature. Held separately from a plain
+    # "grappled" flag because the grappler can DRAG their captive along, so the
+    # board needs to know which way the leash runs.
+    grappled_by: Optional[str] = Field(default=None, sa_column=Column(String))
+
     # Portrait/creature art for the token face (an ``entity_image`` id).
     image_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
     color: Optional[str] = Field(default=None, sa_column=Column(String))

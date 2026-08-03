@@ -233,6 +233,13 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     it: the descriptors in `owned_books/species_looks.json` stay local.
   - Retrieval is selective — only fetch rules when the action needs a mechanic; prose
     lore stays out of prompts except brief mechanical facts.
+- **Speed 0 is a movement rule, so the BOARD enforces it.** A grappled or
+  restrained token can't walk (`[[VTT: grapple/restrain]]`) — but it can still
+  teleport, and it can still be shoved, because a grapple holds you rather
+  than your magic. `grappled_by` names the holder, not a bare flag, because
+  the grappler DRAGS their captive along at half speed. A grapple breaks by
+  itself the moment the pair are out of reach, whichever of them moved.
+  Prone doubles movement (crawling) and standing costs half Speed.
 - **Forced movement is not movement.** `VttEngine.shove` (`[[VTT: push/pull]]`)
   ignores the target's speed, provokes NO opportunity attack, and travels a
   straight line stopping at the first obstacle — never `move_token`, which

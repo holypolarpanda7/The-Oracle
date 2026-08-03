@@ -492,7 +492,8 @@ class VttEngine:
         allowed = {"name", "team", "kind", "size", "speed_ft", "reach_ft",
                    "hidden", "prone", "defeated", "image_id", "color", "label",
                    "notes", "elevation_ft", "facing_deg", "movement_mode",
-                   "moved_ft", "combatant_id", "character_id"}
+                   "moved_ft", "combatant_id", "character_id",
+                   "restrained", "grappled_by"}
         with Session(self.engine) as s:
             tok = s.get(MapToken, token_id)
             if not tok:
@@ -660,6 +661,19 @@ class VttEngine:
             return {"ok": False,
                     "reason": f"{tok.name} can't stand there — it's blocked"}
 
+        # Held fast means Speed 0, and Speed 0 is a movement rule — so it is
+        # enforced here rather than left to the DM to remember. A teleport still
+        # works: a grapple stops you WALKING away, not blinking out of it. Being
+        # shoved works too, which is what ``shove`` is for.
+        if enforce_speed and not free and not teleport:
+            if tok.restrained:
+                return {"ok": False, "reason": f"{tok.name} is restrained — "
+                                               f"their Speed is 0"}
+            if tok.grappled_by:
+                return {"ok": False,
+                        "reason": (f"{tok.name} is grappled by {tok.grappled_by} "
+                                   f"— their Speed is 0 until they break free")}
+
         if teleport:
             path, cost = [(tok.x, tok.y), dest], 0
         else:
@@ -671,11 +685,24 @@ class VttEngine:
             if not path:
                 return {"ok": False,
                         "reason": f"there's no way through to that square"}
-            remaining = max(0, tok.speed_ft + max(0, int(bonus_ft)) - tok.moved_ft)
+            # Crawling costs an extra foot for every foot — so, twice.
+            crawling = tok.prone and tok.movement_mode == "walk"
+            if crawling:
+                cost *= 2
+            # Dragging a captive halves the hauler's speed.
+            dragged = self._captives_of(tok)
+            budget = tok.speed_ft + max(0, int(bonus_ft))
+            if dragged:
+                budget //= 2
+            remaining = max(0, budget - tok.moved_ft)
             if enforce_speed and not free and cost > remaining:
+                why = (f"that's {cost} ft"
+                       + (" (crawling costs double)" if crawling else "")
+                       + f" and {tok.name} has {remaining} ft of movement left"
+                       + (f" while hauling {', '.join(d.name for d in dragged)}"
+                          if dragged else ""))
                 return {"ok": False, "cost_ft": cost, "remaining_ft": remaining,
-                        "reason": (f"that's {cost} ft and {tok.name} has "
-                                   f"{remaining} ft of movement left")}
+                        "reason": why}
 
         oa = [] if teleport else self._opportunity(tok, path, row)
         hazards = self._hazards_on(row, g, path[1:] if len(path) > 1 else [])
@@ -708,6 +735,14 @@ class VttEngine:
                "x": dest[0], "y": dest[1], "remaining_ft": remaining,
                "opportunity": oa, "hazards": hazards,
                "entered": [e["name"] for e in entered]}
+        # Anyone this creature has hold of comes along, and anyone holding IT
+        # either follows or loses their grip (checked from the new position).
+        towed = self._tow_captives(tok, dest, row, g)
+        if towed:
+            out["dragged"] = towed
+        broke = self._break_far_grapples(tok.map_id, row)
+        if broke:
+            out["grapples_broken"] = broke
         # Stepping off a ledge is a fact the DM should narrate (and charge for);
         # the board reports the drop rather than silently applying damage.
         drop = self._drop_ft(row, (tok.x, tok.y), dest)
@@ -791,6 +826,190 @@ class VttEngine:
                   payload={"token_id": token_id, "blink": True,
                            "through": anchor.name if anchor else None})
         return res
+
+    # ----- grappling, going prone, and changing places -------------------
+
+    def _captives_of(self, tok: MapToken) -> list[MapToken]:
+        """Everyone this creature currently has hold of."""
+        name = (tok.name or "").strip().lower()
+        if not name:
+            return []
+        return [t for t in self.tokens(tok.map_id, include_defeated=False)
+                if t.id != tok.id
+                and (t.grappled_by or "").strip().lower() == name]
+
+    def _tow_captives(self, tok: MapToken, dest: Square, row: TacticalMap,
+                      g: Grid) -> list[str]:
+        """Drag anyone this creature holds into its wake. Returns their names.
+
+        Each captive is put in the nearest free square adjacent to where the
+        hauler ended up — the leash is short, and a captive left behind would
+        silently break the grapple the mover was trying to keep.
+        """
+        towed: list[str] = []
+        for cap in self._captives_of(tok):
+            n = size_squares(cap.size)
+            blocked = self._occupied(tok.map_id, exclude=cap.id)
+            spot = None
+            ring = [(dest[0] + dx, dest[1] + dy)
+                    for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                    if (dx or dy)]
+            for sq in sorted(ring,
+                             key=lambda s: geo.distance_squares((cap.x, cap.y), s)):
+                if g.in_bounds(*sq) and geo._fits(g, sq, n, mode=cap.movement_mode,
+                                                  blocked=blocked):
+                    spot = sq
+                    break
+            if spot is None:
+                continue
+            with Session(self.engine) as s:
+                live = s.get(MapToken, cap.id)
+                if live:
+                    live.x, live.y = spot
+                    live.updated_at = _now()
+                    s.add(live)
+                    s.commit()
+            towed.append(cap.name)
+        if towed:
+            self._bump(tok.map_id)
+        return towed
+
+    def _break_far_grapples(self, map_id: int, row: TacticalMap) -> list[str]:
+        """A grapple ends when the pair are no longer within reach."""
+        toks = {t.id: t for t in self.tokens(map_id)}
+        by_name = {(t.name or "").strip().lower(): t for t in toks.values()}
+        broken: list[str] = []
+        for t in list(toks.values()):
+            holder = by_name.get((t.grappled_by or "").strip().lower()) \
+                if t.grappled_by else None
+            if not t.grappled_by:
+                continue
+            if holder is None or holder.defeated:
+                self.update_token(t.id, grappled_by=None)
+                broken.append(t.name)
+                continue
+            gap = geo.token_distance_ft(
+                geo.footprint(holder.x, holder.y, size_squares(holder.size)),
+                geo.footprint(t.x, t.y, size_squares(t.size)),
+                square_ft=row.square_ft or 5)
+            if gap > max(5, holder.reach_ft):
+                self.update_token(t.id, grappled_by=None)
+                broken.append(t.name)
+        return broken
+
+    def grapple(self, map_id: int, grappler_ref: str, target_ref: str) -> dict:
+        """One creature takes hold of another. Both must be within reach."""
+        a = self.find_token(map_id, grappler_ref)
+        b = self.find_token(map_id, target_ref)
+        row = self.get_scene(map_id)
+        if not (a and b and row):
+            return {"ok": False, "reason": "no such creature on this board"}
+        if a.id == b.id:
+            return {"ok": False, "reason": "a creature can't grapple itself"}
+        gap = geo.token_distance_ft(
+            geo.footprint(a.x, a.y, size_squares(a.size)),
+            geo.footprint(b.x, b.y, size_squares(b.size)),
+            square_ft=row.square_ft or 5)
+        if gap > max(5, a.reach_ft):
+            return {"ok": False, "reason": (f"{b.name} is {gap} ft away — out of "
+                                            f"{a.name}'s reach")}
+        self.update_token(b.id, grappled_by=a.name)
+        self._log(map_id, row.session_id, "condition", actor=a.name,
+                  summary=f"{a.name} grapples {b.name}")
+        return {"ok": True, "detail": f"{a.name} has hold of {b.name} — "
+                                      f"{b.name}'s Speed is 0."}
+
+    def release(self, map_id: int, target_ref: str) -> dict:
+        """Let a creature go (they broke free, or the grappler let go)."""
+        b = self.find_token(map_id, target_ref)
+        if not b:
+            return {"ok": False, "reason": "no such creature"}
+        if not b.grappled_by:
+            return {"ok": False, "reason": f"{b.name} isn't being held"}
+        who = b.grappled_by
+        self.update_token(b.id, grappled_by=None)
+        return {"ok": True, "detail": f"{b.name} breaks free of {who}."}
+
+    def set_restrained(self, map_id: int, ref: str, on: bool = True) -> dict:
+        b = self.find_token(map_id, ref)
+        if not b:
+            return {"ok": False, "reason": "no such creature"}
+        self.update_token(b.id, restrained=bool(on))
+        return {"ok": True,
+                "detail": (f"{b.name} is restrained — Speed 0." if on
+                           else f"{b.name} is no longer restrained.")}
+
+    def go_prone(self, map_id: int, ref: str) -> dict:
+        b = self.find_token(map_id, ref)
+        if not b:
+            return {"ok": False, "reason": "no such creature"}
+        self.update_token(b.id, prone=True)
+        return {"ok": True, "detail": f"{b.name} drops prone."}
+
+    def stand_up(self, map_id: int, ref: str) -> dict:
+        """Get up. Costs half the creature's speed, and can fail for want of it."""
+        b = self.find_token(map_id, ref)
+        if not b:
+            return {"ok": False, "reason": "no such creature"}
+        if not b.prone:
+            return {"ok": False, "reason": f"{b.name} is already on their feet"}
+        cost = b.speed_ft // 2
+        remaining = max(0, b.speed_ft - b.moved_ft)
+        if cost > remaining:
+            return {"ok": False, "cost_ft": cost, "remaining_ft": remaining,
+                    "reason": (f"standing costs {cost} ft and {b.name} has "
+                               f"{remaining} ft left")}
+        self.update_token(b.id, prone=False,
+                          moved_ft=min(b.speed_ft * 4, b.moved_ft + cost))
+        return {"ok": True, "cost_ft": cost,
+                "detail": f"{b.name} gets up ({cost} ft of movement)."}
+
+    def swap(self, map_id: int, a_ref: str, b_ref: str) -> dict:
+        """Two creatures change places — neither is moving of its own accord.
+
+        Used by features that let allies trade positions. Both footprints must
+        fit where the other stood, which is why this isn't two moves: a Large
+        creature and a Medium one can't always simply exchange.
+        """
+        a = self.find_token(map_id, a_ref)
+        b = self.find_token(map_id, b_ref)
+        row = self.get_scene(map_id)
+        if not (a and b and row):
+            return {"ok": False, "reason": "no such creature on this board"}
+        if a.id == b.id:
+            return {"ok": False, "reason": "those are the same creature"}
+        g = self.grid_of(row)
+        na, nb = size_squares(a.size), size_squares(b.size)
+        blocked_a = self._occupied(map_id, exclude=a.id)
+        blocked_b = self._occupied(map_id, exclude=b.id)
+        # Each must fit the OTHER's square, ignoring the other's own footprint.
+        for sq in geo.footprint(b.x, b.y, nb):
+            blocked_a.discard(sq)
+        for sq in geo.footprint(a.x, a.y, na):
+            blocked_b.discard(sq)
+        if not geo._fits(g, (b.x, b.y), na, mode=a.movement_mode, blocked=blocked_a):
+            return {"ok": False, "reason": f"{a.name} doesn't fit where {b.name} stands"}
+        if not geo._fits(g, (a.x, a.y), nb, mode=b.movement_mode, blocked=blocked_b):
+            return {"ok": False, "reason": f"{b.name} doesn't fit where {a.name} stands"}
+        ax, ay, bx, by = a.x, a.y, b.x, b.y
+        # Written straight through: ``update_token`` deliberately refuses x/y so
+        # nothing can sidestep the movement rules by editing a position, which
+        # means a placement change has to go to the row itself.
+        with Session(self.engine) as s:
+            la, lb = s.get(MapToken, a.id), s.get(MapToken, b.id)
+            if not (la and lb):
+                return {"ok": False, "reason": "no such creature"}
+            la.x, la.y, lb.x, lb.y = bx, by, ax, ay
+            la.updated_at = lb.updated_at = _now()
+            s.add(la)
+            s.add(lb)
+            s.commit()
+        self._bump(map_id)
+        self.recompute_auras(map_id)
+        self._log(map_id, row.session_id, "move", actor=a.name,
+                  summary=f"{a.name} and {b.name} change places")
+        return {"ok": True, "detail": f"{a.name} and {b.name} change places.",
+                "a": [bx, by], "b": [ax, ay]}
 
     def shove(self, token_id: int, *, away_from: Optional[str] = None,
               toward: Optional[str] = None, to_square: Optional[Square] = None,
@@ -887,6 +1106,11 @@ class VttEngine:
             out["fall_ft"] = drop
         # The squares crossed can matter (shoved through a wall of fire).
         out["entered"] = [e["name"] for e in self._effects_at(tok.map_id, cur, n)]
+        # Being flung out of someone's reach breaks their hold on you — and
+        # equally, hauls a captive of yours out of yours.
+        broke = self._break_far_grapples(tok.map_id, row)
+        if broke:
+            out["grapples_broken"] = broke
         self._log(tok.map_id, row.session_id, "move", actor=tok.name,
                   summary=detail,
                   payload={"token_id": token_id, "forced": True,

@@ -377,6 +377,18 @@ async def lifespan(app: FastAPI):
                         "ALTER TABLE combat_encounter ADD COLUMN pending_reaction JSON")
                     print("[Startup] Migrated combat_encounter: added pending_reaction")
 
+                # Board-side conditions on pre-existing token tables: restrained
+                # and grappled both mean Speed 0, which the board enforces.
+                vt_existing = {row[1] for row in conn.exec_driver_sql(
+                    'PRAGMA table_info("vtt_token")')}
+                if vt_existing:
+                    for col, ddl in [("restrained", "INTEGER DEFAULT 0"),
+                                     ("grappled_by", "VARCHAR")]:
+                        if col not in vt_existing:
+                            conn.exec_driver_sql(
+                                f"ALTER TABLE vtt_token ADD COLUMN {col} {ddl}")
+                            print(f"[Startup] Migrated vtt_token: added {col}")
+
                 # Mobile-bastion columns on pre-existing bastion tables: a
                 # bastion built into a vehicle needs somewhere to be and
                 # somewhere to be going (see bastion/mobile.py).
@@ -6360,7 +6372,9 @@ _VTT_HOOK_ACTIONS = {"open", "close", "place", "move", "remove", "effect",
                      "clear", "terrain", "door", "reveal", "ping", "elevation",
                      # A handler with no entry here is silently dropped before
                      # it ever reaches the dispatcher — add both, always.
-                     "blink", "push", "pull", "token"}
+                     "blink", "push", "pull", "token",
+                     "grapple", "release", "restrain", "free", "prone",
+                     "stand", "swap"}
 
 # Bare words a hook may carry instead of key=value, e.g. "difficult".
 _VTT_FLAGS = {"difficult", "blocking", "obscuring", "permanent", "hidden",
@@ -6424,6 +6438,14 @@ _VTT_HOOKS_ACTIVE = (
     "    [[VTT: token | Vex | fly]]           size=tiny|small|medium|large|huge|gargantuan,\n"
     "    [[VTT: token | Vex | invisible]]     fly|swim|walk, invisible|visible,\n"
     "    [[VTT: token | Vex | speed=40]]      prone|stand, speed=, reach=\n"
+    "    [[VTT: grapple | Gruk | Kara]]      Gruk takes hold of Kara (reach is checked):\n"
+    "                                         her Speed becomes 0, and Gruk drags her\n"
+    "                                         along at half his own when he moves\n"
+    "    [[VTT: release | Kara]]              she breaks free (or he lets go)\n"
+    "    [[VTT: restrain | Kara]] / [[VTT: free | Kara]]   Speed 0 from a net, a web, roots\n"
+    "    [[VTT: prone | Kara]] / [[VTT: stand | Kara]]     knocked down; getting up costs\n"
+    "                                         half her Speed, and crawling costs double\n"
+    "    [[VTT: swap | Kara | Sable]]         two creatures change places\n"
     "    [[VTT: close]]                       the moment has passed — put the board away\n"
     "shape: sphere | cone | line | cube | emanation. 'at' is the origin square; 'size' is the\n"
     "radius (sphere/emanation) or length (cone/line/cube) in feet; 'dir' is degrees\n"
@@ -6789,6 +6811,30 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                 vtt_engine.update_token(tok.id, **fields)
                 said = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in fields.items())
                 notes.append(f"🗺 {tok.name}: {said}.")
+                continue
+
+            if action in ("grapple", "release", "restrain", "free",
+                          "prone", "stand", "swap"):
+                if not positional:
+                    continue
+                who = positional[0]
+                other = positional[1] if len(positional) > 1 else ""
+                if action == "grapple":
+                    res = vtt_engine.grapple(scene.id, who, other)
+                elif action == "release":
+                    res = vtt_engine.release(scene.id, who)
+                elif action == "restrain":
+                    res = vtt_engine.set_restrained(scene.id, who, True)
+                elif action == "free":
+                    res = vtt_engine.set_restrained(scene.id, who, False)
+                elif action == "prone":
+                    res = vtt_engine.go_prone(scene.id, who)
+                elif action == "stand":
+                    res = vtt_engine.stand_up(scene.id, who)
+                else:
+                    res = vtt_engine.swap(scene.id, who, other)
+                notes.append("🗺 " + (res.get("detail") if res.get("ok")
+                                      else f"{res.get('reason')}"))
                 continue
 
             if action == "remove":

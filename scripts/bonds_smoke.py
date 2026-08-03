@@ -286,5 +286,116 @@ t = plain_v.get_token(victim.id)
 check(t.size == "large" and t.movement_mode == "fly" and t.hidden,
       "a creature can grow, take to the air and go unseen mid-fight")
 
+# ------------------------------------- 7. held fast, knocked down, swapped
+print("\n7. conditions the BOARD has to enforce")
+held = plain_v.open_scene(SID, kind="combat", archetype="open",
+                          width=20, height=12, seed=11, render_art=False)
+for t in plain_v.tokens(held.id):
+    plain_v.remove_token(t.id)
+hg = plain_v.grid_of(held)
+
+
+def clear_run(y, x0, n):
+    """A run of n plain (cost-1) squares on row y, or None."""
+    for x in range(x0, held.width - n):
+        if all(hg.tile_at(x + i, y).code == "g" for i in range(n)):
+            return x
+    return None
+
+
+# A row with plenty of ordinary ground: the drag and crawl costs below are
+# checked to the foot, so difficult terrain in the path would falsify them.
+row_y = next((y for y in range(held.height) if clear_run(y, 1, 12) is not None), 3)
+x0 = clear_run(row_y, 1, 12)
+ogre = plain_v.add_token(held.id, name="Ogre", x=x0, y=row_y, team="foe",
+                         speed_ft=40, reach_ft=10)
+hero = plain_v.add_token(held.id, name="Kara", x=x0 + 1, y=row_y,
+                         team="party", speed_ft=30)
+far = plain_v.add_token(held.id, name="Distant Bram", x=held.width - 2,
+                        y=(row_y + 5) % held.height, team="party", speed_ft=30)
+
+r = plain_v.grapple(held.id, "Ogre", "Distant Bram")
+check(not r["ok"], f"you can't grapple across the room ({r.get('reason','')[:40]})")
+r = plain_v.grapple(held.id, "Ogre", "Kara")
+check(r["ok"], f"but you can grapple what you can reach: {r.get('detail','')}")
+
+plain_v.start_turn(held.id, token_id=hero.id)
+r = plain_v.move_token(hero.id, x0 + 3, row_y)
+check(not r["ok"] and "Speed is 0" in r.get("reason", ""),
+      f"a grappled creature can't walk away ({r.get('reason','')[:48]})")
+check(plain_v.move_token(hero.id, x0 + 3, row_y, teleport=True).get("ok"),
+      "but teleporting out still works — a grapple holds you, not your magic")
+check(plain_v.find_token(held.id, "Kara").grappled_by is None,
+      "and blinking clear of his reach breaks the hold behind you")
+
+# Back within reach, and taken hold of again.
+plain_v.move_token(hero.id, x0 + 1, row_y, teleport=True)
+plain_v.grapple(held.id, "Ogre", "Kara")
+
+# The grappler drags his captive, at half speed.
+plain_v.start_turn(held.id, token_id=ogre.id)
+r = plain_v.move_token(ogre.id, x0 + 3, row_y)          # 15 ft, budget 20
+check(r.get("ok") and r.get("dragged") == ["Kara"],
+      f"the grappler hauls his captive along ({r.get('dragged')})")
+k = plain_v.find_token(held.id, "Kara")
+check(max(abs(k.x - (x0 + 3)), abs(k.y - row_y)) <= 1,
+      f"who ends up beside him ({k.x},{k.y})")
+plain_v.start_turn(held.id, token_id=ogre.id)
+r = plain_v.move_token(ogre.id, x0 + 8, row_y)          # 25 ft > halved 20
+check(not r.get("ok") and "hauling" in r.get("reason", ""),
+      f"and can only go half as far while doing it ({r.get('reason','')[:58]})")
+
+# Dragged stays in reach; SHOVED out of it breaks the hold.
+plain_v.shove(hero.id, away_from="Ogre", distance_ft=30)
+check(plain_v.find_token(held.id, "Kara").grappled_by is None,
+      "shoved beyond his reach, the grapple breaks")
+
+# Restrained: the same Speed 0, a different cause.
+k = plain_v.find_token(held.id, "Kara")
+plain_v.set_restrained(held.id, "Kara", True)
+plain_v.start_turn(held.id, token_id=hero.id)
+r = plain_v.move_token(hero.id, k.x, k.y + 1)
+check(not r["ok"] and "restrained" in r.get("reason", ""),
+      "a restrained creature is going nowhere either")
+plain_v.set_restrained(held.id, "Kara", False)
+check(plain_v.move_token(hero.id, k.x, k.y + 1).get("ok"),
+      "and moves again once it's cut away")
+
+# Prone: crawling costs double; standing costs half your Speed.
+plain_v.move_token(hero.id, x0 + 1, row_y, teleport=True)
+plain_v.start_turn(held.id, token_id=hero.id)
+plain_v.go_prone(held.id, "Kara")
+r = plain_v.move_token(hero.id, x0 + 5, row_y)          # 20 ft ground = 40 crawling
+check(not r.get("ok") and "double" in r.get("reason", ""),
+      f"crawling 20 ft costs 40 and she has 30 ({r.get('reason','')[:52]})")
+r = plain_v.move_token(hero.id, x0 + 4, row_y)          # 15 ft ground = 30 crawling
+check(r.get("ok") and r.get("cost_ft") == 30,
+      f"crawling 15 ft costs 30 ({r.get('cost_ft')})")
+plain_v.start_turn(held.id, token_id=hero.id)
+r = plain_v.stand_up(held.id, "Kara")
+check(r["ok"] and r["cost_ft"] == 15, f"standing costs half her Speed ({r.get('cost_ft')})")
+check(not plain_v.find_token(held.id, "Kara").prone, "and she is on her feet")
+check(not plain_v.stand_up(held.id, "Kara")["ok"], "standing twice is refused")
+plain_v.go_prone(held.id, "Kara")
+plain_v.update_token(hero.id, moved_ft=30)
+check(not plain_v.stand_up(held.id, "Kara")["ok"],
+      "and you can't stand with no movement left")
+
+# Swapping places.
+plain_v.update_token(hero.id, prone=False, moved_ft=0)
+k = plain_v.find_token(held.id, "Kara")
+b = plain_v.find_token(held.id, "Distant Bram")
+before = ((k.x, k.y), (b.x, b.y))
+r = plain_v.swap(held.id, "Kara", "Distant Bram")
+k2 = plain_v.find_token(held.id, "Kara")
+b2 = plain_v.find_token(held.id, "Distant Bram")
+check(r["ok"] and (k2.x, k2.y) == before[1] and (b2.x, b2.y) == before[0],
+      f"two creatures change places ({before} -> {((k2.x, k2.y), (b2.x, b2.y))})"
+      + ("" if r["ok"] else f" — {r.get('reason')}"))
+check(not plain_v.swap(held.id, "Kara", "Kara")["ok"],
+      "a creature can't swap with itself")
+check(not plain_v.swap(held.id, "Kara", "Nobody")["ok"],
+      "nor with someone who isn't there")
+
 print("\nFAILS:", fails or "none")
 sys.exit(1 if fails else 0)
