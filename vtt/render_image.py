@@ -41,6 +41,35 @@ _EDGE_COLORS: dict[str, tuple[int, int, int]] = {
     "+": (160, 124, 60), "/": (160, 124, 60), "p": (106, 114, 144),
 }
 
+#: Tiles that get a light WASH over the painted art, not merely an outline:
+#: ground that stops a creature or hurts it. A painting can show a puddle that
+#: is really deep water, or ice that reads as stone — those must be unmissable.
+#: Ordinary difficult terrain (rubble, undergrowth) is deliberately NOT here:
+#: the art shows it perfectly well and washing it all buries the picture.
+_WASHED = frozenset({"~", "W", "^", "x", "l", "f", "i", "m", "%"})
+
+#: Cut-out sprites, keyed by stored image id. Matting the SAME rubble on every
+#: board redraw would be pure waste — the picture never changes once stored.
+_CUTOUTS: dict = {}
+
+
+def _cutout_cached(image_id, raw_bytes):
+    """RGBA sprite with its background removed, or None if that isn't possible."""
+    if image_id is None or not raw_bytes:
+        return None
+    if image_id in _CUTOUTS:
+        return _CUTOUTS[image_id]
+    try:
+        from .art import cutout
+        cut = cutout(raw_bytes)
+        out = Image.open(io.BytesIO(cut)).convert("RGBA") if cut else None
+    except Exception as e:
+        print(f"[vtt.png] cutout failed: {e}")
+        out = None
+    _CUTOUTS[image_id] = out
+    return out
+
+
 _TEAM_COLORS = {
     "party": (79, 163, 255),
     "foe": (255, 90, 90),
@@ -135,6 +164,30 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
             print(f"[vtt.png] background unavailable: {e}")
     if painted is not None:
         img.paste(painted, (ox, oy))
+        # The art is aligned to the grid, but a diffusion model cannot be told
+        # to put a pillar on square 6,5 — that is exactly why the tile grid is
+        # authoritative. So the mechanically significant tiles are TINTED back
+        # over the picture: a wall the rules enforce has to be a wall the
+        # players can see, even when the painting put it somewhere else. This
+        # is the "walls-overlay" vtt/art.py's own docstring promises.
+        # OUTLINES, not fills. The picture was generated FROM this grid, so it
+        # already shows the room; a solid tint over every wall smothers the art
+        # it is meant to annotate. What players need is a visible edge on the
+        # squares the rules treat specially — and a light wash only where the
+        # ground itself would stop or hurt them, which a painting can easily
+        # fail to make obvious.
+        terrain = state.get("terrain") or []
+        for y in range(h_sq):
+            row = terrain[y] if y < len(terrain) else ""
+            for x in range(w_sq):
+                code = row[x] if x < len(row) else "."
+                box = [sx(x), sy(y), sx(x) + cell, sy(y) + cell]
+                if code in _WASHED:
+                    color = _TILE_COLORS.get(code, _TILE_COLORS["."])
+                    d.rectangle(box, fill=(*color, 70))
+                edge = _EDGE_COLORS.get(code)
+                if edge:
+                    d.rectangle(box, outline=(*edge, 150), width=1)
     else:
         terrain = state.get("terrain") or []
         for y in range(h_sq):
@@ -166,19 +219,25 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
             except Exception as e:
                 print(f"[vtt.png] debris sprite unavailable: {e}")
         if sprite is not None:
-            # Feathered, not pasted flat. A diffusion sprite arrives with its
-            # own background, so a hard square reads as a picture stuck on the
-            # map; fading it toward the edges makes it debris LYING on the
-            # floor. Cheap, and it needs no background-removal dependency.
-            mask = Image.new("L", (cell, cell), 0)
-            md = ImageDraw.Draw(mask)
-            steps = max(6, cell // 4)
-            for i in range(steps):
-                t = i / float(steps)
-                inset = int(t * cell * 0.5)
-                md.ellipse([inset, inset, cell - inset, cell - inset],
-                           fill=int(255 * min(1.0, (t + 0.15) * 1.5)))
-            img.paste(sprite.convert("RGB"), (sx(x), sy(y)), mask)
+            cut = _cutout_cached(deb.get("image_id"), raw)
+            if cut is not None:
+                img.paste(cut.resize((cell, cell), Image.LANCZOS),
+                          (sx(x), sy(y)),
+                          cut.resize((cell, cell), Image.LANCZOS))
+            else:
+                # No background removal available: feather the square instead.
+                # A diffusion sprite arrives with its own background, and a hard
+                # paste reads as a picture stuck on the map rather than debris
+                # lying on it. Softer than a cut-out, but never broken.
+                mask = Image.new("L", (cell, cell), 0)
+                md = ImageDraw.Draw(mask)
+                steps = max(6, cell // 4)
+                for i in range(steps):
+                    t = i / float(steps)
+                    inset = int(t * cell * 0.5)
+                    md.ellipse([inset, inset, cell - inset, cell - inset],
+                               fill=int(255 * min(1.0, (t + 0.15) * 1.5)))
+                img.paste(sprite.convert("RGB"), (sx(x), sy(y)), mask)
         else:
             # No picture: mark the square as wreckage so the change still reads.
             d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell],

@@ -222,18 +222,18 @@ class VttEngine:
             return None
         if gen is None:
             gen = self.regenerate(row)
-        # Pin the picture to the layout as GENERATED, not as currently damaged.
-        # Terrain changes hash into the signature, so without this a smashed
-        # pillar would re-render the entire room mid-fight — for one square.
-        # What the party broke is painted on top instead (see debris_for).
-        pristine = generate_map(row.archetype, width=row.width, height=row.height,
-                                seed=row.seed, lighting=row.lighting)
-        ref = layout_signature(pristine.grid, pristine.archetype, pristine.seed)
+        # The signature is taken from the CURRENT grid, so the cache key always
+        # matches what the picture was actually drawn from. Pinning it to the
+        # pristine layout looked like a way to survive battle damage, but two
+        # tables that painted different furniture into the same generated room
+        # would then have shared one picture.
+        #
+        # Damage doesn't re-render anyway: nothing calls this on a break — the
+        # wreckage path draws a small sprite instead (see render_debris).
         self._set_fields(map_id, art_status="pending")
         art = render_battlemap(
             gen, store=self.image_store, name=row.name, biome=row.biome,
-            lighting=row.lighting, extra=extra, conditions=conditions,
-            ref_slug=ref)
+            lighting=row.lighting, extra=extra, conditions=conditions)
         self._set_fields(
             map_id,
             background_image_id=art.image_id,

@@ -241,7 +241,28 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   sight and movement all read the tile. State follows the `doors` precedent:
   terrain holds what a square IS, a JSON column holds what happened to it.
   Objects are immune to poison and psychic; material decides the rest.
-- **Damage does NOT re-render the battlemap.** The base art is pinned to the
+- **Damage does NOT re-render the battlemap** — because nothing calls
+  `render_art` on a break, not because the cache key lies. (An earlier
+  attempt pinned the art to the PRISTINE layout signature; that made two
+  tables who painted different furniture into the same generated room share
+  one picture. The signature follows the CURRENT grid, so the key always
+  matches what was drawn.) Wreckage is a small sprite instead.
+- **Wreckage sprites: render large, cut, store small, PRE-render.** SDXL is
+  trained at 1024, so 512-and-downscale is sharper than asking for 320 (and
+  256 measured WORSE than 320). rembg (`u2netp`, Windows venv) cuts the
+  background so a sprite is debris lying on the floor rather than a picture
+  stuck to it; without rembg it feathers instead and still works. The whole
+  catalogue is only ~50 sprites (5 wreckage kinds x 10 board looks) — run
+  `scripts/debris_prerender.py --render` once and a mid-combat smash costs a
+  cache lookup, not a render.
+- **A painted board still draws the rules on top.** `render_board_png` given
+  an `image_lookup` composites the battlemap and its debris — then OUTLINES
+  the mechanically significant tiles, and washes only ground that stops or
+  hurts you. A diffusion model cannot put a pillar on square 6,5, so the art
+  and the grid disagree by design; the outline is what stops that
+  disagreement reaching the players. Solid tints over every wall smother the
+  picture — that was the first attempt and it was wrong.
+- **DEPRECATED-NOTE:** The base art is pinned to the
   layout as GENERATED (a pristine `layout_signature`), because the live grid
   hashes differently the moment anything breaks and would otherwise repaint
   the whole room over one square. Wreckage is a small sprite drawn on top,

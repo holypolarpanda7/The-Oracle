@@ -189,23 +189,65 @@ def render_battlemap(gen: GeneratedMap, *, store=None, name: str = "",
     )
 
 
-#: Wreckage sprite size, MEASURED rather than assumed. Warm (model already in
-#: VRAM) on this rig: 320px 6.1s, 256px 8.2s, 512px 9.2s, against 13.5s for a
-#: full ~1.1MP battlemap. So a sprite is roughly 2x cheaper — worthwhile, but
-#: nowhere near proportional to the pixels, because a diffusion render carries
-#: fixed per-call overhead that dominates at small sizes. 256px was measurably
-#: WORSE than 320: SDXL is trained at 1024, and very small latents stop paying.
+#: Wreckage sprites are RENDERED large and stored small. SDXL is trained at
+#: 1024, so asking it for 320px gives a muddy 320px; asking for 512 and
+#: downscaling gives a sharp one. Measured warm on this rig: 320px 6.1s,
+#: 256px 8.2s (worse — too far off-distribution), 512px 9.2s, against 13.5s
+#: for a full ~1.1MP battlemap.
 #:
-#: The real economy is elsewhere. A sprite is keyed by (what it became, its
-#: material, the board's look), so the first shattered pillar pays for every
-#: shattered pillar in every room that looks like it — the same trick that made
-#: the item-art catalogue affordable.
-DEBRIS_PX = 320
+#: So a sprite is roughly 1.5x cheaper than a whole map, nowhere near
+#: proportional to its pixels, because a diffusion call carries fixed overhead
+#: that dominates at small sizes. The real economy is elsewhere: a sprite is
+#: keyed by (what it became, its material, the board's look), so the first
+#: shattered pillar pays for every shattered pillar in every room that looks
+#: like it — the same trick that made the item-art catalogue affordable.
+DEBRIS_RENDER_PX = 512      # what the model is asked for
+DEBRIS_PX = 256             # what gets stored, after the background is cut
+
+
+def cutout(png_bytes: bytes, *, size_px: int = DEBRIS_PX) -> Optional[bytes]:
+    """Cut a sprite free of its background and downscale it. None on failure.
+
+    A diffusion model always paints something behind the subject, and a sprite
+    dropped on a battlemap has to be the subject ALONE — otherwise it reads as
+    a picture stuck on the floor rather than debris lying on it. rembg does the
+    matting; the downscale to a stored size happens after, because the model
+    draws a sharper 512 than it draws a 256.
+
+    Optional: with rembg absent this returns None and the caller keeps the
+    uncut render, which still works (feathered) but reads less cleanly.
+    """
+    try:
+        import io as _io
+        from PIL import Image as _Image
+        from rembg import remove, new_session
+    except Exception as e:
+        print(f"[vtt.art] no background removal available ({e}); "
+              "keeping the sprite as rendered")
+        return None
+    try:
+        global _REMBG_SESSION
+        if _REMBG_SESSION is None:
+            # u2netp: the small model. A pile of rubble does not need the big
+            # one, and this keeps the first call from stalling a turn.
+            _REMBG_SESSION = new_session("u2netp")
+        cut = remove(png_bytes, session=_REMBG_SESSION)
+        im = _Image.open(_io.BytesIO(cut)).convert("RGBA")
+        im = im.resize((size_px, size_px), _Image.LANCZOS)
+        buf = _io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception as e:
+        print(f"[vtt.art] background removal failed: {e}")
+        return None
+
+
+_REMBG_SESSION = None
 
 
 def render_debris(becomes: str, *, store=None, material: str = "",
                   context: str = "", was: str = "",
-                  size_px: int = DEBRIS_PX) -> Optional[int]:
+                  size_px: int = DEBRIS_RENDER_PX) -> Optional[int]:
     """A small top-down sprite of what a broken thing left behind.
 
     Shared, not per-map: rubble keyed by (what it is, what it was, the board's

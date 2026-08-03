@@ -55,15 +55,50 @@ def main() -> int:
                       name="The Vault Antechamber", width=18, height=12,
                       seed=20260803, render_art=False)
 
-    # A room with something worth breaking: two pillars flanking a door.
-    v.set_terrain(sc.id, [(6, 5), (6, 7)], "O")
-    v.set_terrain(sc.id, [(11, 6)], "+")
-    v.set_terrain(sc.id, [(4, 3), (4, 9)], "o")
+    # Put the furniture somewhere it makes SENSE. A door belongs in a wall, not
+    # standing in open floor — the first version of this sample painted one at
+    # 11,6 in the middle of the room and it looked exactly as odd as it was.
+    g = v.grid_of(v.get_scene(sc.id))
 
-    kara = v.add_token(sc.id, name="Kara", x=3, y=6, team="party", speed_ft=30)
-    ogre = v.add_token(sc.id, name="Ogre", x=8, y=6, team="foe", speed_ft=30,
-                       size="large")
-    v.add_token(sc.id, name="Bram", x=3, y=8, team="party", speed_ft=25)
+    def wall_gap():
+        """A wall square with open floor on both sides — a doorway."""
+        for y in range(1, g.height - 1):
+            for x in range(1, g.width - 1):
+                if g.get(x, y) != "#":
+                    continue
+                if g.passable(x - 1, y) and g.passable(x + 1, y):
+                    return x, y
+                if g.passable(x, y - 1) and g.passable(x, y + 1):
+                    return x, y
+        return None
+
+    def open_floor(n, near=None):
+        """n plain squares, optionally clustered near a point."""
+        spots = [(x, y) for y in range(1, g.height - 1)
+                 for x in range(1, g.width - 1)
+                 if g.get(x, y) == "." and g.passable(x, y)]
+        if near:
+            spots.sort(key=lambda p: abs(p[0] - near[0]) + abs(p[1] - near[1]))
+        return spots[:n]
+
+    door_sq = wall_gap()
+    pillars = open_floor(2, near=(g.width // 2, g.height // 2))
+    crates = open_floor(4)[2:4]
+    for sq in pillars:
+        v.set_terrain(sc.id, [sq], "O")
+    for sq in crates:
+        v.set_terrain(sc.id, [sq], "o")
+    if door_sq:
+        v.set_terrain(sc.id, [door_sq], "+")
+    print(f"  door in a wall at {door_sq}; pillars {pillars}; crates {crates}")
+    breakables = [*pillars, *crates] + ([door_sq] if door_sq else [])
+
+    # Stand them either side of a pillar so the cover claim is about the pillar.
+    px, py = pillars[0]
+    kara = v.add_token(sc.id, name="Kara", x=px - 1, y=py, team="party", speed_ft=30)
+    ogre = v.add_token(sc.id, name="Ogre", x=px + 1, y=py, team="foe", speed_ft=30)
+    v.add_token(sc.id, name="Bram", x=px - 1, y=min(g.height - 2, py + 2),
+                team="party", speed_ft=25)
 
     print("painting the battlemap (this is the expensive one)...")
     v.render_art(sc.id, extra="cracked flagstones, old dust, iron sconces",
@@ -80,9 +115,8 @@ def main() -> int:
     print(f"  before: Ogre's cover from Kara = {before_cover}")
 
     print("\nbreaking things...")
-    for sq, dmg in (((6, 5), 500), ((6, 7), 500), ((11, 6), 500),
-                    ((4, 3), 500)):
-        r = v.damage_object(sc.id, sq[0], sq[1], dmg, damage_type="bludgeoning")
+    for sq in breakables:
+        r = v.damage_object(sc.id, sq[0], sq[1], 500, damage_type="bludgeoning")
         print(f"  {sq}: {r.get('detail') or r.get('reason')}")
 
     print("\ndrawing wreckage sprites (small, and shared by kind)...")
