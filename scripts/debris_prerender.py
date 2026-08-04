@@ -1,10 +1,10 @@
-"""Pre-render the wreckage sprite catalogue, so no fight ever waits for one.
+"""Pre-render the board's sprite catalogue, so no fight ever waits for one.
 
-Debris is a SMALL, shared set. A sprite is keyed by (what the square became,
-its material, the board's look) — and there are only a handful of things a
-breakable tile can leave behind, times a handful of looks. So the whole
-catalogue is a few dozen renders that can be done once, in advance, exactly
-like the item-art catalogue.
+Both halves: the OBJECTS that stand on a square (pillar, crate, door, altar…)
+and the WRECKAGE they leave when they break. Each is a small, shared set — a
+sprite is keyed by what the thing is, what it became, its material and the
+board's look — so the whole catalogue is a couple of hundred renders that can
+be done once, in advance, exactly like the item-art catalogue.
 
     ./.venv/Scripts/python.exe scripts/debris_prerender.py --audit
     ./.venv/Scripts/python.exe scripts/debris_prerender.py --render
@@ -41,12 +41,21 @@ CONTEXTS = [
 
 
 def _catalogue():
-    """Every (becomes, material, was) the breakable tiles can actually produce."""
+    """Every (becomes, material, was) the breakable tiles can actually produce.
+
+    One row per BREAKABLE, not per (becomes, material): a pillar, an altar and
+    a wall all leave stone rubble, and folding them together is what made a
+    smashed crate come back looking like a smashed wall.
+    """
     from vtt.terrain import _BREAKABLE, tile
-    seen = {}
-    for code, (becomes, _ac, _hp, material) in _BREAKABLE.items():
-        seen.setdefault((becomes, material), tile(code).name)
-    return [(b, m, was) for (b, m), was in sorted(seen.items())]
+    return [(becomes, material, tile(code).name)
+            for code, (becomes, _ac, _hp, material) in sorted(_BREAKABLE.items())]
+
+
+def _object_catalogue():
+    """Every discrete object that gets a sprite of its own."""
+    from vtt.terrain import OBJECT_SPRITES
+    return sorted(OBJECT_SPRITES)
 
 
 def main(argv=None) -> int:
@@ -65,35 +74,51 @@ def main(argv=None) -> int:
 
     from imagery import ImageStore
     from imagery.models import context_key, slugify
-    from vtt.art import render_debris
-    from vtt.terrain import tile
+    from vtt.art import debris_ref, object_ref, render_debris, render_object
+    from vtt.terrain import sprite_label, tile
 
     store = ImageStore()
     contexts = ([c.strip() for c in a.contexts.split(",") if c.strip()]
                 if a.contexts else CONTEXTS)
-    cat = _catalogue()
-    print(f"{len(cat)} wreckage kinds x {len(contexts)} looks "
-          f"= {len(cat) * len(contexts)} sprites\n")
+
+    # Two catalogues, one script. Objects are the half that has to exist BEFORE
+    # anything breaks — you cannot recognise rubble as a broken pillar unless
+    # the pillar was visibly standing there first — so they are pre-rendered on
+    # the same terms as the wreckage they turn into.
+    jobs = []       # (ref, label, context, thunk)
+    for code in _object_catalogue():
+        for ctx in contexts:
+            jobs.append((object_ref(code), f"{sprite_label(code)} (standing)",
+                         ctx, lambda c=code, x=ctx: render_object(
+                             code=c, store=store, context=x)))
+    for becomes, material, was in _catalogue():
+        for ctx in contexts:
+            jobs.append((debris_ref(becomes, material, was),
+                         f"broken {was} -> {tile(becomes).name} ({material})",
+                         ctx, lambda b=becomes, m=material, w=was, x=ctx:
+                             render_debris(b, store=store, material=m,
+                                           was=w, context=x)))
+
+    n_obj = len(_object_catalogue())
+    n_deb = len(_catalogue())
+    print(f"{n_obj} object kinds + {n_deb} wreckage kinds x {len(contexts)} "
+          f"looks = {len(jobs)} sprites\n")
 
     missing, have = [], 0
-    for becomes, material, was in cat:
-        ref = f"debris-{tile(becomes).name.replace(' ', '-')}-{material or 'any'}"
-        for ctx in contexts:
-            rows = store.list_for("map", slugify(ref), context_key(ctx))
-            if rows:
-                have += 1
-            else:
-                missing.append((becomes, material, was, ctx))
+    for ref, label, ctx, thunk in jobs:
+        if store.list_for("map", slugify(ref), context_key(ctx)):
+            have += 1
+        else:
+            missing.append((ref, label, ctx, thunk))
 
     if a.prune:
-        from sqlmodel import Session, select, delete
+        from sqlmodel import Session, select
         from imagery.models import EntityImage
-        keep = {slugify(f"debris-{tile(b).name.replace(' ', '-')}-{m or 'any'}")
-                for b, m, _ in cat}
+        keep = {slugify(ref) for ref, _l, _c, _t in jobs}
         with Session(store.engine) as sess:
-            rows = [r for r in sess.exec(select(EntityImage).where(
-                EntityImage.ref_slug.like("debris-%"))).all()
-                if r.ref_slug not in keep]
+            rows = [r for r in sess.exec(select(EntityImage)).all()
+                    if (str(r.ref_slug).startswith(("debris-", "object-"))
+                        and r.ref_slug not in keep)]
             for r in rows:
                 sess.delete(r)
             sess.commit()
@@ -104,19 +129,16 @@ def main(argv=None) -> int:
 
     print(f"already drawn: {have}   missing: {len(missing)}")
     if a.audit and not a.render:
-        for becomes, material, _was, ctx in missing[:40]:
-            print(f"   {tile(becomes).name:<12} {material:<6} in {ctx}")
+        for _ref, label, ctx, _t in missing[:40]:
+            print(f"   {label:<44} in {ctx}")
         if len(missing) > 40:
             print(f"   ... and {len(missing) - 40} more")
         return 0
 
     t0 = time.time()
-    for i, (becomes, material, was, ctx) in enumerate(missing, 1):
-        print(f"[{i}/{len(missing)}] {tile(becomes).name} ({material}) in {ctx} ...",
-              end="", flush=True)
-        img = render_debris(becomes, store=store, material=material,
-                            was=was, context=ctx)
-        print(" ok" if img else " FAILED")
+    for i, (_ref, label, ctx, thunk) in enumerate(missing, 1):
+        print(f"[{i}/{len(missing)}] {label} in {ctx} ...", end="", flush=True)
+        print(" ok" if thunk() else " FAILED")
     if missing:
         print(f"\n{len(missing)} drawn in {time.time() - t0:.0f}s "
               f"({(time.time() - t0) / len(missing):.1f}s each)")

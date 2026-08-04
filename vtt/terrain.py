@@ -195,22 +195,114 @@ def object_stats(code: str) -> Optional[dict]:
 #:
 #: Walls and rock faces are deliberately absent: they are structure, and the
 #: ControlNet floorplan puts those in the painting itself.
+#:
+#: Every subject names the VIEW before it names the thing. A battlemap is
+#: orthographic — the camera is on the ceiling — but the model's prior for
+#: "a wooden door" is a door photographed from in front, and a trailing "seen
+#: from above" does not outweigh it. So the subject leads with the part of the
+#: object that actually faces a viewer directly overhead (a pillar's capital, a
+#: crate's lid, a tree's crown); the elevation view has to be argued out of the
+#: prompt, not appended to it.
 OBJECT_SPRITES: dict[str, str] = {
-    "O": "carved stone pillar",
-    "o": "stacked wooden crates and barrels",
-    "n": "an overturned table and benches",
-    "T": "a thick tree trunk seen from above",
-    "A": "a carved stone altar",
-    "w": "a waist-high broken wall",
-    "+": "a heavy closed wooden door",
-    "/": "an open doorway with the door swung back",
-    "p": "an iron portcullis",
+    "O": ("the flat circular capital of a stone pillar directly below the "
+          "viewer, a ring of stone on the floor, orthographic top-down"),
+    "o": ("the square plank lids of three large iron-banded wooden crates "
+          "packed together directly below the viewer, big square boards of "
+          "dark timber, orthographic top-down"),
+    "n": ("an overturned wooden table and its benches lying flat on the floor "
+          "directly below the viewer, orthographic top-down"),
+    "T": ("the crown of a broad tree directly below the viewer, a circle of "
+          "foliage, orthographic top-down"),
+    "A": ("the flat top slab of a carved stone altar directly below the "
+          "viewer, orthographic top-down"),
+    "w": ("the flat coping stones along the top of a low broken wall directly "
+          "below the viewer, a straight band of masonry, orthographic top-down"),
+    "+": ("a closed wooden door lying flat in its stone frame directly below "
+          "the viewer, a plain banded rectangle spanning the opening, "
+          "orthographic top-down floorplan"),
+    "/": ("a door swung wide open against the wall beside its empty stone "
+          "frame directly below the viewer, orthographic top-down floorplan"),
+    "p": ("an iron portcullis of vertical bars filling a stone opening "
+          "directly below the viewer, orthographic top-down floorplan"),
+}
+
+#: What a diffusion model must NOT do with a battlemap sprite. Perspective is
+#: the whole fight: anything with a horizon, a vanishing point or a visible
+#: front face reads as a picture propped up on the floor.
+SPRITE_NEGATIVE = (
+    "side view, front view, three-quarter view, isometric, perspective, "
+    "elevation, eye level, horizon, sky, background wall, room, interior "
+    "scene, vanishing point, shadow cast sideways, people, text, label, "
+    "border, frame"
+)
+
+#: Short names for the board's own labels — the tile name where it's already
+#: short, something shorter where it isn't.
+SPRITE_LABELS: dict[str, str] = {
+    "n": "table",
+    "o": "crates",
+    "/": "doorway",
+    "p": "gate",
 }
 
 
 def sprite_subject(code: str) -> Optional[str]:
     """What to draw on this square, or None if the painting handles it."""
     return OBJECT_SPRITES.get(code)
+
+
+def sprite_label(code: str) -> str:
+    """A word or two naming this square's object, for drawing on the board."""
+    return SPRITE_LABELS.get(code) or tile(code).name
+
+
+_LABEL_BY_NAME = {tile(c).name: v for c, v in SPRITE_LABELS.items()}
+
+
+def short_name(name: str) -> str:
+    """The board-label form of a tile name, for text recorded as a name.
+
+    Wreckage remembers what it WAS as a name ("furniture"), not as a code, so
+    this is the same shortening :func:`sprite_label` does, reached from the
+    other side.
+    """
+    return _LABEL_BY_NAME.get(name, name)
+
+
+#: Apertures: a way THROUGH a wall run, rather than a thing standing on floor.
+#: They are drawn and reasoned about differently from every other object —
+#: a door belongs to the wall it interrupts, not to the square it occupies.
+APERTURES = frozenset({"+", "/", "p"})
+
+#: What counts as "the wall continues this way" when working out which way an
+#: aperture faces. Other apertures count: a double door is still one run.
+_RUN_STRUCTURE = frozenset({"#", "R", "w"}) | APERTURES
+
+
+def aperture_axis(grid: "Grid", x: int, y: int) -> str:
+    """Which way the wall runs through an aperture: ``"ew"``, ``"ns"`` or ``""``.
+
+    A door is a gap in a wall, so it has a direction — and everything that
+    draws one needs it. Read from the grid rather than stored, for the same
+    reason :meth:`VttEngine.objects_for` reads the grid: the wall around the
+    door is already the truth about which way it faces, and a second record
+    would only be a second thing to keep in step.
+
+    ``""`` means the neighbours don't agree on a run (a door in open ground, or
+    at a corner) — callers should fall back to drawing it square.
+    """
+    def runs(ax: int, ay: int) -> bool:
+        if not grid.in_bounds(ax, ay):
+            return True                 # the map edge is as solid as a wall
+        return grid.get(ax, ay) in _RUN_STRUCTURE
+
+    ew = runs(x - 1, y) and runs(x + 1, y)
+    ns = runs(x, y - 1) and runs(x, y + 1)
+    if ew and not ns:
+        return "ew"
+    if ns and not ew:
+        return "ns"
+    return ""
 
 
 def required_mode(code: str) -> Optional[str]:

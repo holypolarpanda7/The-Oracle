@@ -49,8 +49,9 @@ from .models import (
     TokenKind,
     size_squares,
 )
-from .terrain import (Grid, tile, required_mode, object_stats,
-                       sprite_subject)
+from .terrain import (APERTURES, Grid, aperture_axis, object_stats,
+                      required_mode, short_name, sprite_label, sprite_subject,
+                      tile)
 
 Square = tuple[int, int]
 
@@ -563,6 +564,13 @@ class VttEngine:
                 continue
             out.append({"x": x, "y": y, "code": code,
                         "name": tile(code).name,
+                        "label": sprite_label(code),
+                        # A door belongs to the wall it interrupts, so it is
+                        # drawn as a panel lying along that wall rather than a
+                        # picture filling the square. Which way the wall runs
+                        # is read off the grid here, once, for every view.
+                        "axis": (aperture_axis(g, x, y)
+                                 if code in APERTURES else ""),
                         "image_id": sprites.get(tile(code).name)})
         return out
 
@@ -604,7 +612,13 @@ class VttEngine:
             except ValueError:
                 continue
             if isinstance(entry, dict):
-                out.append({"x": x, "y": y, **entry})
+                # Say what it WAS, not what it is. "rubble" on a square is the
+                # complaint that debris appears from nowhere; "broken pillar"
+                # is the answer, and it costs a word.
+                was = short_name(str(entry.get("was") or "").strip())
+                out.append({"x": x, "y": y,
+                            "label": f"broken {was}" if was else "wreckage",
+                            **entry})
         return out
 
     def breakables(self, map_id: int) -> list[dict]:

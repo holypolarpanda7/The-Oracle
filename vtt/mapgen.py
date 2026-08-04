@@ -222,9 +222,30 @@ def _room(grid: Grid, x0: int, y0: int, x1: int, y1: int, *,
     grid.outline_rect(x0, y0, x1, y1, wall)
 
 
+#: Which way is "out" through each wall of a room.
+_OUTWARD = {"north": (0, -1), "south": (0, 1), "west": (-1, 0), "east": (1, 0)}
+
+#: Wall-ish codes a door has to be punched all the way through.
+_DOOR_BLOCKERS = ("#", "R", " ")
+
+
 def _door_on_wall(grid: Grid, rng: random.Random, x0: int, y0: int,
-                  x1: int, y1: int, side: Optional[str] = None) -> Optional[Square]:
-    """Punch a door through one wall of a rectangular room."""
+                  x1: int, y1: int, side: Optional[str] = None,
+                  code: str = "+") -> Optional[Square]:
+    """Punch a door through one wall of a rectangular room — all the way through.
+
+    "All the way through" is the part that was missing. Most generators fill the
+    whole grid with wall and then carve a room inside it, so a room's own wall
+    ring has MORE wall behind it. Setting one square of that ring to a door left
+    the door opening onto solid rock: an alcove, not a way out. On the board it
+    read as a door standing in the middle of a wall for no reason, and the
+    floorplan handed to ControlNet showed a notch rather than a gap.
+
+    So the door walks OUTWARD to the last wall square before open ground (or
+    before the edge of the board), everything between it and the room becomes
+    floor, and the door lands where the wall actually ends. A door in a
+    one-square interior wall doesn't move at all — the walk stops immediately.
+    """
     sides = [side] if side else ["north", "south", "east", "west"]
     rng.shuffle(sides)
     for s in sides:
@@ -236,9 +257,19 @@ def _door_on_wall(grid: Grid, rng: random.Random, x0: int, y0: int,
             x = x0 if s == "west" else x1
         else:
             continue
-        if grid.in_bounds(x, y):
-            grid.set(x, y, "+")
-            return (x, y)
+        if not grid.in_bounds(x, y):
+            continue
+        dx, dy = _OUTWARD[s]
+        cx, cy = x, y
+        while (grid.in_bounds(cx + dx, cy + dy)
+               and grid.get(cx + dx, cy + dy) in _DOOR_BLOCKERS):
+            cx, cy = cx + dx, cy + dy
+        px, py = x, y
+        while (px, py) != (cx, cy):          # hollow out the wall behind it
+            grid.set(px, py, FLOOR)
+            px, py = px + dx, py + dy
+        grid.set(cx, cy, code)
+        return (cx, cy)
     return None
 
 

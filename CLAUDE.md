@@ -252,9 +252,42 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   256 measured WORSE than 320). rembg (`u2netp`, Windows venv) cuts the
   background so a sprite is debris lying on the floor rather than a picture
   stuck to it; without rembg it feathers instead and still works. The whole
-  catalogue is only ~50 sprites (5 wreckage kinds x 10 board looks) — run
-  `scripts/debris_prerender.py --render` once and a mid-combat smash costs a
-  cache lookup, not a render.
+  catalogue is ~190 sprites (9 object kinds + 10 wreckage kinds x 10 board
+  looks) — run `scripts/debris_prerender.py --render` once and a mid-combat
+  smash costs a cache lookup, not a render.
+  **A matte is checked, never trusted.** Told to cut stone out of a picture of
+  the same stone in the same light, rembg fails three ways, and all three put
+  a wrong thing on the board: it keeps everything (a pale BOX round a pillar),
+  keeps nothing (an empty square where the rules say a crate is), or keeps the
+  right shape at half strength (a smudge). So `art.cutout` measures what the
+  matte kept and falls back to the raw render outside 8–97%, hardens soft
+  alpha with a contrast curve, re-fits the subject to its square from the
+  alpha's own bounding box (the model draws a crate a sixth of the frame often
+  enough to matter, and how big it draws things is not steerable), and eases
+  the corners so a failed cut never lands as a rectangle. Sprite prompts name
+  the VIEW before the thing — "the flat circular capital of a pillar directly
+  below the viewer", not "a pillar, seen from above", because the model's
+  prior for any object is its elevation and a trailing modifier loses to it.
+  `art.SPRITE_REV` versions the ref slug: bump it when the FRAMING changes, or
+  boards keep serving sprites drawn to a framing that no longer matches.
+- **A door belongs to the wall it interrupts.** Two consequences, both in
+  code: `mapgen._door_on_wall` punches ALL the way through — most generators
+  fill the grid with wall and carve a room inside it, so setting one square of
+  the room's own ring to a door left it opening onto solid rock, an alcove
+  that read as a door standing in a wall for no reason. And a door is DRAWN as
+  a thin panel lying along its wall run (`terrain.aperture_axis` reads the
+  direction off the grid; `render_image._paste_panel` draws it, jamb ticks and
+  all), never as a picture filling its square — square and centred it reads as
+  furniture parked on the floor. The control image leaves an aperture's
+  PASSAGE faces open and keeps its JAMBS, or a door at the board's edge gets
+  sealed shut by the out-of-bounds rule.
+- **Every object and every wreck is NAMED on the board.** The walls-overlay
+  argument applied to sprites: the picture may be atmospheric, the word is not
+  a guess, and "broken pillar" is the answer to wreckage that appears from
+  nowhere. One chip per run, not per square — two crates side by side are one
+  fact, and labelling both prints each over the other. Wreckage also gets a
+  deterministic dark scuff under its sprite, because stone rubble on a
+  flagstone floor is the low-contrast case a render can lose.
 - **The battlemap is CONDITIONED on the layout, not described to it.** A text
   prompt cannot say where a wall goes: told "a dungeon room with stone walls",
   the model paints a plausible room whose walls land nowhere near the grid's.

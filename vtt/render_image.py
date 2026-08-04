@@ -70,6 +70,90 @@ def _cutout_cached(image_id, raw_bytes):
     return out
 
 
+#: How much of a square a door panel fills ACROSS the wall it sits in. A door
+#: is a plank in a wall, not a thing standing in a room — drawn square and
+#: centred it reads as furniture parked in the middle of the floor, which is
+#: exactly how the first pass looked.
+_PANEL_THICKNESS = 0.46
+
+
+def _paste_panel(img, d, sprite, px: int, py: int, cell: int, axis: str,
+                 edge=None) -> None:
+    """Draw an aperture as a panel lying IN its wall, not filling its square.
+
+    ``axis`` is the direction the wall runs: ``"ew"`` puts the panel across the
+    square horizontally, ``"ns"`` vertically. The jamb ticks at either end are
+    drawn by us, never by the model — they are what tie the door to the wall,
+    and they stay right even when the painting behind them wanders.
+    """
+    thick = max(3, int(round(cell * _PANEL_THICKNESS)))
+    inset = (cell - thick) // 2
+    if axis == "ns":
+        box = (px + inset, py, px + inset + thick, py + cell)
+        size = (thick, cell)
+    else:
+        box = (px, py + inset, px + cell, py + inset + thick)
+        size = (cell, thick)
+
+    if sprite is not None:
+        sp = sprite
+        if axis == "ns":
+            # The sprite is drawn as a horizontal panel; stand it on end rather
+            # than squashing it sideways, or the planks run the wrong way.
+            sp = sp.rotate(90, expand=True)
+        sp = sp.resize(size, Image.LANCZOS)
+        img.paste(sp, (box[0], box[1]), sp)
+    else:
+        d.rectangle(box, fill=(96, 74, 41))
+
+    color = edge or (160, 124, 60)
+    d.rectangle(box, outline=(*color, 230), width=2)
+    # Jambs: a short tick across the wall at each end of the panel.
+    tick = max(2, cell // 8)
+    if axis == "ns":
+        for yy in (py, py + cell - 1):
+            d.line([px + inset - tick, yy, px + inset + thick + tick, yy],
+                   fill=(*color, 255), width=2)
+    else:
+        for xx in (px, px + cell - 1):
+            d.line([xx, py + inset - tick, xx, py + inset + thick + tick],
+                   fill=(*color, 255), width=2)
+
+
+def _draw_labels(img, chips, font) -> None:
+    """Name every object and every wreck, in small dark chips on the board.
+
+    Composited in ONE overlay rather than drawn square by square, because the
+    chips are translucent and the board beneath them is a painting — a solid
+    box would punch a hole in the art for the sake of one word, and a per-chip
+    composite would pay for the whole canvas each time.
+
+    This is the walls-overlay argument applied to objects: the picture is
+    allowed to be atmospheric, and the word is not a guess. A player who can
+    read "door" on a square never has to wonder whether the model drew one.
+    """
+    if not chips:
+        return
+    pad = 3
+    tmp = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    td = ImageDraw.Draw(tmp)
+    for cx, base_y, text in chips:
+        try:
+            l, t, r, b = td.textbbox((0, 0), text, font=font)
+        except Exception:                       # very old Pillow
+            l = t = 0
+            r, b = len(text) * 6, 10
+        w, h = r - l, b - t
+        x0 = int(cx - w / 2) - pad
+        y0 = int(base_y) - h - 2 * pad
+        td.rectangle((x0, y0, x0 + w + 2 * pad, y0 + h + 2 * pad),
+                     fill=(9, 12, 21, 200), outline=(*_GOLD, 130), width=1)
+        td.text((x0 + pad - l, y0 + pad - t), text, font=font,
+                fill=(*_TEXT, 255))
+    img.paste(Image.alpha_composite(img.convert("RGBA"), tmp).convert("RGB"),
+              (0, 0))
+
+
 _TEAM_COLORS = {
     "party": (79, 163, 255),
     "foe": (255, 90, 90),
@@ -206,10 +290,14 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
     # board legible: a pillar you can point at, and later recognise as the
     # rubble beside your feet. The painting cannot do it — a prompt cannot
     # place anything — so the sprites do.
+    labels: dict[tuple[int, int], str] = {}
     for obj in state.get("objects") or []:
         x, y = int(obj.get("x", -1)), int(obj.get("y", -1))
         if not (0 <= x < w_sq and 0 <= y < h_sq):
             continue
+        if obj.get("label"):
+            labels[(x, y)] = str(obj["label"])
+        axis = str(obj.get("axis") or "")
         if image_lookup is not None and obj.get("image_id"):
             try:
                 raw = image_lookup(obj["image_id"])
@@ -217,10 +305,19 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
                 raw = None
             cut = _cutout_cached(obj["image_id"], raw) if raw else None
             if cut is not None:
-                sp = cut.resize((cell, cell), Image.LANCZOS)
-                img.paste(sp, (sx(x), sy(y)), sp)
+                if axis:
+                    _paste_panel(img, d, cut, sx(x), sy(y), cell, axis,
+                                 _EDGE_COLORS.get(str(obj.get("code") or "")))
+                else:
+                    sp = cut.resize((cell, cell), Image.LANCZOS)
+                    img.paste(sp, (sx(x), sy(y)), sp)
                 continue
-        # No sprite: the tile colour and edge already drew it, so nothing to do.
+        if axis:
+            # No sprite yet, but a door is worth drawing without one: a bar
+            # across its opening says more than the square's colour does.
+            _paste_panel(img, d, None, sx(x), sy(y), cell, axis,
+                         _EDGE_COLORS.get(str(obj.get("code") or "")))
+        # Otherwise the tile colour and edge already drew it — nothing to do.
 
     # ---- wreckage ----
     # Painted over whatever is beneath it, on the square that was broken. When
@@ -230,6 +327,15 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
         x, y = int(deb.get("x", -1)), int(deb.get("y", -1))
         if not (0 <= x < w_sq and 0 <= y < h_sq):
             continue
+        if deb.get("label"):
+            labels[(x, y)] = str(deb["label"])
+        # Scuff the square before anything is drawn on it. Stone rubble on a
+        # flagstone floor is the low-contrast case a sprite can lose — same
+        # material, same light — and the square has to read as CHANGED whether
+        # or not the picture cooperated. Deterministic, so it can't fail.
+        scuff = img.crop((sx(x), sy(y), sx(x) + cell, sy(y) + cell))
+        img.paste(Image.blend(scuff, Image.new("RGB", scuff.size, (38, 30, 22)),
+                              0.3), (sx(x), sy(y)))
         sprite = None
         if image_lookup is not None and deb.get("image_id"):
             try:
@@ -265,6 +371,22 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
                         fill=(90, 78, 62, 190))
         d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell],
                     outline=(210, 150, 90, 200), width=2)
+
+    # ---- labels ----
+    # Under the tokens, over everything else. A sprite the model drew is only
+    # as legible as the model was clear; the word is not a guess. This is the
+    # same argument as the walls-overlay — the code says what a square IS, and
+    # the picture is welcome to be atmospheric about it.
+    # One chip per RUN, not per square. Two crates side by side are two squares
+    # and one fact; labelling both prints "broken crates" over "broken crat…"
+    # and costs the player the word it was there to give them. A label is
+    # dropped only when the square west or north of it already says the same
+    # thing, so an isolated object is never left unnamed.
+    _draw_labels(img, [(sx(x) + cell // 2, sy(y) + cell - 2, text)
+                       for (x, y), text in sorted(labels.items())
+                       if labels.get((x - 1, y)) != text
+                       and labels.get((x, y - 1)) != text],
+                 _font(max(9, cell // 5)))
 
     # ---- effects ----
     for eff in state.get("effects") or []:
