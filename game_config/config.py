@@ -322,6 +322,15 @@ class ImageryConfig:
     #   {"map": [{"name": "dnd_battlemaps_xl.safetensors", "model": 0.9}]}
     # A kind listed here uses ITS list INSTEAD of `loras`, not in addition.
     loras_by_kind: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    # ControlNet for BATTLEMAPS only, and it is not a style knob — it is the
+    # difference between a picture of this room and a picture of some room. A
+    # text prompt cannot say where a wall goes, so the tile grid is drawn as a
+    # floorplan and the render is conditioned on it (see vtt/art.control_image).
+    # Empty = off, and the art goes back to being a plausible unrelated room.
+    # Strength ~0.8: high enough to hold the walls, low enough to let the model
+    # decorate. Drop the model file in ComfyUI/models/controlnet/.
+    map_controlnet: str = ""
+    map_controlnet_strength: float = 0.8
     # RescaleCFG (0..1) lets you raise `cfg_scale` without the blown-out colour
     # high CFG normally causes. MEASURED WORSE for this pipeline: on the
     # goliath probe, cfg 10 + rescale 0.7 pushed the render further toward a

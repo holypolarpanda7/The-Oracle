@@ -231,9 +231,18 @@ class VttEngine:
         # Damage doesn't re-render anyway: nothing calls this on a break — the
         # wreckage path draws a small sprite instead (see render_debris).
         self._set_fields(map_id, art_status="pending")
+        cn, cn_strength = "", 0.8
+        try:
+            from game_config import get_config
+            _img = get_config().imagery
+            cn = getattr(_img, "map_controlnet", "") or ""
+            cn_strength = float(getattr(_img, "map_controlnet_strength", 0.8))
+        except Exception as e:
+            print(f"[vtt] controlnet config unavailable: {e}")
         art = render_battlemap(
             gen, store=self.image_store, name=row.name, biome=row.biome,
-            lighting=row.lighting, extra=extra, conditions=conditions)
+            lighting=row.lighting, extra=extra, conditions=conditions,
+            controlnet=cn or None, controlnet_strength=cn_strength)
         self._set_fields(
             map_id,
             background_image_id=art.image_id,

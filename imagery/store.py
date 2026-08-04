@@ -224,6 +224,9 @@ class ImageStore:
                 width: Optional[int] = None,
                 height: Optional[int] = None,
                 seed: Optional[int] = None,
+                control_image: Optional[bytes] = None,
+                controlnet: Optional[str] = None,
+                controlnet_strength: float = 0.8,
                 ) -> tuple[Optional[bytes], Optional[int], bool]:
         """Return (raw_bytes, seed, offline). raw_bytes is None only if offline.
 
@@ -240,6 +243,10 @@ class ImageStore:
         try:
             client = self._client_for(cfg)
             client.loras = self._loras_for(cfg, getattr(prompt, "kind", ""))
+            # Set per render: only a layout-conditioned map wants a ControlNet,
+            # and the same client serves portraits and items too.
+            client.controlnet = controlnet
+            client.controlnet_strength = float(controlnet_strength)
             raw = client.generate(
                 prompt.positive,
                 prompt.negative,
@@ -248,6 +255,7 @@ class ImageStore:
                 steps=cfg.steps,
                 seed=seed,
                 reference_filenames=reference_filenames,
+                control_image=control_image,
                 mature=mature,
             )
             return raw, seed, False
@@ -277,6 +285,9 @@ class ImageStore:
         style_prompt: Optional[str] = None,
         negative_extra: str = "",
         drop_stale: bool = False,
+        control_image: Optional[bytes] = None,
+        controlnet: Optional[str] = None,
+        controlnet_strength: float = 0.8,
     ) -> Optional[ImageResult]:
         """Return an image for (subject x context), reusing or generating as needed.
 
@@ -343,7 +354,10 @@ class ImageStore:
 
         # Otherwise render a fresh image (building bucket variety up to the cap).
         raw, seed, offline = self._render(cfg, prompt, ckey, width=width,
-                                          height=height, seed=seed)
+                                          height=height, seed=seed,
+                                          control_image=control_image,
+                                          controlnet=controlnet,
+                                          controlnet_strength=controlnet_strength)
         if offline or raw is None:
             # Backend down: prefer any stored art for this bucket over a
             # placeholder — a slightly-repeated picture beats a blank one.

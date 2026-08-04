@@ -98,6 +98,8 @@ class ComfyClient:
         ipadapter_weight: float = 0.65,
         ipadapter_preset: str = "STANDARD (medium strength)",
         loras: Optional[list] = None,
+        controlnet: Optional[str] = None,
+        controlnet_strength: float = 0.8,
         rescale_cfg: Optional[float] = None,
         pag_scale: Optional[float] = None,
         freeu: bool = False,
@@ -115,6 +117,15 @@ class ComfyClient:
         self.ipadapter_weight = ipadapter_weight
         self.ipadapter_preset = ipadapter_preset
         self.loras = list(loras or [])
+        # ControlNet: the layout is handed to the model as a PICTURE, because a
+        # prompt cannot say where a wall goes. Set per-render, not globally —
+        # only a battlemap has a floorplan to obey.
+        self.controlnet = controlnet
+        self.controlnet_strength = float(controlnet_strength)
+        # Set for the duration of one generate() call; the graph builder reads
+        # it. Kept off the signature of every helper it would otherwise thread
+        # through, and always cleared afterwards.
+        self._control_image_name: Optional[str] = None
         self.rescale_cfg = rescale_cfg
         self.pag_scale = pag_scale
         self.freeu = freeu
@@ -298,7 +309,42 @@ class ComfyClient:
             g["7"]["inputs"]["text"] = negative
         self._apply_model_layers(g)
         self._apply_lora_triggers(g)
+        self._apply_controlnet(g)
         return g
+
+    def _apply_controlnet(self, g: dict) -> None:
+        """Condition the render on a control image, when one was supplied.
+
+        Spliced between the text encoders and the sampler:
+
+            CLIPTextEncode(+/-) → ControlNetApplyAdvanced → KSampler
+
+        ``ControlNetApplyAdvanced`` takes BOTH conditionings, so the negative
+        prompt stays wired up — the simpler ControlNetApply only handles the
+        positive and would quietly drop it.
+        """
+        if not (self.controlnet and self._control_image_name):
+            return
+        ks_id = next((nid for nid, n in g.items()
+                      if n.get("class_type") == "KSampler"), None)
+        if ks_id is None:
+            return
+        pos = g[ks_id]["inputs"].get("positive")
+        neg = g[ks_id]["inputs"].get("negative")
+        if not (pos and neg):
+            return
+        g["70"] = {"class_type": "ControlNetLoader",
+                   "inputs": {"control_net_name": self.controlnet}}
+        g["71"] = {"class_type": "LoadImage",
+                   "inputs": {"image": self._control_image_name}}
+        g["72"] = {"class_type": "ControlNetApplyAdvanced", "inputs": {
+            "positive": pos, "negative": neg,
+            "control_net": ["70", 0], "image": ["71", 0],
+            "strength": self.controlnet_strength,
+            "start_percent": 0.0, "end_percent": 1.0,
+        }}
+        g[ks_id]["inputs"]["positive"] = ["72", 0]
+        g[ks_id]["inputs"]["negative"] = ["72", 1]
 
     def _apply_lora_triggers(self, g: dict) -> None:
         """Append each active LoRA's trigger word to the positive prompt.
@@ -368,6 +414,7 @@ class ComfyClient:
         seed: Optional[int] = None,
         reference_filenames: Optional[list[str]] = None,
         mature: bool = False,
+        control_image: Optional[bytes] = None,
     ) -> bytes:
         """Queue a job and return the produced image bytes (PNG).
 
@@ -390,8 +437,22 @@ class ComfyClient:
         # explicit /free is safe while the model ref is still valid.
         if effective != self._last_checkpoint:
             self.free_memory(unload_models=True)
-        graph = self._build_graph(positive, negative, width, height, seed,
-                                   steps or self.steps, checkpoint=ckpt)
+        # A control image has to reach ComfyUI's input folder before the graph
+        # that names it is queued. Uploaded per render and cleared afterwards,
+        # so one conditioned battlemap can't leak its floorplan into the next
+        # portrait that happens to use the same client.
+        self._control_image_name = None
+        if control_image and self.controlnet:
+            self._control_image_name = self.upload_image(
+                control_image, f"control-{seed}.png")
+            if not self._control_image_name:
+                print("[imagery] control image upload failed; "
+                      "rendering unconditioned")
+        try:
+            graph = self._build_graph(positive, negative, width, height, seed,
+                                      steps or self.steps, checkpoint=ckpt)
+        finally:
+            self._control_image_name = None
         if reference_filenames:
             self._inject_references(graph, list(reference_filenames))
         try:

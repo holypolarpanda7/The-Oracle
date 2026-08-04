@@ -255,6 +255,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   catalogue is only ~50 sprites (5 wreckage kinds x 10 board looks) — run
   `scripts/debris_prerender.py --render` once and a mid-combat smash costs a
   cache lookup, not a render.
+- **The battlemap is CONDITIONED on the layout, not described to it.** A text
+  prompt cannot say where a wall goes: told "a dungeon room with stone walls",
+  the model paints a plausible room whose walls land nowhere near the grid's.
+  That is not a tuning problem and no wording fixes it — the picture and the
+  rules simply depicted different places. So `art.control_image` draws the
+  grid as an architectural floorplan (white strokes on every wall FACE, gaps
+  at doorways) and the render is conditioned on it through an SDXL scribble
+  ControlNet (`imagery.map_controlnet`, model in ComfyUI/models/controlnet/).
+  Empty config = off, and the graph is untouched. Verified by rendering the
+  grid, the control image and the art side by side — see map-probe/alignment.
+  Discrete objects are deliberately NOT in the control image: they are drawn
+  as sprites, because a pillar that can be smashed has to be able to change.
 - **A painted board still draws the rules on top.** `render_board_png` given
   an `image_lookup` composites the battlemap and its debris — then OUTLINES
   the mechanically significant tiles, and washes only ground that stops or

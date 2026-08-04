@@ -121,6 +121,8 @@ def render_battlemap(gen: GeneratedMap, *, store=None, name: str = "",
                      biome: Optional[str] = None, lighting: Optional[str] = None,
                      extra: str = "", conditions: str = "",
                      ref_slug: Optional[str] = None,
+                     controlnet: Optional[str] = None,
+                     controlnet_strength: float = 0.8,
                      force_new: bool = False,
                      store_width: int = 1280,
                      budget_px: int = 1_100_000) -> BattlemapArt:
@@ -159,6 +161,13 @@ def render_battlemap(gen: GeneratedMap, *, store=None, name: str = "",
             seed=gen.seed & 0x7FFFFFFF,
             max_per_bucket=1,      # one picture per layout — it IS the room
             store_width=store_width,
+            # The layout goes to the model as a PICTURE. Without this the
+            # prompt describes a room and the model paints a different one —
+            # walls nowhere near the grid's walls, and the players are looking
+            # at somewhere else entirely.
+            control_image=(control_image(gen.grid) if controlnet else None),
+            controlnet=controlnet,
+            controlnet_strength=controlnet_strength,
         )
     except TypeError as e:
         # An older ImageStore without the sizing kwargs — degrade, don't crash.
@@ -289,3 +298,81 @@ def render_debris(becomes: str, *, store=None, material: str = "",
     if res is None or res.offline or not res.image_id:
         return None
     return res.image_id
+
+
+# ---------------------------------------------------------------------------
+# Control images: making the painting obey the grid
+# ---------------------------------------------------------------------------
+#
+# A text prompt cannot say WHERE a wall goes. Told "a dungeon room with stone
+# walls and carved pillars", the model paints a plausible room — and its walls
+# land nowhere near the grid's walls, so the picture and the rules describe
+# different places. That is not a tuning problem; no wording fixes it.
+#
+# So the layout is drawn as a picture and handed to ControlNet. A scribble
+# model turns a line drawing into art that FOLLOWS the lines, which is exactly
+# the job: the grid draws its own floorplan, and the painting is conditioned on
+# it. What comes back has walls where the rules have walls.
+
+#: Tiles that must appear as STRUCTURE in the control image. Everything else is
+#: floor as far as the layout is concerned — discrete objects are drawn as
+#: sprites afterwards, because they have to change when they break.
+_STRUCTURAL = {"#", "R", "+", "p", "w"}
+#: Drawn as open gaps in a wall run, so the model paints a doorway there.
+_APERTURE = {"+", "/", "p"}
+
+
+def control_image(grid: Grid, *, px_per_square: int = 32,
+                  line_px: int = 0) -> bytes:
+    """Draw the layout as a floorplan for ControlNet to follow. PNG bytes.
+
+    An architectural line drawing, white on black: a stroke wherever open floor
+    meets solid structure — which is to say, along every wall FACE. Filling the
+    wall squares instead was the first attempt and it reads as a silhouette,
+    with a solid ring round the map and a black hole where the room is; what a
+    scribble model wants is the sketch a person would draw.
+
+    Apertures (doors, portcullises) leave a GAP in the run, so the model paints
+    an opening there rather than an unbroken wall. Discrete objects are
+    deliberately absent: they are drawn afterwards as sprites, because a pillar
+    that can be smashed has to be able to change.
+    """
+    from PIL import Image, ImageDraw
+
+    w = max(1, grid.width) * px_per_square
+    h = max(1, grid.height) * px_per_square
+    img = Image.new("RGB", (w, h), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    line_px = line_px or max(2, px_per_square // 8)
+
+    def solid(x, y) -> bool:
+        """Structure the drawing should show a wall face for."""
+        if not grid.in_bounds(x, y):
+            return True                       # the world ends: draw the edge
+        return grid.get(x, y) in _STRUCTURAL and grid.get(x, y) not in _APERTURE
+
+    def open_floor(x, y) -> bool:
+        if not grid.in_bounds(x, y):
+            return False
+        code = grid.get(x, y)
+        return code not in _STRUCTURAL or code in _APERTURE
+
+    for x, y in grid.squares():
+        if not open_floor(x, y):
+            continue
+        x0, y0 = x * px_per_square, y * px_per_square
+        x1, y1 = x0 + px_per_square - 1, y0 + px_per_square - 1
+        # A stroke on each side of this floor square that abuts structure.
+        if solid(x, y - 1):
+            d.line([x0, y0, x1, y0], fill=(255, 255, 255), width=line_px)
+        if solid(x, y + 1):
+            d.line([x0, y1, x1, y1], fill=(255, 255, 255), width=line_px)
+        if solid(x - 1, y):
+            d.line([x0, y0, x0, y1], fill=(255, 255, 255), width=line_px)
+        if solid(x + 1, y):
+            d.line([x1, y0, x1, y1], fill=(255, 255, 255), width=line_px)
+
+    import io as _io
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
