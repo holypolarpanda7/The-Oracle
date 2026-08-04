@@ -60,8 +60,11 @@ def _cutout_cached(image_id, raw_bytes):
     if image_id in _CUTOUTS:
         return _CUTOUTS[image_id]
     try:
-        from .art import cutout
-        cut = cutout(raw_bytes)
+        # Through art.sprite_png, not cutout directly: the Activity fetches the
+        # matted sprite over HTTP from that same function, and the two boards
+        # have to be looking at the same picture.
+        from .art import sprite_png
+        cut = sprite_png(image_id, raw_bytes)
         out = Image.open(io.BytesIO(cut)).convert("RGBA") if cut else None
     except Exception as e:
         print(f"[vtt.png] cutout failed: {e}")
@@ -382,11 +385,18 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
     # and costs the player the word it was there to give them. A label is
     # dropped only when the square west or north of it already says the same
     # thing, so an isolated object is never left unnamed.
-    _draw_labels(img, [(sx(x) + cell // 2, sy(y) + cell - 2, text)
-                       for (x, y), text in sorted(labels.items())
-                       if labels.get((x - 1, y)) != text
-                       and labels.get((x, y - 1)) != text],
-                 _font(max(9, cell // 5)))
+    chips = []
+    for (x, y), text in sorted(labels.items()):
+        if labels.get((x - 1, y)) == text or labels.get((x, y - 1)) == text:
+            continue
+        # A chip is wider than the square it names, so two DIFFERENT labels
+        # side by side overlap even after the run-dedupe above. Stagger them:
+        # a labelled neighbour to the west pushes this one to the top of its
+        # square instead of the bottom.
+        top = (x - 1, y) in labels
+        chips.append((sx(x) + cell // 2,
+                      sy(y) + (12 if top else cell - 2), text))
+    _draw_labels(img, chips, _font(max(9, cell // 5)))
 
     # ---- effects ----
     for eff in state.get("effects") or []:
@@ -422,15 +432,33 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
     for y in range(h_sq + 1):
         d.line([ox, sy(y), ox + w_sq * cell, sy(y)], fill=_GRID + (70,), width=1)
 
-    # ---- fog ----
+    # ---- fog, in two tiers ----
+    # Never seen is black. Seen once but not under anyone's eye right now is a
+    # cold veil — you remember the room, you are not watching it. Only what is
+    # in live line of sight is left clear. One tier alone gets a door wrong in
+    # both directions: with memory only, closing a door behind you changes
+    # nothing; with sight only, the party forgets the map every time they turn
+    # around.
     fog = state.get("fog")
+    sight = state.get("sight")
     if fog:
         for y in range(h_sq):
             row = fog[y] if y < len(fog) else ""
+            lit_row = (sight[y] if sight and y < len(sight) else None)
             for x in range(w_sq):
-                if (row[x] if x < len(row) else "0") != "1":
-                    d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell],
-                                fill=(4, 6, 12, 225))
+                seen = (row[x] if x < len(row) else "0") == "1"
+                lit = lit_row is not None and x < len(lit_row) and lit_row[x] == "1"
+                box = (sx(x), sy(y), sx(x) + cell, sy(y) + cell)
+                if not seen:
+                    # Opaque, not merely dark. At 88% the walls of an unexplored
+                    # room showed faintly through, which hands the party the
+                    # shape of the dungeon they haven't walked yet.
+                    d.rectangle(list(box), fill=(4, 6, 12, 255))
+                elif not lit:
+                    veil = img.crop(box)
+                    img.paste(Image.blend(veil, Image.new("RGB", veil.size,
+                                                          (7, 11, 22)), 0.62),
+                              (sx(x), sy(y)))
 
     # ---- coordinate ruler ----
     if show_coords and cell >= 18:
@@ -441,9 +469,25 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
             d.text((ox - margin + 3, sy(y) + 2), str(y), font=f_small, fill=_DIM)
 
     # ---- tokens ----
+    # A creature standing in the dark is not on the board. Drawing an ogre in a
+    # room nobody can see would give the picture away more completely than any
+    # amount of fog hides it — the party's own tokens are exempt, since they
+    # are what the sight is measured FROM.
+    def in_sight(t) -> bool:
+        if not sight or t.get("team") == "party":
+            return True
+        ty, tx = int(t.get("y", -1)), int(t.get("x", -1))
+        n = max(1, int(t.get("squares", 1)))
+        for yy in range(ty, ty + n):
+            for xx in range(tx, tx + n):
+                r = sight[yy] if 0 <= yy < len(sight) else ""
+                if xx < len(r) and r[xx] == "1":
+                    return True
+        return False
+
     current = state.get("current_token_id")
     for t in state.get("tokens") or []:
-        if t.get("hidden"):
+        if t.get("hidden") or not in_sight(t):
             continue
         n = max(1, int(t.get("squares", 1)))
         x0, y0 = sx(int(t["x"])), sy(int(t["y"]))
@@ -467,7 +511,7 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
     # ---- names under the tokens (only when there's room) ----
     if cell >= 26:
         for t in state.get("tokens") or []:
-            if t.get("hidden"):
+            if t.get("hidden") or not in_sight(t):
                 continue
             n = max(1, int(t.get("squares", 1)))
             nm = str(t.get("name", ""))[:12]

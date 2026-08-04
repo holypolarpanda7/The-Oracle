@@ -28,7 +28,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .terrain import FLOOR, VOID, WALL, Grid
+from .terrain import APERTURES, FLOOR, VOID, WALL, Grid, aperture_axis
 
 Square = tuple[int, int]
 
@@ -81,12 +81,24 @@ def _walkable(grid: Grid, mode: str = "walk") -> set[Square]:
     return {(x, y) for x, y in grid.squares() if grid.passable(x, y, mode=mode)}
 
 
+def _connective(grid: Grid, x: int, y: int, mode: str = "walk") -> bool:
+    """Can you GET through this square, granted you may open what's in it?
+
+    A closed door is impassable and is NOT a wall, and connectivity has to know
+    the difference. Judged by ``passable`` alone, a room reached only through a
+    shut door reads as cut off, and :func:`_connect_regions` obligingly carves a
+    second way in — which is why every door the complex generator placed used to
+    have the corridor's own mouth standing open beside it, guarding nothing.
+    """
+    return grid.passable(x, y, mode=mode) or grid.get(x, y) in APERTURES
+
+
 def _regions(grid: Grid, mode: str = "walk") -> list[set[Square]]:
     """Connected traversable regions (4-way — diagonal-only links don't count as
     a corridor a Large creature could use)."""
     seen: set[Square] = set()
     out: list[set[Square]] = []
-    for sq in _walkable(grid, mode):
+    for sq in (s for s in grid.squares() if _connective(grid, *s, mode)):
         if sq in seen:
             continue
         stack, region = [sq], set()
@@ -97,11 +109,44 @@ def _regions(grid: Grid, mode: str = "walk") -> list[set[Square]]:
             for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
                 if (nx, ny) in seen:
                     continue
-                if grid.in_bounds(nx, ny) and grid.passable(nx, ny, mode=mode):
+                if grid.in_bounds(nx, ny) and _connective(grid, nx, ny, mode):
                     seen.add((nx, ny))
                     stack.append((nx, ny))
         out.append(region)
     return sorted(out, key=len, reverse=True)
+
+
+def _threshold_doors(grid: Grid, rng: random.Random, rooms, out,
+                     *, chance: float = 0.8, name: str = "door",
+                     dc: Optional[int] = None) -> int:
+    """Hang doors where corridors breach room walls. Returns how many.
+
+    The threshold is the gap the corridor already made, and that is the only
+    place a door does anything. Punched into some other wall square, a door
+    stands beside an open corridor mouth: it guards nothing, closing it changes
+    nothing, and the party walks round it without noticing it was there.
+
+    Corners are skipped — a door needs a wall either side to hang from, which
+    is exactly what :func:`terrain.aperture_axis` reports.
+    """
+    made = 0
+    for x0, y0, x1, y1 in rooms:
+        ring = ([(x, y0) for x in range(x0 + 1, x1)]
+                + [(x, y1) for x in range(x0 + 1, x1)]
+                + [(x0, y) for y in range(y0 + 1, y1)]
+                + [(x1, y) for y in range(y0 + 1, y1)])
+        for x, y in ring:
+            if grid.get(x, y) != FLOOR:
+                continue                       # not a breach
+            if not aperture_axis(grid, x, y):
+                continue                       # nothing to hang it from
+            if rng.random() > chance:
+                continue
+            grid.set(x, y, "+")
+            out.doors.append({"x": x, "y": y, "state": "closed",
+                              "name": name, "dc": dc})
+            made += 1
+    return made
 
 
 def _dominant_blocker(grid: Grid, mode: str = "walk") -> str:
@@ -335,12 +380,8 @@ def _gen_dungeon_complex(g: Grid, rng: random.Random, out: GeneratedMap) -> None
         a = ((ax0 + ax1) // 2, (ay0 + ay1) // 2)
         b = ((bx0 + bx1) // 2, (by0 + by1) // 2)
         _carve_corridor(g, a, b)
-    for r in rooms[1:]:
-        if rng.random() < 0.5:
-            d = _door_on_wall(g, rng, *r)
-            if d:
-                out.doors.append({"x": d[0], "y": d[1], "state": "closed",
-                                  "name": "door", "dc": None})
+    # Doors go where the corridors came IN, which is the only place they matter.
+    _threshold_doors(g, rng, rooms, out)
     _scatter(g, rng, ",", 0.05)
     _scatter(g, rng, "o", 0.02)
     out.lighting = "dim"

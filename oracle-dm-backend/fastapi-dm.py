@@ -15588,6 +15588,34 @@ async def imagery_image(image_id: int, thumb: bool = False):
     return Response(content=data, media_type="image/webp")
 
 
+@app.get("/imagery/sprite/{image_id}")
+async def imagery_sprite(image_id: int):
+    """A board sprite with its background cut away — PNG with alpha.
+
+    The Discord board mats its sprites in-process before compositing them; a
+    browser cannot run rembg, so it asks for the same answer here rather than
+    inventing a second one. Both go through ``vtt.art.sprite_png``, which is
+    memoised — a stored sprite's picture never changes.
+
+    Falls back to the raw image when matting isn't possible. A pillar with its
+    background still attached is worse-looking than a cut-out one; a pillar
+    that doesn't render at all is a square the rules say is blocked and the
+    player can't see.
+    """
+    raw = image_store.get_image_bytes(image_id)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    try:
+        from vtt.art import sprite_png
+        cut = sprite_png(image_id, raw)
+    except Exception as e:
+        print(f"[imagery] sprite matting failed for {image_id}: {e}")
+        cut = None
+    if cut is None:
+        return Response(content=raw, media_type="image/webp")
+    return Response(content=cut, media_type="image/png")
+
+
 @app.delete("/imagery/entity/{kind}/{ref}")
 async def imagery_invalidate(kind: str, ref: str, context: Optional[str] = None):
     """Remove a subject's images (all contexts) or just one context bucket.

@@ -288,6 +288,33 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   fact, and labelling both prints each over the other. Wreckage also gets a
   deterministic dark scuff under its sprite, because stone rubble on a
   flagstone floor is the low-contrast case a render can lose.
+- **Both boards draw the same room.** `render_image.py` (Discord PNG) and
+  `activity-ui/src/lib/vttPaint.ts` (canvas) read the identical `state()`
+  dict and must stay in step — objects, wreckage, panels, labels, fog tiers,
+  and which tokens are visible. Sprites are matted ONCE by `art.sprite_png`
+  and served to the browser over `/imagery/sprite/{id}`; a browser cannot run
+  rembg, and two views cutting their own pillars differently is the same
+  disagreement the grid-is-truth rule exists to prevent.
+- **Fog is MEMORY; sight is LIVE. Both, or a door means nothing.**
+  `TacticalMap.fog` records everywhere the party has ever seen and never dims
+  — right for "have we been here", useless for "can we see it now".
+  `VttEngine.sight()` is the second tier, recomputed per frame from real line
+  of sight (which reads `blocks_sight` off the tile, so a closed door blocks
+  and an open one doesn't, for free) and shipped as `state()["sight"]`. Never
+  seen renders opaque black; seen-but-not-watched gets a cold veil; only live
+  sight is clear. A foe standing where nobody can see is NOT DRAWN at all —
+  in either view — because fog over a token you already drew hides nothing.
+  `sight()` returns None when there is no fog, and both renderers treat that
+  as "everything visible".
+- **A door belongs at the threshold the corridor made.** `_threshold_doors`
+  hangs doors where a corridor breaches a room's wall ring; punching one into
+  an arbitrary wall square leaves the corridor's own mouth gaping beside it,
+  so the door guards nothing and closing it changes nothing. This only works
+  because `mapgen._connective` treats a closed door as a way THROUGH for
+  connectivity — judged by `passable` alone, a room behind a shut door reads
+  as cut off and `_connect_regions` obligingly carves a second way in. The
+  selftest asserts both halves: one connected region *granted the doors*, and
+  that shutting them genuinely divides the warren.
 - **The battlemap is CONDITIONED on the layout, not described to it.** A text
   prompt cannot say where a wall goes: told "a dungeon room with stone walls",
   the model paints a plausible room whose walls land nowhere near the grid's.

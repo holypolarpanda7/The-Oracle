@@ -1814,6 +1814,41 @@ class VttEngine:
     def clear_fog(self, map_id: int) -> None:
         self._set_fields(map_id, fog=None)
 
+    def sight(self, map_id: int, *, team: str = Team.PARTY,
+              radius_ft: Optional[int] = None) -> Optional[list[str]]:
+        """What ``team`` can see RIGHT NOW, in the same shape as ``fog``.
+
+        Fog is MEMORY: it records everywhere the party has ever been able to
+        see and never dims again, so a board with fog on shows a room they
+        walked out of as brightly as the one they are standing in. That is the
+        right answer for "have we been here", and the wrong one for "can we see
+        the thing that just moved" — and the difference is precisely what a
+        door is for. Closing one behind you should put the room you left back
+        into the dark without unlearning it.
+
+        So this is the second tier, recomputed each frame from real line of
+        sight (which reads ``blocks_sight`` off the tile, so a closed door
+        blocks and an open one doesn't, for free). ``None`` when the board has
+        no fog — with no memory there is nothing for live sight to be a tier
+        above, and every square is simply visible.
+        """
+        row = self.get_scene(map_id)
+        if row is None or not row.fog:
+            return None
+        g = self.grid_of(row)
+        r = int(radius_ft or {"bright": 120, "dim": 60, "dark": 30}
+                .get(row.lighting or "bright", 90))
+        lit = [["0"] * row.width for _ in range(row.height)]
+        for t in self.tokens(map_id, include_defeated=False):
+            if t.team != team:
+                continue
+            for sx, sy in geo.visible_squares(g, (t.x, t.y), r,
+                                              square_ft=row.square_ft,
+                                              origin_size=size_squares(t.size)):
+                if 0 <= sy < row.height and 0 <= sx < row.width:
+                    lit[sy][sx] = "1"
+        return ["".join(r_) for r_ in lit]
+
     # ================================================================= views
 
     def state(self, map_id: int, *, viewer_team: str = Team.PARTY,
@@ -1843,6 +1878,7 @@ class VttEngine:
             "current_token_id": cur_token_id,
             "terrain": (row.terrain or []) if include_terrain else [],
             "fog": row.fog or None,
+            "sight": self.sight(map_id, team=viewer_team),
             "doors": row.doors or [],
             "elevation": row.elevation or {},
             "debris": self.debris_for(map_id),

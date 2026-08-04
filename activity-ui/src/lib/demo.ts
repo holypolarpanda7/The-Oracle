@@ -254,6 +254,17 @@ const DEMO_TERRAIN = [
   "####################",
 ];
 
+/** Tile code -> the word the board writes on it. Mirrors terrain.sprite_label. */
+const DEMO_OBJECT_LABELS: Record<string, string> = {
+  O: "pillar", o: "crates", n: "table", T: "tree", A: "altar",
+  w: "low wall", "+": "door", "/": "doorway", p: "gate",
+};
+
+function isSolid(rows: string[], x: number, y: number): boolean {
+  const c = rows[y]?.[x];
+  return c === undefined || c === "#" || c === "R" || c === "w";
+}
+
 function ring(cx: number, cy: number, r: number): [number, number][] {
   const out: [number, number][] = [];
   for (let y = cy - r; y <= cy + r; y++) {
@@ -284,8 +295,27 @@ function demoVtt(stage: number): VttScene {
     current_token_id: stage >= 2 ? 11 : 10,
     terrain: DEMO_TERRAIN,
     fog: null,
+    sight: null,
     doors: [{ x: 0, y: 3, state: "open", name: "mill door" }],
     elevation: {},
+    // Objects are read off the terrain by the server, exactly as the engine
+    // does — so the offline demo shows the same board the live one would, minus
+    // the sprite pictures (there is no image store here, and the tile colours
+    // plus the labels carry it perfectly well).
+    objects: DEMO_TERRAIN.flatMap((row, y) =>
+      [...row].flatMap((code, x) => {
+        const label = DEMO_OBJECT_LABELS[code];
+        if (!label) return [];
+        const axis = code === "/" || code === "+" || code === "p"
+          ? (isSolid(DEMO_TERRAIN, x, y - 1) && isSolid(DEMO_TERRAIN, x, y + 1)
+            ? "ns" : "ew")
+          : "";
+        return [{ x, y, code, name: label, label, axis, image_id: null }];
+      })),
+    debris: stage >= 2
+      ? [{ x: 6, y: 5, code: ",", was: "pillar", material: "stone",
+           label: "broken pillar", image_id: null }]
+      : [],
     background_image_id: null,
     art_status: "offline",
     description: "the millhouse floor — grain sacks, a dead millstone, water in the race",

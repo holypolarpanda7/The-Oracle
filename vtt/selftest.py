@@ -19,7 +19,7 @@ from . import geometry as geo
 from .mapgen import ARCHETYPES, generate_map, archetype_for
 from .models import Team, TokenKind
 from .scene import VttEngine
-from .terrain import Grid
+from .terrain import APERTURES, Grid, aperture_axis
 
 _FAILS: list[str] = []
 _RUN = 0
@@ -188,7 +188,14 @@ def test_mapgen() -> None:
         # Connectivity is judged in the medium the board is fought in: an
         # open-water board is one space to a swimmer, none at all to a walker.
         md = m.mode
-        walk = [(x, y) for x, y in m.grid.squares() if m.grid.passable(x, y, mode=md)]
+        # …and GRANTED THE DOORS: a closed door is impassable and is not a
+        # wall. Judged on passability alone a room reached only through a shut
+        # door reads as cut off, which is both wrong and self-defeating — it is
+        # the reason the generator used to leave a corridor mouth gaping beside
+        # every door it hung.
+        def through(x, y):
+            return m.grid.passable(x, y, mode=md) or m.grid.get(x, y) in APERTURES
+        walk = [(x, y) for x, y in m.grid.squares() if through(x, y)]
         # One connected space: every board must be playable end to end.
         seen = {walk[0]}
         stack = [walk[0]]
@@ -196,13 +203,36 @@ def test_mapgen() -> None:
             x, y = stack.pop()
             for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
                 if (nx, ny) not in seen and m.grid.in_bounds(nx, ny) \
-                        and m.grid.passable(nx, ny, mode=md):
+                        and through(nx, ny):
                     seen.add((nx, ny))
                     stack.append((nx, ny))
         check(f"{arch}: one connected region", len(seen) == len(walk),
               f"{len(seen)}/{len(walk)} reachable")
         check(f"{arch}: has both spawn zones",
               bool(m.spawn_party) and bool(m.spawn_foes))
+
+    # A door is a threshold, not decoration. Two things have to be true at
+    # once, and neither is interesting without the other: shut, a door really
+    # does divide the board (or it guards nothing), and every door has wall to
+    # hang from (or it is a plank standing in open floor).
+    warren = generate_map("dungeon-complex", width=26, height=18, seed=20260841)
+    check("a warren hangs doors at its thresholds", len(warren.doors) >= 2,
+          f"{len(warren.doors)} doors")
+    check("every door has a wall either side",
+          all(aperture_axis(warren.grid, d["x"], d["y"])
+              for d in warren.doors))
+    strict = [(x, y) for x, y in warren.grid.squares()
+              if warren.grid.passable(x, y)]
+    seen, stack = {strict[0]}, [strict[0]]
+    while stack:
+        x, y = stack.pop()
+        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if (nx, ny) not in seen and warren.grid.in_bounds(nx, ny) \
+                    and warren.grid.passable(nx, ny):
+                seen.add((nx, ny))
+                stack.append((nx, ny))
+    check("shutting them actually divides the warren", len(seen) < len(strict),
+          f"{len(seen)}/{len(strict)} reachable with the doors shut")
 
     # A sea board swims, a sky board flies, everything else walks.
     eq("an underwater board is swum", generate_map("reef", seed=3).mode, "swim")

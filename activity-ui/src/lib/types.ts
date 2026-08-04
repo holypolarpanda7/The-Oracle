@@ -344,6 +344,30 @@ export interface VttEffect {
 
 export interface VttDoor { x: number; y: number; state: string; name?: string; dc?: number | null; }
 
+/** A discrete object on its own square: pillar, crate, door, altar… */
+export interface VttObject {
+  x: number;
+  y: number;
+  code: string;             // tile code, e.g. "O"
+  name: string;             // "pillar"
+  label?: string;           // what the board writes on it
+  /** For an aperture, which way its wall runs: "ew" | "ns" | "". A door is
+   *  drawn as a panel along that line, never as a picture filling the square. */
+  axis?: string;
+  image_id?: number | null;
+}
+
+/** Wreckage left where something broke. */
+export interface VttDebris {
+  x: number;
+  y: number;
+  code: string;             // what the square became
+  was?: string;             // what it used to be
+  material?: string;
+  label?: string;
+  image_id?: number | null;
+}
+
 /** The whole board, as the overlay draws it. */
 export interface VttScene {
   id: number;
@@ -362,8 +386,16 @@ export interface VttScene {
   current_token_id?: number | null;
   terrain: string[];       // one string per row, one tile code per square
   fog?: string[] | null;   // "1" seen / "0" unseen, or null for no fog
+  /** Live line of sight, same shape as fog: "1" under someone's eye RIGHT NOW.
+   *  Fog is memory and never dims; this is the second tier, and the difference
+   *  is what closing a door behind you changes. Null when there's no fog. */
+  sight?: string[] | null;
   doors: VttDoor[];
   elevation: Record<string, number>;
+  /** Discrete things standing on squares — read off the grid by the server. */
+  objects?: VttObject[];
+  /** What broke, and what it left. */
+  debris?: VttDebris[];
   background_image_id?: number | null;
   art_status: string;      // none | pending | ready | offline
   description?: string;

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CombatState, VttOptions, VttScene, VttToken } from "../lib/types";
+import { SPRITES, loadSprites } from "../lib/boardSprites";
 import { useResizable } from "../lib/useResizable";
 import {
   CELL, fitView, paint, pathFromCosts, toScreen, toSquare, type View,
@@ -140,6 +141,19 @@ export function VttOverlay(p: VttProps) {
     artRef.current = img.complete ? img : artRef.current;
   }, [scene.background_image_id]);
 
+  // ---- object & wreckage sprites ------------------------------------------
+  // Shared by kind and cached across boards, so this is usually a no-op: the
+  // second room with pillars in it already has the pillar. Each arrival bumps
+  // a counter rather than state the draw depends on structurally — the picture
+  // fills in when it lands, and the board is correct before it does.
+  const [spriteTick, bumpSprites] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const ids: number[] = [];
+    for (const o of scene.objects ?? []) if (o.image_id) ids.push(o.image_id);
+    for (const d of scene.debris ?? []) if (d.image_id) ids.push(d.image_id);
+    loadSprites(ids, bumpSprites);
+  }, [scene.objects, scene.debris]);
+
   // ---- incoming pings -----------------------------------------------------
   useEffect(() => {
     if (p.ping) setPings((ps) => [...ps.filter((q) => Date.now() - q.at < 2500), p.ping!]);
@@ -201,10 +215,10 @@ export function VttOverlay(p: VttProps) {
     paint(ctx, size[0], size[1], {
       scene, view, art: artRef.current, reach, path, pathCost,
       pathLegal: pathCost !== undefined, pathProvokes: provokes.length > 0,
-      hover, measure, show, pings, now: Date.now(),
+      hover, measure, show, pings, sprites: SPRITES, now: Date.now(),
     });
   }, [scene, view, size, reach, path, pathCost, hover, measure, show, pings,
-      provokes.length]);
+      provokes.length, spriteTick]);
 
   useEffect(() => {
     draw();
@@ -318,7 +332,21 @@ export function VttOverlay(p: VttProps) {
   }, [p.combat]);
 
   // ---- token layer --------------------------------------------------------
-  const tokenNodes = view && scene.tokens.map((t) => {
+  // A creature standing in the dark is not on the board. Drawing a foe in a
+  // room nobody can see would give away more than any amount of fog hides —
+  // the party's own tokens are exempt, since they are what sight is measured
+  // FROM. Same rule as the Discord board, so the two views agree.
+  const inSight = useCallback((t: VttToken) => {
+    if (!show.fog || !scene.sight || t.team === "party") return true;
+    for (let yy = t.y; yy < t.y + t.squares; yy++) {
+      for (let xx = t.x; xx < t.x + t.squares; xx++) {
+        if (scene.sight[yy]?.[xx] === "1") return true;
+      }
+    }
+    return false;
+  }, [show.fog, scene.sight]);
+
+  const tokenNodes = view && scene.tokens.filter(inSight).map((t) => {
     const cell = CELL * view.scale;
     const [sx, sy] = toScreen(view, t.x, t.y);
     const px = cell * t.squares;

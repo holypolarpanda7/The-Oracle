@@ -101,7 +101,66 @@ export interface PaintState {
   show: { grid: boolean; terrain: boolean; effects: boolean; fog: boolean };
   /** Transient ping markers with their spawn time. */
   pings?: { x: number; y: number; label?: string; at: number }[];
+  /** Matted sprites by stored image id (see lib/boardSprites). */
+  sprites?: ReadonlyMap<number, HTMLImageElement>;
   now?: number;
+}
+
+/** How much of a square a door panel fills ACROSS its wall. Mirrors
+ *  vtt/render_image.py's _PANEL_THICKNESS — a door is a plank in a wall, and
+ *  drawn square and centred it reads as furniture parked on the floor. */
+const PANEL_THICKNESS = 0.46;
+
+function readySprite(st: PaintState, id?: number | null): HTMLImageElement | null {
+  if (id == null) return null;
+  const img = st.sprites?.get(id);
+  return img && img.complete && img.naturalWidth > 0 ? img : null;
+}
+
+/** Draw an aperture as a panel lying IN its wall, with jamb ticks. */
+function panel(ctx: CanvasRenderingContext2D, img: HTMLImageElement | null,
+               sx: number, sy: number, cell: number, axis: string, color: string) {
+  const thick = Math.max(3, Math.round(cell * PANEL_THICKNESS));
+  const inset = (cell - thick) / 2;
+  const ns = axis === "ns";
+  const [px, py, pw, ph] = ns
+    ? [sx + inset, sy, thick, cell]
+    : [sx, sy + inset, cell, thick];
+
+  if (img) {
+    ctx.save();
+    if (ns) {
+      // The sprite is painted as a horizontal panel; stand it on end rather
+      // than squashing it sideways, or its planks run the wrong way.
+      ctx.translate(px + pw / 2, py + ph / 2);
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(img, -ph / 2, -pw / 2, ph, pw);
+    } else {
+      ctx.drawImage(img, px, py, pw, ph);
+    }
+    ctx.restore();
+  } else {
+    ctx.fillStyle = "rgba(96,74,41,0.92)";
+    ctx.fillRect(px, py, pw, ph);
+  }
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(px + 1, py + 1, pw - 2, ph - 2);
+  const tick = Math.max(2, cell / 8);
+  ctx.beginPath();
+  if (ns) {
+    for (const yy of [sy, sy + cell]) {
+      ctx.moveTo(px - tick, yy);
+      ctx.lineTo(px + pw + tick, yy);
+    }
+  } else {
+    for (const xx of [sx, sx + cell]) {
+      ctx.moveTo(xx, py - tick);
+      ctx.lineTo(xx, py + ph + tick);
+    }
+  }
+  ctx.stroke();
 }
 
 export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: PaintState): void {
@@ -161,6 +220,44 @@ export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: P
     }
   }
   ctx.globalAlpha = 1;
+
+  // --- objects and wreckage ---
+  // The same two passes the Discord board draws, in the same order, from the
+  // same server payload. A diffusion battlemap cannot put a pillar on square
+  // 6,5 and cannot turn one into rubble, so both are sprites on their own
+  // squares — and if this view skipped them, the two boards would disagree
+  // about what is standing in the room.
+  const labels = new Map<string, string>();
+  for (const obj of scene.objects ?? []) {
+    const [sx, sy] = toScreen(v, obj.x, obj.y);
+    if (obj.label) labels.set(`${obj.x},${obj.y}`, obj.label);
+    const img = readySprite(st, obj.image_id);
+    const axis = obj.axis ?? "";
+    if (axis) {
+      panel(ctx, img, sx, sy, cell, axis, tileStyle(obj.code).edge ?? "#a07c3c");
+    } else if (img) {
+      ctx.drawImage(img, sx, sy, cell, cell);
+    }
+    // No sprite and no axis: the tile pass already coloured the square.
+  }
+  for (const deb of scene.debris ?? []) {
+    const [sx, sy] = toScreen(v, deb.x, deb.y);
+    if (deb.label) labels.set(`${deb.x},${deb.y}`, deb.label);
+    // Scuff the square first. Stone rubble on a flagstone floor is the
+    // low-contrast case a sprite can lose, and a square that BROKE has to read
+    // as changed whether or not the picture carried it.
+    ctx.fillStyle = "rgba(38,30,22,0.30)";
+    ctx.fillRect(sx, sy, cell, cell);
+    const img = readySprite(st, deb.image_id);
+    if (img) ctx.drawImage(img, sx, sy, cell, cell);
+    else {
+      ctx.fillStyle = "rgba(90,78,62,0.62)";
+      ctx.fillRect(sx, sy, cell, cell);
+    }
+    ctx.strokeStyle = "rgba(210,150,90,0.8)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sx + 1, sy + 1, cell - 2, cell - 2);
+  }
 
   // --- movement wash for the selected token (under the effects: where you
   //     could stand matters less than what is standing there) ---
@@ -239,16 +336,42 @@ export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: P
     ctx.globalAlpha = 1;
   }
 
-  // --- fog of war ---
+  // --- labels ---
+  // Over the grid so a gridline never cuts a word in half, under the fog so a
+  // square nobody has seen doesn't announce what's on it. One chip per RUN,
+  // not per square: two crates side by side are two squares and one fact, and
+  // labelling both prints each over the other.
+  if (labels.size && cell >= 26) {
+    for (const [key, text] of labels) {
+      const [x, y] = key.split(",").map(Number);
+      if (labels.get(`${x - 1},${y}`) === text) continue;
+      if (labels.get(`${x},${y - 1}`) === text) continue;
+      const [sx, sy] = toScreen(v, x, y);
+      // A chip is wider than the square it names, so two DIFFERENT labels side
+      // by side overlap even after the run-dedupe. Stagger: a labelled
+      // neighbour to the west pushes this one to the top of its square.
+      const top = labels.has(`${x - 1},${y}`);
+      chip(ctx, sx + cell / 2, sy + (top ? 14 : cell - 3), text);
+    }
+  }
+
+  // --- fog of war, in two tiers ---
+  // Never seen is black. Seen once but not under anyone's eye right now is a
+  // cold veil — you remember the room, you are not watching it. One tier alone
+  // gets a door wrong in both directions: with memory only, closing one behind
+  // you changes nothing; with sight only, the party forgets the map every time
+  // they turn around.
   if (st.show.fog && scene.fog) {
-    ctx.fillStyle = "rgba(4,6,12,0.86)";
     for (let y = 0; y < scene.height; y++) {
       const row = scene.fog[y] ?? "";
+      const litRow = scene.sight?.[y];
       for (let x = 0; x < scene.width; x++) {
-        if (row[x] !== "1") {
-          const [sx, sy] = toScreen(v, x, y);
-          ctx.fillRect(sx, sy, cell, cell);
-        }
+        const seen = row[x] === "1";
+        const lit = litRow?.[x] === "1";
+        if (seen && lit) continue;
+        const [sx, sy] = toScreen(v, x, y);
+        ctx.fillStyle = seen ? "rgba(7,11,22,0.62)" : "rgba(4,6,12,0.88)";
+        ctx.fillRect(sx, sy, cell, cell);
       }
     }
   }
@@ -393,6 +516,28 @@ function pill(ctx: CanvasRenderingContext2D, cx: number, cy: number, text: strin
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, cx, y + 9);
+  ctx.restore();
+}
+
+/** A small dark chip naming what's on a square. Sibling of pill(), but sized
+ *  to sit inside a five-foot square rather than to annotate a route. */
+function chip(ctx: CanvasRenderingContext2D, cx: number, baseY: number, text: string) {
+  ctx.save();
+  ctx.font = "600 10px ui-monospace, SFMono-Regular, Menlo, monospace";
+  const w = ctx.measureText(text).width + 8;
+  const h = 14;
+  const x = cx - w / 2;
+  const y = baseY - h;
+  ctx.fillStyle = "rgba(9,12,21,0.82)";
+  ctx.strokeStyle = "rgba(230,188,100,0.5)";
+  ctx.lineWidth = 1;
+  roundRect(ctx, x, y, w, h, 3);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#dbe7e8";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, cx, y + h / 2 + 0.5);
   ctx.restore();
 }
 

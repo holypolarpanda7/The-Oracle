@@ -382,6 +382,29 @@ def _soften_corners(alpha, *, hold: float = 0.86):
     return _ImageChops.multiply(alpha, mask)
 
 
+#: Matted sprites, keyed by stored image id. A sprite's picture never changes
+#: once it is in the store, so this only ever grows to the size of the
+#: catalogue — and matting the same pillar for every board redraw, in every
+#: view, would be pure waste.
+_SPRITE_CACHE: dict[int, Optional[bytes]] = {}
+
+
+def sprite_png(image_id: int, raw_bytes: bytes) -> Optional[bytes]:
+    """A stored sprite, matted and fitted, as PNG bytes. Memoised by id.
+
+    The one place a board sprite is prepared for drawing, whichever view is
+    asking. The Discord PNG composites in-process and the Activity fetches it
+    over HTTP, but a pillar has to be the same cut-out picture in both or the
+    two boards disagree about the room — which is the whole reason the grid,
+    not the art, is the truth.
+    """
+    if image_id in _SPRITE_CACHE:
+        return _SPRITE_CACHE[image_id]
+    out = cutout(raw_bytes) if raw_bytes else None
+    _SPRITE_CACHE[image_id] = out
+    return out
+
+
 def object_ref(code: str) -> str:
     """The cache slug for an object sprite. One picture per KIND of thing."""
     from .terrain import tile
