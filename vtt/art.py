@@ -168,6 +168,12 @@ def render_battlemap(gen: GeneratedMap, *, store=None, name: str = "",
             control_image=(control_image(gen.grid) if controlnet else None),
             controlnet=controlnet,
             controlnet_strength=controlnet_strength,
+            # Forbid the picture terrain the RULES don't have. Without this a
+            # dungeon comes back with a pool painted across dry flagstone, and
+            # a player asking how deep it is gets told there's no water — the
+            # DM only ever sees the grid. Derived from that same grid, so it
+            # can't disagree with the cache key.
+            negative_extra=gen.grid.absent_terrain_negative(),
         )
     except TypeError as e:
         # An older ImageStore without the sizing kwargs — degrade, don't crash.

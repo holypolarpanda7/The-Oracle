@@ -269,6 +269,21 @@ def short_name(name: str) -> str:
     return _LABEL_BY_NAME.get(name, name)
 
 
+#: (codes that mean "this is really here", what to forbid when none of them
+#: are). Deliberately short: only terrain that changes how a square is ENTERED,
+#: because that is the only kind a player can be wrong about in a way that
+#: costs them something. Fire is absent on purpose — negating flame would take
+#: the torches out of every dungeon to prevent a confusion nobody has.
+_ART_TERRAIN_NEGATIVES: tuple[tuple[frozenset[str], str], ...] = (
+    (frozenset({"~", "W"}),
+     "water, pool, puddle, standing water, stream, river, flooded floor, "
+     "wet reflective ground"),
+    (frozenset({"l"}), "lava, magma, molten rock"),
+    (frozenset({"x"}), "chasm, pit, hole in the floor, bottomless drop"),
+    (frozenset({"i"}), "ice, frost, frozen surface"),
+    (frozenset({"^"}), "open sky, clouds, empty air, aerial view of clouds"),
+)
+
 #: Apertures: a way THROUGH a wall run, rather than a thing standing on floor.
 #: They are drawn and reasoned about differently from every other object —
 #: a door belongs to the wall it interrupts, not to the square it occupies.
@@ -446,6 +461,26 @@ class Grid:
         if not rules:
             return ", ".join(f"{c} {tile(c).name}" for c in seen)
         return "; ".join(f"{c} {tile(c).name} ({tile_rule(c)})" for c in seen)
+
+    def absent_terrain_negative(self) -> str:
+        """What the PAINTING must not invent, because the rules don't have it.
+
+        The art is a texture and the grid is the truth, which settles who wins
+        an argument — it does not stop the argument happening. A model handed a
+        dungeon floorplan will cheerfully paint a pool across a room the tiles
+        say is dry flagstone, and then a player asks how deep it is and the DM,
+        who only ever sees the grid, says there is no water there. Nobody is
+        wrong and everybody is confused.
+
+        So terrain that would change how a square is ENTERED is forbidden to
+        the picture unless the grid actually has it. Cosmetic invention is
+        still welcome; this is a short list on purpose. Derived from the grid,
+        so a given layout always gets the same negative and the art cache
+        (keyed on that same grid) stays coherent.
+        """
+        present = {c for row in self.rows for c in row}
+        return ", ".join(phrase for codes, phrase in _ART_TERRAIN_NEGATIVES
+                         if present.isdisjoint(codes))
 
     def describe(self) -> str:
         """A short prose inventory of the terrain, for the art prompt."""

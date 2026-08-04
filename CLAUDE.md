@@ -306,6 +306,21 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   in either view — because fog over a token you already drew hides nothing.
   `sight()` returns None when there is no fog, and both renderers treat that
   as "everything visible".
+- **The painting may not invent terrain the rules don't have.** "The art is a
+  texture, the grid is the truth" settles who WINS an argument; it doesn't stop
+  the argument. A model given a dungeon floorplan will paint a pool across dry
+  flagstone, and then a player asks how deep it is and the DM — who only ever
+  sees the grid, never the picture — says there is no water there. Nobody is
+  wrong and everybody is confused. So `Grid.absent_terrain_negative()` forbids
+  water/lava/chasm/ice/sky to the render unless those tiles are actually
+  present (a reef keeps its water, a dungeon doesn't get any), derived from the
+  grid so it can't disagree with the art cache keyed on that same grid. Fire is
+  deliberately NOT on the list — negating flame takes the torches out of every
+  dungeon. For whatever still slips through, the DM board tells the model that
+  unlisted scenery is decoration to be narrated as shallow/dry/harmless, which
+  is true of every square the legend calls open floor. Terrain that IS on the
+  grid needs none of this: `legend(rules=True)` already gives the DM
+  "~ shallow water (difficult, costs double; swimmable)".
 - **A door belongs at the threshold the corridor made.** `_threshold_doors`
   hangs doors where a corridor breaches a room's wall ring; punching one into
   an arbitrary wall square leaves the corridor's own mouth gaping beside it,

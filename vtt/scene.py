@@ -1940,6 +1940,19 @@ class VttEngine:
                          "Narrate within that, and the board will never contradict you. "
                          "Furniture that grants cover can be attacked and broken "
                          "([[VTT: damage | x,y | amount | type]]).")
+            # The players are looking at a PAINTING of this grid, and a
+            # diffusion model embellishes. When someone asks about scenery
+            # that isn't in the legend above, they are not confused and they
+            # are not lying — they can see it. Answering "there is no water
+            # there" makes the table doubt the board. Answering "ankle-deep,
+            # nothing to swim in" costs nothing and is true of every square
+            # the legend calls open floor.
+            lines.append("  The players see a painted map of this grid, which "
+                         "may show scenery the legend doesn't list. That "
+                         "scenery is decoration: narrate it as shallow, dry or "
+                         "harmless (a puddle, a stain, a crack) so it matches "
+                         "the square's real rule. Never promise terrain the "
+                         "legend doesn't give you — the board will refuse it.")
         hurt = [o for o in self.breakables(map_id) if o["hp"] < o["hp_max"]]
         if hurt:
             lines.append("damaged: " + "; ".join(
