@@ -342,6 +342,22 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   every other board→combat channel): can't see the target = disadvantage,
   target can't see you = advantage, and in a dark room both apply and cancel —
   which is correct, and is why darkvision is worth having.
+- **Cover is a question about HEIGHT, and the engine finally has a number for
+  it.** `Tile.cover_height_ft` says how tall an obstacle SCREENS and
+  `terrain.profile_height_ft(size, prone)` how tall a target presents; an
+  obstacle at least as tall as the target grants TOTAL cover instead of its
+  listed rating. That is not a house rule — the DMG defines total cover as
+  "completely concealed by an obstacle", and lying flat behind a crate is how
+  you get completely concealed by a crate. Two guards on it: the height is set
+  ONLY on obstacles limited by height (crate 4 ft, low wall 3 ft, table 3 ft,
+  altar 4 ft) — a pillar or tree is three-quarters because it is NARROW and
+  lying down doesn't widen a trunk, a portcullis is bars and lying down doesn't
+  make them opaque — and `attacker_height_advantage_ft` takes it away again, so
+  you cannot lie behind a crate to dodge an archer on the gallery shooting down
+  over it. Total cover then means what 5e says it means: `vision()` reports the
+  target as unseeable and the combat engine already refuses the attack, so
+  going prone behind low cover really does make you untargetable, and lets you
+  Hide. `cover_between` with no height behaves exactly as before.
 - **Hiding is a CONTEST, and it is personal.** `MapToken.hidden` used to be a
   bare bool a DM set, tied to nothing. Now the board decides ELIGIBILITY
   (`hide_eligibility`: every living enemy must either not perceive you at all,

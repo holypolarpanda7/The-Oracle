@@ -42,6 +42,19 @@ class Tile:
     # the air.
     traversable_flying: bool = False
     traversable_swimming: bool = False
+    # How tall this obstacle SCREENS, in feet — for a creature sheltering
+    # behind it. Cover is really a question about height, and the DMG's own
+    # definition of total cover is "completely concealed by an obstacle", but
+    # without a number the engine could only give a crate one fixed rating,
+    # whoever was behind it and however they were lying.
+    #
+    # Set ONLY on obstacles that span their square and are limited by HEIGHT: a
+    # crate, a low wall, an overturned table. A pillar or a tree is rated
+    # three-quarters because it is NARROW, and lying down does not make a trunk
+    # any wider; a portcullis is bars, and no amount of lying flat makes them
+    # opaque. 0 means "height is not what limits this cover", which is the
+    # right answer for all of them. The Oracle's own tuning, like _BREAKABLE.
+    cover_height_ft: int = 0
     # A short phrase the battlemap prompt and the DM board use.
     art: str = ""
 
@@ -68,12 +81,18 @@ TILES: dict[str, Tile] = {t.code: t for t in (
     _t("u", "stairs", 10, art="stone stairs"),
     # --- blocking ---
     _t("#", "wall", None, blocks_sight=True, cover="total", art="stone wall"),
-    _t("R", "rock face", None, blocks_sight=True, cover="total", art="rough rock face"),
-    _t("T", "tree", None, blocks_sight=True, cover="three-quarters", art="thick tree trunk"),
-    _t("O", "pillar", None, blocks_sight=True, cover="three-quarters", art="carved stone pillar"),
-    _t("o", "crate", None, cover="half", art="stacked crates and barrels"),
-    _t("n", "furniture", None, cover="half", art="overturned table and benches"),
-    _t("w", "low wall", None, cover="half", art="waist-high broken wall"),
+    _t("R", "rock face", None, blocks_sight=True, cover="total",
+       art="rough rock face"),
+    _t("T", "tree", None, blocks_sight=True, cover="three-quarters",
+       art="thick tree trunk"),
+    _t("O", "pillar", None, blocks_sight=True, cover="three-quarters",
+       art="carved stone pillar"),
+    _t("o", "crate", None, cover="half", cover_height_ft=4,
+       art="stacked crates and barrels"),
+    _t("n", "furniture", None, cover="half", cover_height_ft=3,
+       art="overturned table and benches"),
+    _t("w", "low wall", None, cover="half", cover_height_ft=3,
+       art="waist-high broken wall"),
     _t("W", "deep water", None, traversable_swimming=True, art="deep dark water"),
     # Open sky: a flier's ground. Unlike a chasm this is not a hazard — the
     # board IS the air, so crossing it is ordinary movement for anything aloft.
@@ -81,11 +100,14 @@ TILES: dict[str, Tile] = {t.code: t for t in (
     _t("x", "chasm", None, traversable_flying=True, hazard=True, art="yawning chasm"),
     _t("l", "lava", None, traversable_flying=True, hazard=True, art="molten lava"),
     _t("f", "fire", 10, hazard=True, art="burning wreckage"),
-    _t("A", "altar", None, cover="half", art="carved stone altar"),
+    _t("A", "altar", None, cover="half", cover_height_ft=4,
+       art="carved stone altar"),
     # --- stateful furniture (state lives on TacticalMap.doors) ---
-    _t("+", "door", None, blocks_sight=True, cover="total", art="heavy closed door"),
+    _t("+", "door", None, blocks_sight=True, cover="total",
+       art="heavy closed door"),
     _t("/", "open door", 5, art="open doorway"),
-    _t("p", "portcullis", None, cover="three-quarters", art="iron portcullis"),
+    _t("p", "portcullis", None, cover="three-quarters",
+       art="iron portcullis"),
     # --- out of play ---
     _t(" ", "void", None, art="empty darkness"),
 )}
@@ -133,6 +155,34 @@ def tile_rule(code: str) -> str:
     if t.hazard:
         base += ", HAZARD"
     return base
+
+
+def cover_height_ft(code: str) -> int:
+    """How tall the obstacle on this square stands, in feet. 0 for open ground."""
+    return int(tile(code).cover_height_ft or 0)
+
+
+#: How much of the world a creature presents to be shot at, by size — standing,
+#: and flat on the ground. The prone figures are what make lying down behind a
+#: crate mean something: a Medium creature standing is six feet of target and a
+#: four-foot crate covers most of it, while the same creature prone is about a
+#: foot of target and the crate covers ALL of it.
+#:
+#: The Oracle's own numbers. 5e never states a creature's height as a rule, but
+#: it does define total cover as "completely concealed by an obstacle", and
+#: concealment is a question about height whether or not anyone writes it down.
+_STANDING_HEIGHT_FT = {"tiny": 2, "small": 4, "medium": 6,
+                       "large": 10, "huge": 15, "gargantuan": 20}
+_PRONE_HEIGHT_FT = {"tiny": 1, "small": 1, "medium": 1,
+                    "large": 2, "huge": 3, "gargantuan": 4}
+
+
+def profile_height_ft(size: str, prone: bool = False) -> int:
+    """How tall a target of this size is — the height an obstacle must match
+    to conceal it completely."""
+    key = (size or "medium").strip().lower()
+    table = _PRONE_HEIGHT_FT if prone else _STANDING_HEIGHT_FT
+    return int(table.get(key, table["medium"]))
 
 
 #: What a destructible square LEAVES BEHIND, and what it takes to break it.

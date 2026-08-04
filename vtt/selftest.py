@@ -19,7 +19,7 @@ from . import geometry as geo
 from .mapgen import ARCHETYPES, generate_map, archetype_for
 from .models import Team, TokenKind
 from .scene import VttEngine
-from .terrain import APERTURES, Grid, aperture_axis
+from .terrain import APERTURES, Grid, aperture_axis, profile_height_ft
 
 _FAILS: list[str] = []
 _RUN = 0
@@ -86,6 +86,30 @@ def test_sight_and_cover() -> None:
     g4 = Grid.blank(9, 5)
     eq("a creature in the way is half cover (DMG option)",
        geo.cover_between(g4, (0, 2), (8, 2), obstacles={(4, 2): "half"}), "half")
+
+    # Cover is a question about HEIGHT, which the engine had no number for: a
+    # four-foot crate gave half cover to a standing ogre and to a rogue lying
+    # flat behind it alike. The DMG's own definition of total cover is
+    # "completely concealed by an obstacle", and lying down is how you get
+    # completely concealed by a crate.
+    def cov(grid, height, above=0):
+        return geo.cover_between(grid, (0, 2), (8, 2),
+                                 target_height_ft=height,
+                                 attacker_height_advantage_ft=above)
+    eq("standing behind a crate is still half cover",
+       cov(g2, profile_height_ft("medium", False)), "half")
+    eq("lying flat behind it is total — the crate is taller than you now",
+       cov(g2, profile_height_ft("medium", True)), "total")
+    eq("…but not from an archer above it, who is shooting down over",
+       cov(g2, profile_height_ft("medium", True), above=10), "half")
+    eq("a Large creature is too big to hide behind a crate lying down",
+       cov(g2, profile_height_ft("large", False)), "half")
+    eq("…though a Large creature prone still fits",
+       cov(g2, profile_height_ft("large", True)), "total")
+    eq("a pillar's cover comes from its WIDTH, so prone changes nothing",
+       cov(g3, profile_height_ft("medium", True)), "three-quarters")
+    eq("and with no height given, cover behaves exactly as it always did",
+       geo.cover_between(g2, (0, 2), (8, 2)), "half")
 
 
 def test_templates() -> None:
@@ -694,6 +718,41 @@ def test_hiding() -> None:
     check("…and only that searcher", v.can_see(sc.id, "Guard", "Rogue")
           and not v.can_see(sc.id, "Hound", "Rogue"),
           "the guard who spotted you sees you; the rest of the room does not")
+
+    # Going flat behind low cover: the thing you would actually do. A crate is
+    # half cover standing and conceals you completely lying down, which makes
+    # you untargetable AND lets you hide — from an archer at ground level.
+    # A clean row of its own: the portcullis and the hound are still on row 5,
+    # and a second obstacle would make this measure something else.
+    v.set_terrain(sc.id, [(8, 2)], "o")
+    v.unhide(sc.id, "Rogue")
+    v.move_token(rogue.id, 7, 2, teleport=True, free=True)
+    v.move_token(guard.id, 10, 2, teleport=True, free=True)
+    # The hound goes BEHIND the guard, not off to one side: a crate hides you
+    # from what is on the far side of it, and from nothing else.
+    v.move_token(hound.id, 11, 2, teleport=True, free=True)
+    v.stand_up(sc.id, "Rogue")
+    eq("standing behind the crate is half cover",
+       v.cover_for(sc.id, "Guard", "Rogue"), "half")
+    check("…and the guard can see you fine", v.can_see(sc.id, "Guard", "Rogue"))
+    v.go_prone(sc.id, "Rogue")
+    eq("lying down behind it is total cover",
+       v.cover_for(sc.id, "Guard", "Rogue"), "total")
+    check("…which means completely out of sight",
+          not v.can_see(sc.id, "Guard", "Rogue"),
+          "total cover is not a modifier, it is a wall")
+    check("…so you may hide there", v.hide_eligibility(sc.id, "Rogue")["ok"])
+    v.update_token(guard.id, elevation_ft=20)
+    eq("but not from a guard on the gallery, shooting down over it",
+       v.cover_for(sc.id, "Guard", "Rogue"), "half")
+    v.update_token(guard.id, elevation_ft=0)
+    v.stand_up(sc.id, "Rogue")
+    v.move_token(rogue.id, 4, 5, teleport=True, free=True)
+    v.move_token(guard.id, 10, 5, teleport=True, free=True)
+    v.move_token(hound.id, 11, 5, teleport=True, free=True)
+    v.hide(sc.id, "Rogue", bonus=7, rng=_random.Random(3))
+    v.update_token(v.find_token(sc.id, "Rogue").id, stealth_dc=12,
+                   found_by=["Guard"])
 
     # The party's board shows what the party has found — no more, no less.
     names = {t["name"] for t in v.state(sc.id, viewer_team=Team.FOE)["tokens"]}

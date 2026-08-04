@@ -50,8 +50,8 @@ from .models import (
     size_squares,
 )
 from .terrain import (APERTURES, Grid, aperture_axis, object_stats,
-                      required_mode, short_name, sprite_label, sprite_subject,
-                      tile)
+                      profile_height_ft, required_mode, short_name,
+                      sprite_label, sprite_subject, tile)
 
 Square = tuple[int, int]
 
@@ -1768,10 +1768,17 @@ class VttEngine:
             if eff.blocks_sight:
                 for p in (eff.squares or []):
                     obstacles[tuple(p)] = "three-quarters"  # type: ignore[index]
+        # How tall the target presents, and how far the attacker is above them.
+        # Together these are what let a rogue lie flat behind a crate and be
+        # genuinely concealed — and what stops the same rogue hiding from an
+        # archer on the gallery, who is shooting down over it.
         return geo.cover_between(
             g, (a.x, a.y), (b.x, b.y),
             attacker_size=size_squares(a.size), target_size=size_squares(b.size),
-            obstacles=obstacles)
+            obstacles=obstacles,
+            target_height_ft=profile_height_ft(b.size, bool(b.prone)),
+            attacker_height_advantage_ft=max(
+                0, self.token_height_ft(row, a) - self.token_height_ft(row, b)))
 
     # ================================================================ light
 
@@ -1957,6 +1964,14 @@ class VttEngine:
             return {"sees": False, "via": "", "obscured": "heavy",
                     "note": (f"{b.name} is hidden (Stealth "
                              f"{int(b.stealth_dc or 15)}) — Search to find them")}
+        # Total cover is not a modifier, it is a wall: 5e says such a target
+        # "can't be targeted directly". Almost everything granting it already
+        # blocks sight, so this rarely fires — but a creature lying flat behind
+        # a crate is completely concealed by something you CAN see over when
+        # standing, and that is the whole point of the height rule.
+        if unsighted < dist and self.cover_for(map_id, a_ref, b_ref) == "total":
+            return {"sees": False, "via": "", "obscured": "heavy",
+                    "note": f"{b.name} is completely concealed — total cover"}
 
         eff_obscured = ""
         for e in self.effects(map_id):
@@ -2409,6 +2424,22 @@ class VttEngine:
                 extras.append("ACTING NOW")
             if t.prone:
                 extras.append("prone")
+            elif actor is not None and actor.id != t.id:
+                # Offer the tactic where it would actually pay. A model that
+                # doesn't know low cover gets better when you lie down will
+                # never suggest it, and a player who asks will be told no.
+                low = geo.cover_between(
+                    g, (actor.x, actor.y), (t.x, t.y),
+                    attacker_size=size_squares(actor.size),
+                    target_size=size_squares(t.size),
+                    target_height_ft=profile_height_ft(t.size, True),
+                    attacker_height_advantage_ft=max(
+                        0, self.token_height_ft(row, actor)
+                        - self.token_height_ft(row, t)))
+                if low == "total" and self.cover_for(
+                        map_id, actor.name, t.name) != "total":
+                    extras.append("could drop prone here for TOTAL cover "
+                                  "([[VTT: prone | " + t.name + "]])")
             if t.hidden:
                 # The DC is stated because the DM must not invent one: it was
                 # rolled, and a Search action is measured against THIS number.

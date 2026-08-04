@@ -26,7 +26,7 @@ import heapq
 import math
 from typing import Callable, Iterable, Optional, Sequence
 
-from .terrain import Grid
+from .terrain import Grid, cover_height_ft
 
 Square = tuple[int, int]
 Point = tuple[float, float]
@@ -271,7 +271,9 @@ def line_of_effect(grid: Grid, origin: Square, target: Square) -> bool:
 
 def cover_between(grid: Grid, attacker: Square, target: Square, *,
                   attacker_size: int = 1, target_size: int = 1,
-                  obstacles: Optional[dict[Square, str]] = None) -> str:
+                  obstacles: Optional[dict[Square, str]] = None,
+                  target_height_ft: Optional[int] = None,
+                  attacker_height_advantage_ft: int = 0) -> str:
     """The PHB corner rule, best-case for the attacker.
 
     Pick a corner of the attacker's space, trace to each of the target's four
@@ -280,6 +282,20 @@ def cover_between(grid: Grid, attacker: Square, target: Square, *,
     and any ``obstacles`` (other creatures, usually half cover) are counted with
     their own rating, so ducking behind a barrel gives half even though the ray
     technically passes.
+
+    ``target_height_ft`` turns cover into the question it always was. The DMG
+    defines total cover as "completely concealed by an obstacle", and whether
+    an obstacle conceals you completely depends on how tall each of you is —
+    which the engine had no number for, so a crate gave half cover to a
+    standing ogre and to a rogue lying flat behind it alike. Given a height, an
+    obstacle at least that tall grants TOTAL cover instead of its listed
+    rating. Pass ``None`` to keep the old flat behaviour.
+
+    ``attacker_height_advantage_ft`` is how far above the target the attacker
+    is, and it takes that away again: you cannot lie behind a four-foot crate
+    to hide from an archer on the balcony, because they are shooting down over
+    it. Without this, going prone behind furniture would be strictly correct
+    and completely broken.
     """
     obstacles = obstacles or {}
     own = set(footprint(attacker[0], attacker[1], attacker_size))
@@ -290,6 +306,10 @@ def cover_between(grid: Grid, attacker: Square, target: Square, *,
         if not grid.in_bounds(x, y):
             return "none"
         r = grid.cover_at(x, y)
+        if target_height_ft is not None and r != "none":
+            h = cover_height_ft(grid.get(x, y))
+            if h >= int(target_height_ft) and h > int(attacker_height_advantage_ft):
+                r = "total"
         o = obstacles.get((x, y), "none")
         return COVER_BY_RANK[max(COVER_ORDER.get(r, 0), COVER_ORDER.get(o, 0))]
 
