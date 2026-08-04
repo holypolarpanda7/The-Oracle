@@ -396,7 +396,11 @@ async def lifespan(app: FastAPI):
                                      # How a creature perceives. Absent = plain
                                      # sight, which is what every pre-existing
                                      # token was being treated as anyway.
-                                     ("senses", "JSON")]:
+                                     ("senses", "JSON"),
+                                     # Hiding is a contest; the roll and who
+                                     # has beaten it both have to persist.
+                                     ("stealth_dc", "INTEGER"),
+                                     ("found_by", "JSON")]:
                         if col not in vt_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE vtt_token ADD COLUMN {col} {ddl}")
@@ -6387,7 +6391,8 @@ _VTT_HOOK_ACTIONS = {"open", "close", "place", "move", "remove", "effect",
                      # it ever reaches the dispatcher — add both, always.
                      "blink", "push", "pull", "token",
                      "grapple", "release", "restrain", "free", "prone",
-                     "stand", "swap", "damage"}
+                     "stand", "swap", "damage",
+                     "hide", "search", "unhide"}
 
 # Bare words a hook may carry instead of key=value, e.g. "difficult".
 _VTT_FLAGS = {"difficult", "blocking", "obscuring", "permanent", "hidden",
@@ -6459,6 +6464,18 @@ _VTT_HOOKS_ACTIVE = (
     "    [[VTT: prone | Kara]] / [[VTT: stand | Kara]]     knocked down; getting up costs\n"
     "                                         half her Speed, and crawling costs double\n"
     "    [[VTT: swap | Kara | Sable]]         two creatures change places\n"
+    "    [[VTT: hide | Kara | bonus=7]]       take the Hide action. The BOARD decides\n"
+    "                                         whether she may (she needs darkness, or\n"
+    "                                         three-quarters cover, and no enemy already\n"
+    "                                         perceiving her) and the CODE rolls Stealth\n"
+    "                                         against DC 15 and remembers the number.\n"
+    "                                         Never state a Stealth result yourself\n"
+    "    [[VTT: search | Gruk | bonus=2]]     take the Search action: Perception against\n"
+    "                                         each hider's own roll. Finding is PERSONAL —\n"
+    "                                         Gruk seeing her doesn't mean the room does\n"
+    "    [[VTT: unhide | Kara | attacked]]    she gives herself away. Attacking, casting\n"
+    "                                         aloud or shouting all end hiding; walking\n"
+    "                                         into the open ends it by itself\n"
     "    [[VTT: damage | 5,4 | 22 | slashing]]  attack the FURNITURE: a pillar, a door,\n"
     "                                         a crate, even a wall. Each has its own AC\n"
     "                                         and hit points (the board reports them); when\n"
@@ -6890,6 +6907,32 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                 vtt_engine.update_token(tok.id, **fields)
                 said = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in fields.items())
                 notes.append(f"🗺 {tok.name}: {said}.")
+                continue
+
+            if action in ("hide", "search", "unhide"):
+                if not positional:
+                    continue
+                who = positional[0]
+                # The DM names the creature and its modifier; the CODE rolls,
+                # decides, and remembers the number — the same division as the
+                # cartography check. A model that rolled its own Stealth would
+                # also be the thing that knows whether it succeeded.
+                bonus = _iv(kv, "bonus", _iv(kv, "mod", 0))
+                adv = "advantage" in flags
+                dis = "disadvantage" in flags
+                if action == "hide":
+                    res = vtt_engine.hide(scene.id, who, bonus=bonus,
+                                          advantage=adv, disadvantage=dis,
+                                          dc=_iv(kv, "dc", 15))
+                elif action == "search":
+                    res = vtt_engine.search(scene.id, who, bonus=bonus,
+                                            advantage=adv, disadvantage=dis)
+                else:
+                    res = vtt_engine.unhide(
+                        scene.id, who,
+                        positional[1] if len(positional) > 1 else "")
+                notes.append("🗺 " + (res.get("detail_text")
+                                      or res.get("reason") or ""))
                 continue
 
             if action in ("grapple", "release", "restrain", "free",

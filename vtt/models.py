@@ -209,6 +209,14 @@ class MapToken(SQLModel, table=True):
 
     # Hidden from the players' board (an unnoticed ambusher, a DM-only marker).
     hidden: bool = Field(default=False, sa_column=Column(Boolean))
+    # Hiding is a CONTEST, so the number has to survive the roll. This is the
+    # Stealth result a searcher must beat; without it every Search action is a
+    # check against nothing and the DM invents a DC each time.
+    stealth_dc: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    # Who has already found this creature, by token name. Being hidden is not a
+    # property of the hider alone — the guard who spotted you sees you while
+    # the rest of the room still doesn't, and one bool cannot say that.
+    found_by: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     # How this creature perceives, in feet: {"darkvision": 60, "blindsight": 10}.
     # A JSON column rather than four more columns, because it is a stat block's
     # senses line and that line grows — and because the bestiary already stores

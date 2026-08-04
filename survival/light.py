@@ -86,6 +86,24 @@ def parse_senses(raw: Optional[Dict]) -> Dict[str, int]:
     return out
 
 
+def passive_perception(raw: Optional[Dict], default: int = 10) -> int:
+    """A stat block's passive Perception. Kept apart from :func:`parse_senses`,
+    which only deals in senses that have a RANGE — this one is a number you
+    compare a Stealth roll against, not a distance you can perceive at.
+    """
+    for key, value in (raw or {}).items():
+        name = str(key).strip().lower().replace(" ", "_")
+        if name in ("passive_perception", "passiveperception"):
+            digits = "".join(c for c in str(value) if c.isdigit())
+            if digits:
+                return int(digits)
+        elif name in ("raw", "text", "senses") and isinstance(value, str):
+            m = re.search(r"passive\s*perception\s*[:\-]?\s*(\d+)", value, re.I)
+            if m:
+                return int(m.group(1))
+    return default
+
+
 def perceives(light_level: str, distance_ft: float, senses: Optional[Dict] = None,
               *, obscured: str = "", grounded: bool = True) -> Dict:
     """Can a creature with these senses make something out, at this distance?

@@ -649,11 +649,98 @@ def test_light_and_vision() -> None:
     v.close_scene(sc.id)
 
 
+def test_hiding() -> None:
+    section("hiding: a contest, remembered, and personal")
+    import random as _random
+    import tempfile as _tf
+    db = os.path.join(_tf.mkdtemp(), "hiding.db")
+    v = VttEngine(database_url=f"sqlite:///{db}")
+    v.create_tables()
+    sc = v.open_scene("test:hide", kind="combat", archetype="open",
+                      name="Open Field", width=20, height=10, seed=11,
+                      render_art=False, lighting="bright")
+
+    rogue = v.add_token(sc.id, name="Rogue", x=4, y=5, team=Team.PARTY)
+    guard = v.add_token(sc.id, name="Guard", x=10, y=5, team=Team.FOE)
+
+    # You cannot hide from someone looking straight at you.
+    elig = v.hide_eligibility(sc.id, "Rogue")
+    check("open ground in daylight is nowhere to hide", not elig["ok"])
+    eq("…and the board names who can see you", elig["blocked_by"], ["Guard"])
+    eq("so the attempt is refused before any dice",
+       v.hide(sc.id, "Rogue", bonus=99).get("ok"), False)
+
+    # A portcullis is the interesting case: three-quarters cover you can still
+    # be SEEN through. Cover qualifies where dim light would not.
+    v.set_terrain(sc.id, [(7, 5)], "p")
+    eq("bars are cover without blocking sight",
+       v.cover_for(sc.id, "Guard", "Rogue"), "three-quarters")
+    check("…and the guard can still see through them",
+          v.vision(sc.id, "Guard", "Rogue", ignore_hidden=True)["sees"])
+    check("cover is enough to try", v.hide_eligibility(sc.id, "Rogue")["ok"])
+
+    got = v.hide(sc.id, "Rogue", bonus=7, rng=_random.Random(3))
+    check("hiding rolls Stealth and succeeds on a 15+", got["ok"], str(got))
+    eq("the roll is kept as the DC to find them",
+       v.find_token(sc.id, "Rogue").stealth_dc, got["roll"])
+    check("the guard has lost them, line of sight or not",
+          not v.can_see(sc.id, "Guard", "Rogue"))
+
+    # Finding is personal: one searcher, one result.
+    hound = v.add_token(sc.id, name="Hound", x=11, y=5, team=Team.FOE)
+    v.update_token(v.find_token(sc.id, "Rogue").id, stealth_dc=12)
+    found = v.search(sc.id, "Guard", bonus=20)      # cannot fail a DC 12
+    eq("a searcher who beats the roll finds them", found["found"], ["Rogue"])
+    check("…and only that searcher", v.can_see(sc.id, "Guard", "Rogue")
+          and not v.can_see(sc.id, "Hound", "Rogue"),
+          "the guard who spotted you sees you; the rest of the room does not")
+
+    # The party's board shows what the party has found — no more, no less.
+    names = {t["name"] for t in v.state(sc.id, viewer_team=Team.FOE)["tokens"]}
+    check("a foe who found the rogue sees her on their own board",
+          "Rogue" in names,
+          "the Search action's result has to reach the picture")
+    v.update_token(v.find_token(sc.id, "Rogue").id, found_by=[])
+    names = {t["name"] for t in v.state(sc.id, viewer_team=Team.FOE)["tokens"]}
+    check("…and a side that has found nobody sees nobody", "Rogue" not in names)
+    check("but you always see your own people",
+          "Rogue" in {t["name"] for t in
+                      v.state(sc.id, viewer_team=Team.PARTY)["tokens"]},
+          "a player who cannot see their own token cannot play")
+    v.update_token(v.find_token(sc.id, "Rogue").id, found_by=["Guard"])
+
+    # Senses that don't use light aren't fooled by holding still.
+    v.update_token(hound.id, senses={"blindsight": 60})
+    check("blindsight is not fooled by hiding",
+          v.can_see(sc.id, "Hound", "Rogue"),
+          "you can hold still behind bars; you cannot stop making noise")
+    check("…so you cannot hide from it in the first place",
+          not v.hide_eligibility(sc.id, "Rogue")["ok"],
+          "an enemy that perceives you blocks the attempt, sense regardless")
+    v.update_token(hound.id, senses={})
+
+    # Attacking, shouting or stepping into the open all end it.
+    v.unhide(sc.id, "Rogue", "attacked")
+    check("unhiding forgets the roll",
+          v.find_token(sc.id, "Rogue").stealth_dc is None,
+          "a stale DC would make the next hide cheaper than it should be")
+
+    v.hide(sc.id, "Rogue", bonus=7, rng=_random.Random(3))
+    check("hidden again", v.find_token(sc.id, "Rogue").hidden)
+    # Far enough out that the bars are no longer between them; teleport so the
+    # speed limit isn't what this check is really measuring.
+    moved = v.move_token(rogue.id, 13, 8, teleport=True, free=True)
+    check("stepping out from cover breaks it",
+          moved.get("hiding_broken") is True, str(moved))
+    check("…and the board agrees", not v.find_token(sc.id, "Rogue").hidden)
+    v.close_scene(sc.id)
+
+
 def main() -> int:
     print("\033[1mThe Oracle — tactical board self-test\033[0m")
     for fn in (test_distance, test_sight_and_cover, test_templates, test_movement,
                test_opportunity, test_mapgen, test_engine, test_bridge,
-               test_light_and_vision):
+               test_light_and_vision, test_hiding):
         try:
             fn()
         except Exception:

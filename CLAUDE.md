@@ -342,6 +342,22 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   every other board→combat channel): can't see the target = disadvantage,
   target can't see you = advantage, and in a dark room both apply and cancel —
   which is correct, and is why darkvision is worth having.
+- **Hiding is a CONTEST, and it is personal.** `MapToken.hidden` used to be a
+  bare bool a DM set, tied to nothing. Now the board decides ELIGIBILITY
+  (`hide_eligibility`: every living enemy must either not perceive you at all,
+  or be looking through three-quarters cover or better — dim light does NOT
+  qualify, and an enemy with blindsight blocks the attempt no matter how much
+  cover you have, because cover is protection from being *seen*), the CODE
+  rolls the Stealth check (`hide`, DC 15, 2024 rules), and the result is KEPT
+  as `stealth_dc` — without it every Search action is a check against nothing
+  and the DM invents a DC each time. `found_by` tracks who has beaten it, so
+  the guard who spotted you sees you while the rest of the room does not; one
+  bool cannot say that, and `state()` filters each side's board by it. Hiding
+  breaks on `unhide` (attacking, casting aloud) and by itself in `move_token`
+  when the new square no longer qualifies. An enemy whose passive Perception
+  already beats the roll is added to `found_by` at hide time — making them
+  spend a Search action on something they could not have missed is wrong.
+  Hooks: `[[VTT: hide|search|unhide]]` — **and they are in `_VTT_HOOK_ACTIONS`**.
 - **A door belongs at the threshold the corridor made.** `_threshold_doors`
   hangs doors where a corridor breaches a room's wall ring; punching one into
   an arbitrary wall square leaves the corridor's own mouth gaping beside it,

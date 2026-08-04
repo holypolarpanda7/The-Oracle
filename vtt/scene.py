@@ -749,7 +749,8 @@ class VttEngine:
                    "hidden", "prone", "defeated", "image_id", "color", "label",
                    "notes", "elevation_ft", "facing_deg", "movement_mode",
                    "moved_ft", "combatant_id", "character_id",
-                   "restrained", "grappled_by", "senses"}
+                   "restrained", "grappled_by", "senses",
+                   "stealth_dc", "found_by"}
         with Session(self.engine) as s:
             tok = s.get(MapToken, token_id)
             if not tok:
@@ -1020,6 +1021,14 @@ class VttEngine:
         broke = self._break_far_grapples(tok.map_id, row)
         if broke:
             out["grapples_broken"] = broke
+        # Walking into the open ends hiding, and the board is the only thing
+        # that can notice. Re-asking eligibility from the NEW square is the
+        # whole check: if there is still cover or darkness enough to have hidden
+        # here, the creature stays hidden; if it just stepped into a lit
+        # corridor in plain view of the guard, it does not.
+        if tok.hidden and not self.hide_eligibility(tok.map_id, tok.name)["ok"]:
+            self.unhide(tok.map_id, tok.name, "stepped into the open")
+            out["hiding_broken"] = True
         # Stepping off a ledge is a fact the DM should narrate (and charge for);
         # the board reports the drop rather than silently applying damage.
         drop = self._drop_ft(row, (tok.x, tok.y), dest)
@@ -1889,7 +1898,8 @@ class VttEngine:
 
     # ============================================================== seeing
 
-    def vision(self, map_id: int, a_ref: str, b_ref: str) -> dict:
+    def vision(self, map_id: int, a_ref: str, b_ref: str, *,
+               ignore_hidden: bool = False) -> dict:
         """Can ``a`` perceive ``b``? THE answer, for every caller.
 
         Line of sight is necessary and never sufficient: a clear line through a
@@ -1910,6 +1920,13 @@ class VttEngine:
         if self._is_linked(map_id, a_ref, b_ref):
             return {"sees": True, "via": "bond", "obscured": "",
                     "note": "seen through the bond"}
+        # Hiding, and only for those it fools. Checked before the geometry
+        # because a successful hide beats a clear line of sight — that is what
+        # it is FOR. ``ignore_hidden`` exists for the one caller that must ask
+        # the question without the answer folded in: deciding whether hiding is
+        # possible in the first place.
+        hiding = (b.hidden and not ignore_hidden
+                  and a.name not in list(b.found_by or []))
 
         g = self.grid_of(row)
         blockers = {tuple(p) for eff in self.effects(map_id) if eff.blocks_sight
@@ -1924,16 +1941,22 @@ class VttEngine:
             geo.footprint(a.x, a.y, size_squares(a.size)),
             geo.footprint(b.x, b.y, size_squares(b.size)),
             row.square_ft, dz_ft=self.height_gap_ft(row, a, b))
+        # Senses that don't use light don't care about hiding either: you can
+        # hold still behind a rock, but you cannot stop making vibrations.
+        unsighted = max(int(senses.get("blindsight", 0)),
+                        int(senses.get("tremorsense", 0)) if _grounded(b) else 0)
         if not clear:
             # Blindsight and tremorsense don't need a line — but they do need
             # the range, and a wall still stops tremors through open air.
-            reach = max(int(senses.get("blindsight", 0)),
-                        int(senses.get("tremorsense", 0)) if _grounded(b) else 0)
-            if reach >= dist:
+            if unsighted >= dist:
                 return {"sees": True, "via": "blindsight", "obscured": "",
                         "note": "perceived through the obstruction"}
             return {"sees": False, "via": "", "obscured": "heavy",
                     "note": "no line of sight"}
+        if hiding and unsighted < dist:
+            return {"sees": False, "via": "", "obscured": "heavy",
+                    "note": (f"{b.name} is hidden (Stealth "
+                             f"{int(b.stealth_dc or 15)}) — Search to find them")}
 
         eff_obscured = ""
         for e in self.effects(map_id):
@@ -1946,6 +1969,168 @@ class VttEngine:
 
     def can_see(self, map_id: int, a_ref: str, b_ref: str) -> bool:
         return bool(self.vision(map_id, a_ref, b_ref).get("sees"))
+
+    # =============================================================== hiding
+
+    #: What a creature must have between it and an observer before it may try
+    #: to hide from them. Half cover is not enough — you can be shot at behind
+    #: a low wall, which means you can be seen behind it.
+    _HIDING_COVER = ("three-quarters", "total")
+
+    def hide_eligibility(self, map_id: int, ref: str) -> dict:
+        """May this creature attempt to hide, and from whom? ``{ok, blocked_by}``.
+
+        You cannot hide from someone looking straight at you. So every living
+        enemy is asked separately, and each must either not perceive this
+        creature at all — darkness, a fog cloud, a wall — or be looking at it
+        through three-quarters cover or better. An enemy with blindsight is
+        handled without a special case: it perceives you, so it blocks the
+        attempt, which is exactly right.
+
+        Dim light deliberately does NOT qualify. Lightly obscured costs an
+        observer a Perception check; it does not stop them seeing you.
+        """
+        me = self.find_token(map_id, ref)
+        if me is None:
+            return {"ok": False, "reason": f"{ref} is not on the board",
+                    "blocked_by": []}
+        blocked = []
+        for other in self.tokens(map_id, include_defeated=False):
+            if other.id == me.id or other.team == me.team:
+                continue
+            seen = self.vision(map_id, other.name, me.name, ignore_hidden=True)
+            if not seen.get("sees"):
+                continue
+            # Cover is protection from being SEEN. A creature perceiving you by
+            # blindsight or tremorsense is not looking at you, so putting a
+            # portcullis between you changes nothing for it — and neither does
+            # putting out the lights.
+            if seen.get("via") in ("blindsight", "tremorsense", "truesight"):
+                blocked.append(f"{other.name} ({seen['via']})")
+                continue
+            if self.cover_for(map_id, other.name, me.name) in self._HIDING_COVER:
+                continue
+            blocked.append(other.name)
+        if blocked:
+            return {"ok": False, "blocked_by": blocked,
+                    "reason": (f"{me.name} is in plain view of "
+                               f"{', '.join(blocked)} — no cover, no darkness, "
+                               f"nowhere to hide")}
+        return {"ok": True, "blocked_by": [],
+                "reason": f"{me.name} is out of sight and may attempt to hide"}
+
+    def hide(self, map_id: int, ref: str, *, bonus: int = 0,
+             advantage: bool = False, disadvantage: bool = False,
+             dc: int = 15, rng=None) -> dict:
+        """Take the Hide action. The CODE rolls it; the result is remembered.
+
+        2024 rules: a DC 15 Dexterity (Stealth) check, and the result is the
+        number anyone searching for you has to beat. An enemy whose passive
+        Perception already equals or beats the roll finds you at once — they
+        were not fooled, and making them spend a Search action to notice
+        something they could not have missed is the wrong answer.
+        """
+        me = self.find_token(map_id, ref)
+        if me is None:
+            return {"ok": False, "reason": f"{ref} is not on the board"}
+        elig = self.hide_eligibility(map_id, ref)
+        if not elig["ok"]:
+            return {"ok": False, **elig}
+
+        from dice.mechanics import ability_check
+        roll = ability_check(bonus, dc=dc, advantage=advantage,
+                             disadvantage=disadvantage,
+                             label=f"Stealth ({me.name})", rng=rng)
+        if not roll.success:
+            self.update_token(me.id, hidden=False, stealth_dc=None, found_by=[])
+            return {"ok": False, "roll": roll.total, "dc": dc,
+                    "detail": roll.detail,
+                    "reason": f"{me.name} fails to go unseen ({roll.total} vs DC {dc})"}
+
+        # Anyone who could not have missed it never has to look.
+        from survival.light import passive_perception
+        obvious = []
+        for other in self.tokens(map_id, include_defeated=False):
+            if other.team == me.team or other.id == me.id:
+                continue
+            if not self.vision(map_id, other.name, me.name,
+                               ignore_hidden=True).get("sees"):
+                continue
+            if passive_perception(self.token_senses(other)) >= roll.total:
+                obvious.append(other.name)
+
+        self.update_token(me.id, hidden=True, stealth_dc=roll.total,
+                          found_by=obvious)
+        self._bump(map_id)
+        row = self.get_scene(map_id)
+        self._log(map_id, row.session_id if row else None, "hide",
+                  summary=f"{me.name} hides (Stealth {roll.total})")
+        note = (f" — but {', '.join(obvious)} notice anyway"
+                if obvious else "")
+        return {"ok": True, "roll": roll.total, "dc": dc, "detail": roll.detail,
+                "stealth_dc": roll.total, "found_by": obvious,
+                "detail_text": (f"{me.name} slips out of sight "
+                                f"(Stealth {roll.total}){note}.")}
+
+    def search(self, map_id: int, ref: str, *, bonus: int = 0,
+               advantage: bool = False, disadvantage: bool = False,
+               rng=None) -> dict:
+        """Take the Search action: Perception against every hider's own roll.
+
+        Finding someone is personal. A success adds this searcher to that
+        creature's ``found_by`` and nobody else's — the guard who spotted you
+        can see you while the rest of the room still cannot, which is the whole
+        reason hiding is tracked per observer rather than as one flag.
+        """
+        me = self.find_token(map_id, ref)
+        if me is None:
+            return {"ok": False, "reason": f"{ref} is not on the board"}
+        from dice.mechanics import ability_check
+        found, missed = [], []
+        for other in self.tokens(map_id, include_defeated=False):
+            if other.team == me.team or not other.hidden:
+                continue
+            if me.name in list(other.found_by or []):
+                found.append(other.name)
+                continue
+            dc = int(other.stealth_dc or 15)
+            roll = ability_check(bonus, dc=dc, advantage=advantage,
+                                 disadvantage=disadvantage,
+                                 label=f"Perception ({me.name})", rng=rng)
+            if roll.success:
+                self.update_token(other.id,
+                                  found_by=[*list(other.found_by or []), me.name])
+                found.append(other.name)
+            else:
+                missed.append(other.name)
+        if found or missed:
+            self._bump(map_id)
+        return {"ok": True, "found": found, "missed": missed,
+                "detail_text": (
+                    (f"{me.name} finds {', '.join(found)}. " if found else "")
+                    + (f"{me.name} cannot make out {', '.join(missed)}."
+                       if missed else "")
+                    or f"{me.name} searches, and there is nobody hiding.")}
+
+    def unhide(self, map_id: int, ref: str, reason: str = "") -> dict:
+        """Stop being hidden. Attacking, shouting or casting aloud all do this.
+
+        Kept as its own verb rather than an ``update_token`` call, because the
+        board has to forget the Stealth roll and everyone who had found it at
+        the same moment — leaving a stale DC behind would make the NEXT hide
+        cheaper than it should be.
+        """
+        me = self.find_token(map_id, ref)
+        if me is None:
+            return {"ok": False, "reason": f"{ref} is not on the board"}
+        was = bool(me.hidden)
+        self.update_token(me.id, hidden=False, stealth_dc=None, found_by=[])
+        if was:
+            self._bump(map_id)
+        return {"ok": True, "was_hidden": was,
+                "detail_text": (f"{me.name} is no longer hidden"
+                                + (f" ({reason})" if reason else "") + "."
+                                if was else f"{me.name} was not hidden.")}
 
     # =================================================================== fog
 
@@ -2042,6 +2227,26 @@ class VttEngine:
 
     # ================================================================= views
 
+    @staticmethod
+    def _visible_to_team(t: MapToken, toks: list, viewer_team: str) -> bool:
+        """Should this token appear on ``viewer_team``'s board at all?
+
+        Hiding is tracked per observer, so the answer is too: a hidden foe
+        shows up once ANYONE on this side has found them, and stays off the
+        board for a party that has all failed to. The old rule was a blunt
+        "hidden means invisible to everyone but the DM", which threw away the
+        Search action's whole result — the guard who spotted the rogue could
+        not see her on his own board.
+
+        Your own people are never hidden from you. They are hiding from the
+        enemy, and a player who cannot see their own token cannot play.
+        """
+        if not t.hidden or t.team == viewer_team:
+            return True
+        found = {str(n).strip().lower() for n in (t.found_by or [])}
+        return any((o.name or "").strip().lower() in found
+                   for o in toks if o.team == viewer_team)
+
     def state(self, map_id: int, *, viewer_team: str = Team.PARTY,
               include_terrain: bool = True) -> dict:
         """Everything the Activity overlay needs to draw one frame."""
@@ -2079,7 +2284,7 @@ class VttEngine:
             "art_status": row.art_status,
             "description": (row.notes or {}).get("description", ""),
             "tokens": [_token_dict(t, row) for t in toks
-                       if not (t.hidden and viewer_team != Team.FOE)],
+                       if self._visible_to_team(t, toks, viewer_team)],
             "effects": [_effect_dict(e) for e in effs
                         if e.visible_to in ("all", viewer_team)],
             "legend": self.grid_of(row).legend(),
@@ -2205,7 +2410,16 @@ class VttEngine:
             if t.prone:
                 extras.append("prone")
             if t.hidden:
-                extras.append("hidden")
+                # The DC is stated because the DM must not invent one: it was
+                # rolled, and a Search action is measured against THIS number.
+                seekers = [o.name for o in toks
+                           if o.team != t.team and not o.defeated
+                           and o.name in list(t.found_by or [])]
+                extras.append(
+                    f"HIDDEN (Stealth {int(t.stealth_dc or 15)} — a Search "
+                    f"action beats it with a Perception check, "
+                    f"[[VTT: search | <name> | bonus=N]])"
+                    + (f"; already found by {', '.join(seekers)}" if seekers else ""))
             height = self.token_height_ft(row, t)
             if height:
                 # High ground isn't advantage in this game — it's a reason to
@@ -2362,6 +2576,8 @@ def _token_dict(t: MapToken, row: TacticalMap) -> dict:
         "movement_mode": t.movement_mode,
         "elevation_ft": t.elevation_ft,
         "hidden": t.hidden,
+        "stealth_dc": t.stealth_dc,
+        "found_by": list(t.found_by or []),
         "senses": (t.senses if isinstance(t.senses, dict) else {}),
         "prone": t.prone,
         "defeated": t.defeated,
