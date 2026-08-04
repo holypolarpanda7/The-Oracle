@@ -37,7 +37,12 @@ from .light import (
     source_spec,
     burn,
     effective_vision,
+    perceives,
+    parse_senses,
+    brighter,
+    darker,
     LIGHT_LEVELS,
+    LIGHT_ORDER,
 )
 
 __all__ = [
@@ -74,5 +79,10 @@ __all__ = [
     "source_spec",
     "burn",
     "effective_vision",
+    "perceives",
+    "parse_senses",
+    "brighter",
+    "darker",
+    "LIGHT_ORDER",
     "LIGHT_LEVELS",
 ]

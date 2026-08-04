@@ -525,6 +525,23 @@ class CombatEngine:
         if "invisible" in ac_conds or "hidden" in ac_conds:
             adv = True
             notes.append("unseen attacker: advantage")
+        # The BOARD knows something conditions don't: light. Attacking what you
+        # can't make out is at disadvantage, and being unseen by your target is
+        # advantage — the two are separate facts and a dark room usually grants
+        # both at once. Silent when there is no board, or when the board can't
+        # place these two, so theater-of-the-mind play is unchanged.
+        if self.spatial is not None and hasattr(self.spatial, "can_see"):
+            try:
+                sees = self.spatial.can_see(atk, tgt)
+                seen = self.spatial.can_see(tgt, atk)
+            except Exception:
+                sees = seen = None
+            if sees is False:
+                dis = True
+                notes.append(f"{atk.name} can't see {tgt.name}: disadvantage")
+            if seen is False:
+                adv = True
+                notes.append(f"{tgt.name} can't see {atk.name}: advantage")
         if "helped" in ac_conds:
             adv = True
             notes.append("helped: advantage")

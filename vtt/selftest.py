@@ -533,14 +533,127 @@ def test_bridge() -> None:
     board = v.render(scene.id)
     check("the DM board says whose eyes the cover is measured through",
           "who is acting" in board and "Ogre" in board, board.splitlines()[-6:])
+
+    # Light reaches the attack roll. Two creatures on open ground at noon roll
+    # plainly; the same two in the dark roll at disadvantage AND grant
+    # advantage, because neither can see the other. Before the board answered
+    # this, a fight in an unlit crypt rolled exactly like a fight at midday.
+    #
+    # Stand them adjacent first: this board has scenery on it, and a blocked
+    # line of sight would prove the same thing for the wrong reason.
+    ot = v.find_token(scene.id, "Ogre")
+    v.move_token(tk.id, ot.x - 1, ot.y, teleport=True, free=True)
+    eng.spatial = BoardSpatial(v, scene.id)
+    adv, dis, _n = eng._attack_advantage(a, b, ranged=False,
+                                         encounter_id=enc.id)
+    check("in daylight an attack is a plain roll", not adv and not dis)
+
+    v._set_fields(scene.id, lighting="dark")
+    eng.spatial = BoardSpatial(v, scene.id)
+    adv, dis, notes = eng._attack_advantage(a, b, ranged=False,
+                                            encounter_id=enc.id)
+    check("in the dark neither can see the other, so both apply",
+          any("can't see" in n for n in notes), "; ".join(notes))
+    check("…and 5e cancels them against each other", not adv and not dis,
+          "advantage and disadvantage cancel — the roll is plain, for a reason")
+
+    # One of them having darkvision breaks the symmetry, which is the point.
+    v.update_token(tk.id, senses={"darkvision": 60})
+    eng.spatial = BoardSpatial(v, scene.id)
+    adv, dis, notes = eng._attack_advantage(a, b, ranged=False,
+                                            encounter_id=enc.id)
+    check("darkvision against a blind foe is advantage, not a cancelled roll",
+          adv and not dis, "; ".join(notes))
     ct.end_encounter(enc.id)
     v.close_scene(scene.id)
+
+
+def test_light_and_vision() -> None:
+    section("light, darkvision and who can see whom")
+    from survival.light import parse_senses
+    # Stat blocks do not all arrive tidy. Half the bestiary was ingested from
+    # PDFs and keeps its senses line whole, and reading only the well-formed
+    # rows costs the wolf its darkvision — silently, and in the direction of
+    # "blind in the dark", which is the direction that changes fights.
+    eq("a tidy senses line parses", parse_senses({"darkvision": "60 ft."}),
+       {"darkvision": 60})
+    eq("a species flag means the 5e default",
+       parse_senses({"darkvision": True}), {"darkvision": 60})
+    eq("passive Perception is not a sense with a range",
+       parse_senses({"passive_perception": 15}), {})
+    eq("a raw book line parses too",
+       parse_senses({"raw": "Blindsight 30ft.;PassivePerception13"}),
+       {"blindsight": 30})
+    eq("…including the run-together kind",
+       parse_senses({"raw": "Darkvision60ft.;PassivePerception15"}),
+       {"darkvision": 60})
+    import tempfile as _tf
+    db = os.path.join(_tf.mkdtemp(), "vision.db")
+    v = VttEngine(database_url=f"sqlite:///{db}")
+    v.create_tables()
+    sc = v.open_scene("test:vision", kind="combat", archetype="dungeon-room",
+                      name="Unlit Crypt", width=28, height=10, seed=5,
+                      render_art=False, lighting="dark")
+
+    human = v.add_token(sc.id, name="Human", x=3, y=5, team=Team.PARTY)
+    v.add_token(sc.id, name="Dwarf", x=4, y=5, team=Team.PARTY,
+                senses={"darkvision": 60})
+    v.add_token(sc.id, name="Ogre", x=9, y=5, team=Team.FOE)
+    wraith = v.add_token(sc.id, name="Wraith", x=16, y=5, team=Team.FOE)
+
+    # The whole point: a clear line through a dark room shows you nothing.
+    check("an unlit room blinds ordinary sight",
+          not v.can_see(sc.id, "Human", "Ogre"))
+    check("…and line of sight alone is still clear",
+          geo.has_line_of_sight(v.grid_of(v.get_scene(sc.id)), (3, 5), (9, 5)),
+          "the wall isn't what stopped them")
+    check("darkvision sees in the dark", v.can_see(sc.id, "Dwarf", "Ogre"))
+    eq("…as if in dim light, not daylight",
+       v.vision(sc.id, "Dwarf", "Ogre")["obscured"], "light")
+    # The boundary, both ways. 60 ft of darkvision reaches a target AT 60 ft
+    # and not one square past it — an off-by-one here is the difference between
+    # a monster you can fight and one you can only be hit by.
+    check("darkvision reaches exactly its stated range",
+          v.can_see(sc.id, "Dwarf", "Wraith"),
+          f"the wraith is {v.vision(sc.id, 'Dwarf', 'Wraith')} away")
+    v.move_token(wraith.id, 18, 5, teleport=True, free=True)
+    check("…and no further", not v.can_see(sc.id, "Dwarf", "Wraith"))
+
+    # A torch is a light source, and light is cast as field of view.
+    v.add_effect(sc.id, name="torch", kind="light", shape="sphere",
+                 x=3, y=5, radius_ft=20)
+    eq("a torch makes its own square bright", v.light_at(sc.id, 3, 5), "bright")
+    eq("…dim at twice its radius", v.light_at(sc.id, 10, 5), "dim")
+    eq("…and dark beyond that", v.light_at(sc.id, 15, 5), "dark")
+    check("a torch lets the human see", v.can_see(sc.id, "Human", "Ogre"))
+
+    # Blindsight ignores light AND obstruction; heavy obscurement blinds sight.
+    v.update_token(human.id, senses={"blindsight": 40})
+    check("blindsight doesn't care about the dark",
+          v.can_see(sc.id, "Human", "Ogre"))
+    v.add_effect(sc.id, name="fog cloud", kind="area", shape="sphere",
+                 x=9, y=5, radius_ft=20, obscured="heavy")
+    eq("a fog cloud is dark however bright the room",
+       v.light_at(sc.id, 9, 5), "dark")
+    check("…and blindsight still finds them",
+          v.can_see(sc.id, "Human", "Ogre"))
+    check("…while the dwarf's darkvision does not",
+          not v.can_see(sc.id, "Dwarf", "Ogre"),
+          "darkvision is better eyes, not a different sense")
+
+    # Fog of war is lit per creature, from its OWN eyes.
+    v._set_fields(sc.id, fog=v._blank_fog(18, 10))
+    seen = sum(r.count("1") for r in (v.sight(sc.id, team=Team.PARTY) or []))
+    check("fog is revealed by torchlight and darkvision together",
+          seen > 0, f"{seen} squares")
+    v.close_scene(sc.id)
 
 
 def main() -> int:
     print("\033[1mThe Oracle — tactical board self-test\033[0m")
     for fn in (test_distance, test_sight_and_cover, test_templates, test_movement,
-               test_opportunity, test_mapgen, test_engine, test_bridge):
+               test_opportunity, test_mapgen, test_engine, test_bridge,
+               test_light_and_vision):
         try:
             fn()
         except Exception:

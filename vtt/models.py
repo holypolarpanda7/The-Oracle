@@ -209,6 +209,12 @@ class MapToken(SQLModel, table=True):
 
     # Hidden from the players' board (an unnoticed ambusher, a DM-only marker).
     hidden: bool = Field(default=False, sa_column=Column(Boolean))
+    # How this creature perceives, in feet: {"darkvision": 60, "blindsight": 10}.
+    # A JSON column rather than four more columns, because it is a stat block's
+    # senses line and that line grows — and because the bestiary already stores
+    # it in exactly this shape. Empty/None means ordinary sight, which is the
+    # right default for anything nobody bothered to say otherwise about.
+    senses: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     # Prone tokens are drawn flat; defeated ones greyed out.
     prone: bool = Field(default=False, sa_column=Column(Boolean))
     defeated: bool = Field(default=False, sa_column=Column(Boolean))

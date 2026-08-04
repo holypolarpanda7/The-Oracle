@@ -99,6 +99,9 @@ class VttEngine:
         # (see combat/bonds.py). A callback rather than an import so the VTT
         # keeps knowing nothing about any particular feature.
         self.linked = linked
+        # Light maps, keyed (map_id, revision). Per-instance because two
+        # engines can be pointed at different databases holding the same id.
+        self._light_cache: dict = {}
 
     def create_tables(self) -> None:
         SQLModel.metadata.create_all(self.engine)
@@ -647,6 +650,7 @@ class VttEngine:
                   color: Optional[str] = None,
                   movement_mode: Optional[str] = None,
                   label: Optional[str] = None,
+                  senses: Optional[dict] = None,
                   elevation_ft: int = 0) -> Optional[MapToken]:
         """Put a creature (or an object) on the board.
 
@@ -684,6 +688,7 @@ class VttEngine:
             reach_ft=int(reach_ft), combatant_id=combatant_id,
             character_id=character_id, monster_slug=monster_slug,
             image_id=image_id, hidden=hidden, movement_mode=movement_mode,
+            senses=(dict(senses) if senses else None),
             color=color or TEAM_COLORS.get(team), label=label,
             elevation_ft=int(elevation_ft),
         )
@@ -744,7 +749,7 @@ class VttEngine:
                    "hidden", "prone", "defeated", "image_id", "color", "label",
                    "notes", "elevation_ft", "facing_deg", "movement_mode",
                    "moved_ft", "combatant_id", "character_id",
-                   "restrained", "grappled_by"}
+                   "restrained", "grappled_by", "senses"}
         with Session(self.engine) as s:
             tok = s.get(MapToken, token_id)
             if not tok:
@@ -1759,20 +1764,188 @@ class VttEngine:
             attacker_size=size_squares(a.size), target_size=size_squares(b.size),
             obstacles=obstacles)
 
-    def can_see(self, map_id: int, a_ref: str, b_ref: str) -> bool:
+    # ================================================================ light
+
+    def light_map(self, map_id: int) -> list[str]:
+        """Light level per square: ``b`` bright, ``d`` dim, ``x`` dark.
+
+        The board's ``lighting`` is the AMBIENT level — what the room is like
+        with nobody in it. Light EFFECTS (a torch, a hearth, a *Light* cantrip)
+        raise it locally, and obscuring effects (a fog cloud) lower it. Both
+        already existed on ``MapEffect``; ``obscured`` had never been read by
+        anything, which is why a fog cloud blocked nothing.
+
+        A source lights its ``radius_ft`` brightly and twice that dimly — the
+        5e convention already written down in ``survival.light._SOURCES``
+        (torch: 20 bright, 40 dim). Light is cast as FIELD OF VIEW, not as a
+        circle: a torch on the far side of a wall does not light this room.
+        """
+        row = self.get_scene(map_id)
+        if row is None:
+            return []
+        # Recomputed only when the board changes: a torch's reach is a
+        # field-of-view calculation (light doesn't cross walls either), and
+        # sight() wants the map once per square per token.
+        key = (map_id, row.revision)
+        hit = self._light_cache.get(key)
+        if hit is not None:
+            return hit
+
+        from survival.light import brighter, darker
+
+        ambient = row.lighting if row.lighting in ("bright", "dim", "dark") else "bright"
+        g = self.grid_of(row)
+        level = [[ambient] * row.width for _ in range(row.height)]
+
+        effs = self.effects(map_id)
+        for e in effs:
+            if e.kind != "light" or e.radius_ft <= 0:
+                continue
+            bright_r, dim_r = int(e.radius_ft), int(e.radius_ft) * 2
+            for sx, sy in geo.visible_squares(g, (e.origin_x, e.origin_y), dim_r,
+                                              square_ft=row.square_ft):
+                if not (0 <= sy < row.height and 0 <= sx < row.width):
+                    continue
+                d = geo.distance_ft((e.origin_x, e.origin_y), (sx, sy),
+                                    square_ft=row.square_ft)
+                lit = "bright" if d <= bright_r else "dim"
+                level[sy][sx] = brighter(level[sy][sx], lit)
+        # Obscurement last: a fog cloud is heavy obscurement however bright the
+        # daylight behind it, so it must not be outvoted by a light source.
+        for e in effs:
+            if not e.obscured:
+                continue
+            floor = "dark" if e.obscured == "heavy" else "dim"
+            for sq in (e.squares or []):
+                sx, sy = int(sq[0]), int(sq[1])
+                if 0 <= sy < row.height and 0 <= sx < row.width:
+                    level[sy][sx] = darker(level[sy][sx], floor)
+
+        code = {"bright": "b", "dim": "d", "dark": "x"}
+        out = ["".join(code[c] for c in r) for r in level]
+        self._light_cache.clear()          # one board at a time; keep it small
+        self._light_cache[key] = out
+        return out
+
+    def light_at(self, map_id: int, x: int, y: int) -> str:
+        """``bright`` | ``dim`` | ``dark`` for one square."""
+        rows = self.light_map(map_id)
+        if not (0 <= y < len(rows) and 0 <= x < len(rows[y])):
+            return "bright"
+        return {"b": "bright", "d": "dim", "x": "dark"}[rows[y][x]]
+
+    def token_senses(self, t: MapToken) -> dict:
+        """How this creature perceives, in feet. Looked up if never recorded.
+
+        A token added before anyone thought about vision — or by a caller that
+        doesn't know the stat block — still deserves its darkvision. So an
+        empty column is resolved from the bestiary or the character's species
+        the first time it's asked for, rather than silently meaning "human".
+        """
+        recorded = t.senses if isinstance(t.senses, dict) else None
+        if recorded is not None:
+            return {k: int(v) for k, v in recorded.items() if int(v or 0) > 0}
+        found = self._lookup_senses(t)
+        # Recorded even when empty, so a miss is not re-looked-up every frame.
+        try:
+            self.update_token(t.id, senses=found)
+        except Exception:
+            pass
+        return found
+
+    def _lookup_senses(self, t: MapToken) -> dict:
+        """Best effort: the bestiary for a monster, the species for a PC.
+
+        Deliberately forgiving. The rules tables are a separate lifecycle from
+        the board (they can be absent in a bare checkout, or mid-reingest), and
+        a board that refuses to open because it couldn't find out whether a
+        goblin has darkvision would be a much worse bug than a goblin without
+        it. Everything here degrades to plain sight.
+        """
+        from survival.light import parse_senses
+        try:
+            if t.monster_slug:
+                from rules.query import RulesLibrary
+                m = RulesLibrary(engine=self.engine).get_monster(t.monster_slug)
+                if m is not None and isinstance(m.senses, dict):
+                    return parse_senses(m.senses)
+            if t.character_id:
+                from sqlalchemy import text as _text
+                from rules.models import Race
+                with Session(self.engine) as s:
+                    got = s.exec(_text(
+                        'SELECT race FROM "character" WHERE id = :i'
+                    ).bindparams(i=t.character_id)).first()
+                    if got and got[0]:
+                        want = str(got[0]).strip().lower()
+                        for r in s.exec(select(Race)).all():
+                            if want in (str(r.name).lower(),
+                                        str(r.index_slug or "").lower()):
+                                return ({"darkvision": 60}
+                                        if getattr(r, "darkvision", False) else {})
+        except Exception as e:
+            print(f"[vtt] senses lookup failed for {t.name}: {e}")
+        return {}
+
+    # ============================================================== seeing
+
+    def vision(self, map_id: int, a_ref: str, b_ref: str) -> dict:
+        """Can ``a`` perceive ``b``? THE answer, for every caller.
+
+        Line of sight is necessary and never sufficient: a clear line through a
+        pitch-dark room shows you nothing, and 5e says so — an unseen target is
+        attacked at disadvantage and attacks back with advantage. Before this,
+        the board answered geometry alone, so two creatures in an unlit crypt
+        saw each other perfectly and ``lighting`` was decoration.
+
+        Returns ``{sees, via, obscured, note}``; ``via`` names what carried it,
+        because "you hear it moving, you can't see it" is a different sentence
+        from "you see it plainly".
+        """
         a, b = self.find_token(map_id, a_ref), self.find_token(map_id, b_ref)
         row = self.get_scene(map_id)
         if not (a and b and row):
-            return False
+            return {"sees": False, "via": "", "obscured": "", "note": "not on the board"}
+        # A creature LINK overrules the board on purpose (combat/bonds.py).
         if self._is_linked(map_id, a_ref, b_ref):
-            return True
+            return {"sees": True, "via": "bond", "obscured": "",
+                    "note": "seen through the bond"}
+
         g = self.grid_of(row)
         blockers = {tuple(p) for eff in self.effects(map_id) if eff.blocks_sight
                     for p in (eff.squares or [])}
-        return geo.has_line_of_sight(
+        clear = geo.has_line_of_sight(
             g, (a.x, a.y), (b.x, b.y),
             a_size=size_squares(a.size), b_size=size_squares(b.size),
             blocker=lambda x, y: g.blocks_sight(x, y) or (x, y) in blockers)
+
+        senses = self.token_senses(a)
+        dist = geo.token_distance_ft(
+            geo.footprint(a.x, a.y, size_squares(a.size)),
+            geo.footprint(b.x, b.y, size_squares(b.size)),
+            row.square_ft, dz_ft=self.height_gap_ft(row, a, b))
+        if not clear:
+            # Blindsight and tremorsense don't need a line — but they do need
+            # the range, and a wall still stops tremors through open air.
+            reach = max(int(senses.get("blindsight", 0)),
+                        int(senses.get("tremorsense", 0)) if _grounded(b) else 0)
+            if reach >= dist:
+                return {"sees": True, "via": "blindsight", "obscured": "",
+                        "note": "perceived through the obstruction"}
+            return {"sees": False, "via": "", "obscured": "heavy",
+                    "note": "no line of sight"}
+
+        eff_obscured = ""
+        for e in self.effects(map_id):
+            if e.obscured and [b.x, b.y] in [list(p) for p in (e.squares or [])]:
+                eff_obscured = "heavy" if e.obscured == "heavy" else "light"
+                break
+        from survival.light import perceives
+        return perceives(self.light_at(map_id, b.x, b.y), dist, senses,
+                         obscured=eff_obscured, grounded=_grounded(b))
+
+    def can_see(self, map_id: int, a_ref: str, b_ref: str) -> bool:
+        return bool(self.vision(map_id, a_ref, b_ref).get("sees"))
 
     # =================================================================== fog
 
@@ -1836,16 +2009,34 @@ class VttEngine:
         if row is None or not row.fog:
             return None
         g = self.grid_of(row)
-        r = int(radius_ft or {"bright": 120, "dim": 60, "dark": 30}
-                .get(row.lighting or "bright", 90))
+        light = self.light_map(map_id)
+        levels = {"b": "bright", "d": "dim", "x": "dark"}
         lit = [["0"] * row.width for _ in range(row.height)]
+
+        from survival.light import perceives
+
         for t in self.tokens(map_id, include_defeated=False):
             if t.team != team:
                 continue
-            for sx, sy in geo.visible_squares(g, (t.x, t.y), r,
+            senses = self.token_senses(t)
+            # How far to even look. Line of sight has no range in the rules —
+            # what limits you is light and your own senses — so the scan reach
+            # is the largest of the board, this creature's special senses, and
+            # an ordinary horizon. Squares are then kept or dropped one at a
+            # time by whether this creature could actually make anything out
+            # there, which is what makes a carried torch worth carrying.
+            reach = int(radius_ft or max(
+                120, *(int(v or 0) for v in senses.values()) if senses else (120,)))
+            for sx, sy in geo.visible_squares(g, (t.x, t.y), reach,
                                               square_ft=row.square_ft,
                                               origin_size=size_squares(t.size)):
-                if 0 <= sy < row.height and 0 <= sx < row.width:
+                if not (0 <= sy < row.height and 0 <= sx < row.width):
+                    continue
+                if lit[sy][sx] == "1":
+                    continue
+                d = geo.distance_ft((t.x, t.y), (sx, sy), square_ft=row.square_ft)
+                level = levels.get(light[sy][sx], "bright") if light else "bright"
+                if perceives(level, d, senses)["sees"]:
                     lit[sy][sx] = "1"
         return ["".join(r_) for r_ in lit]
 
@@ -1879,6 +2070,7 @@ class VttEngine:
             "terrain": (row.terrain or []) if include_terrain else [],
             "fog": row.fog or None,
             "sight": self.sight(map_id, team=viewer_team),
+            "light": self.light_map(map_id),
             "doors": row.doors or [],
             "elevation": row.elevation or {},
             "debris": self.debris_for(map_id),
@@ -1991,6 +2183,23 @@ class VttEngine:
                 elif cov != "none":
                     near += f" ({cov} cover from them)"
             extras = []
+            # Who can see whom, measured from the acting creature — the same
+            # point of view the cover line above already takes. Reported both
+            # ways round, because in 5e they are different facts with different
+            # consequences: attacking what you can't see is at disadvantage,
+            # and being unseen BY your target hands you advantage.
+            if actor is not None and actor.id != t.id:
+                out = self.vision(map_id, actor.name, t.name)
+                back = self.vision(map_id, t.name, actor.name)
+                if not out["sees"]:
+                    extras.append(f"{actor.name} CANNOT see them ({out['note']}) "
+                                  f"— attacks at disadvantage, and only if the "
+                                  f"square is guessed correctly")
+                elif out["via"] not in ("sight", "bond"):
+                    extras.append(f"located by {out['via']}, not seen")
+                if not back["sees"]:
+                    extras.append(f"cannot see {actor.name} — "
+                                  f"{actor.name}'s attacks have advantage")
             if actor is not None and actor.id == t.id:
                 extras.append("ACTING NOW")
             if t.prone:
@@ -2127,6 +2336,11 @@ def _effect_color(kind: str, name: str) -> str:
             EffectKind.MARKER: "#8ecbff"}.get(kind, "#a86bff")
 
 
+def _grounded(t: MapToken) -> bool:
+    """Is this creature in contact with the ground? Tremorsense's whole question."""
+    return int(t.elevation_ft or 0) <= 0 and (t.movement_mode or "walk") != "fly"
+
+
 def _token_dict(t: MapToken, row: TacticalMap) -> dict:
     return {
         "id": t.id,
@@ -2148,6 +2362,7 @@ def _token_dict(t: MapToken, row: TacticalMap) -> dict:
         "movement_mode": t.movement_mode,
         "elevation_ft": t.elevation_ft,
         "hidden": t.hidden,
+        "senses": (t.senses if isinstance(t.senses, dict) else {}),
         "prone": t.prone,
         "defeated": t.defeated,
     }

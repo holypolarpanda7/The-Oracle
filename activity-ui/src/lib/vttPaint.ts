@@ -361,6 +361,21 @@ export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: P
   // gets a door wrong in both directions: with memory only, closing one behind
   // you changes nothing; with sight only, the party forgets the map every time
   // they turn around.
+  if (!(st.show.fog && scene.fog) && scene.light) {
+    // No fog: light still decides what can be fought, and nothing else on the
+    // board shows it. Only in this branch — with fog on, the veil below already
+    // carries it, and stacking the two buries the art.
+    for (let y = 0; y < scene.height; y++) {
+      const lrow = scene.light[y] ?? "";
+      for (let x = 0; x < scene.width; x++) {
+        const lv = lrow[x];
+        if (!lv || lv === "b") continue;
+        const [sx, sy] = toScreen(v, x, y);
+        ctx.fillStyle = lv === "d" ? "rgba(6,9,20,0.32)" : "rgba(6,9,20,0.66)";
+        ctx.fillRect(sx, sy, cell, cell);
+      }
+    }
+  }
   if (st.show.fog && scene.fog) {
     for (let y = 0; y < scene.height; y++) {
       const row = scene.fog[y] ?? "";

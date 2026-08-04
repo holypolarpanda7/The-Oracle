@@ -321,6 +321,27 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   is true of every square the legend calls open floor. Terrain that IS on the
   grid needs none of this: `legend(rules=True)` already gives the DM
   "~ shallow water (difficult, costs double; swimmable)".
+- **Light is a rule, and `survival/light.py` is the ONE place it is decided.**
+  `perceives(level, distance_ft, senses)` answers "can this creature make that
+  out" for everything — the board's `vision()`, the DM board's text, and the
+  combat engine's advantage — so they cannot drift. Before it, `can_see` was
+  pure geometry: two creatures in an unlit crypt saw each other perfectly and
+  `lighting` was decoration. `VttEngine.light_map()` is the spatial half:
+  ambient board lighting, raised by `kind="light"` effects (radius bright,
+  2x radius dim — the 5e convention already in `_SOURCES`) cast as FIELD OF
+  VIEW so a torch doesn't light through a wall, then lowered by `obscured`
+  effects (which existed on `MapEffect` and had never been read, so a fog cloud
+  blocked nothing). Senses live in `MapToken.senses` as `{"darkvision": 60}`
+  and are looked up lazily from the bestiary (`monster_slug`) or the species
+  (`character_id`) when absent, so a token nobody told about darkvision still
+  gets it. **`parse_senses` must handle raw book lines** —
+  `{"raw": "Darkvision60ft.;PassivePerception15"}` is how a large share of the
+  ingested bestiary stores it, and reading only tidy rows silently costs the
+  wolf its darkvision in the direction that changes fights. The combat payoff
+  reaches `_attack_advantage` through `BoardSpatial.can_see` (a callback, like
+  every other board→combat channel): can't see the target = disadvantage,
+  target can't see you = advantage, and in a dark room both apply and cancel —
+  which is correct, and is why darkvision is worth having.
 - **A door belongs at the threshold the corridor made.** `_threshold_doors`
   hangs doors where a corridor breaches a room's wall ring; punching one into
   an arbitrary wall square leaves the corridor's own mouth gaping beside it,

@@ -5,6 +5,7 @@ creature can effectively see given the ambient light level and darkvision.
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, Optional
 
 from game_config import get_config
@@ -19,6 +20,117 @@ _SOURCES = {
 }
 
 LIGHT_LEVELS = ("bright", "dim", "dark")
+
+#: Brightest wins. A torch in a dark room makes its own square bright; nothing
+#: makes a bright square darker except obscurement, which is handled apart.
+LIGHT_ORDER = {"dark": 0, "dim": 1, "bright": 2}
+
+
+def brighter(a: str, b: str) -> str:
+    """The lighter of two light levels."""
+    return a if LIGHT_ORDER.get(a, 2) >= LIGHT_ORDER.get(b, 2) else b
+
+
+def darker(a: str, b: str) -> str:
+    """The darker of two light levels — what obscurement does to a square."""
+    return a if LIGHT_ORDER.get(a, 2) <= LIGHT_ORDER.get(b, 2) else b
+
+
+#: The senses that come with a range in feet. Passive Perception is not one of
+#: them, and neither is "blind beyond this radius" prose.
+_RANGED_SENSES = ("darkvision", "blindsight", "truesight", "tremorsense")
+
+#: "Blindsight 30ft.", "Darkvision 60 ft.", "tremorsense 60'" — one pattern for
+#: every way a book prints it.
+_SENSE_TEXT = re.compile(
+    r"(darkvision|blindsight|truesight|tremorsense)\s*[:\-]?\s*(\d+)\s*(?:ft|feet|')",
+    re.I)
+
+
+def parse_senses(raw: Optional[Dict]) -> Dict[str, int]:
+    """Normalise a stat block's senses into ``{sense: feet}``.
+
+    The bestiary stores them the way a book prints them
+    (``{"darkvision": "60 ft.", "passive_perception": 15}``) and a species
+    stores darkvision as a bare bool. Both arrive here and leave as numbers,
+    because the board measures in feet and cannot do anything with "60 ft.".
+    Anything that isn't a sense with a range — passive Perception above all —
+    is dropped rather than guessed at.
+    """
+    out: Dict[str, int] = {}
+    for key, value in (raw or {}).items():
+        name = str(key).strip().lower().replace(" ", "_")
+        if name not in _RANGED_SENSES:
+            # Not every stat block arrives tidy. A monster parsed out of a PDF
+            # keeps its senses line whole ("Blindsight 30ft.;PassivePerception
+            # 13"), and reading only the well-formed rows quietly costs the
+            # wolf its darkvision and the grimlock its blindsight — a large
+            # share of the bestiary, failing silently in the direction of
+            # "sees nothing in the dark".
+            if name in ("raw", "text", "senses") and isinstance(value, str):
+                for sense, feet in _SENSE_TEXT.findall(value):
+                    out.setdefault(sense.lower(), int(feet))
+            continue
+        if value is True:                       # a species flag: the 5e default
+            out[name] = 60
+            continue
+        if isinstance(value, (int, float)):
+            feet = int(value)
+        else:
+            digits = "".join(c for c in str(value) if c.isdigit())
+            if not digits:
+                continue
+            feet = int(digits)
+        if feet > 0:
+            out[name] = feet
+    return out
+
+
+def perceives(light_level: str, distance_ft: float, senses: Optional[Dict] = None,
+              *, obscured: str = "", grounded: bool = True) -> Dict:
+    """Can a creature with these senses make something out, at this distance?
+
+    THE one answer to "can it see that", so the board, the DM's board text and
+    the combat engine's advantage calculation cannot drift apart. Returns
+    ``{sees, via, obscured, note}`` — ``via`` names the sense that carried it,
+    which is what the narration needs ("you hear it moving, you can't see it").
+
+    The order matters and is 5e's: senses that don't use light are checked
+    first, because blindsight is not improved vision, it is a different way of
+    knowing where something is. Heavy obscurement (a fog cloud) blinds anything
+    relying on light no matter how bright the square is; light obscurement
+    (dim light, thin smoke) does not blind, it only costs you a Perception
+    check. Darkvision does not turn night into day — it turns dark into dim,
+    which still carries that penalty.
+    """
+    s = {k: int(v) for k, v in (senses or {}).items() if int(v or 0) > 0}
+    d = max(0.0, float(distance_ft))
+    level = light_level if light_level in LIGHT_LEVELS else "bright"
+
+    if s.get("blindsight", 0) >= d:
+        return {"sees": True, "via": "blindsight", "obscured": "",
+                "note": "perceived without sight"}
+    if s.get("truesight", 0) >= d:
+        return {"sees": True, "via": "truesight", "obscured": "",
+                "note": "truesight"}
+    if grounded and s.get("tremorsense", 0) >= d:
+        return {"sees": True, "via": "tremorsense", "obscured": "",
+                "note": "felt through the ground, not seen"}
+
+    if obscured == "heavy":
+        return {"sees": False, "via": "", "obscured": "heavy",
+                "note": "heavily obscured — effectively blinded"}
+    if level == "bright":
+        return {"sees": True, "via": "sight", "obscured": obscured,
+                "note": "clearly visible"}
+    if level == "dim":
+        return {"sees": True, "via": "sight", "obscured": "light",
+                "note": "dim light — lightly obscured, Perception at disadvantage"}
+    if s.get("darkvision", 0) >= d:
+        return {"sees": True, "via": "darkvision", "obscured": "light",
+                "note": "darkvision — seen as if in dim light, in shades of grey"}
+    return {"sees": False, "via": "", "obscured": "heavy",
+            "note": "darkness beyond its sight — effectively blinded"}
 
 
 def light_sources() -> Dict:

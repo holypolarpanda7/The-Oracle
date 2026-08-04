@@ -392,7 +392,11 @@ async def lifespan(app: FastAPI):
                     'PRAGMA table_info("vtt_token")')}
                 if vt_existing:
                     for col, ddl in [("restrained", "INTEGER DEFAULT 0"),
-                                     ("grappled_by", "VARCHAR")]:
+                                     ("grappled_by", "VARCHAR"),
+                                     # How a creature perceives. Absent = plain
+                                     # sight, which is what every pre-existing
+                                     # token was being treated as anyway.
+                                     ("senses", "JSON")]:
                         if col not in vt_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE vtt_token ADD COLUMN {col} {ddl}")

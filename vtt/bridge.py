@@ -282,6 +282,21 @@ class BoardSpatial:
             return None
         return self.vtt.cover_for(self.map_id, ta.name, tb.name)
 
+    def can_see(self, a, b) -> Optional[bool]:
+        """Can ``a`` perceive ``b``? ``None`` when the board can't say.
+
+        The board knows something the combat engine cannot: light. Whether an
+        attacker can see their target decides advantage in both directions, and
+        without this the engine reads it off CONDITIONS alone — so a fight in
+        an unlit crypt rolled exactly like a fight at noon. Answering ``None``
+        (either creature isn't on the board) leaves the engine on its own
+        model, which is the same contract ``distance_ft`` and ``cover`` keep.
+        """
+        ta, tb = self._tok(a), self._tok(b)
+        if ta is None or tb is None:
+            return None
+        return self.vtt.can_see(self.map_id, ta.name, tb.name)
+
 
 def sync_cover(vtt: VttEngine, map_id: int, *, tracker: Any = None) -> None:
     """Write every creature's cover **as seen from whoever's turn it is**.

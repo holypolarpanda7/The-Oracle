@@ -441,6 +441,22 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
     # around.
     fog = state.get("fog")
     sight = state.get("sight")
+    if not fog:
+        # No fog: light still decides what can be fought, and nothing else on
+        # the board shows it. Drawn only in this branch — with fog on, the veil
+        # above already carries it, and stacking the two buries the art.
+        for y, lrow in enumerate(state.get("light") or []):
+            if y >= h_sq:
+                break
+            for x, lv in enumerate(lrow[:w_sq]):
+                if lv == "b":
+                    continue
+                box = (sx(x), sy(y), sx(x) + cell, sy(y) + cell)
+                shade = img.crop(box)
+                img.paste(Image.blend(shade,
+                                      Image.new("RGB", shade.size, (6, 9, 20)),
+                                      0.32 if lv == "d" else 0.66),
+                          (sx(x), sy(y)))
     if fog:
         for y in range(h_sq):
             row = fog[y] if y < len(fog) else ""
