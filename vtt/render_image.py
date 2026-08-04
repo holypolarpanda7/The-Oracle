@@ -201,6 +201,27 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
                     d.rectangle([sx(x), sy(y), sx(x) + cell, sy(y) + cell],
                                 outline=edge, width=1)
 
+    # ---- objects ----
+    # Drawn from the GRID, on their own squares. This is the half that makes a
+    # board legible: a pillar you can point at, and later recognise as the
+    # rubble beside your feet. The painting cannot do it — a prompt cannot
+    # place anything — so the sprites do.
+    for obj in state.get("objects") or []:
+        x, y = int(obj.get("x", -1)), int(obj.get("y", -1))
+        if not (0 <= x < w_sq and 0 <= y < h_sq):
+            continue
+        if image_lookup is not None and obj.get("image_id"):
+            try:
+                raw = image_lookup(obj["image_id"])
+            except Exception:
+                raw = None
+            cut = _cutout_cached(obj["image_id"], raw) if raw else None
+            if cut is not None:
+                sp = cut.resize((cell, cell), Image.LANCZOS)
+                img.paste(sp, (sx(x), sy(y)), sp)
+                continue
+        # No sprite: the tile colour and edge already drew it, so nothing to do.
+
     # ---- wreckage ----
     # Painted over whatever is beneath it, on the square that was broken. When
     # no sprite has been drawn yet the square is still correct underneath — the

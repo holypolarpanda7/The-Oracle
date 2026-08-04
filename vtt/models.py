@@ -145,6 +145,9 @@ class TacticalMap(SQLModel, table=True):
     # to the layout as GENERATED, and what the party broke is painted on top.
     # Cleared when the board itself is replaced.
     debris: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Object sprites in use on this board, keyed by tile NAME -> image id.
+    # By kind rather than by square: eight pillars are one picture.
+    object_art: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
     # Ambient light for the whole board: bright | dim | dark. Individual light
     # sources are MapEffect rows of kind "light".

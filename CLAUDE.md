@@ -267,6 +267,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   grid, the control image and the art side by side — see map-probe/alignment.
   Discrete objects are deliberately NOT in the control image: they are drawn
   as sprites, because a pillar that can be smashed has to be able to change.
+- **Discrete objects are SPRITES, drawn from the grid on their own squares.**
+  `terrain.OBJECT_SPRITES` (pillar, crate, furniture, tree, altar, low wall,
+  door, open door, portcullis) — keyed by KIND, so eight pillars are one
+  picture. Two reasons a painting can't do this: it cannot place anything on
+  a named square, and a painted pillar cannot become rubble. Without them a
+  player cannot find a door that mechanically exists, and wreckage appears
+  from nowhere because the thing that broke was never visible. `objects_for`
+  reads the TERRAIN each time rather than storing a list — the grid already
+  says what stands where, and a broken square is no longer its object.
+  Structure (walls, rock faces) is deliberately excluded: ControlNet puts
+  that in the painting itself.
 - **A painted board still draws the rules on top.** `render_board_png` given
   an `image_lookup` composites the battlemap and its debris — then OUTLINES
   the mechanically significant tiles, and washes only ground that stops or

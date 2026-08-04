@@ -188,6 +188,31 @@ def object_stats(code: str) -> Optional[dict]:
             "immune": list(OBJECT_IMMUNITIES)}
 
 
+#: Discrete objects that are DRAWN as sprites on their own square rather than
+#: left to the battlemap painting. Anything a player must be able to point at —
+#: and anything that can break — belongs here, because a text prompt cannot put
+#: a pillar on square 6,5 and a painted pillar cannot become rubble.
+#:
+#: Walls and rock faces are deliberately absent: they are structure, and the
+#: ControlNet floorplan puts those in the painting itself.
+OBJECT_SPRITES: dict[str, str] = {
+    "O": "carved stone pillar",
+    "o": "stacked wooden crates and barrels",
+    "n": "an overturned table and benches",
+    "T": "a thick tree trunk seen from above",
+    "A": "a carved stone altar",
+    "w": "a waist-high broken wall",
+    "+": "a heavy closed wooden door",
+    "/": "an open doorway with the door swung back",
+    "p": "an iron portcullis",
+}
+
+
+def sprite_subject(code: str) -> Optional[str]:
+    """What to draw on this square, or None if the painting handles it."""
+    return OBJECT_SPRITES.get(code)
+
+
 def required_mode(code: str) -> Optional[str]:
     """The medium a square DEMANDS, if it demands one. None for ordinary ground.
 

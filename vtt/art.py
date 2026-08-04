@@ -254,6 +254,43 @@ def cutout(png_bytes: bytes, *, size_px: int = DEBRIS_PX) -> Optional[bytes]:
 _REMBG_SESSION = None
 
 
+def render_object(code: str, *, store=None, context: str = "",
+                  size_px: int = DEBRIS_RENDER_PX) -> Optional[int]:
+    """A top-down sprite of a discrete object, for the square it stands on.
+
+    Same economics as wreckage: keyed by (what it is, the board's look), so
+    every pillar in every underground room is one picture. This is the half
+    that makes destruction legible — you cannot recognise rubble as a broken
+    pillar unless the pillar was visibly there first.
+    """
+    from .terrain import sprite_subject, tile
+    subject = sprite_subject(code)
+    if not subject:
+        return None
+    if store is None:
+        try:
+            from imagery import ImageStore
+            store = ImageStore()
+        except Exception as e:
+            print(f"[vtt.art] imagery unavailable for object sprite: {e}")
+            return None
+    try:
+        res = store.ensure_image(
+            "map", subject, look=tile(code).art, context=context or "object",
+            ref_slug=f"object-{tile(code).name.replace(' ', '-')}",
+            extra=(_MAP_STYLE + ", a single object seen from directly overhead, "
+                   "centred and isolated, filling the frame, on plain ground, "
+                   "no walls, no room, no scene, no border"),
+            width=size_px, height=size_px, store_width=size_px,
+            max_per_bucket=1)
+    except Exception as e:
+        print(f"[vtt.art] object sprite render failed: {e}")
+        return None
+    if res is None or res.offline or not res.image_id:
+        return None
+    return res.image_id
+
+
 def render_debris(becomes: str, *, store=None, material: str = "",
                   context: str = "", was: str = "",
                   size_px: int = DEBRIS_RENDER_PX) -> Optional[int]:

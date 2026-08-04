@@ -34,7 +34,8 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from . import geometry as geo
-from .art import render_battlemap, render_debris, layout_signature
+from .art import (render_battlemap, render_debris, render_object,
+                   layout_signature)
 from .mapgen import GeneratedMap, archetype_for, generate_map
 from .models import (
     EffectKind,
@@ -48,7 +49,8 @@ from .models import (
     TokenKind,
     size_squares,
 )
-from .terrain import Grid, tile, required_mode, object_stats
+from .terrain import (Grid, tile, required_mode, object_stats,
+                       sprite_subject)
 
 Square = tuple[int, int]
 
@@ -537,6 +539,58 @@ class VttEngine:
                 made += 1
         if made:
             self._set_fields(map_id, debris=deb)
+            self._bump(map_id)
+        return made
+
+    def objects_for(self, map_id: int) -> list[dict]:
+        """Discrete objects on the board, with their sprite when one exists.
+
+        Read from the TERRAIN each time rather than stored: the grid is already
+        the truth about what stands where, and a second list would be a second
+        truth to keep in step. A square that has broken is no longer its object
+        — it is whatever it became — so this needs no clearing either.
+        """
+        row = self.get_scene(map_id)
+        if row is None:
+            return []
+        g = self.grid_of(row)
+        sprites = dict(row.object_art or {})
+        out = []
+        for x, y in g.squares():
+            code = g.get(x, y)
+            subject = sprite_subject(code)
+            if not subject:
+                continue
+            out.append({"x": x, "y": y, "code": code,
+                        "name": tile(code).name,
+                        "image_id": sprites.get(tile(code).name)})
+        return out
+
+    def render_objects(self, map_id: int, *, conditions: str = "") -> int:
+        """Draw sprites for the object kinds on this board. Returns how many.
+
+        Keyed by KIND, not by square: every pillar in the room is one picture,
+        so a board with eight of them costs one render.
+        """
+        row = self.get_scene(map_id)
+        if row is None:
+            return 0
+        g = self.grid_of(row)
+        have = dict(row.object_art or {})
+        ctx = ", ".join(p for p in ((row.biome or ""), conditions) if p)
+        made = 0
+        for code in {g.get(x, y) for x, y in g.squares()}:
+            if not sprite_subject(code):
+                continue
+            name = tile(code).name
+            if have.get(name):
+                continue
+            img = render_object(code, store=self.image_store, context=ctx)
+            if img:
+                have[name] = img
+                made += 1
+        if made:
+            self._set_fields(map_id, object_art=have)
             self._bump(map_id)
         return made
 
@@ -1778,6 +1832,7 @@ class VttEngine:
             "doors": row.doors or [],
             "elevation": row.elevation or {},
             "debris": self.debris_for(map_id),
+            "objects": self.objects_for(map_id),
             "background_image_id": row.background_image_id,
             "art_status": row.art_status,
             "description": (row.notes or {}).get("description", ""),

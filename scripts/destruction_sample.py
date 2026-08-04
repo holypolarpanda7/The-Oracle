@@ -100,11 +100,13 @@ def main() -> int:
     v.add_token(sc.id, name="Bram", x=px - 1, y=min(g.height - 2, py + 2),
                 team="party", speed_ft=25)
 
-    print("painting the battlemap (this is the expensive one)...")
+    print("painting the battlemap, conditioned on the floorplan...")
     v.render_art(sc.id, extra="cracked flagstones, old dust, iron sconces",
                  conditions="underground")
     row = v.get_scene(sc.id)
     print(f"  art_status={row.art_status} image_id={row.background_image_id}")
+    print("drawing the objects that stand in it...")
+    print(f"  {v.render_objects(sc.id, conditions='underground')} object sprite(s)")
 
     def lookup(image_id):
         return store.get_image_bytes(image_id)

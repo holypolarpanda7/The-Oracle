@@ -380,7 +380,7 @@ async def lifespan(app: FastAPI):
                 # Damage taken by breakable furniture on pre-existing boards.
                 vm_existing = {row[1] for row in conn.exec_driver_sql(
                     'PRAGMA table_info("vtt_map")')}
-                for col in ("objects", "debris"):
+                for col in ("objects", "debris", "object_art"):
                     if vm_existing and col not in vm_existing:
                         conn.exec_driver_sql(
                             f"ALTER TABLE vtt_map ADD COLUMN {col} JSON")
@@ -6673,8 +6673,13 @@ def _vtt_render_art(map_id: int) -> None:
         _mark_diffusion_dirty()
         row = vtt_engine.get_scene(map_id)
         slug = getattr(row, "place_slug", None)
+        cond = _vtt_place_conditions(slug)
         vtt_engine.render_art(map_id, extra=_vtt_place_look(slug),
-                              conditions=_vtt_place_conditions(slug))
+                              conditions=cond)
+        # The objects standing in the room are sprites, so they have to be
+        # drawn too — a board whose pillars are invisible is the fault this
+        # whole path exists to fix.
+        vtt_engine.render_objects(map_id, conditions=cond)
     except Exception as e:
         print(f"[vtt] battlemap render failed: {e}")
         return
@@ -6693,8 +6698,9 @@ def _vtt_render_debris(map_id: int) -> None:
         _mark_diffusion_dirty()
         row = vtt_engine.get_scene(map_id)
         slug = getattr(row, "place_slug", None)
-        n = vtt_engine.render_debris(
-            map_id, conditions=_vtt_place_conditions(slug))
+        cond = _vtt_place_conditions(slug)
+        n = vtt_engine.render_debris(map_id, conditions=cond)
+        n += vtt_engine.render_objects(map_id, conditions=cond)
         if not n:
             return
     except Exception as e:
