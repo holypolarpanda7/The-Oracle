@@ -153,6 +153,28 @@ _TARGET_GIVES_ADV = {"restrained", "stunned", "paralyzed", "unconscious",
                      "petrified", "blinded", "faerie fire"}
 _CANNOT_ACT = {"incapacitated", "stunned", "paralyzed", "unconscious", "petrified"}
 
+# --- underwater combat (PHB) ---------------------------------------------
+# Water fights the swing, so a weapon has to be one you THRUST rather than one
+# you swing. A creature with a swimming speed is at home and exempt from the
+# melee rule entirely; nothing exempts you from the ranged one, because the
+# problem there is the water slowing the missile, not your footing.
+_UNDERWATER_MELEE_OK = ("dagger", "javelin", "shortsword", "short sword",
+                        "spear", "trident")
+# Crossbows are wound, not drawn, and a net and a thrown spear both work wet.
+_UNDERWATER_RANGED_OK = ("crossbow", "net", "javelin", "spear", "trident", "dart")
+
+
+def _weapon_matches(name: str, allowed: tuple[str, ...]) -> bool:
+    """Is this weapon on an underwater allowlist?
+
+    Substring rather than exact match, deliberately: the list is of weapon
+    KINDS and the table is full of "Trident of Warning" and "+1 Shortsword".
+    A magic shortsword is still a shortsword, and refusing to notice that
+    would punish exactly the players who found the good weapon.
+    """
+    n = (name or "").strip().lower()
+    return any(w in n for w in allowed)
+
 _BAND_RANK = {"near": 1, "far": 2}
 
 
@@ -492,6 +514,23 @@ class CombatEngine:
     def _conds(self, c: Combatant) -> set[str]:
         return {x.lower() for x in (c.conditions or [])}
 
+    def _underwater(self) -> bool:
+        """Is a board out, and is the fight in the water? False without one."""
+        try:
+            return bool(self.spatial is not None
+                        and getattr(self.spatial, "underwater", None)
+                        and self.spatial.underwater())
+        except Exception:
+            return False
+
+    def _swims(self, c: Combatant) -> bool:
+        try:
+            return bool(self.spatial is not None
+                        and getattr(self.spatial, "swims", None)
+                        and self.spatial.swims(c))
+        except Exception:
+            return False
+
     def _remaining(self, c: Combatant,
                    prof: Optional[PCProfile] = None) -> dict:
         c = self.tracker.get_combatant(c.id) or c
@@ -513,8 +552,25 @@ class CombatEngine:
         return out
 
     def _attack_advantage(self, atk: Combatant, tgt: Combatant,
-                          ranged: bool, encounter_id: int) -> tuple[bool, bool, list[str]]:
+                          ranged: bool, encounter_id: int,
+                          weapon: Optional[dict] = None) -> tuple[bool, bool, list[str]]:
         adv, dis, notes = False, False, []
+        # Underwater, most of what you can swing is wrong for it. The board
+        # knows the fight is in the water and whether this creature swims; the
+        # weapon decides the rest. Before this the rule lived as a line of
+        # prose in the arena catalogue asking the DM to remember it.
+        if weapon is not None and self._underwater():
+            name = str(weapon.get("name") or "")
+            if not ranged and not self._swims(atk) \
+                    and not _weapon_matches(name, _UNDERWATER_MELEE_OK):
+                dis = True
+                notes.append(f"underwater: {name or 'that weapon'} is swung, "
+                             f"not thrust, and {atk.name} has no swimming "
+                             f"speed — disadvantage")
+            elif ranged and not _weapon_matches(name, _UNDERWATER_RANGED_OK):
+                dis = True
+                notes.append(f"underwater: {name or 'that weapon'} fights the "
+                             f"water — disadvantage")
         ac_conds, tc_conds = self._conds(atk), self._conds(tgt)
         if ranged and self._engaged_enemies(encounter_id, atk):
             dis = True
@@ -804,7 +860,8 @@ class CombatEngine:
         if enemy.kind == "pc" and not offered:
             self._maybe_offer_oa(enemy, mover, mprof, after)  # raises
         self.tracker.update_economy(enemy.id, reaction_used=True)
-        adv, dis, notes = self._attack_advantage(enemy, mover, False, encounter_id)
+        adv, dis, notes = self._attack_advantage(enemy, mover, False,
+                                                 encounter_id, weapon=mprof)
         eff_ac = self._eff_ac(mover)
         oa_exh = self._combat_roll_mod(enemy, profiles)
         if oa_exh:
@@ -1004,6 +1061,7 @@ class CombatEngine:
         # not a shot at all. Without a board (or without range data) this is
         # skipped entirely and the band model rules as before.
         long_shot = False
+        drowned_shot = False
         gap = self._spatial_gap(actor, target)
         if gap is not None and prof.get("ranged"):
             dist = gap[0]
@@ -1017,6 +1075,11 @@ class CombatEngine:
                 return
             if r_norm and dist > int(r_norm):
                 long_shot = True
+                # Underwater this is not a harder shot, it is a missed one: the
+                # water stops the missile. Rolled and spent rather than refused,
+                # because that is what the rule says happens — the shot is
+                # taken and it fails.
+                drowned_shot = self._underwater()
 
         steps = self._steps_between(actor, target)
         if not prof["ranged"] and steps > 0:
@@ -1065,7 +1128,8 @@ class CombatEngine:
                           + "."})
             return
 
-        adv, dis, notes = self._attack_advantage(actor, target, prof["ranged"], encounter_id)
+        adv, dis, notes = self._attack_advantage(actor, target, prof["ranged"],
+                                                 encounter_id, weapon=prof)
         if long_shot:
             dis = True
             notes.append(f"long range ({prof.get('range_normal')} ft): disadvantage")
@@ -1094,6 +1158,10 @@ class CombatEngine:
         self._maybe_prompt_shield(actor, target, atk, eff_ac, profiles,
                                   prof, notes, after=None)
         hit = bool(atk.hit)
+        if drowned_shot and hit:
+            hit = False
+            notes.append("underwater: past its normal range the shot is stopped "
+                         "by the water — an automatic miss")
         rolls = [self._roll_dict(f"{prof['name']} — {actor.name}", atk.detail,
                                  atk.total, dc=eff_ac, success=hit)]
         ev = {"kind": "attack", "actor": actor.name, "target": target.name,

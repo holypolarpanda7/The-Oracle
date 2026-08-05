@@ -75,8 +75,12 @@ _ENVIRONMENTS: tuple[Environment, ...] = (
         "coral-reef", "The Sunlit Shelf", "sea", "reef", "swim",
         "A coral shelf beneath the waves. Sand flats, deep channels, coral heads.",
         requires_speed="swim", lighting="dim",
-        dm_note="This fight is underwater: melee weapons that aren't piercing "
-                "have disadvantage, and ranged attacks past normal range fail."),
+        # The weapon rules used to be spelled out here for the DM to apply by
+        # hand. The engine enforces them now, so repeating them would only
+        # invite a second penalty on top of the one already rolled — the board
+        # states what it is doing, and this says what the place is like.
+        dm_note="Coral heads break up every line. Currents make the channels "
+                "a poor place to stand still."),
     Environment(
         "open-water", "The Blue Deep", "sea", "open-water", "swim",
         "Open sea. Drifting wreckage, ribbons of kelp, black falling away below.",

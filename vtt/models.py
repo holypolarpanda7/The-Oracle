@@ -217,6 +217,13 @@ class MapToken(SQLModel, table=True):
     # property of the hider alone — the guard who spotted you sees you while
     # the rest of the room still doesn't, and one bool cannot say that.
     found_by: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Whether this creature SWIMS, in feet — a trait of the creature, not of
+    # the board. movement_mode says how it is moving right now, and on an
+    # underwater board that is "swim" for everyone in it, including the
+    # dwarf who is drowning; the underwater combat rules turn on which of
+    # them actually has a swimming speed. None = never looked up, 0 = looked
+    # up and hasn't got one.
+    swim_speed_ft: Optional[int] = Field(default=None, sa_column=Column(Integer))
     # How this creature perceives, in feet: {"darkvision": 60, "blindsight": 10}.
     # A JSON column rather than four more columns, because it is a stat block's
     # senses line and that line grows — and because the bestiary already stores

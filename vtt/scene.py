@@ -651,6 +651,7 @@ class VttEngine:
                   movement_mode: Optional[str] = None,
                   label: Optional[str] = None,
                   senses: Optional[dict] = None,
+                  swim_speed_ft: Optional[int] = None,
                   elevation_ft: int = 0) -> Optional[MapToken]:
         """Put a creature (or an object) on the board.
 
@@ -689,6 +690,7 @@ class VttEngine:
             character_id=character_id, monster_slug=monster_slug,
             image_id=image_id, hidden=hidden, movement_mode=movement_mode,
             senses=(dict(senses) if senses else None),
+            swim_speed_ft=swim_speed_ft,
             color=color or TEAM_COLORS.get(team), label=label,
             elevation_ft=int(elevation_ft),
         )
@@ -750,7 +752,7 @@ class VttEngine:
                    "notes", "elevation_ft", "facing_deg", "movement_mode",
                    "moved_ft", "combatant_id", "character_id",
                    "restrained", "grappled_by", "senses",
-                   "stealth_dc", "found_by"}
+                   "stealth_dc", "found_by", "swim_speed_ft"}
         with Session(self.engine) as s:
             tok = s.get(MapToken, token_id)
             if not tok:
@@ -1869,6 +1871,34 @@ class VttEngine:
             pass
         return found
 
+    def swim_speed_ft(self, t: MapToken) -> int:
+        """This creature's swimming speed in feet, 0 if it hasn't got one.
+
+        Deliberately NOT ``movement_mode``. On an underwater board every token
+        is moving by swimming, including the dwarf in plate who is drowning in
+        it — and the underwater combat rules turn on which of them actually has
+        a swimming speed. Looked up from the stat block once and recorded, the
+        same way senses are.
+        """
+        if t.swim_speed_ft is not None:
+            return int(t.swim_speed_ft or 0)
+        found = 0
+        try:
+            if t.monster_slug:
+                from rules.query import RulesLibrary
+                m = RulesLibrary(engine=self.engine).get_monster(t.monster_slug)
+                raw = (m.speed if m is not None else None) or {}
+                if isinstance(raw, dict):
+                    digits = "".join(c for c in str(raw.get("swim", "")) if c.isdigit())
+                    found = int(digits) if digits else 0
+        except Exception as e:
+            print(f"[vtt] swim speed lookup failed for {t.name}: {e}")
+        try:
+            self.update_token(t.id, swim_speed_ft=found)
+        except Exception:
+            pass
+        return found
+
     def _lookup_senses(self, t: MapToken) -> dict:
         """Best effort: the bestiary for a monster, the species for a PC.
 
@@ -2365,6 +2395,22 @@ class VttEngine:
                          "harmless (a puddle, a stain, a crack) so it matches "
                          "the square's real rule. Never promise terrain the "
                          "legend doesn't give you — the board will refuse it.")
+        if self.board_mode(row) == "swim":
+            # Two of the three underwater rules are enforced by the code and
+            # are stated so the narration doesn't apply them a second time. The
+            # third is here because it CANNOT be enforced yet: the engine has
+            # no damage-type layer, so nothing can halve fire damage on its
+            # own, and a rule nobody is told about is a rule that never
+            # happens. Say plainly which is which.
+            lines.append(
+                "  Underwater. The board already applies this — do NOT also "
+                "narrate a penalty for it: a melee weapon that is swung rather "
+                "than thrust (anything but a dagger, javelin, shortsword, spear "
+                "or trident) is at disadvantage for anyone without a swimming "
+                "speed, and a ranged weapon that isn't a crossbow, net or "
+                "thrown spear is too, and misses automatically past its normal "
+                "range. YOU must still apply the one thing the code can't: "
+                "creatures fully immersed have RESISTANCE TO FIRE — halve it.")
         hurt = [o for o in self.breakables(map_id) if o["hp"] < o["hp_max"]]
         if hurt:
             lines.append("damaged: " + "; ".join(
@@ -2610,6 +2656,7 @@ def _token_dict(t: MapToken, row: TacticalMap) -> dict:
         "stealth_dc": t.stealth_dc,
         "found_by": list(t.found_by or []),
         "senses": (t.senses if isinstance(t.senses, dict) else {}),
+        "swim_speed_ft": t.swim_speed_ft,
         "prone": t.prone,
         "defeated": t.defeated,
     }

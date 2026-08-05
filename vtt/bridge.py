@@ -282,6 +282,22 @@ class BoardSpatial:
             return None
         return self.vtt.cover_for(self.map_id, ta.name, tb.name)
 
+    def underwater(self) -> bool:
+        """Is this fight being fought in the water?
+
+        The board already knew — a swim-medium board is one whose layout is
+        only connected to a swimmer — but the combat engine had no way to ask,
+        so the underwater rules lived as a sentence of prose in the arena
+        catalogue telling the DM to remember them by hand.
+        """
+        row = self.vtt.get_scene(self.map_id)
+        return bool(row) and self.vtt.board_mode(row) == "swim"
+
+    def swims(self, c) -> bool:
+        """Has this creature a swimming speed? Not: is it currently swimming."""
+        t = self._tok(c)
+        return t is not None and self.vtt.swim_speed_ft(t) > 0
+
     def can_see(self, a, b) -> Optional[bool]:
         """Can ``a`` perceive ``b``? ``None`` when the board can't say.
 

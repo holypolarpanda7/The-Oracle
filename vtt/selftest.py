@@ -673,6 +673,118 @@ def test_light_and_vision() -> None:
     v.close_scene(sc.id)
 
 
+def test_underwater() -> None:
+    section("underwater combat: the rules, not a note asking the DM")
+    try:
+        from combat import CombatEngine, CombatTracker
+        from combat.engine import (_UNDERWATER_MELEE_OK, _UNDERWATER_RANGED_OK,
+                                   _weapon_matches)
+    except Exception as e:
+        check("combat package importable", False, str(e))
+        return
+    from .bridge import BoardSpatial
+
+    check("a magic shortsword is still a shortsword",
+          _weapon_matches("+1 Shortsword", _UNDERWATER_MELEE_OK),
+          "the list is of weapon KINDS, and the table is full of named ones")
+    check("a greataxe is not", not _weapon_matches("Greataxe", _UNDERWATER_MELEE_OK))
+    check("a longbow fights the water",
+          not _weapon_matches("Longbow", _UNDERWATER_RANGED_OK))
+    check("a crossbow does not",
+          _weapon_matches("Heavy Crossbow", _UNDERWATER_RANGED_OK))
+
+    import tempfile as _tf
+    db = os.path.join(_tf.mkdtemp(), "underwater.db")
+    url = f"sqlite:///{db}"
+    ct = CombatTracker(database_url=url)
+    ct.create_tables()
+    v = VttEngine(database_url=url, tracker=ct)
+    v.create_tables()
+    eng = CombatEngine(ct)
+
+    enc = ct.start_encounter("selftest:wet", "The Shelf")
+    kara = ct.add_pc(enc.id, name="Kara", max_hp=20, armor_class=15, dex_mod=2,
+                     character_id=1)
+    fish = ct.add_combatant(enc.id, "Sahuagin", max_hp=22, armor_class=12, dex_mod=1)
+    ct.roll_initiative(enc.id)
+
+    dry = v.open_scene("selftest:wet", kind="combat", archetype="open",
+                       name="Beach", seed=4, encounter_id=enc.id, render_art=False)
+    kt = v.add_token(dry.id, "Kara", kind=TokenKind.PC, team=Team.PARTY,
+                     x=5, y=5, combatant_id=kara.id)
+    v.add_token(dry.id, "Sahuagin", kind=TokenKind.MONSTER, team=Team.FOE,
+                x=6, y=5, combatant_id=fish.id, swim_speed_ft=40)
+    a, b = ct.get_combatant(kara.id), ct.get_combatant(fish.id)
+    eng.spatial = BoardSpatial(v, dry.id)
+    axe = {"name": "Greataxe", "damage": "1d12+3", "ranged": False}
+    _adv, dis, _n = eng._attack_advantage(a, b, False, enc.id, weapon=axe)
+    check("on dry land a greataxe swings fine", not dis)
+    v.close_scene(dry.id)
+
+    wet = v.open_scene("selftest:wet", kind="combat", archetype="reef",
+                       name="The Shelf", seed=4, encounter_id=enc.id,
+                       render_art=False)
+    kt = v.add_token(wet.id, "Kara", kind=TokenKind.PC, team=Team.PARTY,
+                     combatant_id=kara.id)
+    ft = v.add_token(wet.id, "Sahuagin", kind=TokenKind.MONSTER, team=Team.FOE,
+                     combatant_id=fish.id, swim_speed_ft=40)
+    v.move_token(ft.id, kt.x + 1, kt.y, teleport=True, free=True)
+    eng.spatial = BoardSpatial(v, wet.id)
+    check("a reef board knows it is underwater", eng.spatial.underwater())
+    check("…and which of them swims",
+          eng.spatial.swims(b) and not eng.spatial.swims(a),
+          "movement_mode says everyone is swimming; only one of them CAN")
+
+    _adv, dis, notes = eng._attack_advantage(a, b, False, enc.id, weapon=axe)
+    check("underwater the same greataxe is at disadvantage", dis,
+          "; ".join(notes))
+    spear = {"name": "Spear", "damage": "1d6+3", "ranged": False}
+    _adv, dis, _n = eng._attack_advantage(a, b, False, enc.id, weapon=spear)
+    check("…but a spear is thrust, not swung", not dis)
+    _adv, dis, _n = eng._attack_advantage(b, a, False, enc.id, weapon=axe)
+    check("…and a creature that swims is exempt whatever it holds", not dis,
+          "the sahuagin is at home here")
+
+    # Break them apart first: a ranged attack made while an enemy is breathing
+    # down your neck takes disadvantage on dry land too, and it would mask
+    # everything below.
+    here = v.find_token(wet.id, "Kara")
+    far = next((sq for sq in v.grid(wet.id).squares()
+                if v.grid(wet.id).passable(sq[0], sq[1], mode="swim")
+                and geo.distance_ft((here.x, here.y), sq) >= 40), None)
+    check("the shelf is big enough to shoot across", far is not None)
+    v.move_token(ft.id, far[0], far[1], teleport=True, free=True)
+    eng.spatial = BoardSpatial(v, wet.id)
+    check("…and they are no longer in each other's faces",
+          (eng.spatial.distance_ft(a, b) or 0) > 5,
+          f"{eng.spatial.distance_ft(a, b)} ft apart")
+    # Asserted on the NOTES, not on the final flag. Advantage and disadvantage
+    # cancel in 5e, so a correct rule firing here can be zeroed out by another
+    # correct rule (neither of them can see the other across a dim reef) — and
+    # a test that reads only the flag would call that a failure.
+    def underwater_note(notes):
+        return any(n.startswith("underwater:") for n in notes)
+
+    bow = {"name": "Longbow", "damage": "1d8+2", "ranged": True}
+    _adv, _dis, notes = eng._attack_advantage(a, b, True, enc.id, weapon=bow)
+    check("a bow underwater takes the penalty", underwater_note(notes),
+          "; ".join(notes))
+    bolt = {"name": "Light Crossbow", "damage": "1d8+2", "ranged": True}
+    _adv, _dis, notes = eng._attack_advantage(a, b, True, enc.id, weapon=bolt)
+    check("…a crossbow does not", not underwater_note(notes), "; ".join(notes))
+    _adv, _dis, notes = eng._attack_advantage(b, a, True, enc.id, weapon=bow)
+    check("swimming does NOT exempt you from the ranged rule",
+          underwater_note(notes),
+          "the water slows the arrow, not your footing | " + "; ".join(notes))
+
+    # Spell attacks are untouched: the rule is about weapons.
+    _adv, _dis, notes = eng._attack_advantage(a, b, True, enc.id)
+    check("a spell attack underwater is unaffected", not underwater_note(notes),
+          "no weapon passed means no weapon rule | " + "; ".join(notes))
+    ct.end_encounter(enc.id)
+    v.close_scene(wet.id)
+
+
 def test_hiding() -> None:
     section("hiding: a contest, remembered, and personal")
     import random as _random
@@ -799,7 +911,7 @@ def main() -> int:
     print("\033[1mThe Oracle — tactical board self-test\033[0m")
     for fn in (test_distance, test_sight_and_cover, test_templates, test_movement,
                test_opportunity, test_mapgen, test_engine, test_bridge,
-               test_light_and_vision, test_hiding):
+               test_light_and_vision, test_hiding, test_underwater):
         try:
             fn()
         except Exception:

@@ -400,7 +400,11 @@ async def lifespan(app: FastAPI):
                                      # Hiding is a contest; the roll and who
                                      # has beaten it both have to persist.
                                      ("stealth_dc", "INTEGER"),
-                                     ("found_by", "JSON")]:
+                                     ("found_by", "JSON"),
+                                     # Underwater combat turns on whether a
+                                     # creature actually swims, which is not
+                                     # the same as how it's moving.
+                                     ("swim_speed_ft", "INTEGER")]:
                         if col not in vt_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE vtt_token ADD COLUMN {col} {ddl}")

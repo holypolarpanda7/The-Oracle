@@ -342,6 +342,24 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   every other board→combat channel): can't see the target = disadvantage,
   target can't see you = advantage, and in a dark room both apply and cancel —
   which is correct, and is why darkvision is worth having.
+- **Underwater combat is enforced, not requested.** The weapon rules used to
+  live as a `dm_note` sentence in `arena/environments.py` telling the model to
+  remember them by hand — the last place asking the LLM to apply a mechanic.
+  `BoardSpatial.underwater()` (the board's medium is `swim`) and `swims(c)` now
+  carry it to `_attack_advantage`: a melee weapon that is swung rather than
+  thrust is at disadvantage for anyone WITHOUT a swimming speed, a ranged
+  weapon that isn't a crossbow/net/thrown spear is at disadvantage for
+  everyone, and past normal range it misses automatically (rolled and spent,
+  not refused — that is what the rule says happens). Two traps: `movement_mode`
+  is NOT "has a swimming speed" — on a swim board it is `swim` for everyone
+  including the dwarf who is drowning, so `MapToken.swim_speed_ft` is looked up
+  from the stat block the way senses are; and the weapon allowlists match by
+  SUBSTRING, because the list is of weapon kinds and the table is full of
+  "Trident of Warning". Spell attacks are untouched — the rule is about
+  weapons, so passing no weapon skips it. **Fire resistance while immersed is
+  NOT enforced**: the engine has no damage-type or resistance layer at all
+  (weapons carry `"1d8"`, not a type), so the DM board states that one rule
+  explicitly as the DM's to apply. Building damage typing is its prerequisite.
 - **Cover is a question about HEIGHT, and the engine finally has a number for
   it.** `Tile.cover_height_ft` says how tall an obstacle SCREENS and
   `terrain.profile_height_ft(size, prone)` how tall a target presents; an
