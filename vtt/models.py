@@ -149,6 +149,21 @@ class TacticalMap(SQLModel, table=True):
     # By kind rather than by square: eight pillars are one picture.
     object_art: Optional[Any] = Field(default=None, sa_column=Column(JSON))
 
+    # Upper floors. A gallery over a hall, a tower's storeys, a walkway above
+    # a chasm: each is a level with its OWN terrain grid at its own height.
+    # Level 0 is ``terrain`` above, so a single-storey board carries nothing
+    # here and every existing board keeps working untouched.
+    #
+    #   [{"name": "Gallery", "terrain": [...], "base_ft": 15,
+    #     "stairs": [{"x": 4, "y": 7, "to": 0, "tx": 4, "ty": 8}]}]
+    #
+    # The height axis was already folded into every distance, reach and spell
+    # area on the board, so a level is mostly just a grid plus the number that
+    # says how far up it is. What is genuinely new is the FLOOR: a void square
+    # on an upper level is a hole you can see and fall through, and anywhere
+    # else there is a ceiling between the two.
+    levels: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+
     # Ambient light for the whole board: bright | dim | dark. Individual light
     # sources are MapEffect rows of kind "light".
     lighting: str = Field(default="bright", sa_column=Column(String))
@@ -217,6 +232,9 @@ class MapToken(SQLModel, table=True):
     # property of the hider alone — the guard who spotted you sees you while
     # the rest of the room still doesn't, and one bool cannot say that.
     found_by: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Which floor this creature is standing on. 0 is the board's own terrain;
+    # anything higher indexes TacticalMap.levels.
+    level: int = Field(default=0, sa_column=Column(Integer))
     # Forcing itself through a space one size category smaller: half speed in
     # effect (an extra foot per foot), disadvantage on its attacks and Dex
     # saves, advantage on attacks against it. Board state rather than a DM

@@ -342,6 +342,24 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   every other board→combat channel): can't see the target = disadvantage,
   target can't see you = advantage, and in a dark room both apply and cancel —
   which is correct, and is why darkvision is worth having.
+- **Upper floors are grids, and the only new rule is the CEILING.**
+  `TacticalMap.levels` holds one terrain grid per storey with its own
+  `base_ft`; level 0 is the board's own `terrain`, so a single-storey board
+  carries nothing and every caller written before floors existed keeps working
+  (`grid_of(row, level=0)` is defaulted, not required). This was cheap for one
+  reason: **height was already folded into every distance, reach, cover check
+  and spell area**, so `token_height_ft` adding the level's base was enough to
+  make an archer on the gallery 20 ft away rather than standing on your head.
+  What genuinely needed writing: `_occupied` is per floor (two creatures share
+  an x,y on different storeys and are not in each other's way); a new level
+  starts as ALL VOID because a gallery is the strip you build and everywhere
+  else is open to the hall below; and a VOID square is what sight passes
+  through — anywhere else there is a floor between you, which is the one thing
+  an upper storey adds that height alone never expressed. Levels are otherwise
+  sealed: `add_stairs` links a square to a square, both ways, and
+  `take_stairs` is the only way across. Both renderers draw ONE floor (the PNG
+  takes `level=`, the Activity follows your own token) because a gallery drawn
+  over the hall it overlooks is unreadable.
 - **A rider has no movement of their own.** `MapToken.mounted_on` names the
   mount (on the RIDER, the same shape as `grappled_by` and for the same reason:
   the carried one is whose movement stops being its own). They share the

@@ -312,6 +312,10 @@ export interface VttToken {
   hidden: boolean;
   /** How this creature perceives, in feet: {darkvision: 60, blindsight: 10}. */
   senses?: Record<string, number>;
+  /** Which floor this creature is standing on. 0 is the ground. */
+  level?: number;
+  mounted_on?: string | null;
+  squeezing?: boolean;
   prone: boolean;
   defeated: boolean;
 }
@@ -342,6 +346,14 @@ export interface VttEffect {
   source_token_id?: number | null;
   concentration: boolean;
   expires_round?: number | null;
+}
+
+/** One floor of a multi-storey board. */
+export interface VttLevel {
+  name: string;
+  base_ft: number;
+  terrain: string[];
+  stairs: { x: number; y: number; to: number; tx: number; ty: number; kind?: string }[];
 }
 
 export interface VttDoor { x: number; y: number; state: string; name?: string; dc?: number | null; }
@@ -395,6 +407,8 @@ export interface VttScene {
   /** Light level per square: "b" bright, "d" dim, "x" dark. Ambient plus any
    *  light sources, minus obscurement — the board's own answer, not the art's. */
   light?: string[] | null;
+  /** Floors, ground first. A single-storey board reports exactly one. */
+  levels?: VttLevel[];
   doors: VttDoor[];
   elevation: Record<string, number>;
   /** Discrete things standing on squares — read off the grid by the server. */

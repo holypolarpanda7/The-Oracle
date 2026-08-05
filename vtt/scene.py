@@ -49,9 +49,9 @@ from .models import (
     TokenKind,
     size_squares,
 )
-from .terrain import (APERTURES, Grid, aperture_axis, object_stats,
-                      profile_height_ft, required_mode, short_name,
-                      sprite_label, sprite_subject, tile)
+from .terrain import (APERTURES, FLOOR, VOID, Grid, aperture_axis,
+                      object_stats, profile_height_ft, required_mode,
+                      short_name, sprite_label, sprite_subject, tile)
 
 Square = tuple[int, int]
 
@@ -320,8 +320,133 @@ class VttEngine:
 
     # ---- terrain -----------------------------------------------------------
 
-    def grid_of(self, row: TacticalMap) -> Grid:
-        return Grid.from_rows(row.terrain or [])
+    # ================================================================ levels
+
+    def levels_of(self, row: TacticalMap) -> list[dict]:
+        """Every floor of this board, level 0 first. Always at least one."""
+        base = {"name": "Ground", "base_ft": 0, "terrain": row.terrain or [],
+                "stairs": []}
+        return [base, *[dict(l) for l in (row.levels or [])]]
+
+    def grid_of(self, row: TacticalMap, level: int = 0) -> Grid:
+        """The tile grid of one floor. Level 0 is the board's own terrain.
+
+        Defaulted rather than required so that every caller written before
+        upper floors existed keeps meaning what it meant: a single-storey board
+        has exactly one grid and this is it.
+        """
+        if not level or not row.levels:
+            return Grid.from_rows(row.terrain or [])
+        lv = self.levels_of(row)
+        idx = max(0, min(int(level), len(lv) - 1))
+        return Grid.from_rows(lv[idx].get("terrain") or row.terrain or [])
+
+    def level_base_ft(self, row: TacticalMap, level: int) -> int:
+        """How far above the ground floor this level's floor sits."""
+        lv = self.levels_of(row)
+        idx = max(0, min(int(level or 0), len(lv) - 1))
+        return int(lv[idx].get("base_ft") or 0)
+
+    def add_level(self, map_id: int, *, name: str = "Upper", base_ft: int = 15,
+                  terrain: Optional[list] = None,
+                  solid: bool = False) -> dict:
+        """Add a floor above this board. Returns its index.
+
+        A new level starts as ALL VOID — a floor that isn't there yet — because
+        that is the honest default: the gallery is the railed strip you build,
+        and everywhere you don't build is open to the hall below. ``solid``
+        floors the whole footprint instead, for a storey rather than a balcony.
+        """
+        row = self.get_scene(map_id)
+        if row is None:
+            return {"ok": False, "reason": "no board is out"}
+        rows = terrain or ([FLOOR * row.width for _ in range(row.height)]
+                           if solid else [VOID * row.width for _ in range(row.height)])
+        levels = [dict(l) for l in (row.levels or [])]
+        levels.append({"name": name, "base_ft": int(base_ft),
+                       "terrain": rows, "stairs": []})
+        self._set_fields(map_id, levels=levels)
+        return {"ok": True, "level": len(levels), "name": name,
+                "detail": f"{name} added {base_ft} ft above the floor."}
+
+    def add_stairs(self, map_id: int, level: int, x: int, y: int, *,
+                   to_level: int, to_x: int, to_y: int,
+                   kind: str = "stairs") -> dict:
+        """Link a square on one floor to a square on another, both ways.
+
+        Levels are otherwise sealed from each other: you cannot walk up. A
+        connector is the only way between them, which is what makes an upper
+        floor a place you have to REACH rather than a second set of squares
+        everyone can stand on at will.
+        """
+        row = self.get_scene(map_id)
+        if row is None:
+            return {"ok": False, "reason": "no board is out"}
+        levels = [dict(l) for l in (row.levels or [])]
+        n_levels = len(levels) + 1
+        if not (0 <= level < n_levels and 0 <= to_level < n_levels):
+            return {"ok": False, "reason": "no such level on this board"}
+
+        def _put(lv: int, ax: int, ay: int, blv: int, bx: int, by: int) -> None:
+            entry = {"x": int(ax), "y": int(ay), "to": int(blv),
+                     "tx": int(bx), "ty": int(by), "kind": kind}
+            if lv == 0:
+                ground.append(entry)
+            else:
+                levels[lv - 1].setdefault("stairs", []).append(entry)
+
+        ground: list = list((row.notes or {}).get("stairs") or [])
+        _put(level, x, y, to_level, to_x, to_y)
+        _put(to_level, to_x, to_y, level, x, y)
+        notes = dict(row.notes or {})
+        notes["stairs"] = ground
+        self._set_fields(map_id, levels=levels, notes=notes)
+        return {"ok": True,
+                "detail": (f"{kind} joins level {level} at {x},{y} to "
+                           f"level {to_level} at {to_x},{to_y}.")}
+
+    def stairs_on(self, row: TacticalMap, level: int) -> list[dict]:
+        """Connectors leaving this floor."""
+        if not level:
+            return list((row.notes or {}).get("stairs") or [])
+        lv = self.levels_of(row)
+        idx = max(0, min(int(level), len(lv) - 1))
+        return list(lv[idx].get("stairs") or [])
+
+    def take_stairs(self, map_id: int, ref: str) -> dict:
+        """Use the connector under this creature's feet. Costs nothing extra.
+
+        5e charges movement for the SQUARES you cross, and a staircase already
+        occupies squares — charging again for changing floor would tax the
+        same feet twice.
+        """
+        t = self.find_token(map_id, ref)
+        row = self.get_scene(map_id)
+        if not (t and row):
+            return {"ok": False, "reason": "no such creature on this board"}
+        here = next((s for s in self.stairs_on(row, int(t.level or 0))
+                     if int(s.get("x", -1)) == t.x and int(s.get("y", -1)) == t.y),
+                    None)
+        if here is None:
+            return {"ok": False,
+                    "reason": (f"{t.name} isn't standing on any stair, ladder or "
+                               f"opening between floors")}
+        dest = (int(here["tx"]), int(here["ty"]))
+        to_level = int(here["to"])
+        self.update_token(t.id, level=to_level)
+        self._place(t.id, dest)
+        carried = self._rider_of(t)
+        if carried is not None:
+            self.update_token(carried.id, level=to_level)
+            self._place(carried.id, dest)
+        self._bump(map_id)
+        names = [l.get("name") for l in self.levels_of(row)]
+        self._log(map_id, row.session_id, "move", actor=t.name,
+                  summary=f"{t.name} takes the {here.get('kind', 'stairs')}")
+        return {"ok": True, "level": to_level, "x": dest[0], "y": dest[1],
+                "detail": (f"{t.name} takes the {here.get('kind', 'stairs')} to "
+                           f"{names[to_level] if to_level < len(names) else 'the next floor'} "
+                           f"and comes out at {dest[0]},{dest[1]}.")}
 
     def grid(self, map_id: int) -> Grid:
         row = self.get_scene(map_id)
@@ -753,7 +878,7 @@ class VttEngine:
                    "moved_ft", "combatant_id", "character_id",
                    "restrained", "grappled_by", "senses",
                    "stealth_dc", "found_by", "swim_speed_ft",
-                   "mounted_on", "squeezing"}
+                   "mounted_on", "squeezing", "level"}
         with Session(self.engine) as s:
             tok = s.get(MapToken, token_id)
             if not tok:
@@ -782,7 +907,8 @@ class VttEngine:
         return True
 
     def _occupied(self, map_id: int, *, exclude: Optional[int] = None,
-                  ignore_teams: Iterable[str] = ()) -> set[Square]:
+                  ignore_teams: Iterable[str] = (),
+                  level: Optional[int] = None) -> set[Square]:
         """Every square a *blocking* token stands in.
 
         Defeated creatures and markers don't block; allies technically don't
@@ -795,6 +921,11 @@ class VttEngine:
             if t.id == exclude or t.defeated or t.kind == TokenKind.MARKER:
                 continue
             if t.team in skip:
+                continue
+            # Floors don't share squares. Someone standing under the gallery
+            # and someone standing on it are at the same x,y and are not in
+            # each other's way at all.
+            if level is not None and int(t.level or 0) != int(level):
                 continue
             out.update(geo.footprint(t.x, t.y, size_squares(t.size)))
         return out
@@ -908,11 +1039,12 @@ class VttEngine:
         row = self.get_scene(tok.map_id)
         if row is None or not row.active:
             return {"ok": False, "reason": "no board is out"}
-        g = self.grid_of(row)
+        lvl = int(tok.level or 0)
+        g = self.grid_of(row, lvl)
         n = size_squares(tok.size)
         dest = (int(x), int(y))
-        hard_blocked = self._occupied(tok.map_id, exclude=token_id)
-        soft_blocked = self._occupied(tok.map_id, exclude=token_id,
+        hard_blocked = self._occupied(tok.map_id, exclude=token_id, level=lvl)
+        soft_blocked = self._occupied(tok.map_id, exclude=token_id, level=lvl,
                                       ignore_teams=(tok.team,) if tok.team else ())
 
         if not g.in_bounds(*dest):
@@ -1689,8 +1821,18 @@ class VttEngine:
         """
         if tok is None:
             return 0
+        # The floor they are standing on, plus anything they are doing above
+        # it. Every distance, reach, spell area and cover check on this board
+        # already folds height in, so putting the level here is what makes an
+        # archer on the gallery 15 ft away instead of standing on your head.
+        base = 0
+        if int(getattr(tok, "level", 0) or 0):
+            lv = (row.levels or [])
+            idx = int(tok.level) - 1
+            if 0 <= idx < len(lv):
+                base = int((lv[idx] or {}).get("base_ft") or 0)
         own = int(tok.elevation_ft or 0)
-        return own if own else VttEngine._height_at(row, (tok.x, tok.y))
+        return base + (own if own else VttEngine._height_at(row, (tok.x, tok.y)))
 
     @staticmethod
     def height_gap_ft(row: TacticalMap, a: MapToken, b: MapToken) -> int:
@@ -2196,7 +2338,25 @@ class VttEngine:
         hiding = (b.hidden and not ignore_hidden
                   and a.name not in list(b.found_by or []))
 
-        g = self.grid_of(row)
+        # Different floors: there is a ceiling between them unless somebody is
+        # standing under a hole. This is the ONE genuinely new rule an upper
+        # level brings — everything else (distance, reach, cover, spell areas)
+        # already folded height in and needed nothing. A void square on the
+        # upper grid is that hole: the open middle of a galleried hall.
+        if int(a.level or 0) != int(b.level or 0):
+            upper, lower = ((a, b) if int(a.level or 0) > int(b.level or 0)
+                            else (b, a))
+            ug = self.grid_of(row, int(upper.level or 0))
+            open_above = any(
+                ug.get(sx, sy) == VOID
+                for sx, sy in geo.bresenham((lower.x, lower.y), (upper.x, upper.y))
+                if ug.in_bounds(sx, sy))
+            if not open_above:
+                return {"sees": False, "via": "", "obscured": "heavy",
+                        "note": (f"{b.name} is on another floor, with a "
+                                 f"ceiling in between")}
+
+        g = self.grid_of(row, int(a.level or 0))
         blockers = {tuple(p) for eff in self.effects(map_id) if eff.blocks_sight
                     for p in (eff.squares or [])}
         clear = geo.has_line_of_sight(
@@ -2552,6 +2712,15 @@ class VttEngine:
             "fog": row.fog or None,
             "sight": self.sight(map_id, team=viewer_team),
             "light": self.light_map(map_id),
+            # One entry per floor, ground first. A single-storey board reports
+            # exactly one, so a client that knows nothing about levels sees
+            # what it always saw.
+            "levels": [{"name": l.get("name", f"Level {i}"),
+                        "base_ft": int(l.get("base_ft") or 0),
+                        "terrain": l.get("terrain") or [],
+                        "stairs": list(l.get("stairs") or [])
+                        if i else list((row.notes or {}).get("stairs") or [])}
+                       for i, l in enumerate(self.levels_of(row))],
             "doors": row.doors or [],
             "elevation": row.elevation or {},
             "debris": self.debris_for(map_id),
@@ -2595,16 +2764,41 @@ class VttEngine:
         medium = {"swim": ", fought underwater — everything here is swimming",
                   "fly": ", fought in open air — everything here is flying"}.get(
                       self.board_mode(row), "")
+        floors = self.levels_of(row)
+        storeys = ("" if len(floors) < 2 else
+                   f", {len(floors)} floors: "
+                   + "; ".join(f"{i} {f.get('name')} "
+                               f"(+{int(f.get('base_ft') or 0)} ft)"
+                               for i, f in enumerate(floors)))
         lines = [f"# Board: {row.name} — {row.width}x{row.height} squares "
-                 f"({row.square_ft} ft each), {light}{medium}"]
+                 f"({row.square_ft} ft each), {light}{medium}{storeys}"]
         desc = (row.notes or {}).get("description")
         if desc:
             lines.append(f"  {desc}")
-        for y in range(g.height):
-            out = []
-            for x in range(g.width):
-                out.append(marks.get((x, y), g.get(x, y)))
-            lines.append("".join(out))
+        # One grid per floor, each carrying only the creatures standing on it.
+        # A single-storey board prints exactly what it always printed.
+        for fi, floor in enumerate(floors):
+            fg = self.grid_of(row, fi)
+            if len(floors) > 1:
+                stairs = self.stairs_on(row, fi)
+                lines.append(
+                    f"-- level {fi}: {floor.get('name')} "
+                    f"(+{int(floor.get('base_ft') or 0)} ft)"
+                    + (" — " + ", ".join(
+                        f"{s.get('kind', 'stairs')} at {s['x']},{s['y']} "
+                        f"-> level {s['to']}" for s in stairs[:4])
+                       if stairs else "")
+                    + (" — ' ' is open air: you can see and fall through it"
+                       if fi else ""))
+            for y in range(fg.height):
+                out = []
+                for x in range(fg.width):
+                    here = marks.get((x, y))
+                    on_this_floor = here is not None and any(
+                        ch == here and int(t.level or 0) == fi
+                        for ch, t in letters)
+                    out.append(here if on_this_floor else fg.get(x, y))
+                lines.append("".join(out))
         legend = g.legend(rules=True)
         if legend:
             lines.append(f"terrain: {legend}")
@@ -2699,6 +2893,14 @@ class VttEngine:
                                   f"{actor.name}'s attacks have advantage")
             if actor is not None and actor.id == t.id:
                 extras.append("ACTING NOW")
+            if int(t.level or 0):
+                extras.append(f"on level {t.level} "
+                              f"(+{self.level_base_ft(row, int(t.level))} ft)")
+            if t.mounted_on:
+                extras.append(f"riding {t.mounted_on} — move {t.mounted_on}")
+            if t.squeezing:
+                extras.append("SQUEEZING: its attacks have disadvantage and "
+                              "attacks against it have advantage")
             if t.prone:
                 extras.append("prone")
             elif actor is not None and actor.id != t.id:
@@ -2890,6 +3092,7 @@ def _token_dict(t: MapToken, row: TacticalMap) -> dict:
         "swim_speed_ft": t.swim_speed_ft,
         "mounted_on": t.mounted_on,
         "squeezing": bool(t.squeezing),
+        "level": int(t.level or 0),
         "prone": t.prone,
         "defeated": t.defeated,
     }

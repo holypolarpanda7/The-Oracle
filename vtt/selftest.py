@@ -754,6 +754,73 @@ def test_mounts_and_squeezing() -> None:
     v.close_scene(wall.id)
 
 
+def test_levels() -> None:
+    section("upper floors: a gallery over a hall")
+    import tempfile as _tf
+    db = os.path.join(_tf.mkdtemp(), "levels.db")
+    v = VttEngine(database_url=f"sqlite:///{db}")
+    v.create_tables()
+    sc = v.open_scene("test:levels", kind="combat", archetype="open",
+                      name="The Galleried Hall", width=12, height=8, seed=3,
+                      render_art=False)
+    for x in range(12):
+        for y in range(8):
+            v.set_terrain(sc.id, [(x, y)], ".")
+
+    made = v.add_level(sc.id, name="Gallery", base_ft=15)
+    eq("a board can grow a floor", made["level"], 1)
+    check("…which starts as open air, not a lid",
+          all(c == " " for c in v.grid_of(v.get_scene(sc.id), 1).to_rows()[4]),
+          "a gallery is the strip you build; everywhere else is open to below")
+
+    # Build a walkway along the north edge, leaving the hall's middle open.
+    row = v.get_scene(sc.id)
+    lv = [dict(l) for l in (row.levels or [])]
+    gg = v.grid_of(row, 1)
+    for x in range(12):
+        for y in (0, 1):
+            gg.set(x, y, ".")
+    lv[0]["terrain"] = gg.to_rows()
+    v._set_fields(sc.id, levels=lv)
+    v.add_stairs(sc.id, 0, 11, 2, to_level=1, to_x=11, to_y=1)
+
+    kara = v.add_token(sc.id, name="Kara", x=5, y=5, team=Team.PARTY)
+    archer = v.add_token(sc.id, name="Archer", x=5, y=1, team=Team.FOE)
+    v.update_token(archer.id, level=1)
+
+    row = v.get_scene(sc.id)
+    k, a = v.find_token(sc.id, "Kara"), v.find_token(sc.id, "Archer")
+    eq("the gallery's height counts toward every distance",
+       geo.token_distance_ft([(k.x, k.y)], [(a.x, a.y)], row.square_ft,
+                             dz_ft=v.height_gap_ft(row, k, a)), 20)
+    check("you can see up through the open middle of the hall",
+          v.can_see(sc.id, "Kara", "Archer"))
+
+    # Roof the hall over and the same two lose each other entirely.
+    lv = [dict(l) for l in (v.get_scene(sc.id).levels or [])]
+    lv[0]["terrain"] = ["." * 12 for _ in range(8)]
+    v._set_fields(sc.id, levels=lv)
+    check("a floor between them is a ceiling", not v.can_see(sc.id, "Kara", "Archer"),
+          str(v.vision(sc.id, "Kara", "Archer")))
+    lv[0]["terrain"] = gg.to_rows()
+    v._set_fields(sc.id, levels=lv)
+
+    # Floors don't share squares, and you can't just walk upstairs.
+    v.move_token(kara.id, 5, 1, teleport=True, free=True)
+    k = v.find_token(sc.id, "Kara")
+    eq("two creatures can stand on the same square on different floors",
+       (k.x, k.y, int(k.level or 0)), (5, 1, 0))
+    denied = v.take_stairs(sc.id, "Kara")
+    check("and the stairs are the only way between them", not denied["ok"],
+          str(denied.get("reason")))
+    v.move_token(kara.id, 11, 2, teleport=True, free=True)
+    took = v.take_stairs(sc.id, "Kara")
+    check("standing on them, she goes up", took["ok"], str(took))
+    k = v.find_token(sc.id, "Kara")
+    eq("…onto the gallery", (int(k.level or 0), k.x, k.y), (1, 11, 1))
+    v.close_scene(sc.id)
+
+
 def test_underwater() -> None:
     section("underwater combat: the rules, not a note asking the DM")
     try:
@@ -993,7 +1060,7 @@ def main() -> int:
     for fn in (test_distance, test_sight_and_cover, test_templates, test_movement,
                test_opportunity, test_mapgen, test_engine, test_bridge,
                test_light_and_vision, test_hiding, test_underwater,
-               test_mounts_and_squeezing):
+               test_mounts_and_squeezing, test_levels):
         try:
             fn()
         except Exception:

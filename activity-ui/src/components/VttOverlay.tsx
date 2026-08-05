@@ -90,6 +90,32 @@ export function VttOverlay(p: VttProps) {
   const [drag, setDrag] = useState<{ kind: "pan"; x: number; y: number; ox: number; oy: number }
     | { kind: "token"; id: number } | null>(null);
 
+  // Which floor to draw. Follows your OWN token rather than offering a
+  // control: the storey you are standing on is the one you want to see, and a
+  // player who has to pick their own floor from a menu will pick it wrong.
+  // A single-storey board reports one level and this is always 0.
+  const level = useMemo(() => {
+    const mine = scene.tokens.find((t) => p.myCharacterId != null
+      && t.character_id === p.myCharacterId);
+    return Math.max(0, Math.min(mine?.level ?? 0,
+                                Math.max(0, (scene.levels?.length ?? 1) - 1)));
+  }, [scene.tokens, scene.levels, p.myCharacterId]);
+
+  // The scene as it looks from that floor: its terrain, its creatures. Drawing
+  // a gallery over the hall it overlooks is unreadable, and drawing everyone
+  // on one grid puts the archer upstairs in the middle of the melee.
+  const floor = useMemo(() => {
+    if (!level || !scene.levels?.[level]) return scene;
+    return {
+      ...scene,
+      terrain: scene.levels[level].terrain ?? scene.terrain,
+      objects: [], debris: [],
+    };
+  }, [scene, level]);
+
+  const onThisFloor = useCallback(
+    (t: VttToken) => (t.level ?? 0) === level, [level]);
+
   const myToken = useMemo(
     () => scene.tokens.find((t) => p.myCharacterId != null
       && t.character_id === p.myCharacterId) ?? null,
@@ -213,12 +239,13 @@ export function VttOverlay(p: VttProps) {
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paint(ctx, size[0], size[1], {
-      scene, view, art: artRef.current, reach, path, pathCost,
+      scene: { ...floor, tokens: floor.tokens.filter(onThisFloor) },
+      view, art: artRef.current, reach, path, pathCost,
       pathLegal: pathCost !== undefined, pathProvokes: provokes.length > 0,
       hover, measure, show, pings, sprites: SPRITES, now: Date.now(),
     });
-  }, [scene, view, size, reach, path, pathCost, hover, measure, show, pings,
-      provokes.length, spriteTick]);
+  }, [floor, onThisFloor, view, size, reach, path, pathCost, hover, measure,
+      show, pings, provokes.length, spriteTick]);
 
   useEffect(() => {
     draw();
@@ -346,7 +373,8 @@ export function VttOverlay(p: VttProps) {
     return false;
   }, [show.fog, scene.sight]);
 
-  const tokenNodes = view && scene.tokens.filter(inSight).map((t) => {
+  const tokenNodes = view && scene.tokens.filter(onThisFloor)
+    .filter(inSight).map((t) => {
     const cell = CELL * view.scale;
     const [sx, sy] = toScreen(view, t.x, t.y);
     const px = cell * t.squares;

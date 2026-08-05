@@ -380,7 +380,7 @@ async def lifespan(app: FastAPI):
                 # Damage taken by breakable furniture on pre-existing boards.
                 vm_existing = {row[1] for row in conn.exec_driver_sql(
                     'PRAGMA table_info("vtt_map")')}
-                for col in ("objects", "debris", "object_art"):
+                for col in ("objects", "debris", "object_art", "levels"):
                     if vm_existing and col not in vm_existing:
                         conn.exec_driver_sql(
                             f"ALTER TABLE vtt_map ADD COLUMN {col} JSON")
@@ -407,7 +407,8 @@ async def lifespan(app: FastAPI):
                                      ("swim_speed_ft", "INTEGER"),
                                      # Riders move with their mount.
                                      ("mounted_on", "VARCHAR"),
-                                     ("squeezing", "INTEGER DEFAULT 0")]:
+                                     ("squeezing", "INTEGER DEFAULT 0"),
+                                     ("level", "INTEGER DEFAULT 0")]:
                         if col not in vt_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE vtt_token ADD COLUMN {col} {ddl}")
@@ -6399,7 +6400,8 @@ _VTT_HOOK_ACTIONS = {"open", "close", "place", "move", "remove", "effect",
                      "blink", "push", "pull", "token",
                      "grapple", "release", "restrain", "free", "prone",
                      "stand", "swap", "damage",
-                     "hide", "search", "unhide", "mount", "dismount"}
+                     "hide", "search", "unhide", "mount", "dismount",
+                     "level", "stairs"}
 
 # Bare words a hook may carry instead of key=value, e.g. "difficult".
 _VTT_FLAGS = {"difficult", "blocking", "obscuring", "permanent", "hidden",
@@ -6478,6 +6480,15 @@ _VTT_HOOKS_ACTIVE = (
     "                                         at all and may then Hide. It does not work\n"
     "                                         against anything shooting down from above\n"
     "    [[VTT: swap | Kara | Sable]]         two creatures change places\n"
+    "    [[VTT: level | add | Gallery | 15]]   build a floor 15 ft up. It starts as\n"
+    "                                         OPEN AIR — paint the walkway you want\n"
+    "                                         with [[VTT: terrain]]; everywhere you\n"
+    "                                         don't is open to the hall below, and is\n"
+    "                                         what lets the two floors see each other\n"
+    "    [[VTT: stairs | 0 | 13,5 | 1 | 13,4]] join a square on one floor to a square\n"
+    "                                         on another, both ways. Stairs are the\n"
+    "                                         ONLY way between floors\n"
+    "    [[VTT: level | Kara]]                she takes the stair she is standing on\n"
     "    [[VTT: mount | Kara | Warhorse]]     she gets into the saddle (half her\n"
     "                                         Speed; the mount must be at least one\n"
     "                                         size larger). After this MOVE THE MOUNT,\n"
@@ -6931,6 +6942,40 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                 vtt_engine.update_token(tok.id, **fields)
                 said = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in fields.items())
                 notes.append(f"🗺 {tok.name}: {said}.")
+                continue
+
+            if action == "level":
+                # [[VTT: level | add | Gallery | 15]] or [[VTT: level | Kara]]
+                if positional and positional[0].lower() == "add":
+                    res = vtt_engine.add_level(
+                        scene.id,
+                        name=(positional[1] if len(positional) > 1 else "Upper"),
+                        base_ft=_iv(kv, "height",
+                                    int(positional[2]) if len(positional) > 2
+                                    and str(positional[2]).isdigit() else 15),
+                        solid="solid" in flags)
+                elif positional:
+                    res = vtt_engine.take_stairs(scene.id, positional[0])
+                else:
+                    continue
+                notes.append("🗺 " + (res.get("detail")
+                                      or res.get("reason") or ""))
+                continue
+
+            if action == "stairs":
+                # [[VTT: stairs | 0 | 4,7 | 1 | 4,2 ]]
+                if len(positional) < 4:
+                    continue
+                a = _vtt_square(positional[1])
+                b = _vtt_square(positional[3])
+                if not (a and b):
+                    continue
+                res = vtt_engine.add_stairs(
+                    scene.id, int(positional[0]), a[0], a[1],
+                    to_level=int(positional[2]), to_x=b[0], to_y=b[1],
+                    kind=(kv.get("kind") or "stairs"))
+                notes.append("🗺 " + (res.get("detail")
+                                      or res.get("reason") or ""))
                 continue
 
             if action in ("mount", "dismount"):

@@ -188,7 +188,7 @@ def _monogram(name: str) -> str:
 
 def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
                      show_coords: bool = True, max_px: int = 1600,
-                     image_lookup=None) -> bytes:
+                     image_lookup=None, level: int = 0) -> bytes:
     """Render a scene ``state()`` dict to PNG bytes.
 
     ``cell`` is shrunk automatically so a very large board still fits inside
@@ -201,6 +201,19 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
     the flat tile colours are drawn exactly as before, which is why the board
     is never broken by missing pictures.
     """
+    # One floor at a time — you look at the storey you are standing on, and a
+    # gallery drawn over the hall it overlooks is unreadable. A single-storey
+    # board has one level and this changes nothing.
+    floors = state.get("levels") or []
+    level = max(0, min(int(level or 0), max(0, len(floors) - 1)))
+    if level and floors:
+        state = {**state,
+                 "terrain": floors[level].get("terrain") or state.get("terrain"),
+                 "objects": [], "debris": []}
+    state = {**state,
+             "tokens": [t for t in (state.get("tokens") or [])
+                        if int(t.get("level") or 0) == level]}
+
     w_sq = max(1, int(state.get("width", 1)))
     h_sq = max(1, int(state.get("height", 1)))
     head = 34
@@ -217,6 +230,8 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
 
     # ---- header ----
     name = str(state.get("name") or "Tactical Scene")
+    if floors and len(floors) > 1:
+        name += f" / {floors[level].get('name') or f'level {level}'}"
     rnd = state.get("round")
     kind = str(state.get("kind") or "").upper()
     d.text((margin, 9), name, font=f_head, fill=_GOLD)
