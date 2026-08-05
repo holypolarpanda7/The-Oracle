@@ -25,6 +25,11 @@ const SCENE_LABEL: Record<string, string> = {
   hazard: "Peril", explore: "Delve", social: "Standoff",
 };
 
+/** "+15 ft", or "ground" for the floor everything else is measured from. */
+function f_ft(ft: number): string {
+  return ft ? `+${ft} ft` : "ground";
+}
+
 function monogram(name: string): string {
   const words = name.trim().split(/\s+/);
   const tail = words[words.length - 1];
@@ -63,6 +68,8 @@ export interface VttProps {
   onPreviewPath: (tokenId: number, x: number, y: number) => void;
   onMove: (tokenId: number, x: number, y: number) => void;
   onPing: (x: number, y: number) => void;
+  /** Use the connector under my token — the server checks I'm on one. */
+  onTakeStairs: () => void;
   onDismissError: () => void;
 }
 
@@ -90,16 +97,33 @@ export function VttOverlay(p: VttProps) {
   const [drag, setDrag] = useState<{ kind: "pan"; x: number; y: number; ox: number; oy: number }
     | { kind: "token"; id: number } | null>(null);
 
-  // Which floor to draw. Follows your OWN token rather than offering a
-  // control: the storey you are standing on is the one you want to see, and a
-  // player who has to pick their own floor from a menu will pick it wrong.
-  // A single-storey board reports one level and this is always 0.
-  const level = useMemo(() => {
+  // Which floor you are STANDING on. Not the same question as which floor is
+  // being drawn — you need to be able to look upstairs before you decide to
+  // climb, and looking is not moving.
+  const myLevel = useMemo(() => {
     const mine = scene.tokens.find((t) => p.myCharacterId != null
       && t.character_id === p.myCharacterId);
     return Math.max(0, Math.min(mine?.level ?? 0,
                                 Math.max(0, (scene.levels?.length ?? 1) - 1)));
   }, [scene.tokens, scene.levels, p.myCharacterId]);
+
+  // Which floor is being DRAWN. Null means "wherever I am", which is the right
+  // default and the one it snaps back to the moment you actually change floor.
+  const [peek, setPeek] = useState<number | null>(null);
+  const level = peek ?? myLevel;
+  useEffect(() => { setPeek(null); }, [myLevel]);
+
+  const floors = scene.levels ?? [];
+  /** Connectors leaving the floor currently drawn. */
+  const stairsHere = floors[level]?.stairs ?? [];
+  /** The connector my own token is standing on, if any — the way up or down. */
+  const standingOn = useMemo(() => {
+    const mine = scene.tokens.find((t) => p.myCharacterId != null
+      && t.character_id === p.myCharacterId);
+    if (!mine || (mine.level ?? 0) !== myLevel) return null;
+    return (floors[myLevel]?.stairs ?? []).find(
+      (st) => st.x === mine.x && st.y === mine.y) ?? null;
+  }, [scene.tokens, floors, myLevel, p.myCharacterId]);
 
   // The scene as it looks from that floor: its terrain, its creatures. Drawing
   // a gallery over the hall it overlooks is unreadable, and drawing everyone
@@ -109,7 +133,11 @@ export function VttOverlay(p: VttProps) {
     return {
       ...scene,
       terrain: scene.levels[level].terrain ?? scene.terrain,
+      // Objects, wreckage and spell areas all belong to a floor. Drawing the
+      // hall's fireball on the gallery above it was the first thing peeking at
+      // another storey made obvious.
       objects: [], debris: [],
+      effects: scene.effects.filter((e) => (e.level ?? 0) === level),
     };
   }, [scene, level]);
 
@@ -240,12 +268,19 @@ export function VttOverlay(p: VttProps) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     paint(ctx, size[0], size[1], {
       scene: { ...floor, tokens: floor.tokens.filter(onThisFloor) },
-      view, art: artRef.current, reach, path, pathCost,
+      stairs: stairsHere, levels: floors, level,
+      view, art: artRef.current,
+      // A movement wash is a plan for a creature standing on YOUR floor; drawn
+      // over a storey you are only looking at, it is an invitation to a move
+      // that cannot happen.
+      reach: level === myLevel ? reach : null,
+      path: level === myLevel ? path : null,
+      pathCost,
       pathLegal: pathCost !== undefined, pathProvokes: provokes.length > 0,
       hover, measure, show, pings, sprites: SPRITES, now: Date.now(),
     });
-  }, [floor, onThisFloor, view, size, reach, path, pathCost, hover, measure,
-      show, pings, provokes.length, spriteTick]);
+  }, [floor, onThisFloor, stairsHere, floors, level, myLevel, view, size, reach,
+      path, pathCost, hover, measure, show, pings, provokes.length, spriteTick]);
 
   useEffect(() => {
     draw();
@@ -476,6 +511,44 @@ export function VttOverlay(p: VttProps) {
           <button title="Minimise" onClick={() => setCollapsed(true)}>—</button>
         </div>
       </header>
+
+      {floors.length > 1 && (
+        <div className="vtt-floors">
+          {/* Top floor first: a building reads upward, and a list that puts the
+              cellar above the roof takes a moment to parse every single time. */}
+          {floors.map((f, i) => i).reverse().map((i) => (
+            <button
+              key={i}
+              className={[i === level ? "on" : "",
+                          i === myLevel ? "here" : ""].filter(Boolean).join(" ")}
+              title={i === myLevel ? `You are on ${floors[i].name}`
+                                   : `Look at ${floors[i].name}`}
+              onClick={() => setPeek(i === myLevel ? null : i)}
+            >
+              {floors[i].name}
+              <em>{f_ft(floors[i].base_ft)}</em>
+            </button>
+          ))}
+          {peek != null && peek !== myLevel && (
+            <span className="vtt-peeking">
+              looking at {floors[peek].name} — you are on {floors[myLevel].name}
+              <button onClick={() => setPeek(null)}>back</button>
+            </span>
+          )}
+          {standingOn && (
+            <button
+              className="vtt-take-stairs"
+              disabled={!myTurn}
+              title={myTurn ? "" : "Not your turn"}
+              onClick={() => p.onTakeStairs()}
+            >
+              {standingOn.to > myLevel ? "▲" : "▼"} take the{" "}
+              {standingOn.kind ?? "stairs"} to{" "}
+              {floors[standingOn.to]?.name ?? `level ${standingOn.to}`}
+            </button>
+          )}
+        </div>
+      )}
 
       <div
         className="vtt-board"

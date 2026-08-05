@@ -192,7 +192,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `npm run build && npx vite preview --port 4173` in `activity-ui/` first, then
   `npx node <script>.mjs`): `feat-choices`, `spell-picker`, `levelup-spells`,
   `reprepare`, `mobile-smoke`, `arena-shot`, `vtt-shot`, `deity-shot`,
-  `race-dup` (species traits render exactly once per viewport), `granted-feat`
+  `floors-shot` (the storey switcher: peek at a gallery, and what a connector
+  looks like on the board), `race-dup` (species traits render exactly once per
+  viewport), `granted-feat`
   (a background grants its Origin feat, choices and all), `pframe-shot`
   (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
   at desktop and phone: status bar, "here & now" rail, narration column, roll
@@ -359,7 +361,16 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   sealed: `add_stairs` links a square to a square, both ways, and
   `take_stairs` is the only way across. Both renderers draw ONE floor (the PNG
   takes `level=`, the Activity follows your own token) because a gallery drawn
-  over the hall it overlooks is unreadable.
+  over the hall it overlooks is unreadable. **Looking at a floor is not
+  standing on it**: the Activity's floor strip lets a player peek upstairs
+  before deciding to climb, marks which storey they are ON separately from
+  which is DRAWN, and offers the one button that actually moves them —
+  `vtt_stairs`, which the server gates exactly like a move and re-checks
+  against the engine, since the client is not the authority. Connectors are
+  painted on the board (▲/▼ plus the destination's name) because a player
+  cannot choose a stair they cannot see. Anything belonging to a floor has to
+  SAY so — `MapEffect.level` exists for that reason: peeking at the gallery is
+  what made the hall's fireball burning on both storeys obvious.
 - **A rider has no movement of their own.** `MapToken.mounted_on` names the
   mount (on the RIDER, the same shape as `grappled_by` and for the same reason:
   the carried one is whose movement stops being its own). They share the

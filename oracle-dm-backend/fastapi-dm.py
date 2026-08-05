@@ -375,6 +375,12 @@ async def lifespan(app: FastAPI):
                 if ce_existing and "pending_reaction" not in ce_existing:
                     conn.exec_driver_sql(
                         "ALTER TABLE combat_encounter ADD COLUMN pending_reaction JSON")
+                ve_existing = {row[1] for row in conn.exec_driver_sql(
+                    'PRAGMA table_info("vtt_effect")')}
+                if ve_existing and "level" not in ve_existing:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE vtt_effect ADD COLUMN level INTEGER DEFAULT 0")
+                    print("[Startup] Migrated vtt_effect: added level")
                     print("[Startup] Migrated combat_encounter: added pending_reaction")
 
                 # Damage taken by breakable furniture on pre-existing boards.
@@ -19754,6 +19760,34 @@ async def activity_ws(ws: WebSocket, channel: str):
                         "t": "vtt_preview", "token_id": tok.id,
                         **vtt_engine.path_preview(tok.id, int(msg.get("x", 0)),
                                                   int(msg.get("y", 0)))})
+                    continue
+
+                if kind == "vtt_stairs":
+                    # Changing floor is movement, so it goes through the same
+                    # gate as movement: whose turn it is, and whose token this
+                    # is. The engine still refuses if they aren't standing on
+                    # a connector — the client only ever offers the button when
+                    # they are, but the client is not the authority.
+                    ok, why = _vtt_may_move(session_id, user_id, scene, tok)
+                    if not ok:
+                        await ws.send_json({"t": "vtt_error", "detail": why})
+                        continue
+                    res = vtt_engine.take_stairs(scene.id, tok.name)
+                    if not res.get("ok"):
+                        await ws.send_json({
+                            "t": "vtt_error",
+                            "detail": res.get("reason", "There's no way up from here.")})
+                        continue
+                    try:
+                        vtt_bridge.sync_bands(vtt_engine, scene.id, tracker=combat)
+                    except Exception as e:
+                        print(f"[activity] band sync after stairs failed: {e}")
+                    await _activity_broadcast(session_id, {
+                        "t": "vtt", "scene": _vtt_scene_payload(session_id)},
+                        fallback=ws)
+                    await _activity_broadcast(session_id, {
+                        "t": "narration", "text": f"*{res.get('detail', '')}*"},
+                        fallback=ws)
                     continue
 
                 if kind == "vtt_move":

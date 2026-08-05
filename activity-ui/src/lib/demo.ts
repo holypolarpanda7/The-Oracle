@@ -265,6 +265,25 @@ function isSolid(rows: string[], x: number, y: number): boolean {
   return c === undefined || c === "#" || c === "R" || c === "w";
 }
 
+/** The gallery over the mill floor. Blank squares are open air: you can see —
+ *  and fall — through them, which is what lets the two floors share a fight. */
+const DEMO_GALLERY = [
+  "                    ",
+  "#..................#",
+  "#..................#",
+  "                   #",
+  "                   #",
+  "                    ",
+  "                    ",
+  "                    ",
+  "                    ",
+  "                    ",
+  "                    ",
+  "                    ",
+  "                    ",
+  "                    ",
+];
+
 function ring(cx: number, cy: number, r: number): [number, number][] {
   const out: [number, number][] = [];
   for (let y = cy - r; y <= cy + r; y++) {
@@ -296,6 +315,15 @@ function demoVtt(stage: number): VttScene {
     terrain: DEMO_TERRAIN,
     fog: null,
     sight: null,
+    // Two floors, so the offline demo exercises the storey switcher: a gallery
+    // along the north wall over the mill floor, reached by the stair at 17,2.
+    // The blanks are open air — the hall below shows through them.
+    levels: [
+      { name: "Mill floor", base_ft: 0, terrain: DEMO_TERRAIN,
+        stairs: [{ x: 17, y: 2, to: 1, tx: 17, ty: 1, kind: "stair" }] },
+      { name: "Gallery", base_ft: 15, terrain: DEMO_GALLERY,
+        stairs: [{ x: 17, y: 1, to: 0, tx: 17, ty: 2, kind: "stair" }] },
+    ],
     doors: [{ x: 0, y: 3, state: "open", name: "mill door" }],
     elevation: {},
     // Objects are read off the terrain by the server, exactly as the engine

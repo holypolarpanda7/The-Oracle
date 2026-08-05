@@ -198,6 +198,7 @@ export interface PlayProps {
   onVttPreview: (tokenId: number, x: number, y: number) => void;
   onVttMove: (tokenId: number, x: number, y: number) => void;
   onVttPing: (x: number, y: number) => void;
+  onVttStairs: () => void;
   onVttDismissError: () => void;
   /** Things the Oracle says you could do now — a nudge, never a menu. */
   suggestions: string[];
@@ -279,7 +280,8 @@ export function PlaySurface(p: PlayProps) {
               onPreviewPath={p.onVttPreview}
               onMove={p.onVttMove}
               onPing={p.onVttPing}
-              onDismissError={p.onVttDismissError}
+              onTakeStairs={p.onVttStairs}
+            onDismissError={p.onVttDismissError}
             />
           ) : p.sceneUrl ? (
             <Frame className="scene" panel={scene} bare>

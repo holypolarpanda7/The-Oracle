@@ -339,6 +339,8 @@ export interface VttEffect {
   difficult_terrain: boolean;
   blocks_sight: boolean;
   obscured?: string | null;
+  /** Which floor this area is on. */
+  level?: number;
   damage?: string | null;
   save_ability?: string | null;
   save_dc?: number | null;
@@ -670,6 +672,9 @@ export type ClientEvent =
   | { t: "vtt_options"; token_id: number; dash?: boolean }
   | { t: "vtt_preview"; token_id: number; x: number; y: number }
   | { t: "vtt_move"; token_id: number; x: number; y: number }
+  /** Use the connector under my token. No square: you take the stair you are
+   *  standing on, and the server checks that you are standing on one. */
+  | { t: "vtt_stairs" }
   | { t: "vtt_ping"; x: number; y: number; label?: string };
 
 export interface CCPayload {

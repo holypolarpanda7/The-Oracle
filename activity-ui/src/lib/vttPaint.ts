@@ -101,6 +101,13 @@ export interface PaintState {
   show: { grid: boolean; terrain: boolean; effects: boolean; fog: boolean };
   /** Transient ping markers with their spawn time. */
   pings?: { x: number; y: number; label?: string; at: number }[];
+  /** Connectors leaving the floor being drawn. A player can't decide to climb
+   *  a stair they can't see, so these are marked on the board itself. */
+  stairs?: { x: number; y: number; to: number; tx: number; ty: number; kind?: string }[];
+  /** Every floor, so a connector can name where it goes. */
+  levels?: { name: string; base_ft: number }[];
+  /** Which floor is being drawn — decides whether a connector reads up or down. */
+  level?: number;
   /** Matted sprites by stored image id (see lib/boardSprites). */
   sprites?: ReadonlyMap<number, HTMLImageElement>;
   now?: number;
@@ -334,6 +341,37 @@ export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: P
     }
     ctx.stroke();
     ctx.globalAlpha = 1;
+  }
+
+  // --- stairs ---
+  // Drawn over the grid and under the fog: a way off this floor is a feature
+  // of the room, and a player deciding whether to climb has to be able to SEE
+  // it, and to know which way it goes, before they walk onto it.
+  const here = st.stairs ?? [];
+  if (here.length) {
+    const base = (i: number) => st.levels?.[i]?.base_ft ?? 0;
+    for (const conn of here) {
+      const [sx, sy] = toScreen(v, conn.x, conn.y);
+      const goesUp = base(conn.to) > base(st.level ?? 0);
+      ctx.save();
+      ctx.strokeStyle = "#7cd6a0";
+      ctx.fillStyle = "rgba(52,150,102,0.28)";
+      ctx.lineWidth = 2;
+      ctx.fillRect(sx, sy, cell, cell);
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(sx + 1, sy + 1, cell - 2, cell - 2);
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#bff0d4";
+      ctx.font = `700 ${Math.max(11, Math.round(cell * 0.5))}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(goesUp ? "▲" : "▼", sx + cell / 2, sy + cell / 2);
+      ctx.restore();
+      if (cell >= 26) {
+        chip(ctx, sx + cell / 2, sy + cell - 2,
+             st.levels?.[conn.to]?.name ?? `level ${conn.to}`);
+      }
+    }
   }
 
   // --- labels ---

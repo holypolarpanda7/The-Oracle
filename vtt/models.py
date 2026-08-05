@@ -310,6 +310,9 @@ class MapEffect(SQLModel, table=True):
     blocks_sight: bool = Field(default=False, sa_column=Column(Boolean))
     blocks_movement: bool = Field(default=False, sa_column=Column(Boolean))
     obscured: Optional[str] = Field(default=None, sa_column=Column(String))  # light|heavy
+    # Which floor this area is on. A fireball in the hall is not also going off
+    # on the gallery, and a board with one storey has everything on level 0.
+    level: int = Field(default=0, sa_column=Column(Integer))
     damage: Optional[str] = Field(default=None, sa_column=Column(String))    # "2d6 fire"
     save_ability: Optional[str] = Field(default=None, sa_column=Column(String))
     save_dc: Optional[int] = Field(default=None, sa_column=Column(Integer))

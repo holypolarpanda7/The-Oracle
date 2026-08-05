@@ -499,6 +499,8 @@ export default function App({ session }: { session: Session }) {
                 connRef.current?.send({ t: "vtt_preview", token_id, x, y })}
               onVttMove={(token_id, x, y) =>
                 connRef.current?.send({ t: "vtt_move", token_id, x, y })}
+              onVttStairs={() =>
+                connRef.current?.send({ t: "vtt_stairs" })}
               onVttPing={(x, y) => connRef.current?.send({ t: "vtt_ping", x, y })}
               onVttDismissError={() => setVttError(null)}
               input={input}
