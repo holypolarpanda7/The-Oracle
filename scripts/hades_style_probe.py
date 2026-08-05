@@ -212,6 +212,10 @@ def main(argv=None) -> int:
                     help="portrait row's species — goliath is the descriptor "
                          "stress case (slate blue-grey skin is what a strong "
                          "style LoRA eats first)")
+    ap.add_argument("--sheet-only", action="store_true",
+                    help="rebuild the sheets from the PNGs already in --tag, "
+                         "rendering nothing. For changing how the sheet is "
+                         "LABELLED without paying for the pixels again.")
     a = ap.parse_args(argv)
 
     mixes = _pick(a.mix, list(MIXES), "mix")
@@ -224,6 +228,17 @@ def main(argv=None) -> int:
 
     out = OUT_ROOT / a.tag
     out.mkdir(parents=True, exist_ok=True)
+
+    if a.sheet_only:
+        grid = {(r, m): out / f"{r}__{m}.png"
+                for r in rows for m in mixes if (out / f"{r}__{m}.png").is_file()}
+        if not grid:
+            print(f"no renders found in {out} - run without --sheet-only first.")
+            return 1
+        rows = [r for r in rows if any((r, m) in grid for m in mixes)]
+        mixes = [m for m in mixes if any((r, m) in grid for r in rows)]
+        _finish(out, grid, rows, mixes)
+        return 0
 
     from imagery import ImageStore
     store = ImageStore()
@@ -265,12 +280,17 @@ def main(argv=None) -> int:
               "interpreter? (see CLAUDE.md -> Environment)")
         return 1
 
+    _finish(out, grid, rows, mixes)
+    return 0
+
+
+def _finish(out: Path, grid, rows, mixes) -> None:
+    """The diff table and the sheets — everything after the pixels exist."""
     _report_diffs(grid, rows, mixes)
     _contact_sheet(out, grid, rows, mixes)
     for row in rows:
         _contact_sheet(out, grid, [row], mixes, name=f"_sheet_{row}.png", cell=460)
     print(f"\nSheet: {out / '_sheet.png'}  (+ one per row, larger)")
-    return 0
 
 
 def _pick(arg: str | None, known: list[str], what: str) -> list[str] | None:
@@ -413,33 +433,77 @@ def _font(size: int):
     return ImageFont.load_default()
 
 
+#: Which of a mix's three stacks a given row actually renders under. A sheet
+#: that only prints the mix NAME is unreadable for exactly this reason: the
+#: name says "layer-mid", the cell says nothing about whether the house LoRAs
+#: are still underneath, and the answer is different per row.
+_ROW_STACK = {"item": "house", "portrait": "house",
+              "battlemap": "map", "regionmap": "worldmap"}
+
+#: Short names for the sheet. The value is (label, is_new) — the new LoRAs are
+#: drawn in a different colour so "what got layered on" is readable at a glance
+#: instead of being decoded from a filename.
+_SHORT = {
+    "DD_Painterly_Clean": ("painterly", False),
+    "DarkFanXLGrain": ("darkfan", False),
+    "SDXL-Battlemaps": ("battlemaps", False),
+    "sxz-wowmap-civit-sdxl": ("wowmap", False),
+    "Hades_Art_Style": ("HadesArt", True),
+    "HadesLevel": ("HadesLevel", True),
+}
+
+
+def _stack_caption(mix: str, row: str) -> list[tuple[str, bool]]:
+    """The stack this cell really ran, as [(label, is_new), ...]."""
+    stack = MIXES[mix].get(_ROW_STACK.get(row, "house"), [])
+    out = []
+    for l in stack:
+        stem = l["name"].rsplit(".", 1)[0]
+        label, is_new = _SHORT.get(stem, (stem[:14], False))
+        out.append((f"{label} {l['model']:g}", is_new))
+    return out
+
+
 def _contact_sheet(out: Path, grid, rows, mixes, name="_sheet.png",
                    cell: int = 340) -> None:
-    """One grid: a row per kind, a column per MIX, labelled.
+    """One grid: a row per kind, a column per MIX, every cell captioned.
+
+    The caption is the whole point. A mix name is a label for a decision, not
+    a description of one, and the first thing anyone asks of this sheet is
+    "are the other LoRAs still in there" — which the name cannot answer,
+    because each row runs a DIFFERENT one of the mix's three stacks. So each
+    cell prints the stack it actually ran, new LoRAs picked out in gold.
 
     Letterboxed rather than cropped — the portrait row is 3:4 and cropping it
     square is exactly the mistake the CC card sizing already fixed.
     """
     from PIL import Image, ImageDraw
-    pad, hdr, lab = 6, 30, 26
-    f_hdr, f_lab = _font(19), _font(17)
+    pad, hdr, lab = 6, 30, 24
+    f_hdr, f_lab, f_cap = _font(19), _font(17), _font(14)
+    line = 17
+    cap_h = line * max((len(_stack_caption(m, r)) for r in rows for m in mixes),
+                       default=1) + 6
+    row_h = cell + pad + lab + cap_h
     sheet = Image.new("RGB", (len(mixes) * (cell + pad) + pad,
-                              hdr + len(rows) * (cell + pad + lab) + pad),
-                      (18, 20, 30))
+                              hdr + len(rows) * row_h + pad), (18, 20, 30))
     dr = ImageDraw.Draw(sheet)
     for c, m in enumerate(mixes):
         dr.text((pad + c * (cell + pad) + 4, 6), m, fill=(230, 200, 130), font=f_hdr)
     for r, row in enumerate(rows):
-        y = hdr + r * (cell + pad + lab)
+        y = hdr + r * row_h
         dr.text((pad + 4, y), row, fill=(200, 220, 250), font=f_lab)
         for c, m in enumerate(mixes):
+            x = pad + c * (cell + pad)
             p = grid.get((row, m))
-            if not p:
-                continue
-            im = Image.open(p).convert("RGB")
-            im.thumbnail((cell, cell), Image.LANCZOS)
-            sheet.paste(im, (pad + c * (cell + pad) + (cell - im.width) // 2,
-                             y + lab))
+            if p:
+                im = Image.open(p).convert("RGB")
+                im.thumbnail((cell, cell), Image.LANCZOS)
+                sheet.paste(im, (x + (cell - im.width) // 2, y + lab))
+            cy = y + lab + cell + 4
+            for i, (text, is_new) in enumerate(_stack_caption(m, row)):
+                dr.text((x + 4, cy + i * line), ("+ " if is_new else "  ") + text,
+                        fill=((245, 205, 100) if is_new else (140, 150, 170)),
+                        font=f_cap)
     sheet.save(out / name)
 
 
