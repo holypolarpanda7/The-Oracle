@@ -6486,6 +6486,13 @@ _VTT_HOOKS_ACTIVE = (
     "                                         at all and may then Hide. It does not work\n"
     "                                         against anything shooting down from above\n"
     "    [[VTT: swap | Kara | Sable]]         two creatures change places\n"
+    "  open takes a size when the roster doesn't tell the whole story:\n"
+    "    [[VTT: open | combat | steppe | The Charge | scale=mounted]]\n"
+    "                                         scale: duel | skirmish | battle |\n"
+    "                                         pitched | mounted. Or size=40x30.\n"
+    "                                         Left off, the board is sized from the\n"
+    "                                         fight itself — how many creatures, how\n"
+    "                                         big, how fast, and how far they shoot\n"
     "    [[VTT: level | add | Gallery | 15]]   build a floor 15 ft up. It starts as\n"
     "                                         OPEN AIR — paint the walkway you want\n"
     "                                         with [[VTT: terrain]]; everywhere you\n"
@@ -6677,6 +6684,8 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
               archetype: Optional[str] = None, name: Optional[str] = None,
               ctx_obj=None, encounter_id: Optional[int] = None,
               background_tasks: Optional[BackgroundTasks] = None,
+              board_scale: Optional[str] = None,
+              width: Optional[int] = None, height: Optional[int] = None,
               auto_close: bool = True):
     """Open a board for this table, generating the layout now and the art later.
 
@@ -6693,14 +6702,32 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
     arch = vtt_archetype_for_place(
         hint=(archetype or place_name or ""), biome=biome, scale=scale,
         default=getattr(cfg, "default_archetype", "open"))
+    # Who is actually in this fight — the board is sized to them. Passing the
+    # config default here unconditionally is what used to make EVERY board
+    # 24x18: it overrode the per-kind table, so even an exploration board came
+    # out the size of a skirmish. The default is now the fallback it reads as.
+    creatures = []
+    if encounter_id:
+        try:
+            creatures = vtt_bridge.roster_for(combat, encounter_id,
+                                              rules_lib=rules_lib)
+        except Exception as e:
+            print(f"[vtt] roster for sizing unavailable: {e}")
     scene = vtt_engine.open_scene(
         session_id, kind=kind,
         name=(name or place_name or None),
         archetype=arch,
         place_slug=place_slug,
         biome=biome,
-        width=getattr(cfg, "default_width", 24),
-        height=getattr(cfg, "default_height", 18),
+        width=width, height=height,
+        creatures=creatures,
+        board_scale=board_scale,
+        # Outdoors, leave room for a bow to reach its own range band. Stated as
+        # a policy rather than computed from what everyone is carrying: the
+        # engine enforces long-range disadvantage, and on a 120-ft board that
+        # rule can never once fire.
+        longest_range_ft=(0 if kind != "combat"
+                          else int(getattr(cfg, "outdoor_range_ft", 150))),
         encounter_id=encounter_id,
         fog=bool(getattr(cfg, "fog_of_war", False)) or kind == "explore",
         reuse_place=bool(getattr(cfg, "reuse_place_art", True)),
@@ -6795,13 +6822,26 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                 arch = positional[1] if len(positional) > 1 else kv.get("place")
                 nm = positional[2] if len(positional) > 2 else kv.get("name")
                 enc = combat.get_active(session_id)
+                # The board is sized from the roster; these let the DM say
+                # something the roster doesn't know yet — the charge that
+                # begins with two riders and ends with forty.
+                bw = bh = None
+                if kv.get("size"):
+                    m_size = re.match(r"\s*(\d+)\s*[x*,]\s*(\d+)\s*",
+                                      str(kv["size"]))
+                    if m_size:
+                        bw, bh = int(m_size.group(1)), int(m_size.group(2))
                 scene = _vtt_open(session_id, kind=vtt_scene_kind_for(kind),
                                   archetype=arch, name=nm, ctx_obj=ctx_obj,
                                   encounter_id=enc.id if enc else None,
+                                  board_scale=(kv.get("scale") or "").lower() or None,
+                                  width=bw, height=bh,
                                   background_tasks=background_tasks,
                                   auto_close=False)
                 if scene:
-                    notes.append(f"🗺 A board is laid out: {scene.name}.")
+                    notes.append(f"🗺 A board is laid out: {scene.name} "
+                                 f"({scene.width}x{scene.height} squares, "
+                                 f"{scene.width * scene.square_ft} ft across).")
                 continue
             if scene is None:
                 continue  # every other verb needs a live board

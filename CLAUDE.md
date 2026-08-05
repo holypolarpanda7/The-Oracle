@@ -344,6 +344,24 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   every other board→combat channel): can't see the target = disadvantage,
   target can't see you = advantage, and in a dark room both apply and cancel —
   which is correct, and is why darkvision is worth having.
+- **A board is sized by the FIGHT, not by one number.** `triggers.board_size_for`
+  starts from the scene kind's default (`DEFAULT_SIZE`: combat 24x18, explore
+  30x24, chase 34x14…) and grows it for room to STAND (total footprint on the
+  board), room to MOVE (the fastest creature present — three moves to cross, so
+  a charge is a decision rather than the whole encounter) and room to SHOOT
+  (`VttConfig.outdoor_range_ft`, 150 by default). The last two apply OUTDOORS
+  only: a tavern is the size of the tavern, and being outranged indoors is what
+  a building is, not a sizing bug. `SCALES` (duel/skirmish/battle/pitched/
+  mounted) let a DM force it via `[[VTT: open | … | scale=mounted]]` or
+  `size=WxH`, for the charge that starts with two riders. Two rules were
+  UNREACHABLE before this and are the reason it exists: a dashing warhorse
+  crossed the whole 120-ft board in one turn, and a longbow's 150-ft normal
+  range was longer than the battlefield, so long-range disadvantage could never
+  fire. `_vtt_open` used to pass `default_width/height` unconditionally, which
+  overrode the per-kind table and made every board 24x18 including exploration
+  ones — pass width/height only when someone actually asked for a size.
+  `bridge.roster_for` builds the (size, speed) list, because a Combatant row
+  carries neither and the bridge is already where the rules library lives.
 - **Upper floors are grids, and the only new rule is the CEILING.**
   `TacticalMap.levels` holds one terrain grid per storey with its own
   `base_ft`; level 0 is the board's own `terrain`, so a single-storey board

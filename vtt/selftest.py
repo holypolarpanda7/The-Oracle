@@ -754,6 +754,50 @@ def test_mounts_and_squeezing() -> None:
     v.close_scene(wall.id)
 
 
+def test_board_size() -> None:
+    section("board size: the fight decides, not one number")
+    from .triggers import SCALES, board_size_for
+    base = (24, 18)
+
+    eq("with nothing known, the scene kind's default stands",
+       board_size_for(base), (24, 18))
+    eq("a cellar brawl doesn't grow", board_size_for(
+        base, archetype="dungeon-room", creatures=[(1, 30)] * 4), (24, 18))
+
+    # Room to move. This is the one that makes mounted combat possible at all:
+    # a warhorse crosses 120 ft in a turn and DASHES the whole old board.
+    foot = board_size_for(base, archetype="open", creatures=[(1, 30)] * 6)
+    horse = board_size_for(base, archetype="open", creatures=[(2, 60)] * 4)
+    check("riders get more ground than infantry", horse[0] > foot[0],
+          f"{horse[0]} vs {foot[0]} squares wide")
+    check("…enough that a charge is a decision, not the whole fight",
+          horse[0] * 5 >= 60 * 3,
+          f"{horse[0] * 5} ft across at 60 ft a turn")
+
+    # Room to shoot. A rule the engine enforces has to be reachable.
+    shot = board_size_for(base, archetype="open", creatures=[(1, 30)] * 4,
+                          longest_range_ft=150)
+    check("a longbow can reach its own long-range band outdoors",
+          shot[0] * 5 > 150, f"{shot[0] * 5} ft across vs 150 ft normal range")
+    eq("…but a tavern is the size of the tavern",
+       board_size_for(base, archetype="tavern", creatures=[(1, 30)] * 6,
+                      longest_range_ft=150), (24, 18))
+
+    # Room to stand.
+    pitched = board_size_for(base, archetype="open",
+                             creatures=[(1, 30)] * 14 + [(4, 80)])
+    check("a pitched battle with a dragon in it gets room",
+          pitched[0] * pitched[1] > 24 * 18 * 2,
+          f"{pitched[0]}x{pitched[1]}")
+
+    # A named scale is the DM saying something the roster doesn't know yet.
+    for name, want in SCALES.items():
+        eq(f"scale={name} is honoured exactly", board_size_for(
+            base, archetype="open", creatures=[(1, 30)], scale=name), want)
+    check("every board stays inside what mapgen will build",
+          all(8 <= v <= 60 for v in pitched + horse + shot))
+
+
 def test_levels() -> None:
     section("upper floors: a gallery over a hall")
     import tempfile as _tf
@@ -1082,7 +1126,7 @@ def main() -> int:
     for fn in (test_distance, test_sight_and_cover, test_templates, test_movement,
                test_opportunity, test_mapgen, test_engine, test_bridge,
                test_light_and_vision, test_hiding, test_underwater,
-               test_mounts_and_squeezing, test_levels):
+               test_mounts_and_squeezing, test_board_size, test_levels):
         try:
             fn()
         except Exception:

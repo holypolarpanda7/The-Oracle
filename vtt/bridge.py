@@ -61,6 +61,35 @@ def _reach_for(monster_row: Any, size: str) -> int:
     return 10 if size_squares(size) >= 2 else 5
 
 
+def roster_for(tracker: Any, encounter_id: int, *,
+               rules_lib: Any = None) -> list[tuple[int, int]]:
+    """``(size_squares, speed_ft)`` for everyone in a fight — for sizing a board.
+
+    Lives here rather than in ``vtt/`` because a Combatant row carries neither
+    a size nor a speed: both come from the stat block, and the bridge is
+    already the place that knows how to ask. Without ``rules_lib`` everyone is
+    Medium and 30 ft, which is the right answer for a party and a safe floor
+    for anything else.
+    """
+    out: list[tuple[int, int]] = []
+    try:
+        combatants = tracker.order(encounter_id)
+    except Exception:
+        return out
+    for c in combatants:
+        size, speed = "medium", 30
+        if c.monster_slug and rules_lib is not None:
+            try:
+                mon = rules_lib.get_monster(c.monster_slug)
+                if mon is not None:
+                    size = _size_for(mon)
+                    speed = _speed_for(mon)
+            except Exception:
+                pass
+        out.append((size_squares(size), int(speed)))
+    return out
+
+
 def seat_encounter(vtt: VttEngine, map_id: int, encounter_id: int, *,
                    tracker: Any = None, rules_lib: Any = None,
                    portrait_lookup: Any = None) -> list:

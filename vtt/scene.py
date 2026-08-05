@@ -49,6 +49,7 @@ from .models import (
     TokenKind,
     size_squares,
 )
+from .triggers import board_size_for
 from .terrain import (APERTURES, FLOOR, VOID, Grid, aperture_axis,
                       object_stats, profile_height_ft, required_mode,
                       short_name, sprite_label, sprite_subject, tile)
@@ -117,6 +118,9 @@ class VttEngine:
                    biome: Optional[str] = None, lighting: Optional[str] = None,
                    fog: bool = False, render_art: bool = True,
                    reuse_place: bool = True,
+                   creatures: Optional[list] = None,
+                   board_scale: Optional[str] = None,
+                   longest_range_ft: int = 0,
                    auto_close: bool = True) -> TacticalMap:
         """Open a tactical board for a session, closing any board already out.
 
@@ -133,8 +137,14 @@ class VttEngine:
         """
         kind = kind if kind in SceneKind.ALL else SceneKind.COMBAT
         arch = archetype_for(archetype or place_hint or "", default="open")
-        w, h = DEFAULT_SIZE.get(kind, (24, 18))
-        w, h = int(width or w), int(height or h)
+        # The scene KIND sets the floor; the fight standing on it decides the
+        # rest. Explicit width/height still win outright — a caller who names a
+        # size has said something the roster can't.
+        base = DEFAULT_SIZE.get(kind, (24, 18))
+        auto = board_size_for(base, archetype=arch, creatures=creatures,
+                              scale=board_scale,
+                              longest_range_ft=int(longest_range_ft or 0))
+        w, h = int(width or auto[0]), int(height or auto[1])
 
         prior = self._prior_place_map(place_slug, arch, w, h) if (
             reuse_place and place_slug) else None

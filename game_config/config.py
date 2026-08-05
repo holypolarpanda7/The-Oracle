@@ -403,8 +403,15 @@ class VttConfig:
     auto_open_puzzle: bool = True     # only if the puzzle reads as spatial
     auto_open_hazard: bool = False    # trap rooms: opt-in, they're often prose
     # ----- board shape -----
+    # The FALLBACK when nothing better is known. A board is normally sized from
+    # the fight standing on it (vtt/triggers.py: board_size_for) — how many
+    # creatures, how big, how fast, and how far they can shoot.
     default_width: int = 24           # squares
     default_height: int = 18
+    # Outdoors, leave room for a bow to reach its own range band. A longbow's
+    # normal range is 150 ft; on the old fixed 120-ft board the engine's
+    # long-range disadvantage rule could never once fire. 0 disables it.
+    outdoor_range_ft: int = 150
     square_ft: int = 5
     # 5-5-5 (PHB "chebyshev") or the DMG 5-10-5 variant ("alternating").
     diagonal_rule: str = "chebyshev"

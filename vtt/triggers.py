@@ -49,6 +49,103 @@ def scene_kind_for(text: Optional[str], default: str = SceneKind.COMBAT) -> str:
     return default
 
 
+# ---------------------------------------------------------------- board size
+#
+# How much board the table gets is a policy question, so it lives here beside
+# "does a board open at all". Until this it was one number per scene KIND: every
+# fight was 24x18 whether it was two goblins in a cellar or a cavalry charge.
+# Two rules were quietly unreachable as a result — a dashing warhorse crosses a
+# 120-ft board in a single turn, and a longbow's 150-ft normal range is longer
+# than the whole battlefield, so long-range disadvantage could never fire.
+
+#: Archetypes bounded by ARCHITECTURE rather than by the horizon. A tavern is
+#: sixteen squares because the tavern is sixteen squares; being outranged by a
+#: longbow indoors is not a sizing bug, it is what a building is. Only open
+#: ground grows to fit the speeds and ranges in play.
+ENCLOSED = frozenset({
+    "tavern", "dungeon-room", "dungeon-complex", "crypt", "sewer", "cave",
+    "ship", "skyship", "arena",
+})
+
+#: Named scales a DM can force when the fiction wants more room than the
+#: roster implies — the charge that starts with two riders and ends with forty.
+SCALES: dict[str, tuple[int, int]] = {
+    "duel":     (16, 12),
+    "skirmish": (20, 16),
+    "battle":   (30, 24),
+    "pitched":  (44, 34),
+    "mounted":  (48, 36),
+}
+
+#: Hard limits. The floor is a board you can still manoeuvre on; the ceiling is
+#: what ``mapgen`` will generate and what a phone can still read.
+MIN_SIDE, MAX_SIDE = 8, 60
+
+
+def board_size_for(base: tuple[int, int], *, archetype: str = "open",
+                   creatures: Optional[list] = None,
+                   scale: Optional[str] = None,
+                   longest_range_ft: int = 0) -> tuple[int, int]:
+    """How big this board should be. ``(width, height)`` in squares.
+
+    ``base`` is the scene kind's default — the answer when nothing else is
+    known, and the floor for everything below. ``creatures`` is a list of
+    ``(size_squares, speed_ft)``, usually the encounter's roster.
+
+    Three things can make a board bigger, and the largest wins:
+
+    * **room to stand** — a dozen combatants in a 24x18 room is a scrum, so the
+      board grows with the footprint actually on it;
+    * **room to move** — nobody should cross the whole battlefield in one turn,
+      so the width tracks the FASTEST creature present. This is the one that
+      makes mounted combat playable at all;
+    * **room to shoot** — a bow whose normal range exceeds the board can never
+      be at long range, which silently disables a rule the engine enforces.
+
+    A named ``scale`` overrides all of it, because a DM describing a cavalry
+    charge knows something the roster doesn't yet.
+    """
+    if scale and scale.lower() in SCALES:
+        w, h = SCALES[scale.lower()]
+        return (_clamp(w), _clamp(h))
+
+    w, h = int(base[0]), int(base[1])
+    mob = list(creatures or [])
+
+    # Room to stand: total occupied squares, given air to move in. The 8x is
+    # the Oracle's own tuning — enough that a line can form and be flanked.
+    if mob:
+        occupied = sum(max(1, int(sq)) ** 2 for sq, _sp in mob)
+        want_area = occupied * 8
+        while w * h < want_area and (w < MAX_SIDE or h < MAX_SIDE):
+            if w / max(1, h) < 4 / 3:
+                w += 2
+            else:
+                h += 2
+            if w >= MAX_SIDE and h >= MAX_SIDE:
+                break
+
+    # Room to move and room to shoot apply OUTDOORS only: a corridor does not
+    # widen because someone brought a longbow.
+    if (archetype or "open").lower() not in ENCLOSED:
+        if mob:
+            fastest_sq = max(int(sp or 0) for _sq, sp in mob) / 5.0
+            # Three moves to cross it: enough for a charge to be a decision
+            # rather than the whole encounter.
+            w = max(w, int(round(fastest_sq * 3)))
+        if longest_range_ft:
+            # A little past the range band, so "at long range" is a place you
+            # can actually stand rather than a theoretical one.
+            w = max(w, int(round(longest_range_ft / 5.0 * 1.2)))
+        h = max(h, int(round(w * 0.72)))       # keep a usable aspect
+
+    return (_clamp(w), _clamp(h))
+
+
+def _clamp(v: int) -> int:
+    return max(MIN_SIDE, min(MAX_SIDE, int(v)))
+
+
 def should_open_scene(*, combat_started: bool = False,
                       puzzle_started: bool = False,
                       chase_started: bool = False,
