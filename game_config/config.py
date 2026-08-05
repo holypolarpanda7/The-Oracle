@@ -301,9 +301,21 @@ class ImageryConfig:
     #
     # STACKING is how a second style is added — on top of the house LoRA at a
     # low strength, never instead of it. Live stack: DD_Painterly_Clean @0.45
-    # (the look) + DarkFanXLGrain @0.20 (grit on top). Sweep any candidate with
-    # scripts/style_lora_probe.py and judge it on the BRIGHT rows: a dark style
-    # flatters a crypt no matter how badly it ruins a sunlit village.
+    # (the look) + DarkFanXLGrain @0.35 (grit on top) + Hades_Art_Style @0.45
+    # (hard ink edges and flat cel-shaded value blocks — the Supergiant read).
+    # Sweep a candidate against ONE kind with scripts/style_lora_probe.py and
+    # judge it on the BRIGHT rows: a dark style flatters a crypt no matter how
+    # badly it ruins a sunlit village. Sweep a whole STACK with
+    # scripts/hades_style_probe.py, which re-renders an item, a portrait, a
+    # battlemap and a region map together — a house style is not chosen per
+    # kind, so a mix is only comparable against another mix.
+    #
+    # Hades_Art_Style has NO trigger word (its captions are sentences, not a
+    # repeated tag) and it is kept OFF the two map kinds on purpose: over the
+    # large flat areas of a board it reproduces a signature block from its own
+    # training data, bottom-left, and "watermark, text, signature" are already
+    # in `negative_prompt` and do not stop it. HadesLevel, which does the map
+    # half, showed none.
     loras: List[Dict[str, Any]] = field(default_factory=list)
     # `loras_by_kind` overrides the house style for a specific ImageKind, and
     # exists for kinds whose JOB is different, not whose mood is. In practice
@@ -319,6 +331,13 @@ class ImageryConfig:
     #                ss_tag_frequency is empty), so it has NO trigger word —
     #                strength is the only dial, and adding a `trigger` key would
     #                just push a meaningless token into the prompt.
+    # Both map kinds now carry HadesLevel @0.9 on top, with the format LoRA
+    # pulled back to 0.4 to make room. The high number is not a strong ask:
+    # HadesLevel is rank 4 against Hades_Art_Style's 32, so it grips ~8x more
+    # softly and 0.9 there says about what 0.45 says on the house stack. The
+    # format LoRA is what holds dead-flat overhead — the ONE property a board
+    # cannot lose — so anything that lowers it further has to be re-probed on
+    # the battlemap row, not reasoned about.
     #   {"map": [{"name": "dnd_battlemaps_xl.safetensors", "model": 0.9}]}
     # A kind listed here uses ITS list INSTEAD of `loras`, not in addition.
     loras_by_kind: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)

@@ -40,16 +40,28 @@
         "map": [
           {
             "name": "SDXL-Battlemaps.safetensors",
-            "model": 0.5,
-            "clip": 0.5,
+            "model": 0.4,
+            "clip": 0.4,
             "trigger": "battlemap"
+          },
+          {
+            "name": "HadesLevel.safetensors",
+            "model": 0.9,
+            "clip": 0.9,
+            "trigger": "hadeslevel"
           }
         ],
         "worldmap": [
           {
             "name": "sxz-wowmap-civit-sdxl.safetensors",
-            "model": 0.5,
-            "clip": 0.5
+            "model": 0.4,
+            "clip": 0.4
+          },
+          {
+            "name": "HadesLevel.safetensors",
+            "model": 0.9,
+            "clip": 0.9,
+            "trigger": "hadeslevel"
           }
         ]
       },
@@ -65,6 +77,11 @@
           "model": 0.35,
           "clip": 0.35,
           "trigger": "dark fantasy art style"
+        },
+        {
+          "name": "Hades_Art_Style.safetensors",
+          "model": 0.45,
+          "clip": 0.45
         }
       ],
       "map_controlnet": "controlnet-scribble-sdxl.safetensors",

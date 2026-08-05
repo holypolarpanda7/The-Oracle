@@ -491,6 +491,13 @@ LORA_TRIGGERS = {
     # to plain noise at the 6x downscale a CC card does. Firing half a LoRA on
     # purpose - name the half you want.
     "darkfanxlgrain": "dark fantasy art style",
+    "hadeslevel": "hadeslevel",
+    # Hades_Art_Style is deliberately ABSENT, and that is not an oversight.
+    # Its 210 captions are whole sentences ("character shaded with neon
+    # colors") rather than one repeated tag, so there is no trigger to fire -
+    # it behaves like sxz-wowmap, where strength is the only dial. Inventing
+    # one would push a meaningless token into a prompt whose whole budget is
+    # already spoken for by anatomy.
 }
 
 
