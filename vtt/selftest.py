@@ -673,6 +673,87 @@ def test_light_and_vision() -> None:
     v.close_scene(sc.id)
 
 
+def test_mounts_and_squeezing() -> None:
+    section("mounts and squeezing")
+    import tempfile as _tf
+    db = os.path.join(_tf.mkdtemp(), "mounts.db")
+    v = VttEngine(database_url=f"sqlite:///{db}")
+    v.create_tables()
+    sc = v.open_scene("test:ride", kind="combat", archetype="open",
+                      name="The Road", width=20, height=10, seed=3,
+                      render_art=False)
+    for x in range(20):
+        for y in range(10):
+            v.set_terrain(sc.id, [(x, y)], ".")
+
+    kara = v.add_token(sc.id, name="Kara", x=4, y=5, team=Team.PARTY, speed_ft=30)
+    horse = v.add_token(sc.id, name="Warhorse", x=5, y=5, team=Team.PARTY,
+                        size="large", speed_ft=60)
+    v.add_token(sc.id, name="Wolf", x=4, y=6, team=Team.PARTY, size="medium")
+
+    eq("you don't ride a wolf", v.mount(sc.id, "Kara", "Wolf")["ok"], False)
+    got = v.mount(sc.id, "Kara", "Warhorse")
+    check("but you do ride a warhorse", got["ok"], str(got))
+    eq("…for half your Speed", got["cost_ft"], 15)
+    seat = v.find_token(sc.id, "Kara")
+    eq("rider and mount share one space", (seat.x, seat.y), (horse.x, horse.y))
+
+    walked = v.move_token(kara.id, 8, 5)
+    check("a rider has no movement of their own", not walked["ok"],
+          str(walked.get("reason")))
+    check("…and is told what to do instead",
+          "Warhorse" in str(walked.get("reason")))
+
+    rode = v.move_token(horse.id, 10, 5)
+    eq("moving the mount carries the rider", rode.get("carried"), "Kara")
+    seat = v.find_token(sc.id, "Kara")
+    eq("…to the same square", (seat.x, seat.y), (10, 5))
+
+    # Being moved against the mount's will is what the save is FOR.
+    shoved = v.shove(horse.id, to_square=(14, 5), distance_ft=20)
+    check("a shoved mount puts its rider to a saving throw",
+          "saddle_check" in shoved, str(shoved))
+    seat = v.find_token(sc.id, "Kara")
+    eq("…and the rider goes with it either way", (seat.x, seat.y),
+       (shoved["x"], shoved["y"]) if shoved["saddle_check"]["stayed"]
+       else (seat.x, seat.y))
+
+    # Knocked down while mounted means knocked OFF.
+    v.mount(sc.id, "Kara", "Warhorse") if not v.find_token(
+        sc.id, "Kara").mounted_on else None
+    down = v.go_prone(sc.id, "Kara")
+    check("going down while mounted means going down off it",
+          down.get("dismounted") is True, str(down))
+    rider = v.find_token(sc.id, "Kara")
+    check("…landing prone and unmounted",
+          rider.prone and not rider.mounted_on)
+
+    # --- squeezing --------------------------------------------------------
+    wall = v.open_scene("test:ride", kind="combat", archetype="open",
+                        name="The Narrow Hall", width=16, height=9, seed=3,
+                        render_art=False)
+    for x in range(16):
+        for y in range(9):
+            v.set_terrain(wall.id, [(x, y)], ".")
+    for y in range(9):
+        v.set_terrain(wall.id, [(8, y)], "#")
+    v.set_terrain(wall.id, [(8, 4)], ".")          # one square of doorway
+    ogre = v.add_token(wall.id, name="Ogre", x=5, y=4, team=Team.FOE,
+                       size="large", speed_ft=60)
+
+    got = v.move_token(ogre.id, 10, 4)
+    check("a Large creature can force itself through a 5-ft gap", got["ok"],
+          str(got.get("reason")))
+    eq("…at an extra foot for every foot", got["cost_ft"], 50)
+    check("…and the board remembers it is squeezing",
+          v.find_token(wall.id, "Ogre").squeezing)
+    v.start_turn(wall.id, ogre.id)
+    v.move_token(ogre.id, 13, 6)
+    check("out in the open it stops squeezing",
+          not v.find_token(wall.id, "Ogre").squeezing)
+    v.close_scene(wall.id)
+
+
 def test_underwater() -> None:
     section("underwater combat: the rules, not a note asking the DM")
     try:
@@ -911,7 +992,8 @@ def main() -> int:
     print("\033[1mThe Oracle — tactical board self-test\033[0m")
     for fn in (test_distance, test_sight_and_cover, test_templates, test_movement,
                test_opportunity, test_mapgen, test_engine, test_bridge,
-               test_light_and_vision, test_hiding, test_underwater):
+               test_light_and_vision, test_hiding, test_underwater,
+               test_mounts_and_squeezing):
         try:
             fn()
         except Exception:

@@ -752,7 +752,8 @@ class VttEngine:
                    "notes", "elevation_ft", "facing_deg", "movement_mode",
                    "moved_ft", "combatant_id", "character_id",
                    "restrained", "grappled_by", "senses",
-                   "stealth_dc", "found_by", "swim_speed_ft"}
+                   "stealth_dc", "found_by", "swim_speed_ft",
+                   "mounted_on", "squeezing"}
         with Session(self.engine) as s:
             tok = s.get(MapToken, token_id)
             if not tok:
@@ -916,20 +917,37 @@ class VttEngine:
 
         if not g.in_bounds(*dest):
             return {"ok": False, "reason": "that square is off the map"}
+        # Checked before the terrain, because it is the more fundamental
+        # refusal: a rider has no movement of their own, and telling them the
+        # destination is a crate answers a question they weren't asking.
+        if tok.mounted_on and not teleport:
+            return {"ok": False, "mounted_on": tok.mounted_on,
+                    "reason": (f"{tok.name} is riding {tok.mounted_on} — move "
+                               f"{tok.mounted_on} instead, or get down first "
+                               f"([[VTT: dismount | {tok.name}]])")}
+        squeezing = False
         if not geo._fits(g, dest, n, mode=tok.movement_mode, blocked=hard_blocked):
-            # Say WHY, and say what would fix it. A bare "blocked" makes the
-            # narration guess, and it guesses wrong: water and a wall are not
-            # the same refusal, and one of them has a remedy.
-            need = required_mode(g.get(*dest))
-            if need and need != tok.movement_mode:
-                verb = "swim" if need == "swim" else "fly"
-                return {"ok": False, "needs_mode": need,
-                        "reason": (f"{g.tile_at(*dest).name} — {tok.name} would "
-                                   f"have to {verb} to be there "
-                                   f"([[VTT: token | {tok.name} | {need}]])")}
-            return {"ok": False,
-                    "reason": (f"{tok.name} can't stand there — "
-                               f"{g.tile_at(*dest).name}")}
+            # A creature can force itself into a space one size category
+            # smaller. Checked BEFORE the refusal below, because "can't stand
+            # there" is the wrong answer for a corridor a Large creature could
+            # get down and shoulder through — it just costs, and hurts.
+            if n > 1 and geo._fits(g, dest, n - 1, mode=tok.movement_mode,
+                                   blocked=hard_blocked):
+                squeezing = True
+            else:
+                # Say WHY, and say what would fix it. A bare "blocked" makes the
+                # narration guess, and it guesses wrong: water and a wall are not
+                # the same refusal, and one of them has a remedy.
+                need = required_mode(g.get(*dest))
+                if need and need != tok.movement_mode:
+                    verb = "swim" if need == "swim" else "fly"
+                    return {"ok": False, "needs_mode": need,
+                            "reason": (f"{g.tile_at(*dest).name} — {tok.name} would "
+                                       f"have to {verb} to be there "
+                                       f"([[VTT: token | {tok.name} | {need}]])")}
+                return {"ok": False,
+                        "reason": (f"{tok.name} can't stand there — "
+                                   f"{g.tile_at(*dest).name}")}
 
         # Held fast means Speed 0, and Speed 0 is a movement rule — so it is
         # enforced here rather than left to the DM to remember. A teleport still
@@ -947,17 +965,39 @@ class VttEngine:
         if teleport:
             path, cost = [(tok.x, tok.y), dest], 0
         else:
+            # Squeezing paths as the smaller creature it is making itself
+            # into — pathing at full size would report "no way through" for
+            # the very corridor it is shouldering into.
             path, cost = geo.find_path(
-                g, (tok.x, tok.y), dest, size=n, mode=tok.movement_mode,
+                g, (tok.x, tok.y), dest,
+                size=(n - 1 if squeezing else n), mode=tok.movement_mode,
                 blocked=soft_blocked,
                 extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode, row),
                 square_ft=row.square_ft)
+            if not path and n > 1 and not squeezing:
+                # The destination fits; something on the WAY doesn't. That is
+                # the ordinary case — a Large creature standing in a hall,
+                # crossing to another hall through one narrow door — and
+                # checking only the destination would report "no way through"
+                # for a gap it can plainly shoulder into.
+                path, cost = geo.find_path(
+                    g, (tok.x, tok.y), dest, size=n - 1,
+                    mode=tok.movement_mode, blocked=soft_blocked,
+                    extra_cost=self._effect_cost_fn(tok.map_id,
+                                                    tok.movement_mode, row),
+                    square_ft=row.square_ft)
+                squeezing = bool(path)
             if not path:
                 return {"ok": False,
                         "reason": f"there's no way through to that square"}
             # Crawling costs an extra foot for every foot — so, twice.
             crawling = tok.prone and tok.movement_mode == "walk"
             if crawling:
+                cost *= 2
+            # And so does squeezing. They stack, because they are two separate
+            # extra feet and a Large creature crawling through a gap is having
+            # a genuinely terrible turn.
+            if squeezing:
                 cost *= 2
             # Dragging a captive halves the hauler's speed.
             dragged = self._captives_of(tok)
@@ -968,6 +1008,7 @@ class VttEngine:
             if enforce_speed and not free and cost > remaining:
                 why = (f"that's {cost} ft"
                        + (" (crawling costs double)" if crawling else "")
+                       + (" (squeezing costs double)" if squeezing else "")
                        + f" and {tok.name} has {remaining} ft of movement left"
                        + (f" while hauling {', '.join(d.name for d in dragged)}"
                           if dragged else ""))
@@ -1009,6 +1050,11 @@ class VttEngine:
 
         remaining = max(0, tok.speed_ft + max(0, int(bonus_ft))
                         - (tok.moved_ft + (0 if free or teleport else cost)))
+        # Remembered, not recomputed: the combat engine asks whether this
+        # creature is squeezing when it rolls an attack, which is a different
+        # moment from the one that decided it.
+        if bool(tok.squeezing) != squeezing:
+            self.update_token(tok.id, squeezing=squeezing)
         out = {"ok": True, "path": [list(p) for p in path], "cost_ft": cost,
                "x": dest[0], "y": dest[1], "remaining_ft": remaining,
                "opportunity": oa, "hazards": hazards,
@@ -1020,6 +1066,13 @@ class VttEngine:
         towed = self._tow_captives(tok, dest, row, g)
         if towed:
             out["dragged"] = towed
+        # A rider goes exactly where their mount goes — same square, no save,
+        # no separate step. This is not the captive-dragging above: a captive
+        # is hauled to a square NEXT to its hauler, a rider is IN the saddle.
+        carried = self._rider_of(tok)
+        if carried is not None:
+            self._place(carried.id, dest)
+            out["carried"] = carried.name
         broke = self._break_far_grapples(tok.map_id, row)
         if broke:
             out["grapples_broken"] = broke
@@ -1126,6 +1179,22 @@ class VttEngine:
                 if t.id != tok.id
                 and (t.grappled_by or "").strip().lower() == name]
 
+    def _place(self, token_id: int, sq: Square) -> None:
+        """Set a token's square directly, bypassing the movement rules.
+
+        For the handful of things that ARE placements rather than movement —
+        swapping, mounting, being thrown from the saddle. update_token refuses
+        x/y precisely so this cannot happen by accident, so every caller of
+        this is a deliberate exception and should say why.
+        """
+        with Session(self.engine) as s:
+            live = s.get(MapToken, token_id)
+            if live:
+                live.x, live.y = int(sq[0]), int(sq[1])
+                live.updated_at = _now()
+                s.add(live)
+                s.commit()
+
     def _tow_captives(self, tok: MapToken, dest: Square, row: TacticalMap,
                       g: Grid) -> list[str]:
         """Drag anyone this creature holds into its wake. Returns their names.
@@ -1186,6 +1255,144 @@ class VttEngine:
                 broken.append(t.name)
         return broken
 
+    # =============================================================== mounts
+
+    #: Creature sizes in order, so "at least one size larger" is arithmetic.
+    _SIZE_ORDER = ("tiny", "small", "medium", "large", "huge", "gargantuan")
+
+    def _rider_of(self, mount: MapToken) -> Optional[MapToken]:
+        """Who is on this mount, if anyone."""
+        want = (mount.name or "").strip().lower()
+        for t in self.tokens(mount.map_id):
+            if (t.mounted_on or "").strip().lower() == want:
+                return t
+        return None
+
+    def mount(self, map_id: int, rider_ref: str, mount_ref: str) -> dict:
+        """Get on. Costs half the rider's Speed, and needs a big enough animal.
+
+        A mount must be at least one size larger than its rider — you do not
+        ride a wolf — and the two then share the mount's space, which is why
+        the rider keeps no position of its own. Getting on costs half your
+        Speed, so a mount in the middle of a fight is a real decision rather
+        than a free repositioning.
+        """
+        r = self.find_token(map_id, rider_ref)
+        m = self.find_token(map_id, mount_ref)
+        row = self.get_scene(map_id)
+        if not (r and m and row):
+            return {"ok": False, "reason": "no such creature on this board"}
+        if r.id == m.id:
+            return {"ok": False, "reason": "a creature can't ride itself"}
+        if r.mounted_on:
+            return {"ok": False, "reason": f"{r.name} is already mounted"}
+        existing = self._rider_of(m)
+        if existing is not None:
+            return {"ok": False,
+                    "reason": f"{m.name} is already carrying {existing.name}"}
+        order = self._SIZE_ORDER
+        try:
+            if order.index((m.size or "medium").lower()) <= \
+                    order.index((r.size or "medium").lower()):
+                return {"ok": False,
+                        "reason": (f"{m.name} is {m.size} — a mount has to be at "
+                                   f"least one size larger than its rider, and "
+                                   f"{r.name} is {r.size}")}
+        except ValueError:
+            pass
+        gap = geo.token_distance_ft(
+            geo.footprint(r.x, r.y, size_squares(r.size)),
+            geo.footprint(m.x, m.y, size_squares(m.size)),
+            square_ft=row.square_ft or 5,
+            dz_ft=self.height_gap_ft(row, r, m))
+        if gap > 5:
+            return {"ok": False,
+                    "reason": f"{m.name} is {gap} ft away — step alongside first"}
+        if r.grappled_by or r.restrained:
+            return {"ok": False,
+                    "reason": f"{r.name} is held fast and can't climb up"}
+        cost = max(5, int(r.speed_ft or 30) // 2)
+        self.update_token(r.id, mounted_on=m.name, prone=False,
+                          moved_ft=int(r.moved_ft or 0) + cost)
+        # Rider and mount share the mount's space, so there is no second
+        # position to keep in step. Written to the row directly because
+        # update_token refuses x/y on purpose — nothing may sidestep the
+        # movement rules by editing a position.
+        self._place(r.id, (m.x, m.y))
+        self._bump(map_id)
+        self._log(map_id, row.session_id, "condition", actor=r.name,
+                  summary=f"{r.name} mounts {m.name}")
+        return {"ok": True, "cost_ft": cost,
+                "detail": (f"{r.name} swings up onto {m.name} ({cost} ft of "
+                           f"movement). They move as one — direct {m.name}.")}
+
+    def dismount(self, map_id: int, rider_ref: str, *, forced: str = "") -> dict:
+        """Get off. Half Speed by choice; free and PRONE when you're thrown."""
+        r = self.find_token(map_id, rider_ref)
+        row = self.get_scene(map_id)
+        if not (r and row):
+            return {"ok": False, "reason": "no such creature on this board"}
+        if not r.mounted_on:
+            return {"ok": False, "reason": f"{r.name} isn't mounted"}
+        m = self.find_token(map_id, r.mounted_on)
+        g = self.grid_of(row)
+        n = size_squares(r.size)
+        blocked = self._occupied(map_id, exclude=r.id)
+        spot = (r.x, r.y)
+        if m is not None:
+            ring = [(m.x + dx, m.y + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                    if (dx or dy)]
+            spot = next((sq for sq in ring
+                         if g.in_bounds(*sq)
+                         and geo._fits(g, sq, n, mode=r.movement_mode,
+                                       blocked=blocked)), (r.x, r.y))
+        fields: dict = {"mounted_on": None}
+        if forced:
+            fields["prone"] = True
+        else:
+            fields["moved_ft"] = int(r.moved_ft or 0) + max(5, int(r.speed_ft or 30) // 2)
+        self.update_token(r.id, **fields)
+        self._place(r.id, spot)
+        self._bump(map_id)
+        self._log(map_id, row.session_id, "condition", actor=r.name,
+                  summary=f"{r.name} dismounts" + (f" ({forced})" if forced else ""))
+        if forced:
+            return {"ok": True, "thrown": True,
+                    "detail": (f"{r.name} is thrown from "
+                               f"{m.name if m else 'the saddle'} ({forced}) and "
+                               f"lands prone at {spot[0]},{spot[1]}.")}
+        return {"ok": True,
+                "detail": (f"{r.name} drops from "
+                           f"{m.name if m else 'the saddle'} at "
+                           f"{spot[0]},{spot[1]} (half Speed).")}
+
+    def _stay_in_saddle(self, mount: MapToken, reason: str, *,
+                        dc: int = 10, rng=None) -> Optional[dict]:
+        """A rider makes a DC 10 Dex save when their mount is moved against its
+        will, or when either of them is knocked down. Failure means the ground.
+
+        Rolled here rather than left to the narration for the same reason the
+        Stealth check is: the board is what knows the mount was shoved.
+        """
+        r = self._rider_of(mount)
+        if r is None:
+            return None
+        from dice.mechanics import saving_throw
+        # A flat d20: the board doesn't hold ability scores, and inventing a
+        # modifier would be worse than admitting there isn't one. The DM can
+        # re-roll with the rider's real Dex if it matters.
+        save = saving_throw(0, dc=dc,
+                            label=f"{r.name} stays in the saddle (Dex)", rng=rng)
+        if save.success:
+            return {"rider": r.name, "stayed": True, "roll": save.total,
+                    "detail": (f"{r.name} keeps their seat as {mount.name} "
+                               f"{reason} (Dex {save.total} vs DC {dc}).")}
+        thrown = self.dismount(mount.map_id, r.name, forced=reason)
+        return {"rider": r.name, "stayed": False, "roll": save.total,
+                "detail": (f"{r.name} is thrown as {mount.name} {reason} "
+                           f"(Dex {save.total} vs DC {dc}). ")
+                          + str(thrown.get("detail", ""))}
+
     def grapple(self, map_id: int, grappler_ref: str, target_ref: str) -> dict:
         """One creature takes hold of another. Both must be within reach."""
         a = self.find_token(map_id, grappler_ref)
@@ -1233,8 +1440,21 @@ class VttEngine:
         b = self.find_token(map_id, ref)
         if not b:
             return {"ok": False, "reason": "no such creature"}
+        # Going down while mounted means going down OFF the mount. Rolled
+        # rather than assumed, because 5e gives you the save either way round:
+        # the mount falling and the rider falling are the same question.
+        if b.mounted_on:
+            thrown = self.dismount(map_id, b.name, forced="knocked from the saddle")
+            return {"ok": True, "dismounted": True,
+                    "detail": str(thrown.get("detail",
+                                             f"{b.name} drops prone."))}
         self.update_token(b.id, prone=True)
-        return {"ok": True, "detail": f"{b.name} drops prone."}
+        saved = self._stay_in_saddle(b, "goes down under them")
+        out = {"ok": True, "detail": f"{b.name} drops prone."}
+        if saved:
+            out["saddle_check"] = saved
+            out["detail"] += " " + saved["detail"]
+        return out
 
     def stand_up(self, map_id: int, ref: str) -> dict:
         """Get up. Costs half the creature's speed, and can fail for want of it."""
@@ -1401,6 +1621,17 @@ class VttEngine:
         broke = self._break_far_grapples(tok.map_id, row)
         if broke:
             out["grapples_broken"] = broke
+        # A shoved mount takes its rider with it — and then the rider finds out
+        # whether they kept their seat. This is the case the rule is FOR:
+        # "an effect moves your mount against its will while you're on it".
+        carried = self._rider_of(tok)
+        if carried is not None:
+            self._place(carried.id, cur)
+            out["carried"] = carried.name
+            saved = self._stay_in_saddle(tok, "is flung aside")
+            if saved:
+                out["saddle_check"] = saved
+                out["detail"] = detail + ". " + saved["detail"]
         self._log(tok.map_id, row.session_id, "move", actor=tok.name,
                   summary=detail,
                   payload={"token_id": token_id, "forced": True,
@@ -2657,6 +2888,8 @@ def _token_dict(t: MapToken, row: TacticalMap) -> dict:
         "found_by": list(t.found_by or []),
         "senses": (t.senses if isinstance(t.senses, dict) else {}),
         "swim_speed_ft": t.swim_speed_ft,
+        "mounted_on": t.mounted_on,
+        "squeezing": bool(t.squeezing),
         "prone": t.prone,
         "defeated": t.defeated,
     }

@@ -217,6 +217,17 @@ class MapToken(SQLModel, table=True):
     # property of the hider alone — the guard who spotted you sees you while
     # the rest of the room still doesn't, and one bool cannot say that.
     found_by: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Forcing itself through a space one size category smaller: half speed in
+    # effect (an extra foot per foot), disadvantage on its attacks and Dex
+    # saves, advantage on attacks against it. Board state rather than a DM
+    # ruling, because the board is what knows the corridor is too narrow.
+    squeezing: bool = Field(default=False, sa_column=Column(Boolean))
+    # The mount this creature is riding, by token name. On the RIDER, not the
+    # mount — the same shape as ``grappled_by``, and for the same reason: the
+    # thing being carried is the one whose movement stops being its own.
+    # Rider and mount share the mount's space, so there is no second position
+    # to keep in step.
+    mounted_on: Optional[str] = Field(default=None, sa_column=Column(String))
     # Whether this creature SWIMS, in feet — a trait of the creature, not of
     # the board. movement_mode says how it is moving right now, and on an
     # underwater board that is "swim" for everyone in it, including the

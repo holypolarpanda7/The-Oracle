@@ -342,6 +342,27 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   every other board→combat channel): can't see the target = disadvantage,
   target can't see you = advantage, and in a dark room both apply and cancel —
   which is correct, and is why darkvision is worth having.
+- **A rider has no movement of their own.** `MapToken.mounted_on` names the
+  mount (on the RIDER, the same shape as `grappled_by` and for the same reason:
+  the carried one is whose movement stops being its own). They share the
+  mount's space, so there is no second position to keep in step — `move_token`
+  REFUSES a mounted creature and names the remedy, and moving the mount places
+  the rider on the same square. Not the captive-dragging path: a captive is
+  hauled to a square NEXT to its hauler, a rider is in the saddle. Mounting
+  costs half Speed and needs an animal at least one size larger. A shoved mount
+  or either of them knocked down puts the rider to a DC 10 Dex save the board
+  rolls itself; failure lands them prone beside it. Placement bypasses go
+  through `_place`, never `update_token` — that method refuses x/y on purpose
+  so nothing sidesteps the movement rules by editing a position.
+- **Squeezing is decided by the PATH, not the destination.** A Large creature
+  crossing between two halls through one narrow door has a destination that
+  fits perfectly; it is the way there that doesn't. So `move_token` tries the
+  full-size path first and retries at one size smaller before giving up, marks
+  `MapToken.squeezing`, and doubles the cost (stacking with crawling, because
+  they are two separate extra feet). The flag is remembered rather than
+  recomputed because `_attack_advantage` asks about it at a different moment —
+  squeezing is disadvantage on your attacks and advantage on attacks against
+  you, reached through `BoardSpatial.squeezing`.
 - **Underwater combat is enforced, not requested.** The weapon rules used to
   live as a `dm_note` sentence in `arena/environments.py` telling the model to
   remember them by hand — the last place asking the LLM to apply a mechanic.

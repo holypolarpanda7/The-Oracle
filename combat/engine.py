@@ -523,6 +523,14 @@ class CombatEngine:
         except Exception:
             return False
 
+    def _squeezing(self, c: Combatant) -> bool:
+        try:
+            return bool(self.spatial is not None
+                        and getattr(self.spatial, "squeezing", None)
+                        and self.spatial.squeezing(c))
+        except Exception:
+            return False
+
     def _swims(self, c: Combatant) -> bool:
         try:
             return bool(self.spatial is not None
@@ -601,6 +609,15 @@ class CombatEngine:
         if "helped" in ac_conds:
             adv = True
             notes.append("helped: advantage")
+        # Squeezing: forcing yourself through a gap costs you the fight as well
+        # as the movement. Board state, because the board is what knows the
+        # corridor is too narrow for you.
+        if self._squeezing(atk):
+            dis = True
+            notes.append(f"{atk.name} is squeezing: disadvantage")
+        if self._squeezing(tgt):
+            adv = True
+            notes.append(f"{tgt.name} is squeezing: advantage")
         if tgt.dodging:
             dis = True
             notes.append(f"{tgt.name} is Dodging: disadvantage")

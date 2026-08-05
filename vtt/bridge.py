@@ -298,6 +298,11 @@ class BoardSpatial:
         t = self._tok(c)
         return t is not None and self.vtt.swim_speed_ft(t) > 0
 
+    def squeezing(self, c) -> bool:
+        """Is this creature forcing itself through too small a space?"""
+        t = self._tok(c)
+        return t is not None and bool(t.squeezing)
+
     def can_see(self, a, b) -> Optional[bool]:
         """Can ``a`` perceive ``b``? ``None`` when the board can't say.
 

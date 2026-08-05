@@ -404,7 +404,10 @@ async def lifespan(app: FastAPI):
                                      # Underwater combat turns on whether a
                                      # creature actually swims, which is not
                                      # the same as how it's moving.
-                                     ("swim_speed_ft", "INTEGER")]:
+                                     ("swim_speed_ft", "INTEGER"),
+                                     # Riders move with their mount.
+                                     ("mounted_on", "VARCHAR"),
+                                     ("squeezing", "INTEGER DEFAULT 0")]:
                         if col not in vt_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE vtt_token ADD COLUMN {col} {ddl}")
@@ -6396,7 +6399,7 @@ _VTT_HOOK_ACTIONS = {"open", "close", "place", "move", "remove", "effect",
                      "blink", "push", "pull", "token",
                      "grapple", "release", "restrain", "free", "prone",
                      "stand", "swap", "damage",
-                     "hide", "search", "unhide"}
+                     "hide", "search", "unhide", "mount", "dismount"}
 
 # Bare words a hook may carry instead of key=value, e.g. "difficult".
 _VTT_FLAGS = {"difficult", "blocking", "obscuring", "permanent", "hidden",
@@ -6475,6 +6478,16 @@ _VTT_HOOKS_ACTIVE = (
     "                                         at all and may then Hide. It does not work\n"
     "                                         against anything shooting down from above\n"
     "    [[VTT: swap | Kara | Sable]]         two creatures change places\n"
+    "    [[VTT: mount | Kara | Warhorse]]     she gets into the saddle (half her\n"
+    "                                         Speed; the mount must be at least one\n"
+    "                                         size larger). After this MOVE THE MOUNT,\n"
+    "                                         not the rider — they travel as one, and\n"
+    "                                         the board will refuse to move her alone\n"
+    "    [[VTT: dismount | Kara]]             she gets down (half her Speed). Being\n"
+    "                                         shoved or knocked down while mounted\n"
+    "                                         calls for a DC 10 Dex save the board\n"
+    "                                         rolls by itself — a failure lands her\n"
+    "                                         prone beside the animal\n"
     "    [[VTT: hide | Kara | bonus=7]]       take the Hide action. The BOARD decides\n"
     "                                         whether she may (she needs darkness, or\n"
     "                                         three-quarters cover, and no enemy already\n"
@@ -6918,6 +6931,19 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                 vtt_engine.update_token(tok.id, **fields)
                 said = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in fields.items())
                 notes.append(f"🗺 {tok.name}: {said}.")
+                continue
+
+            if action in ("mount", "dismount"):
+                if not positional:
+                    continue
+                if action == "mount":
+                    if len(positional) < 2:
+                        continue
+                    res = vtt_engine.mount(scene.id, positional[0], positional[1])
+                else:
+                    res = vtt_engine.dismount(scene.id, positional[0])
+                notes.append("🗺 " + (res.get("detail")
+                                      or res.get("reason") or ""))
                 continue
 
             if action in ("hide", "search", "unhide"):
