@@ -133,9 +133,13 @@ export function VttOverlay(p: VttProps) {
     return {
       ...scene,
       terrain: scene.levels[level].terrain ?? scene.terrain,
-      // Objects, wreckage and spell areas all belong to a floor. Drawing the
-      // hall's fireball on the gallery above it was the first thing peeking at
-      // another storey made obvious.
+      // Everything here is a fact about a STOREY, not about the board: its
+      // memory, what is under someone's eye on it, and how lit it is. Drawing
+      // the hall's fog and the hall's fireball on the gallery above it was the
+      // first thing peeking at another floor made obvious.
+      fog: scene.levels[level].fog ?? null,
+      sight: scene.levels[level].sight ?? null,
+      light: scene.levels[level].light ?? null,
       objects: [], debris: [],
       effects: scene.effects.filter((e) => (e.level ?? 0) === level),
     };

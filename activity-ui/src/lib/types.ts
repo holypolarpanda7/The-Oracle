@@ -355,6 +355,10 @@ export interface VttLevel {
   name: string;
   base_ft: number;
   terrain: string[];
+  /** This floor's own memory, live sight and light — all per storey. */
+  fog?: string[] | null;
+  sight?: string[] | null;
+  light?: string[] | null;
   stairs: { x: number; y: number; to: number; tx: number; ty: number; kind?: string }[];
 }
 

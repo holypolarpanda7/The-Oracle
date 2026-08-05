@@ -371,6 +371,15 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   cannot choose a stair they cannot see. Anything belonging to a floor has to
   SAY so — `MapEffect.level` exists for that reason: peeking at the gallery is
   what made the hall's fireball burning on both storeys obvious.
+  **Light, fog and live sight are per floor**, and each is stored the way
+  terrain is (level 0 on the row, upper floors inside `levels`) because they
+  are the same kind of fact and splitting them any other way would put two
+  answers to "what does this storey look like" in two places. `light_map`,
+  `light_at`, `sight` and `reveal` all take a `level`; a torch on the gallery
+  does not light the hall, walking the hall does not reveal the gallery, and
+  `reveal_from_party` lights the floor each creature is actually standing on.
+  `state()` still ships the ground floor's flat, where it has always been, and
+  repeats every floor's own inside `levels[]`.
 - **A rider has no movement of their own.** `MapToken.mounted_on` names the
   mount (on the RIDER, the same shape as `grappled_by` and for the same reason:
   the carried one is whose movement stops being its own). They share the

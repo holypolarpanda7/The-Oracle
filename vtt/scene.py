@@ -2159,7 +2159,7 @@ class VttEngine:
 
     # ================================================================ light
 
-    def light_map(self, map_id: int) -> list[str]:
+    def light_map(self, map_id: int, level: int = 0) -> list[str]:
         """Light level per square: ``b`` bright, ``d`` dim, ``x`` dark.
 
         The board's ``lighting`` is the AMBIENT level — what the room is like
@@ -2179,7 +2179,7 @@ class VttEngine:
         # Recomputed only when the board changes: a torch's reach is a
         # field-of-view calculation (light doesn't cross walls either), and
         # sight() wants the map once per square per token.
-        key = (map_id, row.revision)
+        key = (map_id, row.revision, int(level or 0))
         hit = self._light_cache.get(key)
         if hit is not None:
             return hit
@@ -2187,10 +2187,14 @@ class VttEngine:
         from survival.light import brighter, darker
 
         ambient = row.lighting if row.lighting in ("bright", "dim", "dark") else "bright"
-        g = self.grid_of(row)
-        level = [[ambient] * row.width for _ in range(row.height)]
+        g = self.grid_of(row, int(level or 0))
+        lit = [[ambient] * row.width for _ in range(row.height)]
 
-        effs = self.effects(map_id)
+        # Only this floor's sources. A torch on the gallery does not light the
+        # hall beneath it — there is a floor in the way, which is the same
+        # thing that stops the two seeing each other.
+        effs = [e for e in self.effects(map_id)
+                if int(getattr(e, "level", 0) or 0) == int(level or 0)]
         for e in effs:
             if e.kind != "light" or e.radius_ft <= 0:
                 continue
@@ -2201,8 +2205,8 @@ class VttEngine:
                     continue
                 d = geo.distance_ft((e.origin_x, e.origin_y), (sx, sy),
                                     square_ft=row.square_ft)
-                lit = "bright" if d <= bright_r else "dim"
-                level[sy][sx] = brighter(level[sy][sx], lit)
+                near = "bright" if d <= bright_r else "dim"
+                lit[sy][sx] = brighter(lit[sy][sx], near)
         # Obscurement last: a fog cloud is heavy obscurement however bright the
         # daylight behind it, so it must not be outvoted by a light source.
         for e in effs:
@@ -2212,17 +2216,18 @@ class VttEngine:
             for sq in (e.squares or []):
                 sx, sy = int(sq[0]), int(sq[1])
                 if 0 <= sy < row.height and 0 <= sx < row.width:
-                    level[sy][sx] = darker(level[sy][sx], floor)
+                    lit[sy][sx] = darker(lit[sy][sx], floor)
 
         code = {"bright": "b", "dim": "d", "dark": "x"}
-        out = ["".join(code[c] for c in r) for r in level]
-        self._light_cache.clear()          # one board at a time; keep it small
+        out = ["".join(code[c] for c in r) for r in lit]
+        if len(self._light_cache) > 8:     # one board, a few floors: keep it small
+            self._light_cache.clear()
         self._light_cache[key] = out
         return out
 
-    def light_at(self, map_id: int, x: int, y: int) -> str:
-        """``bright`` | ``dim`` | ``dark`` for one square."""
-        rows = self.light_map(map_id)
+    def light_at(self, map_id: int, x: int, y: int, level: int = 0) -> str:
+        """``bright`` | ``dim`` | ``dark`` for one square of one floor."""
+        rows = self.light_map(map_id, int(level or 0))
         if not (0 <= y < len(rows) and 0 <= x < len(rows[y])):
             return "bright"
         return {"b": "bright", "d": "dim", "x": "dark"}[rows[y][x]]
@@ -2402,7 +2407,8 @@ class VttEngine:
                 eff_obscured = "heavy" if e.obscured == "heavy" else "light"
                 break
         from survival.light import perceives
-        return perceives(self.light_at(map_id, b.x, b.y), dist, senses,
+        return perceives(self.light_at(map_id, b.x, b.y, int(b.level or 0)),
+                         dist, senses,
                          obscured=eff_obscured, grounded=_grounded(b))
 
     def can_see(self, map_id: int, a_ref: str, b_ref: str) -> bool:
@@ -2576,13 +2582,49 @@ class VttEngine:
     def _blank_fog(w: int, h: int) -> list[str]:
         return ["0" * w for _ in range(h)]
 
-    def reveal(self, map_id: int, x: int, y: int, radius_ft: int = 30) -> int:
+    def fog_of(self, row: TacticalMap, level: int = 0) -> Optional[list]:
+        """This floor's memory of itself, or None when the board has no fog.
+
+        Stored the same way terrain is — level 0 on the row, upper floors in
+        ``levels`` — because it is the same KIND of fact and splitting it any
+        other way would put two answers to "what does this storey look like"
+        in two different places. Walking the hall must not light the gallery.
+        """
+        if not int(level or 0):
+            return row.fog or None
+        lv = self.levels_of(row)
+        idx = max(0, min(int(level), len(lv) - 1))
+        got = lv[idx].get("fog")
+        if got:
+            return got
+        # An upper floor inherits the board's fogged-ness, not its memory: if
+        # the ground is fogged this one starts unexplored, not revealed.
+        return (self._blank_fog(row.width, row.height) if row.fog else None)
+
+    def _set_fog(self, map_id: int, level: int, rows: list) -> None:
+        if not int(level or 0):
+            self._set_fields(map_id, fog=rows)
+            return
+        row = self.get_scene(map_id)
+        if row is None:
+            return
+        levels = [dict(l) for l in (row.levels or [])]
+        idx = int(level) - 1
+        if 0 <= idx < len(levels):
+            levels[idx]["fog"] = rows
+            self._set_fields(map_id, levels=levels)
+
+    def reveal(self, map_id: int, x: int, y: int, radius_ft: int = 30,
+               level: int = 0) -> int:
         """Reveal what can be seen from a square. Returns squares newly lit."""
         row = self.get_scene(map_id)
-        if row is None or not row.fog:
+        if row is None:
             return 0
-        g = self.grid_of(row)
-        fog = [list(r) for r in row.fog]
+        fog_rows = self.fog_of(row, level)
+        if not fog_rows:
+            return 0
+        g = self.grid_of(row, int(level or 0))
+        fog = [list(r) for r in fog_rows]
         n = 0
         for sx, sy in geo.visible_squares(g, (int(x), int(y)), radius_ft,
                                           square_ft=row.square_ft):
@@ -2590,7 +2632,7 @@ class VttEngine:
                 fog[sy][sx] = "1"
                 n += 1
         if n:
-            self._set_fields(map_id, fog=["".join(r) for r in fog])
+            self._set_fog(map_id, int(level or 0), ["".join(r) for r in fog])
         return n
 
     def reveal_from_party(self, map_id: int, radius_ft: Optional[int] = None) -> int:
@@ -2604,14 +2646,19 @@ class VttEngine:
         for t in self.tokens(map_id, include_defeated=False):
             if t.team != Team.PARTY:
                 continue
-            total += self.reveal(map_id, t.x, t.y, r)
+            # Each of them lights the floor they are actually standing on.
+            total += self.reveal(map_id, t.x, t.y, r, level=int(t.level or 0))
         return total
 
     def clear_fog(self, map_id: int) -> None:
-        self._set_fields(map_id, fog=None)
+        row = self.get_scene(map_id)
+        levels = [{k: v for k, v in dict(l).items() if k != "fog"}
+                  for l in ((row.levels or []) if row else [])]
+        self._set_fields(map_id, fog=None, levels=levels or None)
 
     def sight(self, map_id: int, *, team: str = Team.PARTY,
-              radius_ft: Optional[int] = None) -> Optional[list[str]]:
+              radius_ft: Optional[int] = None,
+              level: int = 0) -> Optional[list[str]]:
         """What ``team`` can see RIGHT NOW, in the same shape as ``fog``.
 
         Fog is MEMORY: it records everywhere the party has ever been able to
@@ -2629,17 +2676,20 @@ class VttEngine:
         above, and every square is simply visible.
         """
         row = self.get_scene(map_id)
-        if row is None or not row.fog:
+        if row is None or not self.fog_of(row, int(level or 0)):
             return None
-        g = self.grid_of(row)
-        light = self.light_map(map_id)
+        # Per floor: this is what the party can see OF THIS STOREY, and the
+        # only creatures who can see any of it are the ones standing on it.
+        lv = int(level or 0)
+        g = self.grid_of(row, lv)
+        light = self.light_map(map_id, lv)
         levels = {"b": "bright", "d": "dim", "x": "dark"}
         lit = [["0"] * row.width for _ in range(row.height)]
 
         from survival.light import perceives
 
         for t in self.tokens(map_id, include_defeated=False):
-            if t.team != team:
+            if t.team != team or int(t.level or 0) != lv:
                 continue
             senses = self.token_senses(t)
             # How far to even look. Line of sight has no range in the rules —
@@ -2711,15 +2761,22 @@ class VttEngine:
             "round": self._round(row),
             "current_token_id": cur_token_id,
             "terrain": (row.terrain or []) if include_terrain else [],
+            # The ground floor's, flat, exactly where they have always been —
+            # a client that knows nothing about storeys keeps working.
             "fog": row.fog or None,
             "sight": self.sight(map_id, team=viewer_team),
             "light": self.light_map(map_id),
-            # One entry per floor, ground first. A single-storey board reports
-            # exactly one, so a client that knows nothing about levels sees
-            # what it always saw.
+            # …and one entry per floor, ground first, each carrying its OWN
+            # terrain, memory, live sight and light. Every one of those is a
+            # fact about a storey rather than about the board: a torch on the
+            # gallery does not light the hall, and walking the hall does not
+            # reveal the gallery.
             "levels": [{"name": l.get("name", f"Level {i}"),
                         "base_ft": int(l.get("base_ft") or 0),
                         "terrain": l.get("terrain") or [],
+                        "fog": self.fog_of(row, i),
+                        "sight": self.sight(map_id, team=viewer_team, level=i),
+                        "light": self.light_map(map_id, i),
                         "stairs": list(l.get("stairs") or [])
                         if i else list((row.notes or {}).get("stairs") or [])}
                        for i, l in enumerate(self.levels_of(row))],

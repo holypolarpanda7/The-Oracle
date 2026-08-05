@@ -813,6 +813,28 @@ def test_levels() -> None:
     denied = v.take_stairs(sc.id, "Kara")
     check("and the stairs are the only way between them", not denied["ok"],
           str(denied.get("reason")))
+    # Light, fog and live sight all belong to a STOREY, not to the board.
+    v._set_fields(sc.id, lighting="dark")
+    v.add_effect(sc.id, name="lantern", kind="light", shape="sphere",
+                 x=5, y=1, radius_ft=20, level=1)
+    eq("a lantern on the gallery lights the gallery",
+       v.light_at(sc.id, 5, 1, level=1), "bright")
+    eq("…and not the hall underneath it",
+       v.light_at(sc.id, 5, 1, level=0), "dark")
+    check("so the hall can't see the gallery by it",
+          not v.can_see(sc.id, "Kara", "Archer"),
+          "Kara is in the dark; the light is on the floor above her")
+
+    v._set_fields(sc.id, fog=v._blank_fog(12, 8))
+    v.reveal_from_party(sc.id)
+    ground = v.state(sc.id)["levels"][0]
+    upper = v.state(sc.id)["levels"][1]
+    check("walking the hall remembers the hall",
+          sum(r.count("1") for r in (ground["fog"] or [])) > 0)
+    eq("…and not one square of the gallery",
+       sum(r.count("1") for r in (upper["fog"] or [])), 0)
+    v._set_fields(sc.id, lighting="bright")
+
     v.move_token(kara.id, 11, 2, teleport=True, free=True)
     took = v.take_stairs(sc.id, "Kara")
     check("standing on them, she goes up", took["ok"], str(took))

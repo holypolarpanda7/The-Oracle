@@ -207,9 +207,15 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
     floors = state.get("levels") or []
     level = max(0, min(int(level or 0), max(0, len(floors) - 1)))
     if level and floors:
+        # Terrain, memory, live sight and light all belong to the storey.
+        f = floors[level]
         state = {**state,
-                 "terrain": floors[level].get("terrain") or state.get("terrain"),
-                 "objects": [], "debris": []}
+                 "terrain": f.get("terrain") or state.get("terrain"),
+                 "fog": f.get("fog"), "sight": f.get("sight"),
+                 "light": f.get("light") or state.get("light"),
+                 "objects": [], "debris": [],
+                 "effects": [e for e in (state.get("effects") or [])
+                             if int(e.get("level") or 0) == level]}
     state = {**state,
              "tokens": [t for t in (state.get("tokens") or [])
                         if int(t.get("level") or 0) == level]}
