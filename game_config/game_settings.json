@@ -80,8 +80,8 @@
         },
         {
           "name": "Hades_Art_Style.safetensors",
-          "model": 0.45,
-          "clip": 0.45
+          "model": 0.7,
+          "clip": 0.7
         }
       ],
       "map_controlnet": "controlnet-scribble-sdxl.safetensors",

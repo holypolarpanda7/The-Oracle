@@ -301,8 +301,15 @@ class ImageryConfig:
     #
     # STACKING is how a second style is added — on top of the house LoRA at a
     # low strength, never instead of it. Live stack: DD_Painterly_Clean @0.45
-    # (the look) + DarkFanXLGrain @0.35 (grit on top) + Hades_Art_Style @0.45
+    # (the look) + DarkFanXLGrain @0.35 (grit on top) + Hades_Art_Style @0.70
     # (hard ink edges and flat cel-shaded value blocks — the Supergiant read).
+    # 0.70 rather than the 0.45 first adopted, and the reason is a lesson about
+    # PROBE SUBJECTS: the probe's portrait row was a goliath, a near-monochrome
+    # grey subject where ink lines and flat value blocks dominate completely.
+    # At 0.45 it looked emphatic there and turned out much gentler across the
+    # real species set, whose subjects carry their own colour and detail. Judge
+    # a style strength on a COLOURFUL subject, not only on the descriptor
+    # stress case — they answer different questions.
     # Sweep a candidate against ONE kind with scripts/style_lora_probe.py and
     # judge it on the BRIGHT rows: a dark style flatters a crypt no matter how
     # badly it ruins a sunlit village. Sweep a whole STACK with
