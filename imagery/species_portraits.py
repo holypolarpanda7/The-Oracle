@@ -71,18 +71,27 @@ _STYLE_KINDRED = ("a real adult face rendered seriously, the species' own bone "
 # Light grounding so faces stay characterful rather than airbrushed. Males and
 # non-small females get a touch of natural realism; the SMALL folk females read
 # cuter (a weathered look is wrong on the little peoples).
-# This line trails EVERY species prompt, and it used to read "grounded
-# semi-realism, natural skin texture, characterful weathered look" — a direct
-# request for realistic rendering, sitting after the art direction and pulling
-# against it. On a stubbled male face that still inks (the stubble IS texture);
-# on a smooth female face "natural skin texture" means airbrush, which is how
-# the men came back cel-shaded and the women came back glossy 3D. Swapping it
-# for ink language was the single biggest lever measured: elf-f ink 14.2 -> 18.4,
-# against 14.9 for deleting the line outright. It still asks for a serious,
-# weathered adult face — that is what it is for — without asking for a
-# photograph. See scripts/species_style_gap.py.
-_GRIT = ("bold graphic shapes, visible ink linework, flat cel shading, "
-         "a characterful weathered face")
+# _GRIT IS GONE, and the sequence is worth keeping because it is a lesson in
+# what a measurement is worth at n=1.
+#
+# It read "grounded semi-realism, natural skin texture, characterful weathered
+# look" and trailed EVERY species prompt — a direct request for realistic
+# rendering sitting after the art direction and pulling against it. On a
+# stubbled male face that still inks (stubble IS texture); on a smooth female
+# face "natural skin texture" means airbrush, which is how the men came back
+# cel-shaded and the women came back glossy 3D.
+#
+# Rewriting it to ink language beat deleting it — elf-f 18.4 against 14.9 — so
+# it was rewritten. That comparison was made on ONE species, at ONE seed, under
+# a configuration that then changed underneath it (style weight went to 1.35, a
+# female anti-gloss negative was added). Re-run across five species spanning
+# the failure modes, keep-vs-remove came out indistinguishable: mean |male-
+# female gap| 2.05 with it against 2.08 without, absolute ink unchanged, the
+# per-species swings going both directions. It was earning nothing the weighted
+# style clause was not already doing, and costing ~10 words of a prompt whose
+# budget is spoken for by anatomy. See style-probe/grit_ab.py.
+#
+# _GRIT_FEM stays: saying ADULT is a real job that nothing else does.
 # "Youthful" plus a small stature is how the gnome and halfling women came back
 # as human CHILDREN. They are grown adults with soft round faces — say both.
 # Same treatment as _GRIT: "soft rounded features, smooth complexion" was the
@@ -661,8 +670,12 @@ def build_positive(look: Dict[str, str], sex: str, style_prompt: str,
              _STYLE_HUMANLIKE if tier == "human"
              else _STYLE_CREATURE if tier == "creature" else _STYLE_KINDRED,
              f"({style_prompt}:{_STYLE_WEIGHT})" if style_prompt else ""]
-    if not skip_grit:   # a style reference (IP-Adapter) defines the mood instead
-        parts.append(_GRIT_FEM if (sex == "f" and cute) else _GRIT)
+    # Only the small folk still get a trailing clause, and only to say ADULT
+    # (see _GRIT_FEM). The general one was removed once measurement showed it
+    # earning nothing against the weighted style clause. `skip_grit` still
+    # applies: a style reference (IP-Adapter) defines the mood instead.
+    if not skip_grit and sex == "f" and cute:
+        parts.append(_GRIT_FEM)
     if tier == "creature" and anchor:
         parts.append(f"({anchor}:1.2)")   # last word on what this is
     return ", ".join(p for p in parts if p)
