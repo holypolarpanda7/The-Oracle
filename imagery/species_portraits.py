@@ -79,7 +79,26 @@ _GRIT_FEM = ("an adult woman with a charming endearing face, soft rounded "
              "grown-up poise")
 _NEG_EXTRA = ("full body, multiple people, crowd, nudity, nsfw, modern clothing, "
               "photograph, low detail, plastic skin, airbrushed, harsh, ugly, "
-              "grimdark, horror")
+              "grimdark, horror, "
+              # A style LoRA inks EDGES, and some species are described as
+              # having none: the changeling is a "BLANK UNFINISHED FACE, smooth
+              # chalky skin, no colour anywhere, featureless", the warforged is
+              # "smooth sculpted plating". That is a description of a CGI clay
+              # bust, and the model's prior for it beat the house style at 0.70
+              # — those two and the female goliath came back as 3D renders while
+              # every textured species inked properly. The LoRA is not weak
+              # there; the SUBJECT is pulling. Say it in the negative, because
+              # diffusion has no negation and "drawn, not 3D" in the positive
+              # does nothing.
+              "3d render, cgi, octane render, unreal engine, zbrush sculpt, "
+              "clay sculpture, resin figurine, vinyl toy, smooth gradient "
+              "shading, subsurface scattering, glossy specular highlights, "
+              # A beast-aspected species grows its animal ears IN ADDITION to
+              # the human pair already drawn — the swiftstride shifter came back
+              # with four, and so did the goblin. Nothing in any negative
+              # mentioned duplicated features before this.
+              "extra ears, multiple ears, duplicate ears, four ears, "
+              "extra limbs, deformed anatomy")
 # The small folk are the ones a "cute" style turns into children.
 _NEG_CHILD = "child, little girl, little boy, teenager, baby face, toddler, youth"
 
