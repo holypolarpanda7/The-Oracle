@@ -102,6 +102,14 @@ _NEG_EXTRA = ("full body, multiple people, crowd, nudity, nsfw, modern clothing,
 # The small folk are the ones a "cute" style turns into children.
 _NEG_CHILD = "child, little girl, little boy, teenager, baby face, toddler, youth"
 
+#: How hard the house art direction pushes in a species prompt (see
+#: build_positive). Deliberately BELOW the species clause's 1.35: the species
+#: has to keep winning, or a strong style eats "slate blue-grey skin" and hands
+#: back a tattooed human — the failure four rounds of prompt surgery already
+#: fought. 1.20 is enough to stop the look varying by subject and sex without
+#: entering that fight.
+_STYLE_WEIGHT = 1.20
+
 # ---- keeping a species from collapsing into a human ------------------------
 #
 # The descriptors below are accurate and detailed, and the model still handed
@@ -586,6 +594,17 @@ def build_positive(look: Dict[str, str], sex: str, style_prompt: str,
     The species clause is CLIP-weighted and its name repeated at the tail: it
     has to outweigh the portrait-style language that follows it, or the render
     drifts back to a good-looking human (see the tier notes above).
+
+    The ART DIRECTION is weighted for the mirror-image reason. Unweighted at
+    the tail of a ~185-word prompt it was the LOWEST-priority text in every
+    render, so whether the house look survived depended on how hard that
+    particular subject happened to pull — and subjects pull differently by
+    SEX. The male goliath's clause adds "jutting jaw, heavy ridged brow" on top
+    of "weathered granite" and "lithoderm growths" and came back sculpted; the
+    female's adds "soft full lips, smooth cheeks, a woman" and came back drawn.
+    Same style words, same LoRA, two different-looking peoples — which is the
+    one thing a house style exists to prevent. Weighting it makes the art
+    direction compete instead of trail.
     """
     sexed = look.get("male" if sex == "m" else "female", "")
     shared = look.get("shared", "")
@@ -597,7 +616,7 @@ def build_positive(look: Dict[str, str], sex: str, style_prompt: str,
              _FRAMING,
              _STYLE_HUMANLIKE if tier == "human"
              else _STYLE_CREATURE if tier == "creature" else _STYLE_KINDRED,
-             style_prompt]
+             f"({style_prompt}:{_STYLE_WEIGHT})" if style_prompt else ""]
     if not skip_grit:   # a style reference (IP-Adapter) defines the mood instead
         parts.append(_GRIT_FEM if (sex == "f" and cute) else _GRIT)
     if tier == "creature" and anchor:
