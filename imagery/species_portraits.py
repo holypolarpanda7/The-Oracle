@@ -71,12 +71,26 @@ _STYLE_KINDRED = ("a real adult face rendered seriously, the species' own bone "
 # Light grounding so faces stay characterful rather than airbrushed. Males and
 # non-small females get a touch of natural realism; the SMALL folk females read
 # cuter (a weathered look is wrong on the little peoples).
-_GRIT = "grounded semi-realism, natural skin texture, characterful weathered look"
+# This line trails EVERY species prompt, and it used to read "grounded
+# semi-realism, natural skin texture, characterful weathered look" — a direct
+# request for realistic rendering, sitting after the art direction and pulling
+# against it. On a stubbled male face that still inks (the stubble IS texture);
+# on a smooth female face "natural skin texture" means airbrush, which is how
+# the men came back cel-shaded and the women came back glossy 3D. Swapping it
+# for ink language was the single biggest lever measured: elf-f ink 14.2 -> 18.4,
+# against 14.9 for deleting the line outright. It still asks for a serious,
+# weathered adult face — that is what it is for — without asking for a
+# photograph. See scripts/species_style_gap.py.
+_GRIT = ("bold graphic shapes, visible ink linework, flat cel shading, "
+         "a characterful weathered face")
 # "Youthful" plus a small stature is how the gnome and halfling women came back
 # as human CHILDREN. They are grown adults with soft round faces — say both.
-_GRIT_FEM = ("an adult woman with a charming endearing face, soft rounded "
-             "features, warm expressive eyes, smooth complexion, laugh lines, "
-             "grown-up poise")
+# Same treatment as _GRIT: "soft rounded features, smooth complexion" was the
+# airbrush request wearing the anti-child line's clothes. The job here is to say
+# ADULT, which "laugh lines" and "grown-up poise" already do, so the softness
+# words were carrying nothing the rest of the clause does not.
+_GRIT_FEM = ("an adult woman with a charming endearing face, full rounded "
+             "cheeks, warm expressive eyes, laugh lines, grown-up poise")
 _NEG_EXTRA = ("full body, multiple people, crowd, nudity, nsfw, modern clothing, "
               "photograph, low detail, plastic skin, airbrushed, harsh, ugly, "
               "grimdark, horror, "
@@ -103,12 +117,18 @@ _NEG_EXTRA = ("full body, multiple people, crowd, nudity, nsfw, modern clothing,
 _NEG_CHILD = "child, little girl, little boy, teenager, baby face, toddler, youth"
 
 #: How hard the house art direction pushes in a species prompt (see
-#: build_positive). Deliberately BELOW the species clause's 1.35: the species
-#: has to keep winning, or a strong style eats "slate blue-grey skin" and hands
-#: back a tattooed human — the failure four rounds of prompt surgery already
-#: fought. 1.20 is enough to stop the look varying by subject and sex without
-#: entering that fight.
-_STYLE_WEIGHT = 1.20
+#: build_positive). Started at 1.20, deliberately below the species clause's
+#: 1.35, on the theory that the species must keep winning or a strong style
+#: eats "slate blue-grey skin" and hands back a tattooed human.
+#:
+#: Raised to 1.35 — level with the species clause, not above it — because 1.20
+#: measurably was not enough: the goliath women stayed smooth at 1.20 and even
+#: at 1.45 with the old _GRIT, so the number alone never was the fix. It earns
+#: its place as one of THREE changes that together closed the elf gap exactly
+#: (female ink 14.2 -> 21.3 against a male 21.2): this, the _GRIT swap, and the
+#: female anti-gloss negative. Level rather than above keeps the original fear
+#: honoured — the species still cannot be outranked, only matched.
+_STYLE_WEIGHT = 1.35
 
 # ---- keeping a species from collapsing into a human ------------------------
 #
@@ -141,7 +161,15 @@ _NEG_BY_SEX = {
     # unless it is negated outright. No species' women want facial hair here
     # (dwarven braided sideburns are hair, and survive this).
     "f": "man, male, masculine jaw, stubble, beard, moustache, goatee, "
-         "facial hair",
+         "facial hair, "
+         # The model's default for "a woman, portrait" is glamour rendering,
+         # and the anti-3D words in _NEG_EXTRA are general enough that the sex
+         # prior wins anyway. Said HERE it is aimed at the render that is
+         # actually losing: measured on elf-f, ink 14.2 -> 15.7 from this
+         # alone, and it stacks with the _GRIT swap.
+         "airbrushed, smooth flawless skin, beauty retouching, glamour "
+         "photography, soft focus, glossy skin, porcelain doll, "
+         "digital painting gradient, rendered in 3d",
 }
 
 
@@ -202,7 +230,12 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
                   "long pointed ears, large almond eyes, smooth fair skin, "
                   "long straight hair, elegant elven attire",
         "male": "a graceful elven man, fine sharp jaw",
-        "female": "a graceful elven woman, serene delicate features"},
+        # "serene delicate features" is a mood, not a face — nothing in it has
+        # an edge, so the model fell back on its default for a beautiful woman
+        # (smooth glamour rendering) while the man's "fine sharp jaw" gave the
+        # ink a line to follow. Name the structure. See the goliath note.
+        "female": "an elven woman, high cheekbones, a fine sharp jaw, "
+                  "long straight hair"},
     "half-elf": {
         "shared": "a half-elf, subtly pointed ears, a blend of human warmth and "
                   "elven grace, faintly angular features, expressive eyes",
@@ -319,7 +352,8 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
                   "light hanging behind the head, hair with a metallic sheen, "
                   "unmistakably not mortal",
         "male": "a radiant aasimar man, noble calm features, glowing sigils",
-        "female": "a radiant aasimar woman, luminous and graceful, glowing sigils"},
+        "female": "a radiant aasimar woman, high cheekbones, a clean jaw line, "
+                  "glowing sigils"},
     # This one took five measured passes; the arc is worth keeping, because the
     # obvious repair at each step caused the next failure.
     #
@@ -368,8 +402,18 @@ SPECIES_LOOKS: Dict[str, Dict[str, str]] = {
         # and simply outranks an unweighted sex clause, so two of three seeds
         # still came back male. This is the ONE look that has to carry its own
         # CLIP weight to survive its own species descriptor.
-        "female": "(a towering goliath woman, clearly feminine face, soft full "
-                  "lips, large expressive eyes, smooth cheeks, a woman:1.3)"},
+        #
+        # Femininity is carried by STRUCTURE, never by softness. "soft full
+        # lips, smooth cheeks" read as a woman AND as an airbrushed surface,
+        # and at 1.3 they outranked the art direction: the men came back inked
+        # and cel-shaded while the women came back smooth 3D renders. Raising
+        # the style weight did NOT fix it (measured at 1.45 — no improvement),
+        # because no weight argues a model out of a description. Naming
+        # cheekbones and a jaw line instead keeps the sex read and gives the
+        # ink something to bite on.
+        "female": "(a towering goliath woman, clearly feminine face, high sharp "
+                  "cheekbones, a strong slender jaw, full lips, large eyes, "
+                  "a woman:1.3)"},
 }
 
 _ALIASES = {"half elf": "half-elf", "halfelf": "half-elf",
