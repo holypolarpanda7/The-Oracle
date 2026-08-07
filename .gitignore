@@ -74,5 +74,8 @@ activity-ui/pack-shots/
 # LoRA probe output (generated art, local only)
 map-probe/
 style-probe/
+# LoRA TRAINING set: ~520 full-size renders + captions, regenerable
+# from scripts/lora_dataset.py, so it is derived data not source.
+lora-train/
 activity-ui/affix-shots/
 activity-ui/route-shots/
