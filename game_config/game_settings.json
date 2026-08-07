@@ -84,6 +84,14 @@
           "clip": 0.7
         }
       ],
+      "loras_mature": [
+        {
+          "name": "MythP0rtr4itStyle.safetensors",
+          "model": 0.75,
+          "clip": 0.75,
+          "trigger": "mythp0rt"
+        }
+      ],
       "map_controlnet": "controlnet-scribble-sdxl.safetensors",
       "map_controlnet_strength": 0.8
     }

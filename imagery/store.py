@@ -117,8 +117,26 @@ class ImageStore:
         from game_config import get_config
         return get_config().imagery
 
-    def _loras_for(self, cfg, kind: str) -> list:
-        """The LoRA stack for one render: the kind's own, else the house style."""
+    def _loras_for(self, cfg, kind: str, mature: bool = False) -> list:
+        """The LoRA stack for one render: the kind's own, else the house style.
+
+        A MATURE render runs a different checkpoint, so it needs a different
+        stack — the house LoRAs are trained against SDXL base and measured
+        close to inert on Pony (see `loras_mature` in the imagery config). It
+        wins over the per-kind map because the checkpoint is the stronger
+        constraint: a LoRA for the wrong base model does nothing useful no
+        matter which kind asked for it. Empty `loras_mature` falls through to
+        the normal selection, so an operator who has not tuned one is exactly
+        where they were before.
+        """
+        # Gated on the CHECKPOINT, not just the flag: a mature-flagged render
+        # with no `checkpoint_mature` configured silently falls back to the
+        # safe model, and handing that render a Pony-tuned stack would be the
+        # exact mismatch this field exists to prevent, in reverse.
+        if mature and getattr(cfg, "checkpoint_mature", None):
+            mature_stack = getattr(cfg, "loras_mature", None) or []
+            if mature_stack:
+                return list(mature_stack)
         by_kind = getattr(cfg, "loras_by_kind", None) or {}
         return list(by_kind.get(normalize_kind(kind) if kind else "",
                                 getattr(cfg, "loras", None) or []))
@@ -242,7 +260,8 @@ class ImageStore:
         seed = random.randint(0, 2**31 - 1) if seed is None else int(seed)
         try:
             client = self._client_for(cfg)
-            client.loras = self._loras_for(cfg, getattr(prompt, "kind", ""))
+            client.loras = self._loras_for(cfg, getattr(prompt, "kind", ""),
+                                           mature=mature)
             # Set per render: only a layout-conditioned map wants a ControlNet,
             # and the same client serves portraits and items too.
             client.controlnet = controlnet

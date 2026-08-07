@@ -572,6 +572,7 @@ LORA_TRIGGERS = {
     # purpose - name the half you want.
     "darkfanxlgrain": "dark fantasy art style",
     "hadeslevel": "hadeslevel",
+    "mythp0rtr4itstyle": "mythp0rt",
     # Hades_Art_Style is deliberately ABSENT, and that is not an oversight.
     # Its 210 captions are whole sentences ("character shaded with neon
     # colors") rather than one repeated tag, so there is no trigger to fire -

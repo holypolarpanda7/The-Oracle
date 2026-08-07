@@ -348,6 +348,36 @@ class ImageryConfig:
     #   {"map": [{"name": "dnd_battlemaps_xl.safetensors", "model": 0.9}]}
     # A kind listed here uses ITS list INSTEAD of `loras`, not in addition.
     loras_by_kind: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    # The stack for a MATURE render, which runs a different CHECKPOINT and so
+    # needs different LoRAs — this is not a mood setting, it is the same
+    # requirement that already gave `checkpoint_mature` and
+    # `mature_style_prompt` their own fields.
+    #
+    # The house LoRAs are trained against SDXL BASE. Pony is a heavy finetune
+    # whose weights have drifted far from it, and MEASURED on Pony they are
+    # close to inert: the full house stack scored 37.7% mean error against the
+    # safe pipeline's own output, where bare Pony with NO LoRAs at all scored
+    # 45.1%. Three LoRAs at full strength were buying ~7 points, so every
+    # mature render was effectively going out with no house style — and a
+    # mature portrait sits beside the safe portrait of the same character,
+    # where that seam is visible.
+    #
+    # Empty = fall back to `loras` (the old behaviour, kept so an operator who
+    # has not tuned a mature stack is no worse off than before).
+    #
+    # Live: MythP0rtr4itStyle @0.75, trigger `mythp0rt` (on all 241 of its
+    # training images — it half-fires without it). 37.7% -> 23.9%. Chosen over
+    # 21 candidate stacks by style-probe/pony_house_match*.py, which renders the
+    # SAFE pipeline as column 0 and asks only which Pony stack belongs beside
+    # it. Two findings worth not re-deriving: AshTALYN_SOD3 never helps at any
+    # dose tested (0.15 -> 0.9) despite being the Pony-native LoRA — it lands
+    # on the target's shadow mass but pays in ink and saturation, and simply
+    # lowering Myth does the same job for free; and Hades_Art_Style cannot
+    # supply linework here for the same reason the rest of the house stack
+    # cannot. The residual gap is INK (9.4 against the target's 14.4): Pony
+    # renders painted, not inked, and closing that needs a Pony-native lineart
+    # LoRA, which neither download is.
+    loras_mature: List[Dict[str, Any]] = field(default_factory=list)
     # ControlNet for BATTLEMAPS only, and it is not a style knob — it is the
     # difference between a picture of this room and a picture of some room. A
     # text prompt cannot say where a wall goes, so the tile grid is drawn as a
