@@ -187,6 +187,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
   level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed)
+- Feat smoke test: `uv run python scripts/feats_smoke.py` (a feat's questions,
+  its grants, its named options, the resource it hands over and the at-will
+  spell it grants — all the way to what the DM is told)
 - Session-feature smoke tests (all offline, fresh scratch DB, no GPU/LLM):
   `uv run python scripts/<name>_smoke.py` for `locale` (place/clock/weather/
   who's here), `chronicle` (journal + quests + bonds), `speech` (dialogue
@@ -718,6 +721,20 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `options_are_feats` and the pick BECOMES that feat — Fighting Initiate's
   styles are real `fighting-style` rows with their own benefit text, and as a
   bare word they were a label every feat-reader walked past.
+- **A named feat OPTION is a proper noun until something says what it does.**
+  `owned_books/option_catalog.json` (gitignored, cached once — restart after
+  editing) maps `tag -> option -> {cost, resource, grants_spell, at_will,
+  desc}`, and `character_feats()` attaches it to every pick as `picks_detail`.
+  Two consequences make the difference between a label and a rule: a feat may
+  declare `grants_resource` and get a real pool in `_class_resources_for` —
+  same key MERGES, so a sorcerer with Metamagic Adept has level+2 points in ONE
+  pool, and a fighter with it has 2 points that `[[USE: Sorcery Points]]`
+  actually spends; and an option granting an at-will spell reaches
+  `_castable_lists`, because that list is the ENFORCEMENT ("the PC may cast
+  ONLY these") and an at-will grant that never arrived read as a spell to
+  refuse. Warlock invocations and sorcery-point Metamagic have no simulation
+  behind them beyond this — the DM is shown the option's own rules text and
+  adjudicates. `uv run python scripts/feats_smoke.py` pins all of it.
 - **A class needs a spell LIST, and only the artificer's was missing.** Its 75
   spells live in the `spell_lists_overrides.json` slot (additive — see
   `rules/OWNED_IMPORT_FORMAT.md`). Before it the DB held exactly one spell

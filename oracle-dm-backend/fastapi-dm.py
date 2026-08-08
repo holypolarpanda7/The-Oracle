@@ -9806,6 +9806,17 @@ def _castable_lists(char: Character) -> tuple[list[str], list[str]]:
                    for r in char.prepared_spells if _nm(r)]
     else:
         leveled = leveled_book
+    # A feat option may grant a spell AT WILL (an invocation like Armor of
+    # Shadows). This list is the enforcement — the DM is told the PC may cast
+    # ONLY what is on it — so an at-will grant that never arrived here read as
+    # a spell to refuse. It rides with the cantrips because that is what
+    # at-will means mechanically: no slot, no preparation, no limit.
+    try:
+        for nm in feat_option_spells(char):
+            if nm not in cantrips and nm not in leveled:
+                cantrips.append(nm)
+    except Exception as e:
+        print(f"[castable] feat-option spells unavailable: {e}")
     return cantrips, leveled
 
 
@@ -12208,6 +12219,65 @@ def _tag_values(char: Character, prefix: str) -> List[str]:
             and t.split(":", 1)[1].strip()]
 
 
+# What a NAMED feat option actually does. A pick like "Quickened Spell" or
+# "Devil's Sight" is a proper noun and nothing more; the rules behind it are
+# book text, so the catalogue is a gitignored local file exactly like
+# feat_choices.json — the loader is committed, the words are not.
+#   {"<tag>": {"<Option Name>": {"cost": 2, "resource": "sorcery",
+#                                "grants_spell": "mage-armor", "at_will": true,
+#                                "desc": "…"}}}
+_OPTION_CATALOG_FILE = (Path(__file__).resolve().parent.parent
+                        / "owned_books" / "option_catalog.json")
+_OPTION_CATALOG_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+
+
+def _option_catalog() -> Dict[str, Dict[str, Any]]:
+    """Tag -> option name (lowercased) -> its entry. Empty when absent."""
+    global _OPTION_CATALOG_CACHE
+    if _OPTION_CATALOG_CACHE is not None:
+        return _OPTION_CATALOG_CACHE
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        if _OPTION_CATALOG_FILE.is_file():
+            import json
+            with open(_OPTION_CATALOG_FILE, encoding="utf-8") as fh:
+                data = json.load(fh)
+            for tag, opts in (data or {}).items():
+                if tag.startswith("_") or not isinstance(opts, dict):
+                    continue
+                out[str(tag).strip().lower()] = {
+                    str(k).strip().lower(): v for k, v in opts.items()
+                    if isinstance(v, dict)}
+    except Exception as e:
+        print(f"[feats] option catalogue load failed: {e}")
+    _OPTION_CATALOG_CACHE = out
+    return out
+
+
+def _option_entry(tag: str, name: str) -> Dict[str, Any]:
+    return _option_catalog().get((tag or "").strip().lower(), {}).get(
+        (name or "").strip().lower(), {})
+
+
+def feat_option_spells(char: Character) -> List[str]:
+    """Spell NAMES a feat's chosen options let this character cast at will.
+
+    An invocation like Armor of Shadows is "you can cast Mage Armor at will",
+    and the spellcasting block is ENFORCED — it tells the DM the PC may cast
+    ONLY what is listed. So an at-will spell that never reached that list was
+    not a benefit, it was a spell the DM was instructed to refuse.
+    """
+    out: List[str] = []
+    for f in character_feats(char):
+        for p in f.get("picks_detail") or []:
+            slug = (p.get("grants_spell") or "").strip()
+            if not slug or not p.get("at_will"):
+                continue
+            sp = rules_lib.get_spell(slug)
+            out.append(sp.name if sp else slug)
+    return list(dict.fromkeys(out))
+
+
 def character_feats(char: Character) -> List[Dict[str, Any]]:
     """Every feat on the sheet, with its benefit text and its NAMED picks.
 
@@ -12226,19 +12296,29 @@ def character_feats(char: Character) -> List[Dict[str, Any]]:
         except Exception:
             pass
         picks: List[str] = []
+        detail: List[Dict[str, Any]] = []
         for spec in _feat_choice_specs(slug):
             if spec.get("kind") != "options":
                 continue
+            tag = str(spec.get("tag") or "feat-option")
             offered = {str(v).strip().lower() for v in (spec.get("from") or [])}
-            held = _tag_values(char, str(spec.get("tag") or "feat-option"))
-            picks.extend(v for v in held
-                         if not offered or v.strip().lower() in offered)
+            held = _tag_values(char, tag)
+            for v in held:
+                if offered and v.strip().lower() not in offered:
+                    continue
+                if v in picks:
+                    continue
+                picks.append(v)
+                detail.append({"name": v, "tag": tag, **_option_entry(tag, v)})
         out.append({
             "slug": slug,
             "name": getattr(row, "name", None) or slug.replace("-", " ").title(),
             "benefit": getattr(row, "benefit", None) or None,
             "category": getattr(row, "category", None) or None,
-            "picks": list(dict.fromkeys(picks)),
+            "picks": picks,
+            # Each pick with whatever the option catalogue knows about it —
+            # its point cost, its rules text, any at-will spell it grants.
+            "picks_detail": detail,
         })
     return out
 
@@ -12261,6 +12341,19 @@ def _feats_prompt_block(char: Character) -> List[str]:
         if f["benefit"]:
             bits += f" — {f['benefit'][:200].rstrip()}"
         lines.append(f"  - {bits}")
+        # The chosen option's OWN rules, indented under it. Without these the
+        # DM has the name of an invocation and no idea what it does, which is
+        # the same as not having it.
+        for p in f.get("picks_detail") or []:
+            desc = (p.get("desc") or "").strip()
+            if not desc and p.get("cost") is None:
+                continue
+            cost = ""
+            if p.get("cost") is not None:
+                cost = f" ({p['cost']} {p.get('resource', 'sorcery')} point" \
+                       f"{'s' if int(p['cost']) != 1 else ''})"
+            lines.append(f"      · {p['name']}{cost}"
+                         + (f" — {desc[:180].rstrip()}" if desc else ""))
     return lines
 
 
@@ -16540,19 +16633,57 @@ def _class_resources_for(char: Character) -> list[dict]:
             r["die"] = die
         return r
 
+    out: list[dict] = []
     if cls == "bard":
         die = "d6" if lvl < 5 else "d8" if lvl < 10 else "d10" if lvl < 15 else "d12"
         # Font of Inspiration (level 5) lets it recover on a short rest too.
-        return [row("Bardic Insp.", "bardic", max(1, amod("charisma")),
-                    "short" if lvl >= 5 else "long", die)]
-    if cls == "monk":
-        return [row("Ki", "ki", lvl, "short")]
-    if cls == "barbarian":
+        out = [row("Bardic Insp.", "bardic", max(1, amod("charisma")),
+                   "short" if lvl >= 5 else "long", die)]
+    elif cls == "monk":
+        out = [row("Ki", "ki", lvl, "short")]
+    elif cls == "barbarian":
         rage = 2 if lvl < 3 else 3 if lvl < 6 else 4 if lvl < 12 else 5 if lvl < 17 else 6
-        return [row("Rage", "rage", rage, "long")]
-    if cls == "sorcerer" and lvl >= 2:
-        return [row("Sorcery Pts", "sorcery", lvl, "long")]
-    return []
+        out = [row("Rage", "rage", rage, "long")]
+    elif cls == "sorcerer" and lvl >= 2:
+        out = [row("Sorcery Pts", "sorcery", lvl, "long")]
+
+    # …plus whatever a FEAT hands over. Metamagic Adept's 2 sorcery points are
+    # the case that forced this: a fighter who takes it has no class pool at
+    # all, so [[USE: Sorcery Points]] failed with "none available" and the
+    # feat's whole second half was unspendable. A grant ADDS to a pool of the
+    # same key rather than making a second one — a sorcerer with the feat has
+    # level+2 points, not two separate pools to reason about.
+    by_key = {r["key"]: r for r in out}
+    for g in _feat_resource_grants(char):
+        key = g["key"]
+        if key in by_key:
+            r = by_key[key]
+            r["total"] += int(g["total"])
+            r["used"] = min(r["total"], used_map.get(key, 0))
+        else:
+            r = row(g["name"], key, int(g["total"]), g.get("reset", "long"))
+            out.append(r)
+            by_key[key] = r
+    return out
+
+
+def _feat_resource_grants(char: Character) -> list[dict]:
+    """Resource pools a character's feats grant, from the feat-choice schema.
+
+    A feat declares ``grants_resource: {key, name, total, reset}``; the pool
+    itself is the class-resource machinery that already exists, so a granted
+    pool is displayed, spent through ``[[USE:]]`` and reset by rests with no
+    further wiring. Same key = same pool, deliberately.
+    """
+    out: list[dict] = []
+    for slug in _tag_values(char, "feat"):
+        spec = _feat_choices_merged().get(slug) or {}
+        for part in ([spec] + ([spec.get("also")] if isinstance(spec.get("also"), dict)
+                               else list(spec.get("also") or []))):
+            g = (part or {}).get("grants_resource")
+            if isinstance(g, dict) and g.get("key") and g.get("total"):
+                out.append(g)
+    return out
 
 
 def _spend_resource(char: Character, name: str, amount: int = 1) -> Optional[dict]:
@@ -17260,11 +17391,17 @@ def _spellbook_spells(char: Character) -> list[dict]:
 
 def _can_inscribe(char: Character) -> bool:
     """Who may write into a spellbook: wizards, or anyone with a feat that grants
-    a spellbook (Ritual Caster / a spellbook-granting feat)."""
+    a spellbook (Ritual Caster / a spellbook-granting feat).
+
+    `Character` has no `feats` attribute — feats are `feat:` TAGS — so the
+    getattr this used to do returned [] every time and no feat has ever let a
+    non-wizard inscribe. Read them the one way they are readable.
+    """
     if (char.char_class or "").strip().lower() == "wizard":
         return True
-    feats = getattr(char, "feats", None) or []
-    return any(("spellbook" in str(f).lower() or "ritual caster" in str(f).lower()) for f in feats)
+    hay = " ".join(f"{f['name']} {f.get('benefit') or ''}"
+                   for f in character_feats(char)).lower()
+    return "spellbook" in hay or "ritual caster" in hay
 
 
 def _activity_item_detail(char: Character, name: str) -> dict:
