@@ -128,6 +128,48 @@ to offer.
 ```
 Any `rules_monster` field may be set; list fields hold `{name, desc, ...}` objects.
 
+## `summons_overrides.json` → `rules.summons` catalogue  (engine: `rules/summons.py`)
+```json
+{
+  "slug": "fey-spirit", "name": "Fey Spirit", "noun": "fey",
+  "spells": ["summon-fey"], "min_level": 3,
+  "size": "Small", "type": "fey",
+  "armor_class": {"base": 12, "per_level": 1},
+  "hit_points": {"base": 30, "per_level": 10, "from": 3},
+  "speed": {"walk": 40},
+  "abilities": {"str": 13, "dex": 16, "con": 14, "int": 14, "wis": 11, "cha": 16},
+  "senses": {"darkvision": 60, "passive_perception": 10},
+  "condition_immunities": ["charmed"],
+  "multiattack": {"per_level": 0.5},
+  "traits": [{"name": "Fey Step", "desc": "...DC {dc}...", "only": ["mirthful"]}],
+  "actions": [
+    {"name": "Shortsword", "kind": "melee weapon", "reach_ft": 5,
+     "damage_dice": "1d6", "damage_bonus": {"base": 3, "per_level": 1},
+     "damage_type": "piercing",
+     "extra_damage": [{"dice": "1d6", "type": "force"}]}
+  ],
+  "variants": {"fuming": {"label": "Fuming"}, "mirthful": {"label": "Mirthful"}}
+}
+```
+The odd one out in the other direction: it is **not upserted into a table at
+all**. A summoning spell's creature has no fixed numbers — "AC 11 + the level
+of the spell", "your spell attack modifier to hit", "against your spell save
+DC" — so the entry is a RECIPE, and `rules.summons.materialize()` writes a
+concrete `rules_monster` row per (spirit, variant, slot level, caster) when the
+spell is actually cast.
+
+Every scaling line in every printed summon block is the same expression:
+`{base, per_level, from}` → `base + per_level x (level - from)`, floored, and
+never below `base`. A bare number is a constant. `{level}`, `{dc}` and
+`{attack}` are substituted into trait and action prose.
+
+`only` gates a trait or action to some variants ("Claws (Slaad Only)") —
+that is where the books put the gate, so it is where it goes here; a `variants`
+patch carries only what genuinely differs as a NUMBER (a Bestial Air spirit's
+hit points and speed). `kind` must name the attack the way a stat block does
+(`melee weapon`, `ranged spell`) because the combat engine parses reach and
+range out of the rendered prose.
+
 ## `items_overrides.json` → `rules_item`  (loader: `ingest_items_overrides`)
 ```json
 {

@@ -276,8 +276,14 @@ class CombatEngine:
 
     @staticmethod
     def _side(c: Combatant) -> str:
-        """PCs are one side; monsters/NPCs the other (v1 — allied NPCs later)."""
-        return "party" if c.kind == "pc" else "foe"
+        """Which side a creature fights for.
+
+        ``Combatant.side`` when it is set — a conjured spirit is a monster row
+        that fights for the party, and nothing else in the schema could say so.
+        Unset falls back to the original rule (PCs are one side, everything else
+        the other), which is right for every fight that has no allies in it.
+        """
+        return getattr(c, "side", None) or ("party" if c.kind == "pc" else "foe")
 
     def _engaged_enemies(self, encounter_id: int, c: Combatant) -> list[Combatant]:
         out = []

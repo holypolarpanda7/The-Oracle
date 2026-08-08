@@ -87,6 +87,14 @@ class Combatant(SQLModel, table=True):
     name: str = Field(sa_column=Column(String, nullable=False))
     kind: str = Field(default=CombatantKind.MONSTER, sa_column=Column(String))
 
+    # Who this creature is fighting FOR. Left unset it is derived from `kind`
+    # (a PC is party, everything else is a foe), which is what the engine always
+    # assumed. A conjured spirit breaks that assumption: it is a monster row by
+    # every other measure and it fights on the party's side, so without this a
+    # summoner's own creature provoked opportunity attacks from the party and
+    # counted as an enemy for flanking and Help.
+    side: Optional[str] = Field(default=None, sa_column=Column(String))
+
     # Optional links back to the source record.
     character_id: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
     monster_slug: Optional[str] = Field(default=None, sa_column=Column(String, index=True))

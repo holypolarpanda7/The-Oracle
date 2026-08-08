@@ -117,6 +117,7 @@ class CombatTracker:
         character_id: Optional[int] = None,
         monster_slug: Optional[str] = None,
         notes: Optional[str] = None,
+        side: Optional[str] = None,
     ) -> Combatant:
         with Session(self.engine) as s:
             c = Combatant(
@@ -124,7 +125,7 @@ class CombatTracker:
                 max_hp=max(1, max_hp), current_hp=max(1, max_hp), temp_hp=0,
                 armor_class=armor_class, dex_mod=dex_mod, initiative=initiative,
                 character_id=character_id, monster_slug=monster_slug,
-                conditions=[], notes=notes,
+                conditions=[], notes=notes, side=side,
             )
             s.add(c)
             s.commit()
@@ -156,14 +157,26 @@ class CombatTracker:
         count: int = 1,
         roll_hp: bool = False,
         rng: Optional[random.Random] = None,
+        side: Optional[str] = None,
+        initiative: int = 0,
+        dex_mod: Optional[int] = None,
     ) -> list[Combatant]:
-        """Add ``count`` copies of an SRD monster, hydrated from ``rules_monster``."""
+        """Add ``count`` copies of an SRD monster, hydrated from ``rules_monster``.
+
+        ``side`` marks who it fights for (a conjured spirit is a monster on the
+        party's side). ``initiative``/``dex_mod`` override the roll, which is
+        how "shares your initiative count, but takes its turn immediately after
+        yours" is expressed: copying the summoner's initiative AND its tiebreak
+        leaves ``order()``'s final key — the row id — to place the newer row
+        just after. The creature has no initiative of its own; that is the rule,
+        not a hack around it.
+        """
         rng = rng or random
         with Session(self.engine) as s:
             mon = s.exec(select(Monster).where(Monster.index_slug == slug)).first()
             if mon is None:
                 raise ValueError(f"Unknown monster slug: {slug!r}")
-            dex_mod = ability_modifier(mon.dexterity)
+            dex = ability_modifier(mon.dexterity) if dex_mod is None else int(dex_mod)
             created: list[Combatant] = []
             for i in range(max(1, count)):
                 if roll_hp and mon.hit_points_roll:
@@ -177,7 +190,8 @@ class CombatTracker:
                 c = Combatant(
                     encounter_id=encounter_id, name=label, kind=CombatantKind.MONSTER,
                     max_hp=hp, current_hp=hp, temp_hp=0,
-                    armor_class=mon.armor_class, dex_mod=dex_mod,
+                    armor_class=mon.armor_class, dex_mod=dex,
+                    initiative=int(initiative or 0), side=side,
                     monster_slug=mon.index_slug, conditions=[],
                 )
                 s.add(c)

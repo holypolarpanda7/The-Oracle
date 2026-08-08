@@ -67,6 +67,7 @@ from rules import (
 )
 from rules import leveling
 from rules import metamagic
+from rules import summons
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import CombatTracker, CombatEngine, PCProfile, PCWeapon, Condition
 from combat.models import CombatLog
@@ -366,7 +367,8 @@ async def lifespan(app: FastAPI):
                                      ("attacks_made", "INTEGER DEFAULT 0"),
                                      ("sneak_used", "BOOLEAN DEFAULT 0"),
                                      ("used_features", "JSON"),
-                                     ("pending_saves", "JSON")]:
+                                     ("pending_saves", "JSON"),
+                                     ("side", "VARCHAR")]:
                         if col not in cb_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE combat_combatant ADD COLUMN {col} {ddl}")
@@ -1249,11 +1251,18 @@ _ORDINALS = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th",
              6: "6th", 7: "7th", 8: "8th", 9: "9th"}
 
 
-def resolve_cast_hooks(text: str, char: "Character") -> str:
+def resolve_cast_hooks(text: str, char: "Character",
+                       record: Optional[Dict[str, Optional[int]]] = None) -> str:
     """Resolve [[CAST: Spell | slot level]] hooks: enforce that the PC actually
     has the spell prepared/known and an open slot, EXPEND the slot (mutating
     char.spell_slots_used — the caller persists), and substitute the outcome.
-    A cast the PC can't make is turned into a visible failure."""
+    A cast the PC can't make is turned into a visible failure.
+
+    ``record`` collects ``{spell name lowered: slot level spent, or None if the
+    casting failed}``. That is what lets a follow-on hook — [[SUMMON]] — refuse
+    to produce anything for a spell that never went off, and know the level it
+    actually went off AT without the DM having to say so twice.
+    """
     def repl(match: re.Match) -> str:
         parts = [p.strip() for p in match.group(1).split("|")]
         name = parts[0] if parts else ""
@@ -1265,18 +1274,96 @@ def resolve_cast_hooks(text: str, char: "Character") -> str:
         sp = rules_lib.get_spell(name)
         disp = sp.name if sp else name
         spell_level = sp.level if sp else None
+
+        def note(level: Optional[int]) -> None:
+            if record is not None:
+                for key in {name.strip().lower(), disp.strip().lower()}:
+                    if key:
+                        record[key] = level
+
         if not _can_cast(char, name):
+            note(None)
             return f"✨ {disp} won't answer — it isn't prepared."
         if (spell_level or 0) == 0:
+            note(0)
             return f"✨ {disp}"                      # cantrip: no slot
         need = max(int(spell_level or 1), int(at_level or 0), 1)
         spent = _expend_slot(char, min_level=need)
         if spent is None:
+            note(None)
             ord_need = _ORDINALS.get(need, f"{need}th")
             return f"✨ {disp} sputters out — no {ord_need}-level (or higher) slot remains."
+        note(spent)
         return f"✨ {disp} ({_ORDINALS.get(spent, str(spent))}-level slot)"
 
     return CAST_HOOK_PATTERN.sub(repl, text)
+
+
+SUMMON_HOOK_PATTERN = re.compile(r"\[\[SUMMON:(.+?)\]\]", re.IGNORECASE)
+
+
+def resolve_summon_hooks(text: str, char: "Character", session_id: str,
+                         cast: Optional[Dict[str, Optional[int]]] = None) -> str:
+    """Resolve [[SUMMON: <spell> | <variant> | <slot level>]] — conjure a creature.
+
+    A summoning spell describes a creature whose numbers come from the caster
+    and the slot, so there is nothing in the bestiary to add: before this,
+    `[[COMBAT: add | Fey Spirit]]` found no such monster and seated a 10-HP
+    blob with no AC, speed, senses or attacks. `rules.summons` computes the
+    block and writes it as a real `rules_monster` row; everything downstream
+    resolves creatures by slug, so the spirit arrives complete.
+
+    It does NOT spend the slot — `[[CAST]]` does, and runs first. ``cast`` is
+    that hook's record, so a spell that sputtered out conjures nothing, and the
+    slot level it actually went off at is taken from there rather than trusted
+    from the hook: this is where the whole stat block's scaling comes from, and
+    a DM who writes the wrong number writes a different creature.
+    """
+    def repl(match: re.Match) -> str:
+        parts = [p.strip() for p in match.group(1).split("|")]
+        spell = parts[0] if parts else ""
+        variant = parts[1] if len(parts) > 1 else ""
+        entry = summons.spirit_for(spell)
+        if entry is None:
+            return f"✨ nothing answers the call of {spell or 'that spell'}."
+        key = spell.strip().lower()
+        if cast and key in cast and cast[key] is None:
+            return ""            # the casting already failed and said so
+        level = int(entry.get("min_level") or 1)
+        if len(parts) > 2 and (lm := re.search(r"\d+", parts[2])):
+            level = max(level, int(lm.group()))
+        if cast and cast.get(key):
+            level = max(level, int(cast[key] or 0))
+
+        prof = _combat_pc_profile(char)
+        pb = int(prof.prof or 2)
+        atk = prof.spell_attack_bonus if prof.spell_attack_bonus is not None else pb
+        dc = prof.spell_dc if prof.spell_dc is not None else 8 + pb
+        mon = summons.materialize(spell, level=level, variant=variant,
+                                  engine=engine, attack_bonus=int(atk),
+                                  save_dc=int(dc), proficiency_bonus=pb)
+        if mon is None:
+            return f"✨ nothing answers the call of {spell or 'that spell'}."
+
+        seated = ""
+        try:
+            enc = combat.get_active(session_id)
+            if enc is not None:
+                # "Shares your initiative count, but takes its turn immediately
+                # after yours" — copy the summoner's initiative AND its
+                # tiebreaker, and order()'s last key (the row id) does the rest.
+                me = next((c for c in combat.order(enc.id)
+                           if c.character_id == char.id), None)
+                combat.add_from_monster(
+                    enc.id, mon.index_slug, side="party",
+                    initiative=(me.initiative if me else 0),
+                    dex_mod=(me.dex_mod if me else None))
+                seated = " — it joins the fight on your initiative"
+        except Exception as e:
+            print(f"[summon] could not seat {mon.index_slug}: {e}")
+        return f"✨ {summons.summon_summary(mon)}{seated}"
+
+    return SUMMON_HOOK_PATTERN.sub(repl, text)
 
 
 def _known_metamagic(char: "Character") -> Dict[str, Dict[str, Any]]:
@@ -1303,7 +1390,8 @@ def _strip_mechanic_hooks(text: str) -> str:
     One function rather than a chain of .sub() calls at each call site: the
     two arms that gave up used to list the patterns by hand, so a hook added
     later leaks raw into the narration from whichever arm was missed."""
-    for pat in (CAST_HOOK_PATTERN, USE_HOOK_PATTERN, METAMAGIC_HOOK_PATTERN):
+    for pat in (CAST_HOOK_PATTERN, USE_HOOK_PATTERN, METAMAGIC_HOOK_PATTERN,
+                SUMMON_HOOK_PATTERN):
         text = pat.sub("", text)
     return text
 
@@ -10679,6 +10767,27 @@ def _character_resource_block(character_id: int) -> str:
                     "expends the slot. If they try a spell not listed, or have no "
                     "slot left, narrate that it fails (not prepared / out of "
                     "slots); do NOT let it succeed.")
+                # Summoning spells only: the conjured creature's whole stat block
+                # is computed from the slot and this caster, so the DM must never
+                # invent its numbers — it names the spell and the choice, and the
+                # code builds the creature and seats it.
+                conjurers = []
+                for nm in list(cantrips) + list(leveled):
+                    sp_entry = summons.spirit_for(nm)
+                    if sp_entry is not None:
+                        opts = summons.variants_for(sp_entry)
+                        conjurers.append(
+                            f"{nm} → {sp_entry['name']}"
+                            + (f" ({' / '.join(opts)})" if opts else ""))
+                if conjurers:
+                    lines.append(
+                        "Summoning spells — after the [[CAST]], emit "
+                        "[[SUMMON: Spell Name | choice]] and the game builds the "
+                        "creature from the slot you cast at, writes its stat "
+                        "block, and seats it on your initiative fighting for the "
+                        "party. NEVER state its AC, HP, speed or damage yourself, "
+                        "and never add it with [[COMBAT: add]]: "
+                        + "; ".join(conjurers))
         except Exception as e:
             print(f"[spellcasting block] {e}")
 
@@ -10967,7 +11076,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
 
     # Mechanical enforcement: expend the PC's spell slot for a [[CAST]] and class
     # resources (Rage/Ki/…) for a [[USE]], and block the ones they can't afford.
-    if re.search(r"\[\[(CAST|USE|METAMAGIC):", dm_text, re.IGNORECASE):
+    if re.search(r"\[\[(CAST|USE|METAMAGIC|SUMMON):", dm_text, re.IGNORECASE):
         try:
             state = _load_session_state(req.session_id)
             cid = (_acting_member(state.get("meta", {}) or {}, req.user_id) or {}).get("character_id") \
@@ -10980,7 +11089,14 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                         # shaping is legal and what it costs, and a refusal
                         # there shouldn't have already spent the spell slot.
                         dm_text = resolve_metamagic_hooks(dm_text, ch)
-                        dm_text = resolve_cast_hooks(dm_text, ch)
+                        cast_record: Dict[str, Optional[int]] = {}
+                        dm_text = resolve_cast_hooks(dm_text, ch, cast_record)
+                        # After the cast, so a summon whose slot was refused is
+                        # never conjured and the spirit is built at the level the
+                        # slot actually was; before the combat hooks and the
+                        # board autosync, so it is seated and drawn this turn.
+                        dm_text = resolve_summon_hooks(dm_text, ch, req.session_id,
+                                                       cast_record)
                         dm_text = resolve_use_hooks(dm_text, ch)
                         s.add(ch)
                         s.commit()

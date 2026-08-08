@@ -129,7 +129,11 @@ def seat_encounter(vtt: VttEngine, map_id: int, encounter_id: int, *,
             map_id, c.name,
             kind=(TokenKind.PC if is_pc else
                   TokenKind.NPC if c.kind == "npc" else TokenKind.MONSTER),
-            team=(Team.PARTY if is_pc else Team.FOE),
+            # The tracker owns which side a creature is on (a conjured spirit is
+            # a monster fighting for the party); reading `kind` here instead
+            # would put the board and the combat engine on different answers.
+            team=(getattr(c, "side", None)
+                  or (Team.PARTY if is_pc else Team.FOE)),
             size=size, speed_ft=speed, reach_ft=reach,
             combatant_id=c.id, character_id=c.character_id,
             monster_slug=c.monster_slug, image_id=image_id,

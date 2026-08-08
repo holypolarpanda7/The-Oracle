@@ -190,6 +190,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Feat smoke test: `uv run python scripts/feats_smoke.py` (a feat's questions,
   its grants, its named options, the resource it hands over and the at-will
   spell it grants — all the way to what the DM is told)
+- Summoning smoke test: `uv run python scripts/summons_smoke.py` (the scaling
+  arithmetic, variant gates, the stat block the combat engine reads, the side
+  it fights on, where it lands in initiative, and the backend's own hooks)
 - Session-feature smoke tests (all offline, fresh scratch DB, no GPU/LLM):
   `uv run python scripts/<name>_smoke.py` for `locale` (place/clock/weather/
   who's here), `chronicle` (journal + quests + bonds), `speech` (dialogue
@@ -241,8 +244,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     Paste-and-translate override slots (all gitignored, see
     `rules/OWNED_IMPORT_FORMAT.md`): species, feats, **classes**, subclasses,
     spells, monsters, items, puzzles, backgrounds, **bastion facilities**
-    (`bastion_facilities_overrides.json`) and the **airship fleet**
-    (`airships_overrides.json` — vessels, stations and tuning). A class from
+    (`bastion_facilities_overrides.json`), the **airship fleet**
+    (`airships_overrides.json` — vessels, stations and tuning) and the
+    **summoned spirits** (`summons_overrides.json` — recipes, not rows). A class from
     an owned book goes in the slot, NOT beside Illrigger/Gunslinger in
     `rules/ingest.py`; those are small third-party homebrew, which the rule
     allows, and a WotC book's class is not.
@@ -758,6 +762,38 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   rather than darkvision with a bigger number, because it beats MAGICAL
   darkness and darkvision explicitly cannot; the caller says which kind of
   heavy obscurement it is, and anything that doesn't know still blinds.
+- **A summoning spell has no monster to add — it has a RECIPE.** "AC 11 + the
+  level of the spell", "1d10 + 3 + the spell's level", "your spell attack
+  modifier to hit": `Monster` holds fixed integers and can express none of it,
+  so `[[COMBAT: add | Fey Spirit]]` found nothing in the bestiary and seated a
+  10-HP blob with no AC, speed, senses or attacks — the spell resolved and the
+  creature it conjured did not exist. `rules/summons.py` MATERIALIZES instead:
+  given (spirit, variant, slot level, caster) it computes every number once and
+  upserts a concrete `rules_monster` row, so the tracker, the board, senses and
+  the combat engine — all of which already resolve creatures by slug — need no
+  change at all. The rows are derived and deterministic, so an identical
+  casting is a lookup and a stale one rebuilds identically. **Every scaling
+  line in every printed block is one shape** (`base + per_level x (level -
+  from)`, floored), which is why this is a data slot and not nine special
+  cases. The caster's numbers are IN the slug: two casters of different skill
+  summoning at the same level really do get different creatures. Engine
+  committed, numbers gitignored (`owned_books/summons_overrides.json`), one
+  self-authored generic in the repo — the `airships/` split. The hook is
+  `[[SUMMON: spell | choice]]`, emitted AFTER `[[CAST]]`, which now records
+  what actually went off and at what level: a spell that sputtered out conjures
+  nothing, and the block is built from the slot really spent, never from a
+  number the DM typed.
+- **`Combatant.side` is how an ally exists at all.** The engine's rule was "PCs
+  are one side, everything else the other", and a conjured spirit is a monster
+  row that fights for the party — without the column a summoner's own creature
+  provoked opportunity attacks from the party and counted as an enemy for
+  flanking and Help. Unset still derives from `kind`, so every fight without
+  allies plays exactly as before, and `vtt/bridge.py` reads the same field for
+  a token's team so the board and the tracker cannot disagree. A summon takes
+  the summoner's initiative AND dex tiebreak, which leaves `order()`'s last key
+  (the row id) to place it immediately after — that is the rule ("shares your
+  initiative count, but takes its turn immediately after yours"), not a hack
+  around it.
 - **A class needs a spell LIST, and only the artificer's was missing.** Its 75
   spells live in the `spell_lists_overrides.json` slot (additive — see
   `rules/OWNED_IMPORT_FORMAT.md`). Before it the DB held exactly one spell
