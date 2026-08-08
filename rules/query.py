@@ -462,12 +462,22 @@ def format_spell_brief(sp: Spell) -> str:
         bits.append(f"Save: {sp.dc_type}" + (f" ({sp.dc_success} on success)" if sp.dc_success else ""))
     if sp.attack_type:
         bits.append(f"Attack: {sp.attack_type}")
+    dmg_line = ""
     if sp.damage and isinstance(sp.damage, dict):
         dtype = (sp.damage.get("damage_type") or {}).get("name", "")
         slots = sp.damage.get("damage_at_slot_level") or sp.damage.get("damage_at_character_level") or {}
         if slots:
             base = slots.get(str(sp.level)) or next(iter(slots.values()))
-            bits.append(f"Damage: {base} {dtype}".strip())
+            dmg_line = f"Damage: {base} {dtype}".strip()
+        elif not sp.desc:
+            # Curated overrides store a flat {slot level: "2d10 force"} map, and
+            # normally state the damage in `desc` too. A damage dict this reader
+            # can't render must NOT suppress the description — that left 17 of
+            # the 24 curated spells reaching the DM as a bare header.
+            base = sp.damage.get(str(sp.level)) or next(iter(sp.damage.values()), "")
+            dmg_line = f"Damage: {base}".strip() if base else ""
+    if dmg_line:
+        bits.append(dmg_line)
     elif sp.desc:
         # Book-ingested 2024 spells carry mechanics in prose, not JSON.
         desc = sp.desc.strip()
