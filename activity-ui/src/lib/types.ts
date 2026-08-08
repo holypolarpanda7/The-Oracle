@@ -716,7 +716,7 @@ export interface Spellcasting {
  *  the feat needs none). */
 export interface FeatChoice {
   kind: "skills" | "tools" | "ability" | "language" | "magic_initiate"
-      | "options" | "asi";
+      | "spells" | "options" | "asi";
   n?: number; cantrips?: number; spells?: number;
   classes?: string[]; hint?: string;
   // skills/ability/options: an explicit subset; tools: a group ("instrument"|
@@ -726,8 +726,21 @@ export interface FeatChoice {
   max?: number;      // ability: the score ceiling (20, or 30 for epic boons)
   total?: number;    // asi: points to spend (2)
   save_proficiency?: boolean;   // ability: also grants that save (Resilient)
-  /** A second choice the same feat asks for (e.g. Dragonscarred's resistance). */
-  also?: FeatChoice | null;
+  // "spells": a pick scoped by SCHOOL rather than class (Fey Touched wants a
+  // level-1 Divination or Enchantment spell). `granted` is what rides along
+  // free; n = 0 means grant only, nothing to choose. The pool comes from
+  // GET /cc/feat_spells/{feat} — the server owns the filter.
+  level?: number; schools?: string[]; granted?: string[];
+  /** Further choices the same feat asks for — one, or a list (Skill Expert
+   *  wants an ability, a skill proficiency, AND which skill gets Expertise). */
+  also?: FeatChoice | FeatChoice[] | null;
+}
+
+/** GET /cc/feat_spells/{feat} — the pool a school-scoped feat pick draws from. */
+export interface FeatSpells {
+  feat: string; n: number;
+  level?: number | null; schools?: string[]; hint?: string | null;
+  spells: SpellBrief[]; granted: SpellBrief[];
 }
 
 /** The picks a player has made for one feat, sent back with the level-up. */
@@ -783,7 +796,7 @@ export interface CCOptions {
   }[];
   feats: { slug: string; name: string; category?: string;
            prerequisite?: string | null; min_level?: number; brief: string;
-           choices?: FeatChoice | null }[];
+           repeatable?: boolean; choices?: FeatChoice | null }[];
   backgrounds: {
     slug: string; name: string; skills: string[];
     feature?: string | null; abilities?: string[];

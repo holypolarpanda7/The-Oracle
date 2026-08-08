@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CCOptions, CCPayload, CCSpells, Pantheon, Power, SpellBrief } from "../lib/types";
+import type { CCOptions, CCPayload, CCSpells, FeatChoice, FeatPicks, FeatSpells,
+  Pantheon, Power, SpellBrief } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
-import { ABILITY_LABEL, ChoiceChips, choiceOptions } from "./FeatChoices";
+import { choiceParts, FeatChoiceFields, partSatisfied } from "./FeatChoices";
 
 /** Male+female species portraits for a race/lineage card. Each image walks a
  * candidate list (lineage art → base species art) and hides itself only when
@@ -162,11 +163,11 @@ interface Draft {
   skills: string[];
   featBg?: string;    // the background's Origin feat
   featRace?: string;  // a species-granted feat (Human origin, Custom Lineage any)
-  featSkills: string[];   // skills granted by a chosen feat (e.g. Skilled)
-  featTools: string[];    // tools granted by a feat (Musician/Crafter)
-  featLanguages: string[];// languages granted by a feat
-  featAbility?: string;   // ability chosen by a feat (3-letter code)
-  featOptions: string[];  // named feat picks (a damage resistance, a giant strike)
+  /** Each feat's own answers, keyed by feat slug. A character takes TWO feats
+   *  at creation and they ask independently — a background feat wanting a
+   *  skill and a Custom Lineage feat wanting a skill are two picks, not one,
+   *  and a single flat bucket silently merged them into one. */
+  featPicks: Record<string, FeatPicks>;
   cantrips: string[];     // class cantrip slugs
   spells: string[];       // class level-1 spell slugs
   miClass?: string;       // Magic Initiate: chosen class list
@@ -183,7 +184,7 @@ interface Draft {
 const freshDraft = (): Draft => ({
   boostMode: "two-one", method: "standard_array", pool: [], assigned: {},
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
-  skills: [], featSkills: [], featTools: [], featLanguages: [], featOptions: [],
+  skills: [], featPicks: {},
   cantrips: [], spells: [], miCantrips: [], miSpells: [],
   gearMode: "kit", cart: {}, name: "",
 });
@@ -279,6 +280,9 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   // Initiate — the feat's chosen-class list. Keyed by slug so we don't refetch.
   const [spellData, setSpellData] = useState<CCSpells | null>(null);
   const [miData, setMiData] = useState<CCSpells | null>(null);
+  // Feat spell pools, keyed by feat slug — both feats could ask for one.
+  const [featSpellData, setFeatSpellData] =
+    useState<Record<string, FeatSpells>>({});
   // Bring the racial-features + lineage panel into view when a species is
   // picked — on a phone it sits below the card grid and is easy to miss.
   const raceDetailRef = useRef<HTMLDivElement>(null);
@@ -308,6 +312,26 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     return () => { live = false; };
   }, [d.miClass]);
 
+  // Fetch the pool for each chosen feat that asks for a school-scoped spell
+  // (Fey Touched). The FILTER is the server's — asking by feat slug is what
+  // keeps creation and level-up offering the same list.
+  const spellFeatKey = [d.featBg, d.featRace].filter(Boolean).join(",");
+  useEffect(() => {
+    const slugs = spellFeatKey ? spellFeatKey.split(",") : [];
+    if (!slugs.length) { setFeatSpellData({}); return; }
+    let live = true;
+    Promise.all(slugs.map((slug) =>
+      fetch(`/cc/feat_spells/${slug}`).then((r) => r.json())
+        .then((j: FeatSpells) => [slug, j] as const)
+        .catch(() => null)))
+      .then((rows) => {
+        if (!live) return;
+        setFeatSpellData(Object.fromEntries(
+          rows.filter((r): r is readonly [string, FeatSpells] => !!r)));
+      });
+    return () => { live = false; };
+  }, [spellFeatKey]);
+
   useEffect(() => {
     if (d.race && raceDetailRef.current) {
       raceDetailRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -335,19 +359,34 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     [bg, opts]);
   // Only backgrounds that name no feat (legacy 2014 entries) offer a choice.
   const needsBgFeat = !!bg && !grantedBgFeat && (opts?.feats.length ?? 0) > 0;
+  // …and that choice can't be the species feat already taken, for the same
+  // reason the species pick can't be the background's.
+  const bgFeatPool = useMemo(
+    () => (d.featRace
+      ? originFeats.filter((f) => f.slug !== d.featRace || f.repeatable)
+      : originFeats),
+    [originFeats, d.featRace]);
   const raceFeat = race?.feat_choice ?? null;   // "origin" | "any" | null
+  // The species pick and the background's Origin feat are two SLOTS, not two
+  // copies of one feat: a Giant Foundling already granted Strike of the Giants
+  // can't spend the Custom Lineage pick on it again (the benefit is recorded
+  // once, so the second slot would buy nothing). The server re-checks this.
   const raceFeatPool = useMemo(() => {
     if (!raceFeat || !opts) return [];
-    return raceFeat === "any" ? opts.feats : originFeats;
-  }, [raceFeat, opts, originFeats]);
+    const pool = raceFeat === "any" ? opts.feats : originFeats;
+    return d.featBg ? pool.filter((f) => f.slug !== d.featBg || f.repeatable) : pool;
+  }, [raceFeat, opts, originFeats, d.featBg]);
 
   // The background's Origin feat is granted, not chosen — bind it (and clear
   // the previous one's answers) whenever the background changes.
   useEffect(() => {
     setD((cur) => ({
       ...cur, featBg: grantedBgFeat?.slug,
-      featSkills: [], featTools: [], featLanguages: [],
-      featAbility: undefined, featOptions: [],
+      // A background that grants what the species pick already spent leaves
+      // the species slot holding a duplicate — drop it and let it be re-picked.
+      featRace: cur.featRace && cur.featRace === grantedBgFeat?.slug
+        ? undefined : cur.featRace,
+      featPicks: {},
       miClass: undefined, miCantrips: [], miSpells: [],
     }));
   }, [grantedBgFeat]);
@@ -412,37 +451,37 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   // Choices carried by the chosen origin feats (Skilled → skills, Magic
   // Initiate → a class + cantrips + a spell).
   const chosenFeats = [d.featBg, d.featRace].filter(Boolean) as string[];
-  // A feat may ask two things (Dragonscarred wants an ability AND a damage
-  // resistance), so flatten `also` in alongside the primary choice.
-  const featChoices = chosenFeats
-    .flatMap((slug) => {
-      const c = opts?.feats.find((f) => f.slug === slug)?.choices;
-      if (!c) return [];
-      const { also, ...primary } = c;
-      return also ? [primary as Choice, also as Choice] : [primary as Choice];
-    });
-  const skilledChoice = featChoices.find((c) => c.kind === "skills");
-  const toolsChoice = featChoices.find((c) => c.kind === "tools");
-  const abilityChoice = featChoices.find((c) => c.kind === "ability");
-  const languageChoice = featChoices.find((c) => c.kind === "language");
-  const optionsChoice = featChoices.find((c) => c.kind === "options");
-  const miChoice = featChoices.find((c) => c.kind === "magic_initiate");
-  const featSkillsDone = !skilledChoice || d.featSkills.length === (skilledChoice.n ?? 3);
-  const featToolsDone = !toolsChoice || d.featTools.length === (toolsChoice.n ?? 1);
-  const featLangDone = !languageChoice || d.featLanguages.length === (languageChoice.n ?? 1);
-  const featAbilityDone = !abilityChoice || !!d.featAbility;
-  const featOptionsDone = !optionsChoice || d.featOptions.length === (optionsChoice.n ?? 1);
-  const featChoicesDone = featSkillsDone && featToolsDone && featLangDone
-    && featAbilityDone && featOptionsDone;
+  // A feat may ask more than one thing (Dragonscarred wants an ability AND a
+  // damage resistance; Skill Expert wants three), so flatten `also` in
+  // alongside the primary choice — `choiceParts` is the same flattening the
+  // level-up overlay uses, so the two can't drift. Each feat's questions stay
+  // ATTACHED to it: two feats asking the same kind are two separate answers.
+  const featQuestions: { slug: string; part: Choice }[] = chosenFeats.flatMap(
+    (slug) => choiceParts(opts?.feats.find((f) => f.slug === slug)?.choices)
+      .map((part) => ({ slug, part: part as Choice })));
+  const picksFor = (slug: string): FeatPicks => d.featPicks[slug] ?? {};
+  const setPicksFor = (slug: string, next: FeatPicks) =>
+    setD({ ...d, featPicks: { ...d.featPicks, [slug]: next } });
+  // Spell questions are answered on the SPELLS stage, everything else here.
+  const isSpellPart = (c: Choice) =>
+    c.kind === "magic_initiate" || c.kind === "spells";
+  const featChoicesDone = featQuestions.every(({ slug, part }) =>
+    isSpellPart(part) || partSatisfied(part, picksFor(slug)));
 
-  // The Spells stage appears when the class casts OR Magic Initiate was taken.
-  const needsSpells = !!spellData || !!miChoice;
+  // The Spells stage appears when the class casts OR a feat asks for spells
+  // (Magic Initiate's class list, Fey Touched's school-scoped pick).
+  const miChoice = featQuestions.find((q) => q.part.kind === "magic_initiate")?.part;
+  const featSpellQuestions = featQuestions.filter(
+    ({ part }) => part.kind === "spells" && (part.n ?? 0) > 0);
+  const needsSpells = !!spellData || !!miChoice || featSpellQuestions.length > 0;
   const classCantripsDone = !spellData || d.cantrips.length === spellData.cantrips_n;
   const classSpellsDone = !spellData || d.spells.length === spellData.spells_n;
   const miDone = !miChoice
     || (!!d.miClass && d.miCantrips.length === (miChoice.cantrips ?? 2)
         && d.miSpells.length === (miChoice.spells ?? 1));
-  const spellsDone = classCantripsDone && classSpellsDone && miDone;
+  const featSpellsDone = featSpellQuestions.every(
+    ({ slug, part }) => partSatisfied(part, picksFor(slug)));
+  const spellsDone = classCantripsDone && classSpellsDone && miDone && featSpellsDone;
 
   const stageDone: Record<Stage, boolean> = {
     race: !!d.race && (!(race?.lineages?.length) || !!d.lineage),
@@ -468,21 +507,28 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     if (stage === "review") {
       const stats: Record<string, number> = {};
       for (const a of ABILITIES) stats[ABILITY_FULL[a]] = finalScore(a) ?? 10;
-      // A feat that grants an ability increase folds into the final stats.
-      // The schema names abilities in lowercase ("wis"); ABILITY_FULL is keyed
-      // uppercase, so index it that way or the +1 is silently dropped.
-      if (abilityChoice && d.featAbility && (abilityChoice.amount ?? 0) > 0) {
-        const full = ABILITY_FULL[d.featAbility.toUpperCase() as Ability];
-        const cap = abilityChoice.max ?? 20;
+      // EVERY feat that grants an ability increase folds into the final stats
+      // — both slots, not just the first one found. The schema names abilities
+      // in lowercase ("wis"); ABILITY_FULL is keyed uppercase, so index it
+      // that way or the +1 is silently dropped.
+      for (const { slug, part } of featQuestions) {
+        const code = picksFor(slug).ability;
+        if (part.kind !== "ability" || !code || (part.amount ?? 0) <= 0) continue;
+        const full = ABILITY_FULL[code.toUpperCase() as Ability];
         if (full) {
-          stats[full] = Math.min(cap,
-            (stats[full] ?? 10) + (abilityChoice.amount ?? 0));
+          stats[full] = Math.min(part.max ?? 20,
+            (stats[full] ?? 10) + (part.amount ?? 0));
         }
       }
       const feats = [d.featBg, d.featRace].filter(Boolean) as string[];
       const lineageName = race?.lineages?.find((l) => l.slug === d.lineage)?.name;
+      // Each feat's proficiency picks, gathered across both slots.
+      const gather = (key: "skills" | "tools" | "languages" | "options" | "spells") =>
+        chosenFeats.flatMap((s) => picksFor(s)[key] ?? []);
       const allCantrips = [...d.cantrips, ...d.miCantrips];
-      const allSpells = [...d.spells, ...d.miSpells];
+      // What a feat GRANTS outright (Fey Touched's Misty Step) isn't sent —
+      // the server folds it in from the feat itself, so it can't be lost here.
+      const allSpells = [...d.spells, ...d.miSpells, ...gather("spells")];
       onDone({
         name: d.name.trim(),
         race: lineageName ? `${race!.name} (${lineageName})` : race!.name,
@@ -491,10 +537,10 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         gender: d.gender?.trim() || undefined,
         // Feat-granted skills (Skilled) fold into the skill list; tools/languages
         // ride their own fields.
-        stats, skills: [...d.skills, ...d.featSkills],
-        tools: d.featTools.length ? d.featTools : undefined,
-        languages: d.featLanguages.length ? d.featLanguages : undefined,
-        feat_options: d.featOptions.length ? d.featOptions : undefined,
+        stats, skills: [...d.skills, ...gather("skills")],
+        tools: gather("tools").length ? gather("tools") : undefined,
+        languages: gather("languages").length ? gather("languages") : undefined,
+        feat_options: gather("options").length ? gather("options") : undefined,
         feats: feats.length ? feats : undefined,
         cantrips: allCantrips.length ? allCantrips : undefined,
         spells: allSpells.length ? allSpells : undefined,
@@ -734,10 +780,10 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
             {needsBgFeat && (
               <FeatPicker
                 title={`Your ${bg?.name ?? "background"} grants an Origin feat`}
-                feats={originFeats} finalStats={finalStats} clsSlug={d.cls}
+                feats={bgFeatPool} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featBg}
-                onPick={(slug) => setD({ ...d, featBg: slug,
-                  featSkills: [], featTools: [], featLanguages: [], featAbility: undefined, featOptions: [], miClass: undefined, miCantrips: [], miSpells: [] })} />
+                onPick={(slug) => setD({ ...d, featBg: slug, featPicks: {},
+                  miClass: undefined, miCantrips: [], miSpells: [] })} />
             )}
             {raceFeat && (
               <FeatPicker
@@ -746,58 +792,30 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                   : `${race?.name} grants an Origin feat`}
                 feats={raceFeatPool} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featRace}
-                onPick={(slug) => setD({ ...d, featRace: slug,
-                  featSkills: [], featTools: [], featLanguages: [], featAbility: undefined, featOptions: [], miClass: undefined, miCantrips: [], miSpells: [] })} />
+                onPick={(slug) => setD({ ...d, featRace: slug, featPicks: {},
+                  miClass: undefined, miCantrips: [], miSpells: [] })} />
             )}
-            {skilledChoice && (
-              <ChoiceChips
-                label={skilledChoice.hint || `Your feat grants ${skilledChoice.n ?? 3} skills`}
-                options={choiceOptions(skilledChoice)} chosen={d.featSkills}
-                n={skilledChoice.n ?? 3}
-                onToggle={(v) => setD({ ...d, featSkills: d.featSkills.includes(v)
-                  ? d.featSkills.filter((x) => x !== v) : [...d.featSkills, v] })} />
-            )}
-            {toolsChoice && (
-              <ChoiceChips
-                label={toolsChoice.hint || `Choose ${toolsChoice.n ?? 1} tools`}
-                options={choiceOptions(toolsChoice)} chosen={d.featTools}
-                n={toolsChoice.n ?? 1}
-                onToggle={(v) => setD({ ...d, featTools: d.featTools.includes(v)
-                  ? d.featTools.filter((x) => x !== v) : [...d.featTools, v] })} />
-            )}
-            {languageChoice && (
-              <ChoiceChips
-                label={languageChoice.hint || `Choose ${languageChoice.n ?? 1} languages`}
-                options={choiceOptions(languageChoice)} chosen={d.featLanguages}
-                n={languageChoice.n ?? 1}
-                onToggle={(v) => setD({ ...d, featLanguages: d.featLanguages.includes(v)
-                  ? d.featLanguages.filter((x) => x !== v) : [...d.featLanguages, v] })} />
-            )}
-            {abilityChoice && (() => {
-              // The schema lists abilities as lowercase codes; show them the
-              // way every other ability in the wizard is shown.
-              const codes = choiceOptions(abilityChoice);
-              const label = (c: string) => ABILITY_LABEL[c] ?? c.toUpperCase();
+            {/* Every question each chosen feat asks, rendered by the SHARED
+                component so creation and the level-up overlay ask them the
+                same way. Answers are kept per feat: two feats both wanting a
+                skill are two picks. Spell questions wait for the Spells
+                stage, where the spell lists live. */}
+            {chosenFeats.map((slug) => {
+              const row = opts?.feats.find((f) => f.slug === slug);
+              const parts = choiceParts(row?.choices).filter((c) => !isSpellPart(c as Choice));
+              if (!row || !parts.length) return null;
               return (
-                <ChoiceChips single
-                  label={abilityChoice.hint || "Choose an ability"}
-                  options={codes.map(label)}
-                  chosen={d.featAbility ? [label(d.featAbility)] : []} n={1}
-                  onToggle={(shown) => {
-                    const code = codes.find((c) => label(c) === shown) ?? shown;
-                    setD({ ...d,
-                      featAbility: d.featAbility === code ? undefined : code });
-                  }} />
+                <div key={slug} style={{ marginTop: 4 }}>
+                  <div className="cf-sub-label" style={{ marginTop: 14 }}>
+                    {row.name}
+                  </div>
+                  <FeatChoiceFields
+                    choice={{ ...parts[0], also: parts.slice(1) } as FeatChoice}
+                    picks={picksFor(slug)}
+                    onChange={(next) => setPicksFor(slug, next)} />
+                </div>
               );
-            })()}
-            {optionsChoice && (
-              <ChoiceChips
-                label={optionsChoice.hint || `Choose ${optionsChoice.n ?? 1}`}
-                options={choiceOptions(optionsChoice)} chosen={d.featOptions}
-                n={optionsChoice.n ?? 1}
-                onToggle={(v) => setD({ ...d, featOptions: d.featOptions.includes(v)
-                  ? d.featOptions.filter((x) => x !== v) : [...d.featOptions, v] })} />
-            )}
+            })}
           </>
         )}
 
@@ -854,6 +872,29 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 )}
               </div>
             )}
+            {featSpellQuestions.map(({ slug, part }) => {
+              const pool = featSpellData[slug];
+              if (!pool) return null;
+              const chosen = picksFor(slug).spells ?? [];
+              const n = part.n ?? 1;
+              return (
+                <div key={slug} style={{ marginTop: (spellData || miChoice) ? 20 : 0 }}>
+                  <SpellPicker
+                    title={part.hint || `Feat spell (choose ${n})`}
+                    list={pool.spells} chosen={chosen} n={n}
+                    onToggle={(sl) => setPicksFor(slug, {
+                      ...picksFor(slug),
+                      spells: chosen.includes(sl)
+                        ? chosen.filter((x) => x !== sl) : [...chosen, sl],
+                    })} />
+                  {pool.granted.length > 0 && (
+                    <p className="cf-hint">
+                      Always prepared: {pool.granted.map((g) => g.name).join(", ")}.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </>
         )}
 

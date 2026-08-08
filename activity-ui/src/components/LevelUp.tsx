@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { AsiFeat, FeatPicks, LevelUpData, SpellBrief } from "../lib/types";
+import { useEffect, useState } from "react";
+import type { AsiFeat, FeatPicks, FeatSpells, LevelUpData, SpellBrief } from "../lib/types";
 import {
   ABILITY_CODES, AsiSpread, FeatChoiceFields, featChoicesSatisfied,
 } from "./FeatChoices";
@@ -35,6 +35,17 @@ function AsiStep({ data, mode, setMode, increases, setIncreases,
   const scores = byCode(data.abilities);
   const feats = data.asi_feats ?? [];
   const chosen = feats.find((f) => f.slug === feat);
+  // A feat with a school-scoped spell pick (Fey Touched) needs its pool, and
+  // the server owns the filter — ask by feat slug, exactly as creation does.
+  const [featSpells, setFeatSpells] = useState<FeatSpells | null>(null);
+  useEffect(() => {
+    if (!feat) { setFeatSpells(null); return; }
+    let live = true;
+    fetch(`/cc/feat_spells/${feat}`).then((r) => r.json())
+      .then((j: FeatSpells) => { if (live) setFeatSpells(j.n > 0 ? j : null); })
+      .catch(() => { if (live) setFeatSpells(null); });
+    return () => { live = false; };
+  }, [feat]);
   return (
     <>
       <div className="lu-pick-label">Ability Score Improvement</div>
@@ -76,7 +87,27 @@ function AsiStep({ data, mode, setMode, increases, setIncreases,
             ))}
           </div>
           {chosen?.choices && (
-            <FeatChoiceFields choice={chosen.choices} picks={picks} onChange={setPicks} />
+            <FeatChoiceFields
+              choice={chosen.choices} picks={picks} onChange={setPicks}
+              spellPicker={(c) => (c.kind !== "spells" || !featSpells) ? null : (
+                <>
+                  <LuSpellPick
+                    label={c.hint || `Feat spell (choose ${c.n ?? 1})`}
+                    list={featSpells.spells} chosen={picks.spells ?? []}
+                    n={c.n ?? 1}
+                    onToggle={(slug) => setPicks({
+                      ...picks,
+                      spells: (picks.spells ?? []).includes(slug)
+                        ? (picks.spells ?? []).filter((x) => x !== slug)
+                        : [...(picks.spells ?? []), slug],
+                    })} />
+                  {featSpells.granted.length > 0 && (
+                    <div className="lu-opt-feats">
+                      Always prepared: {featSpells.granted.map((g) => g.name).join(", ")}.
+                    </div>
+                  )}
+                </>
+              )} />
           )}
         </>
       )}

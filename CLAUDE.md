@@ -195,7 +195,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `floors-shot` (the storey switcher: peek at a gallery, and what a connector
   looks like on the board), `race-dup` (species traits render exactly once per
   viewport), `granted-feat`
-  (a background grants its Origin feat, choices and all), `pframe-shot`
+  (a background grants its Origin feat, choices and all), `feat-spells` (the
+  two feat slots are independent: the granted feat is gone from the species
+  pool, both feats' questions gate Onward separately, and a school-scoped
+  spell pick lands on the Spells stage), `pframe-shot`
   (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
   at desktop and phone: status bar, "here & now" rail, narration column, roll
   card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
@@ -668,6 +671,29 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `ability_increases` or a `feat` (+ `feat_choices`). `FEAT_CHOICES` is the one
   schema for what a feat asks; `_apply_feat` is the one place it is applied, so
   creation and level-up can never drift. The UI half is `FeatChoices.tsx`.
+  `also` carries any FURTHER question — one spec or a LIST, because Skill
+  Expert asks three (an ability, a skill, and which skill gets Expertise) and
+  a single `also` could only ever hold two.
+- **A feat's spell pick is scoped by SCHOOL, and the server owns the filter.**
+  `magic_initiate` picks a CLASS first, which cannot say "a level 1 Divination
+  or Enchantment spell from anywhere" — so the `spells` kind takes `level` +
+  `schools` and `GET /cc/feat_spells/{feat}` serves the pool, keeping creation
+  and level-up on the same list. `granted` is what rides along free (Fey
+  Touched's Misty Step): it is NOT a choice, so `n: 0` is a legal grant-only
+  spec, and creation folds it in server-side via `_feat_granted_spells` —
+  the client never sends a grant, so a grant can't be lost in the post.
+  (`int(spec.get("n") or 1)` turns an explicit 0 back into 1; don't.)
+- **The two feat slots at creation are INDEPENDENT.** A background's Origin
+  feat and a species pick (Human's origin feat, Custom Lineage's free choice)
+  are separate slots, and two things followed from treating them as one. A
+  Giant Foundling could spend the Custom Lineage pick on the Strike of the
+  Giants it was already granted — a choice made that buys nothing, since a
+  feat's benefit is recorded once (both pickers now hide the other's feat
+  unless it is `repeatable`, and `register_character` re-checks). And CC kept
+  ONE flat bucket per choice kind, so two feats each wanting a skill, or each
+  granting +1 to an ability, silently merged into one answer. Answers are
+  keyed by feat slug (`Draft.featPicks`) and rendered by the SHARED
+  `FeatChoiceFields`, so creation asks exactly what level-up asks.
 - **A 2024 background GRANTS its Origin feat** — it is not a pick from the
   origin pool. CC resolves `background.origin_feat` against the WHOLE feat list
   (a book background can grant a feat filed elsewhere: Rune Carver → Rune

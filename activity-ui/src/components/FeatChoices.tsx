@@ -38,11 +38,13 @@ export const LANGUAGES = [
   "Primordial", "Sylvan", "Undercommon",
 ];
 
-/** Every question one feat asks — the primary choice plus any `also`. */
+/** Every question one feat asks — the primary choice plus any `also`, which
+ *  may be a single spec or a list (Skill Expert asks three things). */
 export function choiceParts(c?: FeatChoice | null): FeatChoice[] {
   if (!c) return [];
   const { also, ...primary } = c;
-  return also ? [primary as FeatChoice, also] : [primary as FeatChoice];
+  const extra = Array.isArray(also) ? also : also ? [also] : [];
+  return [primary as FeatChoice, ...extra];
 }
 
 /** The option list a non-spell feat-choice draws from. */
@@ -72,24 +74,31 @@ function bucketOf(kind: FeatChoice["kind"]): keyof FeatPicks | null {
   }
 }
 
+/** Has one question of a feat been answered? Exported because creation asks
+ *  its questions across two stages (proficiencies on Skills, spells on
+ *  Spells) and has to judge them a part at a time. */
+export function partSatisfied(part: FeatChoice, picks: FeatPicks): boolean {
+  const n = part.n ?? 1;
+  if (part.kind === "ability") return !!picks.ability;
+  if (part.kind === "asi") {
+    const total = Object.values(picks.ability_increases ?? {})
+      .reduce((a, b) => a + b, 0);
+    return total === (part.total ?? 2);
+  }
+  if (part.kind === "magic_initiate") {
+    return (picks.cantrips?.length ?? 0) === (part.cantrips ?? 2)
+      && (picks.spells?.length ?? 0) === (part.spells ?? 1);
+  }
+  // A school-scoped pick; n = 0 is a pure grant, so nothing to answer.
+  if (part.kind === "spells") return (picks.spells?.length ?? 0) === n;
+  const bucket = bucketOf(part.kind);
+  return !bucket || (picks[bucket] as string[] | undefined)?.length === n;
+}
+
 /** Has the player answered every question this feat asks? */
 export function featChoicesSatisfied(c: FeatChoice | null | undefined,
                                      picks: FeatPicks): boolean {
-  return choiceParts(c).every((part) => {
-    const n = part.n ?? 1;
-    if (part.kind === "ability") return !!picks.ability;
-    if (part.kind === "asi") {
-      const total = Object.values(picks.ability_increases ?? {})
-        .reduce((a, b) => a + b, 0);
-      return total === (part.total ?? 2);
-    }
-    if (part.kind === "magic_initiate") {
-      return (picks.cantrips?.length ?? 0) === (part.cantrips ?? 2)
-        && (picks.spells?.length ?? 0) === (part.spells ?? 1);
-    }
-    const bucket = bucketOf(part.kind);
-    return !bucket || (picks[bucket] as string[] | undefined)?.length === n;
-  });
+  return choiceParts(c).every((part) => partSatisfied(part, picks));
 }
 
 /** A "choose N of these" chip row. */
@@ -142,7 +151,7 @@ export function FeatChoiceFields({ choice, picks, onChange, spellPicker }: {
   return (
     <>
       {parts.map((c, i) => {
-        if (c.kind === "magic_initiate") {
+        if (c.kind === "magic_initiate" || c.kind === "spells") {
           return <div key={i}>{spellPicker?.(c) ?? null}</div>;
         }
         if (c.kind === "asi") {
