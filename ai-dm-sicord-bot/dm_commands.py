@@ -140,16 +140,22 @@ async def enter_world_command(ctx: commands.Context, character_name: str, check_
         )
 
         # Kick off scene-appropriate opening music if the DM recommended one
-        # and the player is sitting in a voice channel.
+        # and the player is sitting in a voice channel. With no cue, the table
+        # still has to come off the character-creation bed — entering the world
+        # is the moment the menu stops being the right thing to hear.
         music_query = result.get("music")
-        if music_query:
-            voice_state = getattr(ctx.author, "voice", None)
-            voice_channel = voice_state.channel if voice_state else None
-            if voice_channel is not None:
-                try:
+        voice_state = getattr(ctx.author, "voice", None)
+        voice_channel = voice_state.channel if voice_state else None
+        if voice_channel is not None:
+            try:
+                if music_query:
                     await music_player.play_query_in_channel(voice_channel, music_query)
-                except Exception as e:
-                    print(f"[music] Failed to play opening scene music '{music_query}': {e}")
+                else:
+                    import music_control
+                    await music_control.leave_menu_music(voice_channel)
+            except Exception as e:
+                print(f"[music] Failed to start world music "
+                      f"({music_query or 'no cue'}): {e}")
     else:
         error = result.get("error", "Unknown error")
         await ctx.send(f"❌ Failed to enter world: {error}")

@@ -2,7 +2,7 @@
 Music Control Module - Handles music preferences and playlist switching.
 Coordinates with music_player.py for playback control.
 """
-from typing import Dict
+from typing import Dict, Optional
 import discord
 import music_player
 
@@ -26,6 +26,31 @@ _MOOD_KEYWORDS: Dict[str, tuple] = {
     "desert": ("desert", "sand", "dune", "arid", "wasteland", "oasis", "barren", "scorch"),
 }
 DEFAULT_MOOD = "town"
+
+# The playlist a fresh table opens on. A fresh table is a TITLE SCREEN and a
+# character-creation wizard, not a scene — so it gets menu music, not a room.
+MENU_PLAYLIST = "cc_menu"
+# …and where it lands once play begins with no scene cue to follow.
+WORLD_DEFAULT_PLAYLIST = "tavern"
+
+
+async def leave_menu_music(voice_channel: "discord.VoiceChannel") -> Optional[str]:
+    """Move a table off the menu bed once play actually starts.
+
+    Nothing but the DM's own scene cue ever moved a table's playlist, so a
+    session the DM never scored would sit on the character-creation music all
+    night. No-op unless the table is still on the menu list — anything else
+    means a cue already won, and this must not talk over it.
+    """
+    if voice_channel is None:
+        return None
+    prefs = music_preferences.get(voice_channel.id)
+    if not prefs or not prefs.get("enabled", True):
+        return None
+    if prefs.get("current_playlist") != MENU_PLAYLIST:
+        return None
+    await switch_music(voice_channel, WORLD_DEFAULT_PLAYLIST)
+    return WORLD_DEFAULT_PLAYLIST
 
 
 def mood_for_query(query: str) -> str:

@@ -29,12 +29,20 @@ MOOD_QUERIES: dict[str, str] = {
 
 # Broader per-mood queries tried in order when the primary query comes up short
 # (Freesound ANDs all terms, so specific queries can easily return 0-2 hits).
+#
+# These are MUSIC moods, and every fallback here has to be a query for music.
+# Freesound is a sound-effects library first: ask it for "tavern ambience" or
+# "village ambience" and it will happily hand back a field recording of a
+# crowded room, which then lands in the same folder as the songs and plays in
+# rotation with them. A playlist that alternates a lute tune with four minutes
+# of babble is what those fallbacks actually bought. Name an INSTRUMENT or a
+# genre, never a room. `scripts/audio_classify.py` measures what got seeded.
 MOOD_FALLBACK_QUERIES: dict[str, list[str]] = {
-    "tavern":             ["tavern ambience", "medieval lute", "folk fiddle jig"],
+    "tavern":             ["medieval lute", "folk fiddle jig", "celtic harp music"],
     "combat":             ["epic battle drums", "orchestral action"],
-    "dungeon":            ["cave drone", "dark ambient drone"],
-    "town":               ["medieval market", "village ambience"],
-    "desert":             ["desert ambience", "middle eastern oud"],
+    "dungeon":            ["dark cinematic underscore", "ominous cello drone"],
+    "town":               ["medieval flute music", "renaissance dance music"],
+    "desert":             ["middle eastern oud", "arabic duduk music"],
     "character_complete": ["victory fanfare", "orchestral triumph"],
     "cc_menu":            ["fantasy harp", "calm medieval music"],
 }

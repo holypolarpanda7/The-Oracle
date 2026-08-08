@@ -44,7 +44,19 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - `character_creation.py` — Avrae import + AI-guided creation, ephemeral channels
    - `backend_integration.py` — HTTP client to the FastAPI backend
    - `dm_commands.py` / `event_handlers.py` — commands & Discord events
-   - `music_player.py` / `music_control.py` — Lavalink/wavelink ambient music
+   - `music_player.py` / `music_control.py` — ambient music through the DAVE
+     voice sidecar. **A playlist holds MUSIC; a room recording is not music.**
+     Freesound is a sound-effects library first, so a mood padded with
+     "tavern ambience"/"village ambience" comes back with a field recording of
+     a crowded bar — filed beside the songs and played in rotation with them,
+     which is how a fresh table went song → four minutes of babble → song.
+     Fallback queries name an INSTRUMENT or a genre, never a room, and
+     `scripts/audio_classify.py` measures what got seeded (beat strength off
+     the onset envelope; `--quarantine` moves the beatless tracks of a music
+     mood into `<mood>/ambience/`, which `load_playlist`'s non-recursive glob
+     already ignores). A table opens on `music_control.MENU_PLAYLIST` — a
+     title screen and a CC wizard are not a scene — and `leave_menu_music`
+     moves it off when play begins with no DM cue to follow.
    - See `MODULE_ARCHITECTURE.md` for the full module map
 2. **`oracle-dm-backend/fastapi-dm.py`** — the "DM brain."
    - OpenRouter LLM call → narration

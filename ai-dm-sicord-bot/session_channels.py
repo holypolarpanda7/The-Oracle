@@ -36,11 +36,15 @@ _idle_tasks: Dict[int, asyncio.Task] = {}
 SESSION_CATEGORY_NAME = "The Oracle — Tables"
 # How long an untouched (never-joined) table lingers before it's swept.
 IDLE_SWEEP_SECONDS = 900  # 15 minutes
-# Ambient playlist a fresh table starts with. Players begin at the Silver
-# Tankard, so a warm tavern bed fits the opening; the DM's per-scene music cues
-# are a separate (not-yet-wired) layer. Playlists live in ai-dm-sicord-bot/
-# playlists/ and voice-service/audio/.
-DEFAULT_TABLE_PLAYLIST = "tavern"
+# Ambient playlist a fresh table starts with. A fresh table is a TITLE SCREEN
+# and a character-creation wizard, not a scene — nobody is at the Silver
+# Tankard yet, and creation can run twenty minutes. `tavern` was wrong twice
+# over: it scored the wrong room, and half that folder is a field recording of
+# a crowded bar, so the bed became a wall of babble the moment track 1 ended.
+# The name lives in music_control beside the rule that moves a table OFF it
+# when play begins — two constants would drift and strand tables on the menu.
+# Playlists live in ai-dm-sicord-bot/playlists/ and voice-service/audio/.
+from music_control import MENU_PLAYLIST as DEFAULT_TABLE_PLAYLIST  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
