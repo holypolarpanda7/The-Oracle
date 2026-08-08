@@ -89,6 +89,27 @@ bonuses (2024 model) — the loader forces `ability_bonuses={}`.
 ```
 For book spells outside the PHB parser's reach.
 
+## `spell_lists_overrides.json` → `rules_spell.classes`  (loader: `ingest_spell_lists_overrides`)
+```json
+{
+  "_note": "class slug -> spell slugs already in rules_spell",
+  "artificer": ["cure-wounds", "detect-magic", "faerie-fire", "..."]
+}
+```
+The odd one out: **additive, not an upsert.** A class list says which of the
+spells *already in the DB* a class may cast, so the loader APPENDS the class to
+each named spell's `classes` and leaves the rest alone. Setting `classes`
+through `spells_overrides.json` instead would REPLACE the list — adding the
+artificer to Cure Wounds would take it from the cleric — and would need one
+full entry per spell to say one field. Slugs the DB doesn't carry are reported,
+never created: a missing spell is a gap in the spell tables, and inventing an
+empty row would hide it. Re-running is a no-op.
+
+Use it for a class whose spell list the parsers never built. The artificer had
+exactly ONE spell in the whole database until this existed, so an artificer PC
+could not pick spells at creation and the Artificer Initiate feat had nothing
+to offer.
+
 ## `monsters_overrides.json` → `rules_monster`  (loader: `ingest_monsters_overrides`)
 ```json
 {

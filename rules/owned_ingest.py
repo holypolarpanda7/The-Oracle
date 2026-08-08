@@ -3159,6 +3159,63 @@ def ingest_puzzles_overrides(engine=None, database_url=None,
                                   engine, database_url, workspace)
 
 
+def ingest_spell_lists_overrides(engine=None, database_url=None,
+                                 workspace: Path = WORKSPACE) -> dict:
+    """Add classes to existing spells' class lists (spell_lists_overrides.json).
+
+    A class list is not a spell — it says which of the spells already in the DB
+    a class may cast. Every other override slot UPSERTS a row, which is the
+    wrong shape here twice over: writing ``classes`` through
+    ``spells_overrides.json`` REPLACES the list (so adding the artificer to
+    Cure Wounds would take it away from the cleric), and there are ~60 entries
+    per class that differ from the SRD only in that one field.
+
+    So this one is ADDITIVE and idempotent: ``{"artificer": ["cure-wounds",
+    ...]}`` appends that class to each named spell, leaving everything else
+    alone. Without it the artificer had exactly ONE spell in the whole
+    database, so an artificer PC could not pick spells at creation and the
+    Artificer Initiate feat had nothing to offer. Slugs the DB doesn't carry
+    are reported, not invented — a missing spell is a gap in the spell tables,
+    and quietly creating a nameless row would hide it.
+    """
+    import json
+    from .models import Spell
+    path = workspace / "spell_lists_overrides.json"
+    result = {"spell_lists_classes": 0, "spell_lists_tagged": 0,
+              "spell_lists_missing": [], "path": str(path)}
+    if not path.is_file():
+        return result
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"error": f"spell_lists_overrides.json: {e}", "path": str(path)}
+    engine = engine or get_engine(database_url)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        for cls_slug, slugs in (data or {}).items():
+            if cls_slug.startswith("_") or not isinstance(slugs, list):
+                continue          # "_note" and friends
+            cls = str(cls_slug).strip().lower()
+            result["spell_lists_classes"] += 1
+            for sp_slug in slugs:
+                sp_slug = str(sp_slug).strip().lower()
+                row = s.exec(select(Spell).where(
+                    Spell.index_slug == sp_slug)).first()
+                if row is None:
+                    result["spell_lists_missing"].append(sp_slug)
+                    continue
+                have = [str(c) for c in (row.classes or [])]
+                if any(c.lower() == cls for c in have):
+                    continue
+                # Reassign rather than append: a JSON column tracks changes by
+                # identity, and mutating the list in place doesn't mark it dirty.
+                row.classes = have + [cls]
+                s.add(row)
+                result["spell_lists_tagged"] += 1
+        s.commit()
+    return result
+
+
 def main(argv: list[str]) -> None:
     only = None
     ocr_match = None
@@ -3200,6 +3257,9 @@ def main(argv: list[str]) -> None:
         print("[owned] class overrides:", ingest_classes_overrides())
         print("[owned] subclass overrides:", ingest_subclasses_overrides())
         print("[owned] spell overrides:", ingest_spells_overrides())
+        # After the spell overrides: a class list may name a spell that only
+        # exists because the slot above just created it.
+        print("[owned] spell lists:", ingest_spell_lists_overrides())
         print("[owned] monster overrides:", ingest_monsters_overrides())
         print("[owned] item overrides:", ingest_items_overrides())
         print("[owned] puzzle overrides:", ingest_puzzles_overrides())

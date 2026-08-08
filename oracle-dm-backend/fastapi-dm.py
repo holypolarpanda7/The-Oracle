@@ -558,7 +558,8 @@ async def lifespan(app: FastAPI):
                                              ingest_spells_overrides,
                                              ingest_monsters_overrides,
                                              ingest_items_overrides,
-                                             ingest_puzzles_overrides)
+                                             ingest_puzzles_overrides,
+                                             ingest_spell_lists_overrides)
             # Standard paste-and-translate import: gitignored
             # owned_books/<type>_overrides.json applied with top precedence.
             ov = ingest_species_overrides(engine=engine)
@@ -578,6 +579,12 @@ async def lifespan(app: FastAPI):
                 res = fn(engine=engine)
                 if any(v for k, v in res.items() if k.endswith(("_applied", "_new"))):
                     print(f"[Startup] {label} overrides: {res}")
+            # Class spell lists LAST: they only add a class to spells the rows
+            # above may have just created. Without this an artificer PC has one
+            # castable spell in the whole database.
+            sl = ingest_spell_lists_overrides(engine=engine)
+            if sl.get("spell_lists_tagged") or sl.get("spell_lists_missing"):
+                print(f"[Startup] Spell lists: {sl}")
             # Classes are in place; read any per-class slot progressions they
             # declare (see _CLASS_SLOT_OVERRIDES).
             _load_class_slot_overrides()
@@ -10366,6 +10373,9 @@ def _build_character_sheet(char: Character) -> Dict[str, Any]:
         "inventory_lines": inv["lines"],
         "carried_weight": inv["carried_weight"],
         "conditions": _character_conditions(char),
+        # Feats and the options each was resolved to — the sheet is where a
+        # player checks which invocation or fighting style they actually took.
+        "feats": character_feats(char),
         "home_region": char.home_region,
         "notes": char.notes,
     }
@@ -10535,6 +10545,12 @@ def _character_resource_block(character_id: int) -> str:
                 rendered = "; ".join(
                     f"{f['name']} ({f['summary'][:150].rstrip()})" for f in rfeats[:8])
                 lines.append(f"Species features — {char.race}: {rendered}")
+
+            # Feats, and what each one was CHOSEN to be. Class and species
+            # features were listed here from the start and feats never were,
+            # so a PC's Eldritch Adept invocation or Metamagic options — the
+            # whole point of taking those — were on the sheet and unseen.
+            lines.extend(_feats_prompt_block(char))
         except Exception as e:
             print(f"[features block] {e}")
 
@@ -11559,7 +11575,7 @@ _BACKGROUND_KITS: Dict[str, Dict[str, Any]] = {
 _LOCAL_BG_LOADED = False
 
 
-def _slugify_bg_feat(name: Optional[str]) -> Optional[str]:
+def _slugify_feat_name(name: Optional[str]) -> Optional[str]:
     """Feat name -> slug ('Magic Initiate' -> 'magic-initiate')."""
     if not name:
         return None
@@ -11599,7 +11615,7 @@ def _ensure_local_backgrounds() -> None:
             # The parsed feat is the Origin feat (slug); keep the descriptive
             # background feature name from the repo default when we have one.
             origin_feat = b.get("origin_feat") or (
-                _slugify_bg_feat(b.get("feat")) if b.get("feat") else None)
+                _slugify_feat_name(b.get("feat")) if b.get("feat") else None)
             # Prefer curated repo equipment; else the parsed/curated book
             # equipment (JSON items are [name, qty]).
             items = prev.get("items") or [
@@ -12184,6 +12200,70 @@ def _add_tags(char: Character, prefix: str, values: List[str]) -> List[str]:
     return added
 
 
+def _tag_values(char: Character, prefix: str) -> List[str]:
+    """Values filed under one tag prefix, in the order they were added."""
+    want = f"{prefix.lower()}:"
+    return [t.split(":", 1)[1].strip() for t in (char.tags or [])
+            if isinstance(t, str) and t.lower().startswith(want)
+            and t.split(":", 1)[1].strip()]
+
+
+def character_feats(char: Character) -> List[Dict[str, Any]]:
+    """Every feat on the sheet, with its benefit text and its NAMED picks.
+
+    A feat that asks for an option records the answer under its own tag
+    (`invocation: Devil's Sight`), and until this existed nothing read those
+    back — the pick was on the sheet and invisible to the DM, the Activity and
+    the prompt alike, which made "you have Eldritch Adept" the whole of what
+    anyone could know. Picks are matched to the feat that OFFERED them, by the
+    `from` list of its own choice, so two feats' options never cross.
+    """
+    out: List[Dict[str, Any]] = []
+    for slug in _tag_values(char, "feat"):
+        row = None
+        try:
+            row = rules_lib.get_feat(slug)
+        except Exception:
+            pass
+        picks: List[str] = []
+        for spec in _feat_choice_specs(slug):
+            if spec.get("kind") != "options":
+                continue
+            offered = {str(v).strip().lower() for v in (spec.get("from") or [])}
+            held = _tag_values(char, str(spec.get("tag") or "feat-option"))
+            picks.extend(v for v in held
+                         if not offered or v.strip().lower() in offered)
+        out.append({
+            "slug": slug,
+            "name": getattr(row, "name", None) or slug.replace("-", " ").title(),
+            "benefit": getattr(row, "benefit", None) or None,
+            "category": getattr(row, "category", None) or None,
+            "picks": list(dict.fromkeys(picks)),
+        })
+    return out
+
+
+def _feats_prompt_block(char: Character) -> List[str]:
+    """The DM prompt's Feats block — name, what it does, and what was chosen.
+
+    Class and species features had a block; feats never did, so a Metamagic
+    Adept's two options or a Fighting Initiate's style existed only as a tag no
+    prompt ever mentioned. The DM cannot apply what it is never shown.
+    """
+    feats = character_feats(char)
+    if not feats:
+        return []
+    lines = ["Feats:"]
+    for f in feats:
+        bits = f["name"]
+        if f["picks"]:
+            bits += f" [{', '.join(f['picks'])}]"
+        if f["benefit"]:
+            bits += f" — {f['benefit'][:200].rstrip()}"
+        lines.append(f"  - {bits}")
+    return lines
+
+
 def _apply_feat(char: Character, slug: str,
                 choices: Optional[Dict[str, Any]] = None) -> List[str]:
     """Record a feat on the sheet and apply whatever the player chose for it.
@@ -12239,6 +12319,20 @@ def _apply_feat(char: Character, slug: str,
                             list(picks.get("options") or []))
             if got:
                 notes.append(", ".join(got) + ".")
+            # An option that NAMES A FEAT the rules DB already carries becomes
+            # that feat. Fighting Initiate's styles are `fighting-style` rows
+            # with their own benefit text; recorded as a bare word they were a
+            # label, and every reader of feats walked straight past them.
+            if spec.get("options_are_feats"):
+                for v in got:
+                    fslug = _slugify_feat_name(v)
+                    frow = None
+                    try:
+                        frow = rules_lib.get_feat(fslug)
+                    except Exception:
+                        pass
+                    if frow is not None:
+                        _add_tags(char, "feat", [fslug])
         elif kind == "magic_initiate":
             learned: List[str] = []
             for sl in list(picks.get("cantrips") or []) + list(picks.get("spells") or []):
@@ -16534,7 +16628,20 @@ def _sheet_features(session: Session, char: Character) -> list[dict]:
             out.append({"name": name, "note": (note[:90] or None), "kind": _feat_kind(name)})
     except Exception as e:
         print(f"[activity features] {e}")
-    return out[:12]
+    # …and the FEATS, which this tab never showed. A feat is a feature the
+    # player chose and paid a level for; leaving it off meant the one line on
+    # the sheet that says which invocation you took didn't exist anywhere.
+    try:
+        for f in character_feats(char):
+            name = f["name"] + (f" ({', '.join(f['picks'])})" if f["picks"] else "")
+            if name.lower() in {o["name"].lower() for o in out}:
+                continue
+            note = (f["benefit"] or "").strip()
+            out.append({"name": name, "note": (note[:90] or None),
+                        "kind": _feat_kind(f["name"])})
+    except Exception as e:
+        print(f"[activity feats] {e}")
+    return out[:18]
 
 
 def _activity_portrait_url(character_name: str,

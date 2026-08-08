@@ -706,6 +706,24 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   granting +1 to an ability, silently merged into one answer. Answers are
   keyed by feat slug (`Draft.featPicks`) and rendered by the SHARED
   `FeatChoiceFields`, so creation asks exactly what level-up asks.
+- **A feat nobody can see does nothing.** Class and species features had a
+  prompt block from the start; feats never did, and the Activity's Features tab
+  listed neither. So a Metamagic Adept's two options, an Eldritch Adept's
+  invocation and a Fighting Initiate's style — the entire point of taking those
+  feats — lived as tags no reader ever opened. `character_feats()` is the one
+  place a sheet's feats and their NAMED picks are read back (picks matched to
+  the feat that OFFERED them, by its own `from` list, so two feats' options
+  never cross); it feeds the prompt block, the sheet payload and the Features
+  tab. Where an option names a feat the rules DB already carries, say
+  `options_are_feats` and the pick BECOMES that feat — Fighting Initiate's
+  styles are real `fighting-style` rows with their own benefit text, and as a
+  bare word they were a label every feat-reader walked past.
+- **A class needs a spell LIST, and only the artificer's was missing.** Its 75
+  spells live in the `spell_lists_overrides.json` slot (additive — see
+  `rules/OWNED_IMPORT_FORMAT.md`). Before it the DB held exactly one spell
+  tagged `artificer`, so an artificer PC reached the CC spell stage with an
+  empty pool. Twelve XGE/Tasha's spells on that list are still absent from
+  `rules_spell` and are named in the file's `_absent_from_rules_db` block.
 - **A 2024 background GRANTS its Origin feat** — it is not a pick from the
   origin pool. CC resolves `background.origin_feat` against the WHOLE feat list
   (a book background can grant a feat filed elsewhere: Rune Carver → Rune
