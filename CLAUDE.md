@@ -797,9 +797,22 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   re-casting the same one, the summoner going to 0) routes through it, so the
   dismissal is written once instead of at each. A spirit is marked DEFEATED,
   not deleted — that is already the state a spirit at 0 HP is in, and it is
-  already mirrored to the board and skipped by the engine. Proficiency is
-  deliberately NOT added to the save: no other save in the engine adds it yet,
-  and having concentration alone diverge would be a quieter bug than this one.
+  already mirrored to the board and skipped by the engine.
+- **A saving throw is ability modifier PLUS proficiency, and `_save_mod` is the
+  one place that is decided.** Every save site called `_ability_mod`, which
+  leaves proficiency out — a level-11 sorcerer's Constitution save was rolled
+  at +2 instead of +6, four points off on every concentration check, every Hold
+  Person and every hazard. A PC's proficient abilities come from
+  `rules_class.saving_throws` plus any `save:` TAG (Resilient has written that
+  tag since feats were built and nothing ever read it, so the feat bought a
+  bonus that reached no roll). A MONSTER uses the number its stat block PRINTS
+  — that total already includes proficiency, so adding it again would double
+  it — and falls back to the bare modifier where none is listed, which is the
+  rule and not a gap. **Known gap:** the MM-2024 parser captured skills only,
+  so book-parsed monsters carry no save proficiencies at all and roll
+  unproficient; the 58 SRD-shaped stat blocks do get theirs. Recovering the
+  rest means re-parsing, and the 2024 format folds the save into the ability
+  line ("CON 20 +5 +10") rather than printing a Saving Throws row.
 - **`Combatant.side` is how an ally exists at all.** The engine's rule was "PCs
   are one side, everything else the other", and a conjured spirit is a monster
   row that fights for the party — without the column a summoner's own creature

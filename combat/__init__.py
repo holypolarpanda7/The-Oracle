@@ -10,11 +10,13 @@ from .models import Encounter, Combatant, CombatantKind, Condition, CombatLog
 from . import bonds
 from .bonds import CombatBond
 from .tracker import CombatTracker
-from .engine import CombatEngine, PCProfile, PCWeapon, TurnReport
+from .engine import (CombatEngine, PCProfile, PCWeapon, TurnReport,
+                     monster_save_mod)
 
 __all__ = [
     "CombatTracker",
     "CombatEngine",
+    "monster_save_mod",
     "PCProfile",
     "PCWeapon",
     "TurnReport",

@@ -348,6 +348,59 @@ ended = tracker.set_concentration(caster.id, None)
 check("a spirit bound to no spell is never dismissed by one",
       ended["dismissed"] == [] and not tracker.get_combatant(free.id).defeated)
 
+# ----------------------------------------------------------------------
+section("12. a saving throw adds proficiency, everywhere")
+from combat.engine import CombatEngine as _CE, monster_save_mod  # noqa: E402
+from dice import proficiency_bonus_for_level  # noqa: E402
+
+prof = m.PCProfile(character_id=wiz.id, name="Perrin", level=11, prof=4,
+                   ability_mods={"con": 2, "dex": 3, "wis": 0},
+                   save_profs={"int", "wis"})
+eng2 = _CE(tracker)
+probe = m.combat.add_pc(enc_h.id, name="Probe", max_hp=1, character_id=wiz.id)
+check("an ability the class isn't proficient in is the bare modifier",
+      eng2._save_mod(probe, "con", {wiz.id: prof}) == 2)
+check("...and one it IS proficient in adds the proficiency bonus",
+      eng2._save_mod(probe, "wis", {wiz.id: prof}) == 4,
+      "WIS +0 with proficiency +4")
+prof.save_profs = prof.save_profs | {"con"}
+check("Resilient's save proficiency finally reaches a roll",
+      eng2._save_mod(probe, "con", {wiz.id: prof}) == 6, "CON +2 +4")
+
+with Session(m.engine) as s:                 # the scratch DB carries no classes
+    s.add(m.DndClass(index_slug="wizard", name="Wizard", hit_die=6,
+                     saving_throws=["INT", "WIS"]))
+    s.commit()
+check("the backend reads a wizard's two saves off the class",
+      m._save_proficiencies(wiz) == {"int", "wis"},
+      str(sorted(m._save_proficiencies(wiz))))
+
+# The concentration save the tracker rolls uses that same set. Perrin is a
+# level-7 wizard (proficiency +3) with CON 12 (+1) and no CON save proficiency.
+seat_row = m.combat.get_combatant(probe.id)
+check("a caster with no CON save proficiency rolls the bare modifier",
+      m._con_save_mod(seat_row) == 1, "CON 12 → +1")
+with Session(m.engine) as s:
+    ch = s.get(m.Character, wiz.id)
+    ch.tags = list(ch.tags or []) + ["save: Constitution"]
+    s.add(ch)
+    s.commit()
+check("...and Resilient's `save:` tag finally reaches a real roll",
+      m._con_save_mod(seat_row) == 1 + proficiency_bonus_for_level(7),
+      "+1 CON, +3 proficiency = +4")
+
+# A stat block PRINTS the total, so proficiency must not be added twice.
+drag = m.rules_lib.get_monster("adult-brass-dragon")
+if drag is None:
+    check("(no SRD bestiary in this scratch DB — monster half skipped)", True)
+else:
+    check("a monster uses the save its stat block prints",
+          monster_save_mod(drag, "con") == 10,
+          f"listed +10; the bare modifier is only "
+          f"{(drag.constitution - 10) // 2}")
+    check("...and lists None where it has no proficiency",
+          monster_save_mod(drag, "str") is None)
+
 print()
 if _failures:
     print(f"{RED}{_failures} check(s) failed{OFF}")

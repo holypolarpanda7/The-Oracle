@@ -69,7 +69,8 @@ from rules import leveling
 from rules import metamagic
 from rules import summons
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
-from combat import CombatTracker, CombatEngine, PCProfile, PCWeapon, Condition
+from combat import (CombatTracker, CombatEngine, PCProfile, PCWeapon,
+                    Condition, monster_save_mod)
 from combat.models import CombatLog
 from dice import ability_check, ability_modifier, roll as dice_roll, proficiency_bonus_for_level
 from game_config import get_config
@@ -810,25 +811,32 @@ combat = CombatTracker(engine=engine)
 
 
 def _con_save_mod(c) -> int:
-    """A combatant's Constitution saving-throw modifier.
+    """A combatant's Constitution saving-throw modifier, proficiency included.
 
     The one thing the tracker can't work out for itself — a Combatant row
     carries no ability scores — so damage can roll the concentration save
-    itself instead of printing a DC and hoping. A PC's comes from the sheet, a
-    monster's from its stat block. Proficiency is deliberately NOT added: no
-    other save in the engine adds it yet, and having concentration alone
-    diverge would be a quieter bug than the one this fixes.
+    itself instead of printing a DC and hoping. Same rule as every other save
+    (see ``CombatEngine._save_mod``): a PC adds their proficiency bonus when
+    they are proficient in Constitution saves, and a monster uses the total its
+    stat block prints, which already includes proficiency.
     """
     try:
         if getattr(c, "character_id", None):
             with Session(engine) as s:
                 ch = s.get(Character, c.character_id)
             if ch is not None:
-                return ability_modifier(_ability_score(ch, "constitution"))
+                mod = ability_modifier(_ability_score(ch, "constitution"))
+                if "con" in _save_proficiencies(ch):
+                    mod += proficiency_bonus_for_level(ch.level)
+                return mod
         if getattr(c, "monster_slug", None):
             mon = rules_lib.get_monster(c.monster_slug)
-            if mon is not None and mon.constitution is not None:
-                return ability_modifier(mon.constitution)
+            if mon is not None:
+                listed = monster_save_mod(mon, "con")
+                if listed is not None:
+                    return listed
+                if mon.constitution is not None:
+                    return ability_modifier(mon.constitution)
     except Exception as e:
         print(f"[concentration] modifier lookup failed: {e}")
     return 0
@@ -7781,7 +7789,8 @@ def _combat_pc_profile(char: Character) -> PCProfile:
     reaction_spells = {"shield"} & known if cast_key else set()
     return PCProfile(
         character_id=char.id, name=char.name, level=lvl, ability_mods=mods,
-        prof=pb, skills=skills, weapons=weapons, attacks_per_action=attacks,
+        prof=pb, skills=skills, save_profs=_save_proficiencies(char),
+        weapons=weapons, attacks_per_action=attacks,
         features=features, spell_attack_bonus=spell_atk, spell_dc=spell_dc,
         spell_mod=cast_key, slots=slots, reaction_spells=reaction_spells,
         exhaustion=int(char.exhaustion or 0),
@@ -10049,6 +10058,31 @@ def _castable_lists(char: Character) -> tuple[list[str], list[str]]:
     except Exception as e:
         print(f"[castable] feat-option spells unavailable: {e}")
     return cantrips, leveled
+
+
+def _save_proficiencies(char: Character) -> set:
+    """Abilities this PC is proficient in the SAVING THROWS of ("con", "wis"…).
+
+    Two sources, and the second is why this is a function rather than a class
+    lookup: `rules_class.saving_throws` carries the two a class grants, and a
+    `save:` TAG carries any the sheet picked up afterwards — Resilient has been
+    writing that tag since feats were built and nothing has ever read it, so
+    the feat bought a bonus that was never applied to a single roll.
+    """
+    out = set()
+    try:
+        cls = (char.char_class or "").strip().lower()
+        if cls:
+            with Session(engine) as s:
+                row = s.exec(select(DndClass).where(
+                    DndClass.index_slug == cls)).first()
+            for a in ((row.saving_throws if row else None) or []):
+                out.add(str(a).strip().lower()[:3])
+    except Exception as e:
+        print(f"[saves] class lookup failed: {e}")
+    for a in _tag_values(char, "save"):
+        out.add(str(a).strip().lower()[:3])
+    return out
 
 
 def _can_cast(char: Character, name: str) -> bool:

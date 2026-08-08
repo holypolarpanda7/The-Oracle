@@ -68,6 +68,11 @@ class PCProfile:
     ability_mods: dict[str, int] = field(default_factory=dict)  # str/dex/con/int/wis/cha
     prof: int = 2
     skills: set[str] = field(default_factory=set)               # lowercase skill names
+    # Abilities this PC is PROFICIENT in the saving throws of ("str"/"con"/…):
+    # the class's two, plus anything that granted another (Resilient). Empty
+    # means no save proficiencies, which costs the PC their bonus on every save
+    # — so a backend that stops filling this in silently weakens every PC.
+    save_profs: set[str] = field(default_factory=set)
     weapons: list[PCWeapon] = field(default_factory=list)
     spell_attack_bonus: Optional[int] = None
     spell_dc: Optional[int] = None
@@ -180,6 +185,35 @@ _BAND_RANK = {"near": 1, "far": 2}
 
 def _mod_key(name: str) -> str:
     return (name or "")[:3].lower()
+
+
+def monster_save_mod(mon: Any, ability: str) -> Optional[int]:
+    """The saving-throw modifier a stat block PRINTS for this ability, or None.
+
+    The SRD stores it in ``proficiencies`` as
+    ``{"value": 10, "proficiency": {"name": "Saving Throw: CON"}}`` and that
+    value is the TOTAL — ability modifier and proficiency already added — so it
+    is used as-is and proficiency must never be added on top. None means the
+    stat block lists no save for this ability, which is not a gap: a creature
+    without the proficiency really does roll the bare modifier.
+
+    Book-parsed monsters store proficiencies in a different shape that carries
+    skills only, so they come back None here and roll unproficient. That is a
+    parse gap in ``rules/owned_ingest.py``, not a rule.
+    """
+    key = _mod_key(ability)
+    for p in (getattr(mon, "proficiencies", None) or []):
+        if not isinstance(p, dict):
+            continue
+        name = str((p.get("proficiency") or {}).get("name") or "")
+        if "saving throw" not in name.lower():
+            continue
+        if _mod_key(name.split(":")[-1].strip()) == key:
+            try:
+                return int(p.get("value"))
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 class _ReactionPause(Exception):
@@ -393,6 +427,37 @@ class CombatEngine:
                      "cha": m.charisma}.get(key)
             return ability_modifier(score) if score is not None else 0
         return c.dex_mod if key == "dex" else 0
+
+    def _save_mod(self, c: Combatant, ability: str,
+                  profiles: dict[int, PCProfile]) -> int:
+        """A creature's SAVING THROW modifier — ability mod plus proficiency.
+
+        The one place it is decided, because every save site used
+        ``_ability_mod`` and so silently left proficiency out: a level-11
+        sorcerer's Constitution save was rolled at +2 instead of +6, which is
+        four points off on every concentration check, every Hold Person and
+        every hazard. Proficiency comes from the class's two saves plus
+        anything that granted another (Resilient writes a ``save:`` tag, which
+        until now nothing read).
+
+        A monster's is the value its stat block PRINTS, used as-is — that
+        number already includes the creature's proficiency, so adding it again
+        would double it. A stat block with no listed save for this ability
+        falls back to the bare ability modifier, which is the rule.
+        """
+        key = _mod_key(ability)
+        if c.character_id and c.character_id in profiles:
+            p = profiles[c.character_id]
+            mod = p.ability_mods.get(key, 0)
+            if key in {str(a).strip().lower()[:3] for a in (p.save_profs or ())}:
+                mod += p.prof
+            return mod
+        m = self._monster(c)
+        if m is not None:
+            listed = monster_save_mod(m, key)
+            if listed is not None:
+                return listed
+        return self._ability_mod(c, ability, profiles)
 
     def _exh_pen(self, c: Combatant, profiles: dict[int, PCProfile]) -> int:
         """2024 Exhaustion penalty on a creature's D20 Test: -2 x level. Applied at
@@ -1036,7 +1101,7 @@ class CombatEngine:
             return
         keep: list[dict] = []
         for sv in saves:
-            mod = self._ability_mod(fresh, sv.get("ability") or "con", profiles)
+            mod = self._save_mod(fresh, sv.get("ability") or "con", profiles)
             mod += self._combat_roll_mod(fresh, profiles)
             res = saving_throw(mod, dc=int(sv.get("dc") or 10),
                                label=f"{(sv.get('ability') or '?').upper()} save "
@@ -1733,7 +1798,7 @@ class CombatEngine:
                                     "unaffected": "not a Humanoid"})
                     ev["notes"].append(f"{tgt.name} is not a Humanoid — unaffected")
                     continue
-                t_mod = self._ability_mod(tgt, sp.dc_type, profiles)
+                t_mod = self._save_mod(tgt, sp.dc_type, profiles)
                 t_mod += self._combat_roll_mod(tgt, profiles)
                 save = saving_throw(t_mod, dc=dc,
                                     label=f"{sp.dc_type.upper()} save ({tgt.name})",
@@ -1944,7 +2009,7 @@ class CombatEngine:
                 if targets is not None and c.id not in set(targets):
                     continue
                 ability = (hz.get("ability") or "con")[:3]
-                mod = self._ability_mod(c, ability, profiles) + self._exh_pen(c, profiles)
+                mod = self._save_mod(c, ability, profiles) + self._exh_pen(c, profiles)
                 dc = int(hz.get("dc", 12) or 12)
                 hname = hz.get("name", "a hazard")
                 save = saving_throw(mod, dc=dc, label=f"{hname} save ({c.name})",
