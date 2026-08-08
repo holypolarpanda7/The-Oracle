@@ -368,7 +368,9 @@ async def lifespan(app: FastAPI):
                                      ("sneak_used", "BOOLEAN DEFAULT 0"),
                                      ("used_features", "JSON"),
                                      ("pending_saves", "JSON"),
-                                     ("side", "VARCHAR")]:
+                                     ("side", "VARCHAR"),
+                                     ("summoned_by", "INTEGER"),
+                                     ("summon_spell", "VARCHAR")]:
                         if col not in cb_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE combat_combatant ADD COLUMN {col} {ddl}")
@@ -805,6 +807,34 @@ world = WorldGraph(engine=engine)
 rules_lib = RulesLibrary(engine=engine)
 # Initiative-ordered combat state tracker (PCs, NPCs, monsters).
 combat = CombatTracker(engine=engine)
+
+
+def _con_save_mod(c) -> int:
+    """A combatant's Constitution saving-throw modifier.
+
+    The one thing the tracker can't work out for itself — a Combatant row
+    carries no ability scores — so damage can roll the concentration save
+    itself instead of printing a DC and hoping. A PC's comes from the sheet, a
+    monster's from its stat block. Proficiency is deliberately NOT added: no
+    other save in the engine adds it yet, and having concentration alone
+    diverge would be a quieter bug than the one this fixes.
+    """
+    try:
+        if getattr(c, "character_id", None):
+            with Session(engine) as s:
+                ch = s.get(Character, c.character_id)
+            if ch is not None:
+                return ability_modifier(_ability_score(ch, "constitution"))
+        if getattr(c, "monster_slug", None):
+            mon = rules_lib.get_monster(c.monster_slug)
+            if mon is not None and mon.constitution is not None:
+                return ability_modifier(mon.constitution)
+    except Exception as e:
+        print(f"[concentration] modifier lookup failed: {e}")
+    return 0
+
+
+combat.con_save_mod_for = _con_save_mod
 # Deterministic turn engine on top of it: validates intents, rolls real dice,
 # enforces action economy and spacing; the LLM only proposes and narrates.
 combat_engine = CombatEngine(combat)
@@ -1345,6 +1375,8 @@ def resolve_summon_hooks(text: str, char: "Character", session_id: str,
         if mon is None:
             return f"✨ nothing answers the call of {spell or 'that spell'}."
 
+        sp = rules_lib.get_spell(spell)
+        spell_name = sp.name if sp else spell
         seated = ""
         try:
             enc = combat.get_active(session_id)
@@ -1354,11 +1386,21 @@ def resolve_summon_hooks(text: str, char: "Character", session_id: str,
                 # tiebreaker, and order()'s last key (the row id) does the rest.
                 me = next((c for c in combat.order(enc.id)
                            if c.character_id == char.id), None)
+                # Start the concentration BEFORE the spirit exists, so a
+                # re-cast dismisses the previous one and the new spirit binds
+                # to the casting that is actually holding it up.
+                if me is not None and sp is not None and sp.concentration:
+                    combat.set_concentration(me.id, spell_name)
                 combat.add_from_monster(
                     enc.id, mon.index_slug, side="party",
                     initiative=(me.initiative if me else 0),
-                    dex_mod=(me.dex_mod if me else None))
+                    dex_mod=(me.dex_mod if me else None),
+                    summoned_by=(me.id if me else None),
+                    summon_spell=(spell_name if sp is not None
+                                  and sp.concentration else None))
                 seated = " — it joins the fight on your initiative"
+                if me is not None and sp is not None and sp.concentration:
+                    seated += " and lasts as long as your concentration does"
         except Exception as e:
             print(f"[summon] could not seat {mon.index_slug}: {e}")
         return f"✨ {summons.summon_summary(mon)}{seated}"
@@ -6506,6 +6548,19 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                     out = combat.apply_damage(c.id, amount)
                     if out.get("defeated"):
                         notes.append(f"⚔ {c.name} goes down.")
+                    # The tracker rolled the concentration save (see
+                    # `_con_save_mod`); the DM's damage hook is the other place
+                    # damage lands, so it reports the outcome too.
+                    if (cr := out.get("concentration_roll")) is not None:
+                        notes.append(
+                            f"⚔ {c.name} — CON {cr['total']} vs DC {cr['dc']}: "
+                            f"concentration on {cr.get('spell') or 'the spell'} "
+                            + ("holds." if cr["success"] else "BREAKS."))
+                    if gone := out.get("dismissed"):
+                        notes.append(
+                            f"⚔ {', '.join(gone)} "
+                            + ("vanish" if len(gone) > 1 else "vanishes")
+                            + " as the spell ends.")
                 elif action == "heal":
                     combat.heal(c.id, amount)
                 else:
@@ -10786,7 +10841,10 @@ def _character_resource_block(character_id: int) -> str:
                         "creature from the slot you cast at, writes its stat "
                         "block, and seats it on your initiative fighting for the "
                         "party. NEVER state its AC, HP, speed or damage yourself, "
-                        "and never add it with [[COMBAT: add]]: "
+                        "and never add it with [[COMBAT: add]]. A concentration "
+                        "summon is bound to that concentration — the game ends it "
+                        "the moment the spell does, so do not narrate the spirit "
+                        "acting after concentration breaks: "
                         + "; ".join(conjurers))
         except Exception as e:
             print(f"[spellcasting block] {e}")

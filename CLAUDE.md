@@ -783,6 +783,23 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   what actually went off and at what level: a spell that sputtered out conjures
   nothing, and the block is built from the slot really spent, never from a
   number the DM typed.
+- **Concentration is now ROLLED, and a summon ends with it.** The DC has
+  always been computed in `tracker.apply_damage` and the save was never made —
+  it was reported as `[concentration check DC n pending]` and the flag stayed
+  set forever, so a spell held through anything short of the caster dropping.
+  The save is rolled where the DC already lived, because that is the one place
+  all EIGHT of the engine's damage paths and the DM's own `[[COMBAT: damage]]`
+  hook meet; the ability modifier — the only thing a Combatant row cannot
+  supply — arrives as `con_save_mod_for`, the `bonus_dice_for` precedent, and
+  with no callback installed the check is still merely reported, so nothing
+  regresses. `set_concentration` is then the ONE place a conjured creature
+  dies: every ending (a failed save, a drop, moving to another spell,
+  re-casting the same one, the summoner going to 0) routes through it, so the
+  dismissal is written once instead of at each. A spirit is marked DEFEATED,
+  not deleted — that is already the state a spirit at 0 HP is in, and it is
+  already mirrored to the board and skipped by the engine. Proficiency is
+  deliberately NOT added to the save: no other save in the engine adds it yet,
+  and having concentration alone diverge would be a quieter bug than this one.
 - **`Combatant.side` is how an ally exists at all.** The engine's rule was "PCs
   are one side, everything else the other", and a conjured spirit is a monster
   row that fights for the party — without the column a summoner's own creature

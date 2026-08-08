@@ -42,8 +42,18 @@ def _default_engine(database_url: Optional[str] = None) -> Engine:
 
 
 class CombatTracker:
-    def __init__(self, engine: Optional[Engine] = None, database_url: Optional[str] = None):
+    def __init__(self, engine: Optional[Engine] = None,
+                 database_url: Optional[str] = None,
+                 con_save_mod_for=None):
         self.engine = engine or _default_engine(database_url)
+        # ``con_save_mod_for(combatant) -> int`` — the one thing the tracker
+        # cannot know about a creature it holds a row for. With it, damage
+        # ROLLS the concentration save here, which is the only place all eight
+        # of the engine's damage paths and the DM's own damage hook meet;
+        # without it the check is reported as pending exactly as before, so a
+        # caller that never installs one loses nothing. The DC has always been
+        # computed here, so the save belongs beside it.
+        self.con_save_mod_for = con_save_mod_for
 
     def create_tables(self) -> None:
         SQLModel.metadata.create_all(self.engine)
@@ -160,6 +170,8 @@ class CombatTracker:
         side: Optional[str] = None,
         initiative: int = 0,
         dex_mod: Optional[int] = None,
+        summoned_by: Optional[int] = None,
+        summon_spell: Optional[str] = None,
     ) -> list[Combatant]:
         """Add ``count`` copies of an SRD monster, hydrated from ``rules_monster``.
 
@@ -192,6 +204,7 @@ class CombatTracker:
                     max_hp=hp, current_hp=hp, temp_hp=0,
                     armor_class=mon.armor_class, dex_mod=dex,
                     initiative=int(initiative or 0), side=side,
+                    summoned_by=summoned_by, summon_spell=summon_spell,
                     monster_slug=mon.index_slug, conditions=[],
                 )
                 s.add(c)
@@ -374,17 +387,45 @@ class CombatTracker:
             remaining = amount - absorbed
             c.current_hp = max(0, c.current_hp - remaining)
             broke_conc = bool(c.concentration) and remaining > 0
+            dismissed: list[str] = []
             if c.current_hp == 0:
                 c.defeated = True
+                # Going down ends concentration outright — no save — so the
+                # spirits it was holding up go with it. Same helper as every
+                # other way concentration ends.
+                dismissed = self._dismiss_summons(s, combatant_id, c.concentration)
                 c.concentration = None
+                broke_conc = False
+            dc = max(10, remaining // 2)
+            roll = None
+            if broke_conc and self.con_save_mod_for is not None:
+                try:
+                    mod = int(self.con_save_mod_for(c))
+                except Exception:
+                    mod = None
+                if mod is not None:
+                    res = dice_roll(f"1d20{mod:+d}")
+                    held = res.total >= dc
+                    roll = {"total": res.total, "dc": dc, "detail": res.detail,
+                            "success": held, "spell": c.concentration}
+                    if not held:
+                        dismissed = self._dismiss_summons(s, combatant_id,
+                                                          c.concentration)
+                        c.concentration = None
+                    broke_conc = not held
             s.add(c)
             s.commit()
             s.refresh(c)
             out = _combatant_dict(c)
             out["damage_taken"] = amount
+            # True only when concentration was actually LOST (or, with no
+            # modifier callback installed, when a save is owed and unrolled).
             out["concentration_check"] = broke_conc
+            out["dismissed"] = dismissed
+            if roll is not None:
+                out["concentration_roll"] = roll
             if broke_conc:
-                out["concentration_dc"] = max(10, remaining // 2)
+                out["concentration_dc"] = dc
             return out
 
     def heal(self, combatant_id: int, amount: int) -> dict:
@@ -438,16 +479,58 @@ class CombatTracker:
             s.refresh(c)
             return _combatant_dict(c)
 
+    def _dismiss_summons(self, s: Session, summoner_id: int,
+                         spell: Optional[str]) -> list[str]:
+        """"The creature disappears when the spell ends" — make that true.
+
+        A conjured spirit is held up by its summoner's concentration and by
+        nothing else, so ending that concentration has to reach the roster or
+        the spirit fights on after the magic that made it is gone. Marked
+        defeated rather than deleted: that is already the state a spirit at 0
+        HP is in (the rules give both endings the same outcome), and it is
+        already mirrored onto the board and skipped by the engine, so nothing
+        else needs telling.
+        """
+        if not spell:
+            return []
+        rows = s.exec(select(Combatant).where(
+            Combatant.summoned_by == summoner_id)).all()
+        gone: list[str] = []
+        key = str(spell).strip().lower()
+        for r in rows:
+            if r.defeated or str(r.summon_spell or "").strip().lower() != key:
+                continue
+            r.defeated = True
+            s.add(r)
+            gone.append(r.name)
+        return gone
+
     def set_concentration(self, combatant_id: int, spell: Optional[str]) -> dict:
+        """Start, change or drop concentration — and the ONE place a summon dies with it.
+
+        Every way concentration ends routes through here (a failed save, the
+        caster dropping it, moving it to another spell, going down), so a
+        conjured creature can be dismissed in one place instead of at each of
+        them. Returns the usual combatant dict plus ``dismissed``: the names of
+        the spirits that went with the spell.
+        """
         with Session(self.engine) as s:
             c = s.get(Combatant, combatant_id)
             if not c:
                 raise ValueError("Unknown combatant")
+            was = c.concentration
             c.concentration = spell or None
+            # Dismissed even when the new spell is the SAME one: that is a
+            # re-cast, and the first casting's spirits end with the first
+            # casting. Every caller here is a real event (a cast, a drop, a
+            # failed save), so there is no redundant set to protect against.
+            dismissed = self._dismiss_summons(s, combatant_id, was)
             s.add(c)
             s.commit()
             s.refresh(c)
-            return _combatant_dict(c)
+            out = _combatant_dict(c)
+            out["dismissed"] = dismissed
+            return out
 
     def set_pending_saves(self, combatant_id: int, saves: list) -> dict:
         """Replace the repeat-save list ({condition, ability, dc} rows)."""

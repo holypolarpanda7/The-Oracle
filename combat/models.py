@@ -95,6 +95,13 @@ class Combatant(SQLModel, table=True):
     # counted as an enemy for flanking and Help.
     side: Optional[str] = Field(default=None, sa_column=Column(String))
 
+    # A conjured creature and the concentration holding it up. Both are needed,
+    # not just the summoner: a caster who moves their concentration to another
+    # spell has ended the first one, and only the spell's NAME can say which
+    # spirits that took with it.
+    summoned_by: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
+    summon_spell: Optional[str] = Field(default=None, sa_column=Column(String))
+
     # Optional links back to the source record.
     character_id: Optional[int] = Field(default=None, sa_column=Column(Integer, index=True))
     monster_slug: Optional[str] = Field(default=None, sa_column=Column(String, index=True))

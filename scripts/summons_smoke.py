@@ -260,6 +260,94 @@ check("an unknown spell says so instead of conjuring",
 check("no hook survives into the narration when there is no character",
       "SUMMON" not in m._strip_mechanic_hooks("x [[SUMMON: Summon Fey | Fuming]] y"))
 
+# The hook binds the spirit to the concentration that is holding it up — which
+# needs the summoner to be IN the fight, as a combatant the sheet points at.
+enc_h = m.combat.start_encounter("smoke:hook", "Hook")
+seat = m.combat.add_pc(enc_h.id, name="Perrin", max_hp=30, armor_class=12,
+                       character_id=wiz.id, initiative=14)
+rec3: dict = {}
+m.resolve_cast_hooks("[[CAST: Summon Fey | 3]]", wiz, rec3)
+out = m.resolve_summon_hooks("[[SUMMON: Summon Fey | Fuming]]", wiz,
+                             "smoke:hook", rec3)
+check("the hook starts the caster's concentration",
+      m.combat.get_combatant(seat.id).concentration == "Summon Fey", out.strip())
+bound = [c for c in m.combat.order(enc_h.id) if c.summoned_by == seat.id]
+check("...and binds the spirit to that spell",
+      len(bound) == 1 and bound[0].summon_spell == "Summon Fey")
+dropped = m.combat.set_concentration(seat.id, None)
+check("...so dropping concentration ends it",
+      dropped["dismissed"] == [bound[0].name])
+
+# ----------------------------------------------------------------------
+section("11. it lasts exactly as long as the concentration does")
+enc2 = tracker.start_encounter("smoke:conc", "Concentration")
+caster = tracker.add_pc(enc2.id, name="Perrin", max_hp=40, armor_class=12,
+                        dex_mod=1, initiative=15)
+
+
+def summon(spell="Summon Fey"):
+    return tracker.add_from_monster(
+        enc2.id, fey.index_slug, side="party", initiative=caster.initiative,
+        dex_mod=caster.dex_mod, summoned_by=caster.id, summon_spell=spell)[0]
+
+
+tracker.set_concentration(caster.id, "Summon Fey")
+spirit = summon()
+check("damage that doesn't break concentration leaves it standing",
+      not tracker.get_combatant(spirit.id).defeated)
+
+# No modifier callback yet: the check is reported as pending, exactly as before.
+out = tracker.apply_damage(caster.id, 8)
+check("with no CON-save provider the save is still only REPORTED",
+      out["concentration_check"] and out.get("concentration_roll") is None
+      and out["dismissed"] == [], str(out.get("concentration_dc")))
+
+# Now install one and make the save impossible to pass.
+tracker.con_save_mod_for = lambda c: -50
+out = tracker.apply_damage(caster.id, 8)
+check("a failed save actually ends the concentration",
+      out["concentration_roll"] is not None
+      and not out["concentration_roll"]["success"]
+      and tracker.get_combatant(caster.id).concentration is None)
+check("...and the spirit it was holding up vanishes",
+      out["dismissed"] == [spirit.name]
+      and tracker.get_combatant(spirit.id).defeated, str(out["dismissed"]))
+
+tracker.con_save_mod_for = lambda c: 50
+tracker.set_concentration(caster.id, "Summon Fey")
+spirit2 = summon()
+out = tracker.apply_damage(caster.id, 8)
+check("a save that HOLDS keeps the spirit",
+      out["concentration_roll"]["success"] and out["dismissed"] == []
+      and not tracker.get_combatant(spirit2.id).defeated)
+
+moved = tracker.set_concentration(caster.id, "Haste")
+check("moving concentration to another spell ends the summon too",
+      moved["dismissed"] == [spirit2.name])
+
+tracker.set_concentration(caster.id, "Summon Fey")
+spirit3 = summon()
+recast = tracker.set_concentration(caster.id, "Summon Fey")
+check("re-casting the same spell replaces the old spirit",
+      recast["dismissed"] == [spirit3.name])
+
+tracker.set_concentration(caster.id, "Summon Fey")
+spirit4 = summon()
+out = tracker.apply_damage(caster.id, 500)
+check("a summoner dropped to 0 takes their spirits with them — no save",
+      out["defeated"] and out["dismissed"] == [spirit4.name]
+      and out.get("concentration_roll") is None
+      and tracker.get_combatant(spirit4.id).defeated)
+
+# A spirit bound to nothing (a summon with no concentration) is untouched.
+tracker.heal(caster.id, 40)
+tracker.set_concentration(caster.id, "Summon Fey")
+free = tracker.add_from_monster(enc2.id, fey.index_slug, side="party",
+                                summoned_by=caster.id, summon_spell=None)[0]
+ended = tracker.set_concentration(caster.id, None)
+check("a spirit bound to no spell is never dismissed by one",
+      ended["dismissed"] == [] and not tracker.get_combatant(free.id).defeated)
+
 print()
 if _failures:
     print(f"{RED}{_failures} check(s) failed{OFF}")

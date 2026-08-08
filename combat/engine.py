@@ -347,6 +347,30 @@ class CombatEngine:
                         "reach_ft": int(reach.group(1)) if reach else None})
         return out
 
+    @staticmethod
+    def _note_concentration(out: dict, ev: dict) -> None:
+        """Say on the event what the damage did to the target's concentration.
+
+        The tracker ROLLS the save — it owns the DC, and it is the one place
+        all eight of the paths that deal damage here meet. This only reports.
+        With no ``con_save_mod_for`` installed there is no roll and the check
+        is still reported as pending, which is what always happened.
+        """
+        roll = out.get("concentration_roll")
+        if roll is not None:
+            spell = roll.get("spell") or "the spell"
+            ev.setdefault("notes", []).append(
+                f"concentration on {spell} "
+                f"{'holds' if roll['success'] else 'BREAKS'} "
+                f"(CON {roll['total']} vs DC {roll['dc']})")
+        elif out.get("concentration_check"):
+            ev["concentration_dc"] = out.get("concentration_dc")
+        gone = out.get("dismissed") or []
+        if gone:
+            ev.setdefault("notes", []).append(
+                f"{', '.join(gone)} {'vanish' if len(gone) > 1 else 'vanishes'} "
+                f"with the spell")
+
     def _multiattack_count(self, c: Combatant) -> int:
         m = self._monster(c)
         for a in (m.actions if m else []) or []:
@@ -794,6 +818,7 @@ class CombatEngine:
             ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
             if out.get("defeated"):
                 ev["defeated"] = True
+            self._note_concentration(out, ev)
             rep.events.append(ev)
         self._finish_after(encounter_id, payload.get("after"), profiles, rep)
 
@@ -820,6 +845,7 @@ class CombatEngine:
         ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
         if out.get("defeated"):
             ev["defeated"] = True
+        self._note_concentration(out, ev)
         rep.events.append(ev)
         self._finish_after(encounter_id, payload.get("after"), profiles, rep)
 
@@ -913,6 +939,7 @@ class CombatEngine:
             oa["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
             if out.get("defeated"):
                 oa["defeated"] = True
+            self._note_concentration(out, oa)
         rep.events.append(oa)
 
     # ---------------- intent resolution ----------------
@@ -1254,8 +1281,7 @@ class CombatEngine:
             ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
             if out.get("defeated"):
                 ev["defeated"] = True
-            if out.get("concentration_check"):
-                ev["concentration_dc"] = out.get("concentration_dc")
+            self._note_concentration(out, ev)
         rep.events.append(ev)
 
     def _do_move(self, encounter_id, actor, intent, profiles, rep):
@@ -1627,6 +1653,7 @@ class CombatEngine:
             ev["notes"].append("auto-hit")
             if out.get("defeated"):
                 ev["defeated"] = True
+            self._note_concentration(out, ev)
         elif eff and eff.get("heal"):
             tgt = target or actor
             n = 1 + max(0, (slot_spent or base_lv) - base_lv)
@@ -1675,6 +1702,7 @@ class CombatEngine:
                 ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
                 if out.get("defeated"):
                     ev["defeated"] = True
+                self._note_concentration(out, ev)
         elif sp and sp.dc_type and targets:
             # Registry target cap (upcasting may widen it); AoE spells carry
             # no cap — the narration decides who stands in the area, the
@@ -1740,6 +1768,7 @@ class CombatEngine:
                         res["hp"] = f"{out['current_hp']}/{out['max_hp']}"
                         if out.get("defeated"):
                             res["defeated"] = True
+                        self._note_concentration(out, ev)
                 results.append(res)
             ev["results"] = results
             if len(results) == 1:
@@ -1935,6 +1964,7 @@ class CombatEngine:
                     if out.get("defeated"):
                         ev["defeated"] = True
                     ev["notes"].append(f"takes {dmg.total}")
+                    self._note_concentration(out, ev)
                 else:
                     ev["notes"].append("resists")
                 events.append(ev)
