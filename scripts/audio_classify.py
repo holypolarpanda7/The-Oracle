@@ -33,6 +33,13 @@ Usage:
 ``voice-service/audio/<mood>/ambience/``. Nothing is deleted, and the loader
 needs no change: ``load_playlist`` globs ``*.mp3`` non-recursively, so a
 subfolder is already invisible to it. Move a file back to undo.
+
+A fourth verdict, SILENT, is the one that isn't about taste: a truncated MP3
+decodes to zeros instead of raising — libsndfile reads the header, hands back
+silence and reports no error — so a broken download is otherwise indis-
+tinguishable from a very quiet room. Ask ``is_music()`` rather than testing the
+string, or the CONFIDENT verdicts (which are upper-case) slip past a
+lower-case prefix check.
 """
 from __future__ import annotations
 
@@ -104,8 +111,31 @@ def beat_strength(mag: np.ndarray, sr: int) -> float:
     return float(ac[lo:hi].max()) if hi > lo else 0.0
 
 
+# Below this RMS the sample carries no signal worth measuring.
+SILENT_RMS = 1e-4
+
+
+def is_music(verdict: str) -> bool:
+    """Whether a verdict means "keep this in a music playlist".
+
+    Case-insensitive on purpose: the verdicts are shouted when the call is
+    confident ("MUSIC"/"AMBIENCE") and hedged when it isn't ("music?"), so a
+    caller testing `verdict.startswith("ambience")` silently accepted every
+    track the measurement was SUREST about. Ask through here.
+    """
+    return not verdict.strip().lower().startswith(("ambience", "silent"))
+
+
 def classify(path: Path) -> dict:
     y, sr = _load(path)
+    rms = float(np.sqrt(np.mean(y.astype(np.float64) ** 2))) if y.size else 0.0
+    if rms < SILENT_RMS:
+        # A truncated or corrupt MP3 decodes to silence rather than raising —
+        # libsndfile reads the header, hands back zeros, and reports no error.
+        # Scored as audio that is flat and beatless, which is indistinguishable
+        # from noise; called out by name so it can be re-fetched, not filed.
+        return {"file": path.name, "flatness": 1.0, "beat": 0.0, "rms": rms,
+                "verdict": "SILENT"}
     mag = _spectrogram(y)
     flat = spectral_flatness(mag, sr)
     beat = beat_strength(mag, sr)
@@ -119,7 +149,7 @@ def classify(path: Path) -> dict:
         verdict = "music?"     # noisy but pulsed — percussion, or a busy mix
     else:
         verdict = "ambience?"  # tonal but beatless — a drone, or a slow pad
-    return {"file": path.name, "flatness": flat, "beat": beat,
+    return {"file": path.name, "flatness": flat, "beat": beat, "rms": rms,
             "verdict": verdict}
 
 
@@ -143,7 +173,7 @@ def main(argv: list[str]) -> int:
                 print(f"  {f.name:32} — unreadable ({e})")
                 continue
             note = ""
-            if quarantine and r["verdict"].startswith("ambience"):
+            if quarantine and not is_music(r["verdict"]):
                 dest = d / "ambience"
                 dest.mkdir(exist_ok=True)
                 f.rename(dest / f.name)
