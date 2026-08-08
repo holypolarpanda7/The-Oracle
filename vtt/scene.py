@@ -1918,6 +1918,7 @@ class VttEngine:
                    concentration: bool = False,
                    difficult_terrain: bool = False, blocks_sight: bool = False,
                    blocks_movement: bool = False, obscured: Optional[str] = None,
+                   silences: bool = False,
                    level: int = 0,
                    damage: Optional[str] = None, save_ability: Optional[str] = None,
                    save_dc: Optional[int] = None, trigger: Optional[str] = None,
@@ -1957,6 +1958,7 @@ class VttEngine:
             direction_deg=int(direction_deg), squares=[list(p) for p in sq],
             difficult_terrain=difficult_terrain, blocks_sight=blocks_sight,
             blocks_movement=blocks_movement, obscured=obscured,
+            silences=bool(silences),
             level=int(level or 0),
             damage=damage, save_ability=save_ability, save_dc=save_dc,
             trigger=trigger, color=color or _effect_color(kind, name),
@@ -2241,6 +2243,30 @@ class VttEngine:
         if not (0 <= y < len(rows) and 0 <= x < len(rows[y])):
             return "bright"
         return {"b": "bright", "d": "dim", "x": "dark"}[rows[y][x]]
+
+    def silenced_at(self, map_id: int, x: int, y: int, level: int = 0) -> bool:
+        """Is this square inside a zone where no sound can be made?
+
+        The spatial half of the Verbal-component rule, and the same shape as
+        the lighting one: the board owns WHERE, `survival` and the casting gate
+        own what it means. Per floor, because a Silence on the gallery does not
+        quiet the hall.
+        """
+        for e in self.effects(map_id):
+            if not getattr(e, "silences", False):
+                continue
+            if int(e.level or 0) != int(level or 0):
+                continue
+            if [int(x), int(y)] in [list(p) for p in (e.squares or [])]:
+                return True
+        return False
+
+    def token_silenced(self, map_id: int, ref: str) -> bool:
+        """Whether a named creature is standing in silence (False if not here)."""
+        t = self.find_token(map_id, ref)
+        if t is None:
+            return False
+        return self.silenced_at(map_id, t.x, t.y, int(t.level or 0))
 
     def token_senses(self, t: MapToken) -> dict:
         """How this creature perceives, in feet. Looked up if never recorded.
@@ -3211,6 +3237,7 @@ def _effect_dict(e: MapEffect) -> dict:
         "difficult_terrain": e.difficult_terrain,
         "blocks_sight": e.blocks_sight,
         "obscured": e.obscured,
+        "silences": bool(getattr(e, "silences", False)),
         "level": int(getattr(e, "level", 0) or 0),
         "damage": e.damage,
         "save_ability": e.save_ability,

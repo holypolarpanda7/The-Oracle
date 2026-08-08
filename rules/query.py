@@ -12,6 +12,7 @@ from typing import Optional
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
+from .components import components_of, describe
 from .ingest import get_engine
 from .models import Feat, Monster, Spell, Subclass, Item, SrdEntry, Puzzle
 
@@ -458,6 +459,12 @@ def format_spell_brief(sp: Spell) -> str:
     if sp.concentration:
         meta += " | Concentration"
     bits = [header, meta]
+    # Components were in the database from the first ingest and had never been
+    # shown to anyone, so a DM adjudicating Revivify could not see that it
+    # wanted a 300 GP diamond — let alone that the casting destroys it.
+    comps = components_of(sp)
+    if comps.perceptible:
+        bits.append(f"Components: {describe(comps)}")
     if sp.dc_type:
         bits.append(f"Save: {sp.dc_type}" + (f" ({sp.dc_success} on success)" if sp.dc_success else ""))
     if sp.attack_type:

@@ -310,6 +310,12 @@ class MapEffect(SQLModel, table=True):
     blocks_sight: bool = Field(default=False, sa_column=Column(Boolean))
     blocks_movement: bool = Field(default=False, sa_column=Column(Boolean))
     obscured: Optional[str] = Field(default=None, sa_column=Column(String))  # light|heavy
+    # No sound can be created within or pass through. Its own column for the
+    # same reason `obscured` has one: `kind` says how the UI paints an area,
+    # not what standing in it does, and a silence zone is painted like any
+    # other zone. Read by the casting gate — a Verbal component cannot be
+    # spoken in here.
+    silences: bool = Field(default=False, sa_column=Column(Boolean))
     # Which floor this area is on. A fireball in the hall is not also going off
     # on the gallery, and a board with one storey has everything on level 0.
     level: int = Field(default=0, sa_column=Column(Integer))

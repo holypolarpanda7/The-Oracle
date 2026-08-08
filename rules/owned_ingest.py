@@ -601,13 +601,54 @@ _FIELD = {
     "duration": _fldrx("Duration"),
 }
 
+#: A field label, used to stop the Components field running into the next one.
+_FIELD_LABEL = re.compile(
+    r"^\s*(Casting\s*Time|Range|Duration|Components?|Classes?)\s*:", re.I)
+
+
+def _components_value(body: str) -> Optional[str]:
+    """The Components field, followed across the line wrap the PDF puts in it.
+
+    ``_fldrx`` captures a single line, and the material component is the one
+    field that routinely runs past one: "M (a diamond worth 300+ GP,\\nwhich
+    the spell consumes)". A truncated capture has an unclosed parenthesis, so
+    the ``M (...)`` regex below finds nothing and the spell is stored with NO
+    material at all — 54 spells, Revivify's 300 GP diamond among them, silently
+    free to cast. Read on until the bracket closes.
+    """
+    m = _FIELD["components"].search(body)
+    if not m:
+        return None
+
+    def norm(s: str) -> str:
+        # "M (a reliquary worth 1,000+ GP}" — the extractor mistakes a closing
+        # bracket for a brace often enough to matter, and an unbalanced value
+        # never yields a material. Only ever applied to this one field.
+        return s.replace("{", "(").replace("[", "(").replace("}", ")").replace("]", ")")
+
+    value = norm(m.group(1))
+    if value.count("(") <= value.count(")"):
+        return value
+    for line in body[m.end():].split("\n")[:5]:
+        if _FIELD_LABEL.match(line):
+            break                      # the entry moved on; leave it unclosed
+        value += " " + norm(line.strip())
+        if value.count("(") <= value.count(")"):
+            break
+    return value
+
+
 _DIGIT_REPAIR = {"l": "1", "J": "1", "I": "1", "O": "0"}
 
 # Vocabulary for repairing glyph-spaced words in field values.
 _VALUE_VOCAB = ("Bonus Action", "Reaction", "Action", "Ritual", "Instantaneous",
                 "Concentration", "Touch", "Self", "Special", "Unlimited",
                 "Sight", "minutes", "minute", "hours", "hour", "days", "day",
-                "rounds", "round", "feet", "mile", "miles")
+                "rounds", "round", "feet", "mile", "miles",
+                # Material-component words: a glyph-split "the spe ll consumes"
+                # otherwise survives into the DB and hides the fact that the
+                # component is destroyed.
+                "consumes", "consumed", "spell", "worth")
 
 
 def _repair_value(s: str) -> str:
@@ -617,6 +658,9 @@ def _repair_value(s: str) -> str:
         s = re.sub(r"\b" + r" ?".join(re.escape(c) for c in w) + r"\b", w, s,
                    flags=re.I)
     s = re.sub(r"\bl (minute|hour|round|day|mile)", r"1 \1", s)
+    # "a diamond worth l,000+ GP" — a lone 'l' glued to digits is a 1, and in a
+    # material component that misreading is the price of the spell.
+    s = re.sub(r"\bl(?=[,.]?\d)", "1", s)
     s = re.sub(r"\s+([,;:])", r"\1", s)
     return re.sub(r"\s+", " ", s).strip(" .")
 
@@ -686,6 +730,9 @@ def parse_phb_spells(text: str, canon: dict,
             continue
         fields = {k: (_repair_value(rx.search(body).group(1)) if rx.search(body) else None)
                   for k, rx in _FIELD.items()}
+        # Components is read separately: its value is the one that wraps.
+        raw_comp = _components_value(body)
+        fields["components"] = _repair_value(raw_comp) if raw_comp else None
         # Description: after the Duration line.
         dm = _FIELD["duration"].search(body)
         desc = re.sub(r"\s+", " ", body[dm.end():]).strip()[:3000] if dm else ""

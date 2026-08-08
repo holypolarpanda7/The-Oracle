@@ -68,6 +68,7 @@ from rules import (
 from rules import leveling
 from rules import metamagic
 from rules import summons
+from rules import components as rules_components
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import (CombatTracker, CombatEngine, PCProfile, PCWeapon,
                     Condition, monster_save_mod)
@@ -386,6 +387,9 @@ async def lifespan(app: FastAPI):
                 if ve_existing and "level" not in ve_existing:
                     conn.exec_driver_sql(
                         "ALTER TABLE vtt_effect ADD COLUMN level INTEGER DEFAULT 0")
+                if ve_existing and "silences" not in ve_existing:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE vtt_effect ADD COLUMN silences BOOLEAN DEFAULT 0")
                     print("[Startup] Migrated vtt_effect: added level")
                     print("[Startup] Migrated combat_encounter: added pending_reaction")
 
@@ -1290,11 +1294,19 @@ _ORDINALS = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th",
 
 
 def resolve_cast_hooks(text: str, char: "Character",
-                       record: Optional[Dict[str, Optional[int]]] = None) -> str:
-    """Resolve [[CAST: Spell | slot level]] hooks: enforce that the PC actually
-    has the spell prepared/known and an open slot, EXPEND the slot (mutating
-    char.spell_slots_used — the caller persists), and substitute the outcome.
-    A cast the PC can't make is turned into a visible failure.
+                       record: Optional[Dict[str, Optional[int]]] = None,
+                       session_id: Optional[str] = None) -> str:
+    """Resolve [[CAST: Spell | slot level]] hooks — the whole price of a casting.
+
+    Four things have to be true, and they are checked in the order that makes a
+    refusal cheap: the PC must KNOW the spell, be ABLE to cast it (conditions
+    and the Verbal component — see :func:`_casting_gate`), HAVE the material
+    component, and have an open SLOT. The slot is expended last, so a casting
+    refused for any other reason has not already burned one. A consumed
+    material is destroyed only after the slot is actually spent.
+
+    Mutates ``char.spell_slots_used`` and ``char.inventory``; the caller
+    persists both.
 
     ``record`` collects ``{spell name lowered: slot level spent, or None if the
     casting failed}``. That is what lets a follow-on hook — [[SUMMON]] — refuse
@@ -1322,9 +1334,19 @@ def resolve_cast_hooks(text: str, char: "Character",
         if not _can_cast(char, name):
             note(None)
             return f"✨ {disp} won't answer — it isn't prepared."
+        blocked = _casting_gate(char, sp, session_id)
+        if blocked:
+            note(None)
+            return f"✨ {disp} won't come — {char.name} {blocked}."
+        ok, why, entry = _material_check(char, sp)
+        if not ok:
+            note(None)
+            return f"✨ {disp} won't come — it {why}."
+        comps = rules_components.components_of(sp)
         if (spell_level or 0) == 0:
             note(0)
-            return f"✨ {disp}"                      # cantrip: no slot
+            burned = _spend_material(char, comps, entry)
+            return f"✨ {disp}" + (f" ({burned})" if burned else "")
         need = max(int(spell_level or 1), int(at_level or 0), 1)
         spent = _expend_slot(char, min_level=need)
         if spent is None:
@@ -1332,7 +1354,12 @@ def resolve_cast_hooks(text: str, char: "Character",
             ord_need = _ORDINALS.get(need, f"{need}th")
             return f"✨ {disp} sputters out — no {ord_need}-level (or higher) slot remains."
         note(spent)
-        return f"✨ {disp} ({_ORDINALS.get(spent, str(spent))}-level slot)"
+        # The component burns only once the casting is paid for and real.
+        burned = _spend_material(char, comps, entry)
+        tail = f"{_ORDINALS.get(spent, str(spent))}-level slot"
+        if burned:
+            tail += f"; {burned}"
+        return f"✨ {disp} ({tail})"
 
     return CAST_HOOK_PATTERN.sub(repl, text)
 
@@ -4141,16 +4168,12 @@ def _spell_components_for(name: str) -> SpellComponents:
         sp = rules_lib.get_spell(name)
     except Exception:
         sp = None
-    if not sp:
-        return SpellComponents(verbal=True, somatic=True)
-    comps = sp.components or []
-    if isinstance(comps, str):
-        comps = [c.strip() for c in re.split(r"[,\s]+", comps) if c.strip()]
-    codes = {str(c).upper()[:1] for c in comps}
-    return SpellComponents(
-        verbal="V" in codes,
-        somatic="S" in codes,
-        material=("M" in codes) or bool(getattr(sp, "material", None)))
+    # One parser. This used to read `components` itself, which was fine until a
+    # second reader existed — and two answers to "does this spell have a
+    # material component" is exactly the drift `rules/components.py` is for.
+    c = rules_components.components_of(sp)
+    return SpellComponents(verbal=c.verbal, somatic=c.somatic,
+                           material=c.material)
 
 
 def _parse_detectability(raw: str) -> Detectability:
@@ -7404,6 +7427,7 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                     difficult_terrain="difficult" in flags,
                     blocks_sight="obscuring" in flags,
                     blocks_movement="blocking" in flags,
+                    silences="silence" in flags or "silenced" in flags,
                     damage=dmg, save_ability=save_ab, save_dc=save_dc,
                     trigger=kv.get("trigger"),
                     color=kv.get("color"),
@@ -9998,6 +10022,183 @@ def _add_inventory_item(char: Character, name: str, *, quantity: int = 1, extra:
     char.inventory = inv
 
 
+#: Anything that stands in for a costless material component. Deliberately
+#: broad: every class's focus has a different name, a book may add another, and
+#: refusing a spell because a wand wasn't on a list is a far worse failure than
+#: letting one through.
+_FOCUS_WORDS = (
+    "component pouch", "spellcasting focus", "arcane focus", "druidic focus",
+    "holy symbol", "emblem", "reliquary", "amulet", "sprig of mistletoe",
+    "totem", "yew wand", "wand", "staff", "quarterstaff", "rod", "orb",
+    "crystal", "sceptre", "scepter", "prayer book",
+)
+#: Words in a material line that describe the SPELL rather than the object.
+_MATERIAL_STOPWORDS = {
+    "a", "an", "the", "of", "or", "and", "at", "least", "worth", "which",
+    "spell", "consumes", "consumed", "this", "that", "is", "are", "it", "its",
+    "with", "in", "on", "for", "to", "gp", "sp", "cp", "pp", "ep", "each",
+    "one", "two", "you", "your", "creature", "large", "enough", "hold",
+    "being", "made", "from", "than", "more", "least", "value", "total",
+}
+
+
+def _material_nouns(text: str) -> List[str]:
+    """The words that name the OBJECT a material component is, longest first.
+
+    A costly component has to be found in the pack, and the only handle on it
+    is the book's own description — "a diamond worth 300+ GP, which the spell
+    consumes" is a diamond. Everything about price and destruction is stripped,
+    what remains is matched against item names, and longest-first means "ruby
+    dust" is preferred over "dust" when both would match.
+    """
+    head = re.split(r"\bworth\b|,", text or "", maxsplit=1)[0]
+    words = [w for w in re.findall(r"[a-zA-Z']{3,}", head.lower())
+             if w not in _MATERIAL_STOPWORDS]
+    pairs = [f"{a} {b}" for a, b in zip(words, words[1:])]
+    return sorted(set(words) | set(pairs), key=len, reverse=True)
+
+
+def _find_component_item(char: Character, comps) -> Optional[Dict[str, Any]]:
+    """The inventory entry that satisfies this material component, or None."""
+    inv = _inventory_items(char)
+    if not inv:
+        return None
+    if not comps.costly:
+        for it in inv:
+            nm = _normalize_item_name(str(it.get("name", "")))
+            if any(w in nm for w in _FOCUS_WORDS):
+                return it
+        return None
+    nouns = _material_nouns(comps.text)
+    for it in inv:
+        nm = _normalize_item_name(str(it.get("name", "")))
+        if not nm:
+            continue
+        if any(n in nm for n in nouns):
+            return it
+    return None
+
+
+def _material_check(char: Character, spell) -> tuple[bool, str, Optional[Dict[str, Any]]]:
+    """Can this PC pay this spell's material component? (ok, why not, entry).
+
+    Two different rules wear the same letter M. A component with NO listed
+    price is provided by a focus or a component pouch, so the check is "do
+    they carry one". A component WITH a price is a specific object that has to
+    be in the pack, and if the spell consumes it, it is gone afterwards — that
+    is the whole reason Revivify is a decision rather than a button.
+
+    An EMPTY inventory is treated as unknown rather than as carrying nothing:
+    imported sheets routinely arrive with no pack, and a false refusal stops
+    play dead where a missed enforcement only makes the game slightly generous.
+    """
+    comps = rules_components.components_of(spell)
+    if not comps.material:
+        return True, "", None
+    entry = _find_component_item(char, comps)
+    if entry is not None:
+        return True, "", entry
+    if not _inventory_items(char):
+        return True, "", None            # unknown pack — don't block play
+    if comps.costly:
+        # Name the OBJECT and its price, not the whole clause: "a diamond worth
+        # 300+ GP, which the spell consumes and there is none in the pack" is
+        # two sentences fighting over one comma.
+        want = re.split(r",\s*which\b", comps.text, maxsplit=1)[0].strip()
+        return False, f"needs {want}, and there is none in the pack", None
+    return False, ("needs a spellcasting focus or a component pouch, "
+                   "and there is neither in the pack"), None
+
+
+def _spend_material(char: Character, comps, entry: Optional[Dict[str, Any]]) -> str:
+    """Destroy a consumed component. Returns a note, or "" if nothing was used."""
+    if entry is None or not comps.consumed:
+        return ""
+    inv = _inventory_items(char)
+    for i, it in enumerate(inv):
+        if it is not entry and _normalize_item_name(str(it.get("name", ""))) \
+                != _normalize_item_name(str(entry.get("name", ""))):
+            continue
+        name = str(it.get("name", "the component"))
+        try:
+            q = int(it.get("quantity", 1) or 1)
+        except (TypeError, ValueError):
+            q = 1
+        if q > 1:
+            it["quantity"] = q - 1
+        else:
+            inv.pop(i)
+        char.inventory = inv
+        return f"{name} is consumed"
+    return ""
+
+
+#: Conditions that stop a creature acting at all — so they stop a spell before
+#: any component is considered. Paralyzed/stunned/unconscious/petrified all
+#: INCLUDE Incapacitated in 5e, but a DM setting one of them by hand rarely
+#: also sets Incapacitated, so each is named.
+_NO_ACTION_CONDITIONS = {"incapacitated", "paralyzed", "petrified", "stunned",
+                         "unconscious"}
+
+
+def _combatant_for_character(session_id: Optional[str], char: Character):
+    """This PC's row in the live fight, if there is one."""
+    if not session_id:
+        return None
+    try:
+        enc = combat.get_active(session_id)
+        if enc is None:
+            return None
+        return next((c for c in combat.order(enc.id)
+                     if c.character_id == char.id), None)
+    except Exception:
+        return None
+
+
+def _casting_gate(char: Character, spell, session_id: Optional[str]) -> str:
+    """Why this casting can't happen, or "" when it can.
+
+    The components have always been in the database and nothing ever asked
+    whether the caster could actually PROVIDE them. Two rules are decidable
+    here without inventing state that doesn't exist:
+
+    * A creature that cannot act cannot cast. This is not about components at
+      all — it comes first because a paralyzed wizard with a full pouch is
+      still not casting anything.
+    * A Verbal component cannot be spoken by someone who cannot speak. The
+      board answers WHERE (a `silences` effect, the same shape as `obscured`),
+      the `silenced` condition answers the same question at a table with no
+      board, and either one is enough.
+
+    Deliberately NOT decided here: whether a hand is free for the Somatic and
+    Material components. Nothing in the schema says which hand holds what — a
+    shield and a two-handed weapon are inventory rows, not grips — so enforcing
+    it would mean guessing, and a guess that refuses a spell is worse than a
+    rule left to the DM. That one is stated on the DM's board instead.
+    """
+    conds = {str(c).strip().lower() for c in (char.conditions or [])}
+    seat = _combatant_for_character(session_id, char)
+    if seat is not None:
+        conds |= {str(c).strip().lower() for c in (seat.conditions or [])}
+    blocked = conds & _NO_ACTION_CONDITIONS
+    if blocked:
+        return f"is {sorted(blocked)[0]} and can't act"
+    comps = rules_components.components_of(spell)
+    if not comps.verbal:
+        return ""
+    if "silenced" in conds:
+        return "can't speak, and this spell needs its Verbal component"
+    try:
+        if _vtt_on() and session_id and seat is not None:
+            scene = vtt_engine.active_scene(session_id)
+            if scene is not None and vtt_engine.token_silenced(scene.id, seat.name):
+                return ("is standing in magical silence, and this spell needs "
+                        "its Verbal component")
+    except Exception as e:
+        print(f"[casting gate] board check failed: {e}")
+    return ""
+
+
 def _character_spell_names(char: Character) -> List[str]:
     """Normalized names of spells known/prepared on the character sheet."""
     out: List[str] = []
@@ -10848,6 +11049,27 @@ def _character_resource_block(character_id: int) -> str:
                     lines.append("Cantrips (at will): " + ", ".join(cantrips))
                 lines.append(f"{label} spells: " + (", ".join(leveled) if leveled else "none"))
                 lines.append(f"Open spell slots: {slot_txt}")
+                # Costly materials, named. A spell brief only reaches the DM
+                # when the spell is MENTIONED, so without this the one fact
+                # that turns a casting into a decision — it wants a 300 GP
+                # diamond and destroys it — is invisible right up to the
+                # moment the game refuses the cast.
+                try:
+                    priced = []
+                    for nm in list(cantrips) + list(leveled):
+                        sp_row = rules_lib.get_spell(nm)
+                        cc = rules_components.components_of(sp_row) if sp_row else None
+                        if cc and cc.costly:
+                            priced.append(
+                                f"{nm} — {cc.text}"
+                                + (" (DESTROYED by the casting)" if cc.consumed else ""))
+                    if priced:
+                        lines.append(
+                            "Costly material components (ENFORCED — the caster must "
+                            "have the object in their pack, and a focus does NOT "
+                            "replace it): " + "; ".join(priced))
+                except Exception as e:
+                    print(f"[spellcasting block] materials: {e}")
                 lines.append(
                     "The PC may cast ONLY the cantrips/spells listed here, and a "
                     "leveled spell only while an open slot of its level or higher "
@@ -10855,7 +11077,16 @@ def _character_resource_block(character_id: int) -> str:
                     "level]] (the spell's level, or higher to upcast) — the system "
                     "expends the slot. If they try a spell not listed, or have no "
                     "slot left, narrate that it fails (not prepared / out of "
-                    "slots); do NOT let it succeed.")
+                    "slots); do NOT let it succeed. [[CAST]] also checks that the "
+                    "caster CAN cast — a creature that is Incapacitated, "
+                    "Paralyzed, Petrified, Stunned or Unconscious casts nothing, "
+                    "and a spell with a Verbal component fails inside magical "
+                    "silence — and that a costly material is in the pack, "
+                    "destroying it when the spell consumes it. It reports every "
+                    "refusal; narrate what it says rather than overruling it. "
+                    "The ONE casting rule left to you: whether a hand is free "
+                    "for the Somatic and Material components — the sheet doesn't "
+                    "record which hand holds what, so that call is yours.")
                 # Summoning spells only: the conjured creature's whole stat block
                 # is computed from the slot and this caster, so the DM must never
                 # invent its numbers — it names the spell and the choice, and the
@@ -11182,7 +11413,8 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                         # there shouldn't have already spent the spell slot.
                         dm_text = resolve_metamagic_hooks(dm_text, ch)
                         cast_record: Dict[str, Optional[int]] = {}
-                        dm_text = resolve_cast_hooks(dm_text, ch, cast_record)
+                        dm_text = resolve_cast_hooks(dm_text, ch, cast_record,
+                                                     req.session_id)
                         # After the cast, so a summon whose slot was refused is
                         # never conjured and the spirit is built at the level the
                         # slot actually was; before the combat hooks and the

@@ -46,12 +46,17 @@ class Condition:
     POISONED = "poisoned"
     PRONE = "prone"
     RESTRAINED = "restrained"
+    # Not an SRD condition — the SRD expresses this as the Silence spell's
+    # area. It is one here because a table with no board still needs a way to
+    # say "you cannot speak", which is what stops a Verbal component.
+    SILENCED = "silenced"
     STUNNED = "stunned"
     UNCONSCIOUS = "unconscious"
     EXHAUSTION = "exhaustion"
     ALL = (
         BLINDED, CHARMED, DEAFENED, FRIGHTENED, GRAPPLED, INCAPACITATED, INVISIBLE,
-        PARALYZED, PETRIFIED, POISONED, PRONE, RESTRAINED, STUNNED, UNCONSCIOUS,
+        PARALYZED, PETRIFIED, POISONED, PRONE, RESTRAINED, SILENCED, STUNNED,
+        UNCONSCIOUS,
         EXHAUSTION,
     )
 

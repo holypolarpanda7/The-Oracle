@@ -198,7 +198,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   who's here), `chronicle` (journal + quests + bonds), `speech` (dialogue
   attribution), `itemart` (catalog vs player-named art, and that a renamed
   piece keeps its stats), `cultural_scripts` (culture -> typeface mapping),
-  `affix` (a drop rolls properties that reach real mechanics), `forge`
+  `affix` (a drop rolls properties that reach real mechanics), `components`
+  (V/S/M priced out of the book's prose, enforced at the cast hook, and the
+  gate on a caster who can't act or can't speak), `forge`
   (tempering needs a smith), `routes` (roads costed from real geography, and
   no map data leaks), `map` (one terrain answer across scene/board/parchment;
   tool + knowledge gating; a sheet accrues across revisions), `airship`
@@ -824,6 +826,50 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (the row id) to place it immediately after — that is the rule ("shares your
   initiative count, but takes its turn immediately after yours"), not a hack
   around it.
+- **A component is a COST, and `rules/components.py` is the one place it is
+  read.** `Spell.components` and `Spell.material` were in the database from the
+  first ingest and exactly one thing ever read them — the card-game cheating
+  check, which asks whether a casting is *perceptible*. Nothing asked what it
+  cost, and the spell brief printed casting time, range and duration but never
+  components, so Revivify's 300 GP diamond was free, infinite, AND invisible.
+  Three layers, all shipped: the brief and the DM's board now PRINT the
+  component and its price; `[[CAST]]` REFUSES a costly component that isn't in
+  the pack and destroys it when the spell says "which the spell consumes"; and
+  a casting gate refuses a caster who can't act or can't speak. Cost and
+  consumption are DERIVED from the book's prose, never stored beside it — a
+  stored number and the sentence it came from drift the moment a re-parse
+  improves one of them. The line for a focus is the PRICE, not the prose: a
+  focus or component pouch replaces any material with no cost, however specific
+  the description, and replaces none that has one.
+- **An EMPTY inventory is unknown, not empty-handed.** The one deliberate hole
+  in component enforcement: imported sheets routinely arrive with no pack, and
+  a false refusal stops play dead where a missed enforcement only makes the
+  game slightly generous. A pack with *something* in it is taken at its word.
+- **Free hands are the DM's call, and the board says so.** Somatic and Material
+  components need one, and nothing in the schema records which hand holds what
+  — a shield and a greatsword are inventory rows, not grips. Enforcing it would
+  mean guessing, and a guess that refuses a spell is worse than a rule left to
+  a person, so the DM board states that one explicitly as theirs.
+- **Silence is a place, and `MapEffect.silences` is where it lives.** Its own
+  column for the same reason `obscured` has one: `kind` says how the UI paints
+  an area, not what standing in it does. `silenced_at`/`token_silenced` answer
+  per floor; `Condition.SILENCED` answers the same question at a table with no
+  board (not an SRD condition — the SRD only has the spell's area, and a
+  gridless table still needs a way to say "you cannot speak").
+- **A material line WRAPS, and the parser read one line.** `_fldrx` captures
+  `[^\n]+`, and the material component is the one field that routinely runs
+  past it — "M (a diamond worth 300+ GP,\nwhich the spell consumes)" truncates
+  to an unclosed bracket, the `M (...)` regex finds nothing, and the spell is
+  stored with NO material at all. That was 55 spells silently free to cast.
+  `_components_value` reads on until the bracket closes, treats `}`/`]` as a
+  closing bracket (the extractor confuses them often enough to matter), and a
+  lone `l` glued to digits is a 1 — in a material component that misreading is
+  the price of the spell.
+- **Re-running a bulk parser WIPES the additive class lists.** `ingest_spells`
+  replaces each row's `classes`, so `ingest_spell_lists_overrides` has to run
+  after it, every time — miss it and the artificer's pool silently drops from
+  20 cantrips to 4. `main()` already orders them correctly; a hand-run re-parse
+  is where this bites.
 - **A class needs a spell LIST, and only the artificer's was missing.** Its 75
   spells live in the `spell_lists_overrides.json` slot (additive — see
   `rules/OWNED_IMPORT_FORMAT.md`). Before it the DB held exactly one spell
