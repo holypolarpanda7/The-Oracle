@@ -202,6 +202,101 @@ def main() -> int:
         check("beside the class features, not instead of them",
               len(feats_on_sheet) > 1, f"{len(feats_on_sheet)} rows")
 
+    print(f"\n{BOLD}7. Metamagic is a rule the code decides{OFF}")
+    if has_choices:
+        sor = pc("Sorcerer", 5, charisma=16)
+        sor.spells = ["Fireball", "Magic Missile", "Haste", "Fire Bolt",
+                      "Charm Person", "Shield"]
+        dm._apply_feat(sor, "metamagic-adept",
+                       {"options": ["Quickened Spell", "Extended Spell"]})
+        dm._add_tags(sor, "metamagic", ["Careful Spell", "Distant Spell",
+                                        "Transmuted Spell", "Empowered Spell",
+                                        "Heightened Spell"])
+
+        def mm(hook: str, reset: bool = True) -> str:
+            if reset:
+                sor.resources_used = {}
+            return dm.resolve_metamagic_hooks(hook, sor).strip()
+
+        check("a legal shaping is applied and priced",
+              "1 bonus action" in mm("[[METAMAGIC: Quickened Spell | Fireball]]"))
+        check("a reaction spell can't be Quickened",
+              "can't touch" in mm("[[METAMAGIC: Quickened Spell | Shield]]"),
+              mm("[[METAMAGIC: Quickened Spell | Shield]]"))
+        check("an instantaneous spell can't be Extended",
+              "can't touch" in mm("[[METAMAGIC: Extended Spell | Fireball]]"))
+        check("a 1-minute spell can be, and the new duration is computed",
+              "2 minutes" in mm("[[METAMAGIC: Extended Spell | Haste]]"))
+        check("a spell with no save can't be made Careful",
+              "can't touch" in mm("[[METAMAGIC: Careful Spell | Magic Missile]]"))
+        check("one with a save can",
+              "can't touch" not in mm("[[METAMAGIC: Careful Spell | Fireball]]"))
+        check("Distant doubles a real range",
+              "300 feet" in mm("[[METAMAGIC: Distant Spell | Fireball]]"))
+        check("a damageless spell can't be Transmuted",
+              "can't touch" in mm("[[METAMAGIC: Transmuted Spell | Charm Person]]"))
+        check("an unknown option is refused",
+              "isn't a Metamagic they know"
+              in mm("[[METAMAGIC: Subtle Spell | Fireball]]"))
+        check("a spell that isn't a spell is refused",
+              "isn't one" in mm("[[METAMAGIC: Careful Spell | Banana Bolt]]"))
+
+        sor.resources_used = {}
+        two = dm.resolve_metamagic_hooks(
+            "[[METAMAGIC: Distant Spell | Fireball]] "
+            "[[METAMAGIC: Heightened Spell | Fireball]]", sor)
+        check("only ONE option to a casting", "only one Metamagic" in two)
+        sor.resources_used = {}
+        stacked = dm.resolve_metamagic_hooks(
+            "[[METAMAGIC: Empowered Spell | Fireball]] "
+            "[[METAMAGIC: Heightened Spell | Fireball]]", sor)
+        check("…except the one that says it stacks",
+              "only one Metamagic" not in stacked)
+
+        broke = pc("Sorcerer", 2, charisma=16)     # 2 class points, no feat
+        broke.spells = ["Fireball"]
+        dm._add_tags(broke, "metamagic", ["Quickened Spell"])
+        dm.resolve_metamagic_hooks("[[METAMAGIC: Quickened Spell | Fireball]]", broke)
+        check("points are actually spent",
+              broke.resources_used.get("sorcery") == 2, str(broke.resources_used))
+        check("and running out refuses the shaping",
+              "needs 2 sorcery points" in dm.resolve_metamagic_hooks(
+                  "[[METAMAGIC: Quickened Spell | Fireball]]", broke))
+
+    print(f"\n{BOLD}8. an invocation grants what it says it grants{OFF}")
+    if has_choices:
+        w = pc()
+        dm._apply_feat(w, "eldritch-adept",
+                       {"options": ["Beguiling Influence"], "ability": "cha"})
+        check("a skill-granting invocation grants the skills",
+              "skill: Deception" in w.tags and "skill: Persuasion" in w.tags,
+              "; ".join(t for t in w.tags if t.startswith("skill")))
+
+        d2 = pc()
+        dm._apply_feat(d2, "eldritch-adept",
+                       {"options": ["Devil's Sight"], "ability": "cha"})
+        from survival.light import parse_senses, perceives
+        sense_tags = [t.split(":", 1)[1].strip()
+                      for t in d2.tags if t.lower().startswith("sense:")]
+        senses = parse_senses({"raw": " ".join(sense_tags)})
+        check("Devil's Sight lands as a real sense on the sheet",
+              senses.get("devils_sight") == 120, str(senses))
+        check("…and the light engine honours it in the dark",
+              perceives("dark", 100, senses)["sees"] is True)
+        check("…including through MAGICAL darkness",
+              perceives("dark", 50, senses, obscured="heavy",
+                        magical_dark=True)["sees"] is True)
+        check("…but not through fog, which is not darkness",
+              perceives("dark", 50, senses, obscured="heavy")["sees"] is False)
+
+        t5 = pc()
+        dm._apply_feat(t5, "eldritch-adept",
+                       {"options": ["Thief of Five Fates"], "ability": "cha"})
+        pools = {r["key"]: r for r in dm._class_resources_for(t5)}
+        check("a once-per-rest invocation gets a counted allowance",
+              any(k.startswith("opt-") and v["total"] == 1
+                  for k, v in pools.items()), str(list(pools)))
+
     print()
     if _fails:
         print(f"{RED}{len(_fails)} check(s) failed:{OFF} " + "; ".join(_fails))

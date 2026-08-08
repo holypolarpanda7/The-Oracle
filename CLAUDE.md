@@ -732,9 +732,32 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   actually spends; and an option granting an at-will spell reaches
   `_castable_lists`, because that list is the ENFORCEMENT ("the PC may cast
   ONLY these") and an at-will grant that never arrived read as a spell to
-  refuse. Warlock invocations and sorcery-point Metamagic have no simulation
-  behind them beyond this — the DM is shown the option's own rules text and
-  adjudicates. `uv run python scripts/feats_smoke.py` pins all of it.
+  refuse. `uv run python scripts/feats_smoke.py` pins all of it.
+- **Metamagic is enforced, and `rules/metamagic.py` is where it is decided.**
+  An option is a price, a CONDITION and a CHANGE; `[[METAMAGIC: Option |
+  Spell]]` checks the PC knows it, that the spell qualifies, and that the
+  points are there, then spends them and reports what changed — emitted BEFORE
+  the `[[CAST]]`, so a refusal hasn't already burned the slot. Only one option
+  to a casting unless the option declares `stacks`. **Known options are read
+  off the `metamagic:` TAGS, never off the feats** — a sorcerer's options come
+  from their class, and keying it to feats made the class feature the one way
+  of having Metamagic that didn't work. The conditions are DECLARATIVE
+  (`requires`/`effect` in the catalogue), so the engine is committable and the
+  book's numbers are not. `casting_time`/`range`/`duration` are populated on
+  every spell so those conditions are decided outright; save/attack/damage are
+  populated on ~3% and are read from the description, where absence counts
+  only if the description is long enough to be whole. **A condition that can't
+  be evaluated becomes a line the DM confirms — never a silent refusal (which
+  makes the feat unusable) and never a silent pass (which makes the rule
+  decoration).**
+- **An invocation grants what it declares.** `grants_skills`/`grants_tools`
+  become proficiency tags, `uses` becomes a counted per-option pool, and
+  `grants_senses` becomes a `sense:` tag the BOARD reads off the character row
+  — `vtt/` must not have to know what an invocation is, or be able to read the
+  owned-book catalogue. `devils_sight` is a real sense in `survival/light.py`
+  rather than darkvision with a bigger number, because it beats MAGICAL
+  darkness and darkvision explicitly cannot; the caller says which kind of
+  heavy obscurement it is, and anything that doesn't know still blinds.
 - **A class needs a spell LIST, and only the artificer's was missing.** Its 75
   spells live in the `spell_lists_overrides.json` slot (additive — see
   `rules/OWNED_IMPORT_FORMAT.md`). Before it the DB held exactly one spell

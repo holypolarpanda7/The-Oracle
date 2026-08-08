@@ -38,13 +38,27 @@ def darker(a: str, b: str) -> str:
 
 #: The senses that come with a range in feet. Passive Perception is not one of
 #: them, and neither is "blind beyond this radius" prose.
-_RANGED_SENSES = ("darkvision", "blindsight", "truesight", "tremorsense")
+#:
+#: ``devils_sight`` is darkvision that also works in MAGICAL darkness, which is
+#: the only reason it is a separate sense rather than darkvision with a bigger
+#: number — the warlock invocation's whole point is seeing through the Darkness
+#: spell, and darkvision explicitly cannot.
+_RANGED_SENSES = ("darkvision", "blindsight", "truesight", "tremorsense",
+                  "devils_sight")
 
 #: "Blindsight 30ft.", "Darkvision 60 ft.", "tremorsense 60'" — one pattern for
 #: every way a book prints it.
 _SENSE_TEXT = re.compile(
-    r"(darkvision|blindsight|truesight|tremorsense)\s*[:\-]?\s*(\d+)\s*(?:ft|feet|')",
+    r"(darkvision|blindsight|truesight|tremorsense|devil'?s.?sight)"
+    r"\s*[:\-]?\s*(\d+)\s*(?:ft|feet|')",
     re.I)
+
+
+def _norm_sense(name: str) -> str:
+    """"Devil's Sight" / "devils sight" / "devil-sight" -> "devils_sight"."""
+    n = str(name).strip().lower().replace("'", "").replace("\u2019", "")
+    n = re.sub(r"[\s\-]+", "_", n)
+    return "devils_sight" if n in ("devils_sight", "devil_sight") else n
 
 
 def parse_senses(raw: Optional[Dict]) -> Dict[str, int]:
@@ -59,7 +73,7 @@ def parse_senses(raw: Optional[Dict]) -> Dict[str, int]:
     """
     out: Dict[str, int] = {}
     for key, value in (raw or {}).items():
-        name = str(key).strip().lower().replace(" ", "_")
+        name = _norm_sense(key)
         if name not in _RANGED_SENSES:
             # Not every stat block arrives tidy. A monster parsed out of a PDF
             # keeps its senses line whole ("Blindsight 30ft.;PassivePerception
@@ -69,7 +83,7 @@ def parse_senses(raw: Optional[Dict]) -> Dict[str, int]:
             # "sees nothing in the dark".
             if name in ("raw", "text", "senses") and isinstance(value, str):
                 for sense, feet in _SENSE_TEXT.findall(value):
-                    out.setdefault(sense.lower(), int(feet))
+                    out.setdefault(_norm_sense(sense), int(feet))
             continue
         if value is True:                       # a species flag: the 5e default
             out[name] = 60
@@ -92,7 +106,7 @@ def passive_perception(raw: Optional[Dict], default: int = 10) -> int:
     compare a Stealth roll against, not a distance you can perceive at.
     """
     for key, value in (raw or {}).items():
-        name = str(key).strip().lower().replace(" ", "_")
+        name = _norm_sense(key)
         if name in ("passive_perception", "passiveperception"):
             digits = "".join(c for c in str(value) if c.isdigit())
             if digits:
@@ -105,7 +119,8 @@ def passive_perception(raw: Optional[Dict], default: int = 10) -> int:
 
 
 def perceives(light_level: str, distance_ft: float, senses: Optional[Dict] = None,
-              *, obscured: str = "", grounded: bool = True) -> Dict:
+              *, obscured: str = "", grounded: bool = True,
+              magical_dark: bool = False) -> Dict:
     """Can a creature with these senses make something out, at this distance?
 
     THE one answer to "can it see that", so the board, the DM's board text and
@@ -136,6 +151,13 @@ def perceives(light_level: str, distance_ft: float, senses: Optional[Dict] = Non
                 "note": "felt through the ground, not seen"}
 
     if obscured == "heavy":
+        # Devil's Sight beats DARKNESS, not fog: the invocation is about seeing
+        # where there is no light, and a fog cloud is opaque whether it is lit
+        # or not. So the caller has to say which kind of heavy obscurement this
+        # is; anything that doesn't know still blinds, which is the safe answer.
+        if magical_dark and s.get("devils_sight", 0) >= d:
+            return {"sees": True, "via": "devil's sight", "obscured": "",
+                    "note": "sees in magical darkness"}
         return {"sees": False, "via": "", "obscured": "heavy",
                 "note": "heavily obscured — effectively blinded"}
     if level == "bright":
@@ -144,6 +166,9 @@ def perceives(light_level: str, distance_ft: float, senses: Optional[Dict] = Non
     if level == "dim":
         return {"sees": True, "via": "sight", "obscured": "light",
                 "note": "dim light — lightly obscured, Perception at disadvantage"}
+    if s.get("devils_sight", 0) >= d:
+        return {"sees": True, "via": "devil's sight", "obscured": "",
+                "note": "devil's sight — darkness is no darkness at all"}
     if s.get("darkvision", 0) >= d:
         return {"sees": True, "via": "darkvision", "obscured": "light",
                 "note": "darkvision — seen as if in dim light, in shades of grey"}

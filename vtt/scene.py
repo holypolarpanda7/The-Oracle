@@ -2308,17 +2308,43 @@ class VttEngine:
             if t.character_id:
                 from sqlalchemy import text as _text
                 from rules.models import Race
+                out: dict = {}
                 with Session(self.engine) as s:
                     got = s.exec(_text(
-                        'SELECT race FROM "character" WHERE id = :i'
+                        'SELECT race, tags FROM "character" WHERE id = :i'
                     ).bindparams(i=t.character_id)).first()
                     if got and got[0]:
                         want = str(got[0]).strip().lower()
                         for r in s.exec(select(Race)).all():
                             if want in (str(r.name).lower(),
                                         str(r.index_slug or "").lower()):
-                                return ({"darkvision": 60}
-                                        if getattr(r, "darkvision", False) else {})
+                                if getattr(r, "darkvision", False):
+                                    out["darkvision"] = 60
+                                break
+                    # A sense a FEAT granted rides on the sheet as a
+                    # `sense: devils_sight 120 ft` tag. The board must not have
+                    # to know what an invocation is — or be able to read the
+                    # owned-book catalogue — so the character row carries the
+                    # answer and this parses it with everyone else's parser.
+                    # The better range wins: Devil's Sight does not cancel the
+                    # darkvision a tiefling was already born with.
+                    if got and len(got) > 1 and got[1]:
+                        raw = got[1]
+                        if isinstance(raw, str):
+                            import json as _json
+                            try:
+                                raw = _json.loads(raw)
+                            except Exception:
+                                raw = []
+                        for tag in (raw or []):
+                            if not isinstance(tag, str) or ":" not in tag:
+                                continue
+                            pfx, _, val = tag.partition(":")
+                            if pfx.strip().lower() != "sense":
+                                continue
+                            for k, v in parse_senses({"raw": val.strip()}).items():
+                                out[k] = max(int(out.get(k, 0)), int(v))
+                return out
         except Exception as e:
             print(f"[vtt] senses lookup failed for {t.name}: {e}")
         return {}

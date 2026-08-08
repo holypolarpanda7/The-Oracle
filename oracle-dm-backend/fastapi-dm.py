@@ -66,6 +66,7 @@ from rules import (
     monster_to_dict,
 )
 from rules import leveling
+from rules import metamagic
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import CombatTracker, CombatEngine, PCProfile, PCWeapon, Condition
 from combat.models import CombatLog
@@ -1276,6 +1277,93 @@ def resolve_cast_hooks(text: str, char: "Character") -> str:
         return f"✨ {disp} ({_ORDINALS.get(spent, str(spent))}-level slot)"
 
     return CAST_HOOK_PATTERN.sub(repl, text)
+
+
+def _known_metamagic(char: "Character") -> Dict[str, Dict[str, Any]]:
+    """Metamagic options this character knows, by lowercased name.
+
+    Read off the `metamagic:` TAGS, not off the feats: a sorcerer's options
+    come from their class, not from Metamagic Adept, and keying this to feats
+    made the class feature the one way of having Metamagic that didn't work.
+    The tag says what is known; the option catalogue says what it does.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for name in _tag_values(char, "metamagic"):
+        out[name.strip().lower()] = {"name": name, "tag": "metamagic",
+                                     **_option_entry("metamagic", name)}
+    return out
+
+
+METAMAGIC_HOOK_PATTERN = re.compile(r"\[\[METAMAGIC:(.+?)\]\]", re.IGNORECASE)
+
+
+def _strip_mechanic_hooks(text: str) -> str:
+    """Drop the resource hooks when there is no character to charge.
+
+    One function rather than a chain of .sub() calls at each call site: the
+    two arms that gave up used to list the patterns by hand, so a hook added
+    later leaks raw into the narration from whichever arm was missed."""
+    for pat in (CAST_HOOK_PATTERN, USE_HOOK_PATTERN, METAMAGIC_HOOK_PATTERN):
+        text = pat.sub("", text)
+    return text
+
+
+def resolve_metamagic_hooks(text: str, char: "Character") -> str:
+    """Resolve [[METAMAGIC: Option | Spell]] — the whole rule, in code.
+
+    Four things have to be true and none of them were being checked: the PC
+    must KNOW the option, the spell must QUALIFY for it, the points must be
+    PAYABLE, and only one option may ride a single casting (Empowered Spell
+    is the exception, and says so). A failure is narrated as a failure rather
+    than silently allowed, exactly like [[CAST]] and [[USE]].
+
+    Mutates char.resources_used; the caller persists.
+    """
+    known = _known_metamagic(char)
+    applied_to: Dict[str, List[str]] = {}
+
+    def repl(match: re.Match) -> str:
+        parts = [p.strip() for p in match.group(1).split("|")]
+        opt_name = parts[0] if parts else ""
+        spell_name = parts[1] if len(parts) > 1 else ""
+        opt = known.get(opt_name.strip().lower())
+        if opt is None:
+            have = ", ".join(sorted(p["name"] for p in known.values())) or "none"
+            return f"🌀 {opt_name or 'that'} isn't a Metamagic they know ({have})."
+        sp = rules_lib.get_spell(spell_name)
+        if sp is None:
+            return f"🌀 {opt['name']} needs a spell to shape — {spell_name!r} isn't one."
+
+        # One option per casting. Empowered Spell is the only one that stacks,
+        # so a second non-stacking option on the same spell is the rule being
+        # broken, not a second effect.
+        prior = applied_to.setdefault(sp.name.lower(), [])
+        if prior and not opt.get("stacks") and not all(
+                known.get(p.lower(), {}).get("stacks") for p in prior):
+            return (f"🌀 {opt['name']} can't join {', '.join(prior)} on "
+                    f"{sp.name} — only one Metamagic to a casting.")
+
+        facts = metamagic.facts_for(sp)
+        verdict = metamagic.check(opt, facts)
+        if not verdict.ok:
+            return f"🌀 {metamagic.describe(opt['name'], opt, facts, verdict)}"
+
+        cost = int(opt.get("cost") or 0)
+        if cost:
+            spent = _spend_resource(char, str(opt.get("resource") or "sorcery"), cost)
+            if spent is None:
+                left = next((int(r["total"]) - int(r["used"])
+                             for r in _class_resources_for(char)
+                             if r["key"] == (opt.get("resource") or "sorcery")), 0)
+                return (f"🌀 {opt['name']} needs {cost} sorcery points — "
+                        f"{left} left.")
+            tail = f" ({spent['remaining']} sorcery points left)"
+        else:
+            tail = ""
+        prior.append(opt["name"])
+        return f"🌀 {metamagic.describe(opt['name'], opt, facts, verdict)}{tail}"
+
+    return METAMAGIC_HOOK_PATTERN.sub(repl, text)
 
 
 USE_HOOK_PATTERN = re.compile(r"\[\[USE:(.+?)\]\]", re.IGNORECASE)
@@ -10611,6 +10699,22 @@ def _character_resource_block(character_id: int) -> str:
                     "(n defaults to 1) — the system deducts it. If none remain, "
                     "the PC cannot use that feature; narrate accordingly. Do NOT "
                     "let them Rage / spend Ki / etc. with none left.")
+
+            # Metamagic is its OWN hook, because it is not just a price: the
+            # code also checks the spell qualifies and reports what changed.
+            mm_known = sorted(p["name"] for p in _known_metamagic(char).values())
+            if mm_known:
+                lines.append("")
+                lines.append("# Metamagic (ENFORCED)")
+                lines.append("Known: " + ", ".join(mm_known))
+                lines.append(
+                    "To shape a spell, emit [[METAMAGIC: Option | Spell]] BEFORE "
+                    "the [[CAST]]. The system checks the PC knows that option, "
+                    "that the spell qualifies for it, and that the sorcery "
+                    "points are there — then spends them and reports what "
+                    "changed. Only ONE option per casting (Empowered Spell may "
+                    "ride along with a second). Never apply Metamagic by "
+                    "narration alone.")
         except Exception as e:
             print(f"[resources block] {e}")
         return "\n".join(lines)
@@ -10863,7 +10967,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
 
     # Mechanical enforcement: expend the PC's spell slot for a [[CAST]] and class
     # resources (Rage/Ki/…) for a [[USE]], and block the ones they can't afford.
-    if re.search(r"\[\[(CAST|USE):", dm_text, re.IGNORECASE):
+    if re.search(r"\[\[(CAST|USE|METAMAGIC):", dm_text, re.IGNORECASE):
         try:
             state = _load_session_state(req.session_id)
             cid = (_acting_member(state.get("meta", {}) or {}, req.user_id) or {}).get("character_id") \
@@ -10872,15 +10976,19 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 with Session(engine) as s:
                     ch = s.get(Character, cid)
                     if ch:
+                        # Metamagic BEFORE the cast: it decides whether the
+                        # shaping is legal and what it costs, and a refusal
+                        # there shouldn't have already spent the spell slot.
+                        dm_text = resolve_metamagic_hooks(dm_text, ch)
                         dm_text = resolve_cast_hooks(dm_text, ch)
                         dm_text = resolve_use_hooks(dm_text, ch)
                         s.add(ch)
                         s.commit()
             else:
-                dm_text = CAST_HOOK_PATTERN.sub("", USE_HOOK_PATTERN.sub("", dm_text))
+                dm_text = _strip_mechanic_hooks(dm_text)
         except Exception as e:
             print(f"[cast/use] hook processing failed: {e}")
-            dm_text = CAST_HOOK_PATTERN.sub("", USE_HOOK_PATTERN.sub("", dm_text))
+            dm_text = _strip_mechanic_hooks(dm_text)
 
     # Puzzles: present a puzzle the DM armed, dispense the next graded hint, or
     # record a solve/abandon. The solution stays server-side (fed only to the DM
@@ -12426,6 +12534,28 @@ def _apply_feat(char: Character, slug: str,
                         pass
                     if frow is not None:
                         _add_tags(char, "feat", [fslug])
+            # What the CHOSEN option itself hands over. Beguiling Influence is
+            # "proficiency in Deception and Persuasion" — a rule two existing
+            # systems already read off `skill:` tags, and which was doing
+            # nothing at all while the pick was only a word.
+            tag = str(spec.get("tag") or "feat-option")
+            for v in got:
+                entry = _option_entry(tag, v)
+                gs = _add_tags(char, "skill", list(entry.get("grants_skills") or []))
+                if gs:
+                    notes.append(f"{v}: proficiency in {', '.join(gs)}.")
+                gt = _add_tags(char, "tool", list(entry.get("grants_tools") or []))
+                if gt:
+                    notes.append(f"{v}: proficiency with {', '.join(gt)}.")
+                # A SENSE goes on as a tag, because the board reads it from
+                # the character row and must not have to know what an
+                # invocation is (or be able to read the owned-book catalogue).
+                # `survival.light.parse_senses` is the shared vocabulary.
+                for sense, feet in (entry.get("grants_senses") or {}).items():
+                    got_s = _add_tags(char, "sense", [f"{sense} {int(feet)} ft"])
+                    if got_s:
+                        notes.append(f"{v}: {sense.replace('_', ' ')} "
+                                     f"{int(feet)} ft.")
         elif kind == "magic_initiate":
             learned: List[str] = []
             for sl in list(picks.get("cantrips") or []) + list(picks.get("spells") or []):
@@ -16683,6 +16813,17 @@ def _feat_resource_grants(char: Character) -> list[dict]:
             g = (part or {}).get("grants_resource")
             if isinstance(g, dict) and g.get("key") and g.get("total"):
                 out.append(g)
+    # …and what a chosen OPTION grants. Thief of Five Fates is "cast Bane once
+    # per long rest" — a use that has to be counted somewhere, and the pool
+    # machinery counts things already. Keyed per option so two limited
+    # invocations don't share one allowance.
+    for f in character_feats(char):
+        for p in (f.get("picks_detail") or []):
+            u = p.get("uses")
+            if isinstance(u, dict) and u.get("n"):
+                out.append({"key": f"opt-{_slugify_feat_name(p['name'])}",
+                            "name": p["name"], "total": int(u["n"]),
+                            "reset": u.get("reset", "long")})
     return out
 
 
