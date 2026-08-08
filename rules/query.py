@@ -104,6 +104,28 @@ class RulesLibrary:
                and (include_cantrips or sp.level > 0)]
         return sorted(out, key=lambda sp: (sp.level, sp.name))
 
+    def spells_by_school(self, schools: list[str], *,
+                         level: Optional[int] = None,
+                         max_level: Optional[int] = None,
+                         cls: Optional[str] = None) -> list[Spell]:
+        """Spells of the given school(s), for a pick scoped by SCHOOL rather
+        than by class list — Fey Touched wants "a level 1 Divination or
+        Enchantment spell" from anywhere, which ``legal_spells_for`` can't
+        express. ``level`` pins one spell level; ``max_level`` caps it."""
+        wanted = {str(s).strip().lower() for s in (schools or []) if str(s).strip()}
+        with Session(self.engine) as s:
+            stmt = select(Spell)
+            if level is not None:
+                stmt = stmt.where(Spell.level == level)
+            elif max_level is not None:
+                stmt = stmt.where(Spell.level <= max_level)
+            rows = s.exec(stmt).all()
+        cls_l = (cls or "").strip().lower()
+        out = [sp for sp in rows
+               if (not wanted or (sp.school or "").strip().lower() in wanted)
+               and (not cls_l or any(cls_l == c.lower() for c in (sp.classes or [])))]
+        return sorted(out, key=lambda sp: (sp.level, sp.name))
+
     def count(self) -> dict:
         with Session(self.engine) as s:
             m = len(s.exec(select(Monster.id)).all())

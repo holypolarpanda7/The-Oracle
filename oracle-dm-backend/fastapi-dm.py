@@ -11846,6 +11846,22 @@ async def register_character(req: RegisterCharacterRequest):
         if req.feats:
             from rules.models import Feat as _Feat
             fstats = req.stats or {}
+            # The same feat twice is not two feats. A background's Origin feat
+            # and a Custom Lineage's free pick are separate slots, and nothing
+            # stopped one filling both with Strike of the Giants — which reads
+            # as a choice made and buys nothing, since a feat's benefit is
+            # recorded once. Only a feat that says it repeats may be doubled.
+            seen: set[str] = set()
+            for ft in req.feats:
+                if ft in seen:
+                    dup = session.exec(select(_Feat).where(
+                        _Feat.index_slug == ft)).first()
+                    if dup is not None and not getattr(dup, "repeatable", False):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(f"'{dup.name}' is already one of your feats — "
+                                    "choose a different one for the other slot."))
+                seen.add(ft)
             for ft in req.feats:
                 frow = session.exec(select(_Feat).where(
                     _Feat.index_slug == ft)).first()
@@ -11886,21 +11902,35 @@ async def register_character(req: RegisterCharacterRequest):
         # Named feat picks that aren't proficiencies (a damage resistance, a
         # giant strike) — filed under whichever tag their choice declares.
         if req.feat_options:
-            prefix = "feat-option"
+            # Each VALUE is filed under the tag of the choice that offered it.
+            # Taking the last spec's tag for the whole list was fine while one
+            # feat could ask; two feats can (a giant strike AND an expertise
+            # skill), and filing the wrong one under "giant-strike" makes a
+            # follow-on feat's prerequisite read as met when it isn't.
+            by_value: Dict[str, str] = {}
             for fslug in (req.feats or []):
                 for spec in _feat_choice_specs(fslug):
-                    if spec.get("kind") == "options":
-                        prefix = str(spec.get("tag") or prefix)
-            _add_tags(char, prefix, list(req.feat_options))
+                    if spec.get("kind") != "options":
+                        continue
+                    tag = str(spec.get("tag") or "feat-option")
+                    for v in (spec.get("from") or []):
+                        by_value.setdefault(str(v).strip().lower(), tag)
+            for v in req.feat_options:
+                _add_tags(char, by_value.get(str(v).strip().lower(),
+                                             "feat-option"), [v])
 
-        # Spells chosen at creation (class cantrips/spells + Magic Initiate).
-        # Stored as display names to match the inscribe flow's format.
+        # Spells chosen at creation (class cantrips/spells + Magic Initiate +
+        # a feat's school-scoped pick). Stored as display names to match the
+        # inscribe flow's format.
         spell_slugs = list(dict.fromkeys((req.cantrips or []) + (req.spells or [])))
-        if spell_slugs:
-            names: List[str] = []
-            for sl in spell_slugs:
-                sp = rules_lib.get_spell(sl)
-                names.append(sp.name if sp else sl)
+        names: List[str] = []
+        for sl in spell_slugs:
+            sp = rules_lib.get_spell(sl)
+            names.append(sp.name if sp else sl)
+        # …plus what a feat hands over outright (Fey Touched's Misty Step). The
+        # client never has to send those, so a grant can't be lost in the post.
+        names.extend(_feat_granted_spells(list(req.feats or [])))
+        if names:
             char.spells = list(dict.fromkeys(names))
 
         # A prepared/spellbook caster gets one initial preparation window.
@@ -12075,21 +12105,30 @@ def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
 
 
 def _feat_choice_specs(slug: str) -> List[Dict[str, Any]]:
-    """Every choice a feat asks for, flattened (a feat may ask for two)."""
+    """Every choice a feat asks for, flattened.
+
+    A feat may ask for more than one thing, which is what ``also`` is for; it
+    takes a single spec or a LIST of them (Skill Expert asks three: an ability,
+    a skill proficiency, and which skill gets Expertise). Two specs of the same
+    kind would collide in the picks payload, so each kind appears at most once.
+    """
     spec = _feat_choices_merged().get((slug or "").strip().lower())
     if not spec:
         return []
     out = [{k: v for k, v in spec.items() if k != "also"}]
     also = spec.get("also")
-    if isinstance(also, dict) and also.get("kind"):
-        out.append(also)
+    for extra in (also if isinstance(also, list) else [also]):
+        if isinstance(extra, dict) and extra.get("kind"):
+            out.append(extra)
     return out
 
 
 def _feat_choice_satisfied(spec: Dict[str, Any], picks: Dict[str, Any]) -> bool:
     """Has the player answered this one feat choice completely?"""
     kind = spec.get("kind")
-    n = int(spec.get("n") or 1)
+    # `or 1` would turn an explicit 0 into 1, and a grant-only spell spec
+    # (Telepathic just hands over Detect Thoughts) would never be satisfiable.
+    n = 1 if spec.get("n") is None else int(spec["n"])
     if kind == "ability":
         return bool(str(picks.get("ability") or "").strip())
     if kind == "asi":
@@ -12103,6 +12142,8 @@ def _feat_choice_satisfied(spec: Dict[str, Any], picks: Dict[str, Any]) -> bool:
         return len(picks.get("languages") or []) == n
     if kind == "options":
         return len(picks.get("options") or []) == n
+    if kind == "spells":
+        return len(picks.get("spells") or []) == n
     if kind == "magic_initiate":
         return (len(picks.get("cantrips") or []) == int(spec.get("cantrips") or 2)
                 and len(picks.get("spells") or []) == int(spec.get("spells") or 1))
@@ -12206,7 +12247,35 @@ def _apply_feat(char: Character, slug: str,
             if learned:
                 char.spells = list(dict.fromkeys(list(char.spells or []) + learned))
                 notes.append(f"Learned: {', '.join(learned)}.")
+        elif kind == "spells":
+            # A school-scoped pick (Fey Touched's Divination/Enchantment spell)
+            # plus whatever the feat GRANTS outright (its Misty Step) — the
+            # grant isn't a choice, so it lands whether or not one was made.
+            learned = []
+            for sl in (list(spec.get("granted") or [])
+                       + list(picks.get("spells") or [])):
+                sp = rules_lib.get_spell(sl)
+                learned.append(sp.name if sp else str(sl))
+            if learned:
+                char.spells = list(dict.fromkeys(list(char.spells or []) + learned))
+                notes.append(f"Always prepared: {', '.join(learned)}.")
     return notes
+
+
+def _feat_granted_spells(slugs: List[str]) -> List[str]:
+    """Spell NAMES a set of feats hand over outright (Fey Touched → Misty Step).
+
+    Creation doesn't go through ``_apply_feat`` — the client folds its picks
+    into the normal payload — so the grant has to be collected here or a
+    freshly made character is missing half of what the feat gave them.
+    """
+    out: List[str] = []
+    for fslug in slugs or []:
+        for spec in _feat_choice_specs(fslug):
+            for sl in (spec.get("granted") or []):
+                sp = rules_lib.get_spell(sl)
+                out.append(sp.name if sp else str(sl))
+    return list(dict.fromkeys(out))
 
 
 # Spellcasting ability per caster class. The cantrip/spell PICK COUNTS come from
@@ -12242,8 +12311,10 @@ CC_SPELLCASTING: Dict[str, Dict[str, Any]] = {
 # Choice kinds: "skills" (n from all, or a `from` subset) · "tools" (n from a
 # `from` group: instrument/artisan/any, or an explicit list) · "ability" (n from
 # a `from` list of 3-letter codes, raising each by `amount` up to `max`) ·
-# "language" (n) · "magic_initiate" · "options" (n from an explicit labelled
-# list, recorded as a tag) · "asi" (the level-up +2 / +1+1 spread).
+# "language" (n) · "magic_initiate" · "spells" (n spells of a given `level` and
+# `schools`, plus any the feat `granted` outright) · "options" (n from an
+# explicit labelled list, recorded as a tag) · "asi" (the +2 / +1+1 spread).
+# `also` carries any FURTHER question the same feat asks — one spec or a list.
 _ANY_ABILITY = ["str", "dex", "con", "int", "wis", "cha"]
 
 
@@ -12257,6 +12328,18 @@ def _spell_ability_choice(codes: List[str]) -> Dict[str, Any]:
     """A 'choose the spellcasting ability' pick — a choice with no score bump."""
     return {"kind": "ability", "n": 1, "from": codes, "amount": 0,
             "hint": "Choose the spellcasting ability for this feat."}
+
+
+def _spell_pick(schools: List[str], hint: str, *, level: int = 1, n: int = 1,
+                granted: Optional[List[str]] = None) -> Dict[str, Any]:
+    """A 'learn N spells of these schools at this level' pick.
+
+    Scoped by SCHOOL, not by class list — Fey Touched draws its Divination or
+    Enchantment spell from every list at once, which `magic_initiate` (which
+    picks a class first) cannot say. `granted` is what comes free with it.
+    """
+    return {"kind": "spells", "n": n, "level": level, "schools": schools,
+            "granted": list(granted or []), "hint": hint}
 
 
 FEAT_CHOICES: Dict[str, Dict[str, Any]] = {
@@ -12441,6 +12524,9 @@ def cc_options():
             "slug": f.index_slug, "name": f.name, "category": f.category,
             "prerequisite": f.prerequisite, "min_level": f.min_level,
             "brief": (f.benefit or "")[:160],
+            # Whether it may fill two slots at once — the CC hides an already-
+            # chosen feat from the other picker unless the feat says it repeats.
+            "repeatable": bool(getattr(f, "repeatable", False)),
             # A choice the player must resolve when taking this feat (or None).
             "choices": _fc.get(f.index_slug),
         } for f in feats],
@@ -12666,6 +12752,30 @@ def cc_spells(class_slug: str):
             "spells_n": (sc or {}).get("spells", 0),
             "ability": (sc or {}).get("ability"), "mode": (sc or {}).get("mode"),
             "cantrips": cantrips, "spells": lvl1}
+
+
+@app.get("/cc/feat_spells/{feat_slug}")
+def cc_feat_spells(feat_slug: str):
+    """The spell pool a feat's school-scoped pick draws from, plus what it
+    grants outright. The FILTER lives here, not in the client, so creation and
+    level-up offer the same list and neither can widen it."""
+    slug = (feat_slug or "").strip().lower()
+    spec = next((s for s in _feat_choice_specs(slug)
+                 if s.get("kind") == "spells"), None)
+    if not spec:
+        return {"feat": slug, "n": 0, "spells": [], "granted": []}
+    # n = 0 is a GRANT with no pick (Telepathic just hands over Detect
+    # Thoughts) — offering a pool there would invite a choice that isn't one.
+    n = int(spec.get("n") or 0)
+    rows = (rules_lib.spells_by_school(list(spec.get("schools") or []),
+                                       level=spec.get("level")) if n else [])
+    granted = [g for g in (rules_lib.get_spell(s)
+                           for s in (spec.get("granted") or [])) if g]
+    return {"feat": slug, "n": n,
+            "level": spec.get("level"), "schools": spec.get("schools") or [],
+            "hint": spec.get("hint"),
+            "spells": [_spell_brief_dict(sp) for sp in rows],
+            "granted": [_spell_brief_dict(sp) for sp in granted]}
 
 
 class DDBImportRequest(BaseModel):
