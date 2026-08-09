@@ -221,7 +221,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   no map data leaks), `map` (one terrain answer across scene/board/parchment;
   tool + knowledge gating; a sheet accrues across revisions), `airship`
   (core/helm/damage/repair/crash/upgrade + passages + mobile bastions), `bonds`
-  (linked creatures: initiative dice, sight through cover, blink, rescue)
+  (linked creatures: initiative dice, sight through cover, blink, rescue),
+  `targeting` (what a spell targets out of OCR-damaged prose; who the board
+  says may be hit and why not the rest; a template clipped by line of effect;
+  the action bar reaching the engine as an intent, and refusing when it can't)
 - Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
   (a god born in play becomes choosable in CC; an unmade one stops being offered)
 - Activity UI harnesses (Playwright, against the offline demo — run
@@ -612,6 +615,27 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   nothing about any particular feature. `VttEngine.blink` is the matching
   movement: a short teleport whose long form is gated on the link, and which
   CHARGES movement (unlike `move_token(teleport=True)`, which is free).
+- **"A creature you can see within range" is the board's answer, and the
+  ACTION BAR is a third intent source.** `[[CAST]]` carried a name and a slot
+  level and no target, so range and sight were enforced by nobody:
+  `VttEngine.vision()` had been the complete "can A perceive B" answer since
+  the light layer went in and no player-facing path ever called it.
+  `targets_for` asks it together with range and returns EVERY creature — the
+  illegal ones carrying a REASON, because a target greyed out with a stated
+  cause is information and one missing from the list is indistinguishable from
+  a bug. `area_preview` is the same answer for a template: the squares, who is
+  caught (your own party included, before the slot is spent), and whether the
+  origin is legal at all. `rules/targeting.py` reads what a spell targets out
+  of the book's prose — derived, never stored, like `rules/components.py`.
+  The bar (`_activity_actions` → `_board_action_plan` → `board_action`) emits
+  the SAME intent dicts into the SAME `CombatEngine.resolve` that
+  `_combat_preparse` and the extraction LLM do; `_combat_engine_turn(intents=)`
+  just skips the parse. It is deliberately not a second resolution path — that
+  would be a second set of rules to keep in step — and because skipping the
+  parse is not skipping the RULES, intents arriving untrusted on the public
+  `/chat` route can do no more than a typed sentence. **Enforcement is lenient
+  where it cannot be honest**: no board, no token, or a name the board doesn't
+  know means no refusal at all, the same direction `_material_check` errs in.
 - **The tactical board is a spotlight, not a stage.** Play stays theater-of-the-
   mind; `vtt/` opens a grid only for moments where position decides the outcome,
   and closes it after. The LLM decides FICTION (a board opens here, the fireball

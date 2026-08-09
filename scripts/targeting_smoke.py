@@ -470,6 +470,45 @@ def part_bar() -> int:
     plan, sentence, err = m._board_action_plan(session_id, user_id, {
         "action_id": mm["id"], "target_token_id": other_tok.id, "slot": 1})
     check("acting out of turn is refused", plan is None and "turn" in err.lower(), err)
+
+    rule("12. the DM's own [[CAST]] is gated the same way")
+    # The bar is not the only way a spell gets cast — the DM narrates most of
+    # them. `[[CAST]]` carries a target now, so the same range-and-sight rule
+    # reaches the narrated path.
+    with Session(m.engine) as s:
+        ch = s.get(m.Character, char_id)
+        before_slots = dict(ch.spell_slots_used or {})
+        far = m.resolve_cast_hooks(
+            f"[[CAST: Magic Missile | 1 | {other_tok.name}]]", ch,
+            session_id=session_id)
+        check("a spell at a target out of range is refused",
+              "finds nothing" in far, far.strip())
+        check("…and the slot was NOT burned by the refusal",
+              dict(ch.spell_slots_used or {}) == before_slots,
+              f"{before_slots} -> {dict(ch.spell_slots_used or {})}")
+
+        # Bring the target back into reach and the same hook goes off. Re-read
+        # the caster's token: it was moved above, and the local object still
+        # carries the coordinates it had before that.
+        me_now = m.vtt_engine.get_token(my_tok.id)
+        m.vtt_engine.move_token(other_tok.id, me_now.x, me_now.y - 1,
+                                teleport=True, free=True)
+        near = m.resolve_cast_hooks(
+            f"[[CAST: Magic Missile | 1 | {other_tok.name}]]", ch,
+            session_id=session_id)
+        check("the same spell at a reachable target goes off",
+              "finds nothing" not in near, near.strip())
+        check("…and THAT one spent a slot",
+              dict(ch.spell_slots_used or {}) != before_slots,
+              f"{before_slots} -> {dict(ch.spell_slots_used or {})}")
+
+        # A spell naming nobody is not refused: theater-of-the-mind casting
+        # has no position to check, and inventing a refusal would be worse
+        # than not enforcing one.
+        anon = m.resolve_cast_hooks("[[CAST: Magic Missile | 1]]", ch,
+                                    session_id=session_id)
+        check("a casting that names no target is left alone",
+              "finds nothing" not in anon, anon.strip())
     return 0
 
 

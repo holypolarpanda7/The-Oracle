@@ -1593,18 +1593,67 @@ _ORDINALS = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th",
              6: "6th", 7: "7th", 8: "8th", 9: "9th"}
 
 
+def _cast_target_gate(char: "Character", sp, target: str,
+                      session_id: Optional[str]) -> str:
+    """"a creature you can see within range" — checked, at last.
+
+    Returns a refusal clause, or "" when the casting may proceed. Silent
+    whenever the question cannot be asked honestly: no board out, no token for
+    the caster, no named target, or a name the board doesn't know. Theater of
+    the mind has no positions, so there is nothing there to enforce and a
+    refusal would be invented rather than derived.
+
+    That leniency is deliberate and matches `_material_check`'s: an
+    unenforced rule makes the game slightly generous, a wrongly-enforced one
+    stops play dead over something the player did nothing wrong to deserve.
+    """
+    if not (sp and target and session_id and _vtt_on()):
+        return ""
+    try:
+        scene = vtt_engine.active_scene(session_id)
+        if scene is None:
+            return ""
+        me = next((t for t in vtt_engine.tokens(scene.id)
+                   if t.character_id == char.id), None)
+        if me is None:
+            return ""
+        spec = rules_targeting.spec_for(sp)
+        # A self spell and an unreadable one have no target to check.
+        if spec.kind in ("self", "special"):
+            return ""
+        found = next((t for t in vtt_engine.targets_for(
+            scene.id, me.name,
+            range_ft=spec.range_ft, needs_sight=spec.needs_sight,
+            include_self=True, include_defeated=True,
+        )["targets"] if t["name"].strip().lower() == target.strip().lower()),
+            None)
+        if found is None or found["legal"]:
+            return ""
+        return found["reason"]
+    except Exception as e:
+        print(f"[cast] target gate unavailable: {e}")
+        return ""
+
+
 def resolve_cast_hooks(text: str, char: "Character",
                        record: Optional[Dict[str, Optional[int]]] = None,
                        session_id: Optional[str] = None) -> str:
-    """Resolve [[CAST: Spell | slot level]] hooks — the whole price of a casting.
+    """Resolve [[CAST: Spell | slot level | target]] hooks — the price of a casting.
 
-    Five things have to be true, and they are checked in the order that makes a
+    Six things have to be true, and they are checked in the order that makes a
     refusal cheap: the PC must KNOW the spell, be ABLE to cast it (conditions
     and the Verbal component — see :func:`_casting_gate`), HAVE the material
     component, have a HAND for the somatic and material components (see
-    :func:`_hands_gate`), and have an open SLOT. The slot is expended last, so
-    a casting refused for any other reason has not already burned one. A
-    consumed material is destroyed only after the slot is actually spent.
+    :func:`_hands_gate`), be able to REACH AND SEE the target it named (see
+    :func:`_cast_target_gate`), and have an open SLOT. The slot is expended
+    last, so a casting refused for any other reason has not already burned
+    one. A consumed material is destroyed only after the slot is actually spent.
+
+    The target is the newest of those and the reason the others could not
+    cover it: until a casting carried one, "a creature you can see within
+    range" had nothing to be checked against, and a Fire Bolt at something
+    sixty feet past the spell's reach — or through a wall — was caught only if
+    the DM happened to notice.
 
     Mutates ``char.spell_slots_used`` and ``char.inventory``; the caller
     persists both.
@@ -1617,6 +1666,7 @@ def resolve_cast_hooks(text: str, char: "Character",
     def repl(match: re.Match) -> str:
         parts = [p.strip() for p in match.group(1).split("|")]
         name = parts[0] if parts else ""
+        target = parts[2] if len(parts) > 2 else ""
         at_level = None
         if len(parts) > 1:
             lm = re.search(r"\d+", parts[1])
@@ -1650,6 +1700,11 @@ def resolve_cast_hooks(text: str, char: "Character",
         if handless:
             note(None)
             return f"✨ {disp} won't come — {char.name} {handless}."
+        # The last free check, and the only one the board can answer.
+        unreachable = _cast_target_gate(char, sp, target, session_id)
+        if unreachable:
+            note(None)
+            return f"✨ {disp} finds nothing — {unreachable}."
         comps = rules_components.components_of(sp)
         if (spell_level or 0) == 0:
             note(0)
@@ -12086,8 +12141,15 @@ def _character_resource_block(character_id: int) -> str:
                     "The PC may cast ONLY the cantrips/spells listed here, and a "
                     "leveled spell only while an open slot of its level or higher "
                     "remains. When the PC casts, emit [[CAST: Spell Name | slot "
-                    "level]] (the spell's level, or higher to upcast) — the system "
-                    "expends the slot. If they try a spell not listed, or have no "
+                    "level | target]] (the spell's level, or higher to upcast; "
+                    "the target is the creature's name exactly as the board "
+                    "lists it, omitted for a spell that targets nobody) — the "
+                    "system expends the slot and, while a board is out, checks "
+                    "that the target is IN RANGE and can be SEEN. Name the "
+                    "target whenever the spell has one: it is what lets the "
+                    "system catch a spell thrown further than it reaches or "
+                    "through a wall, which is not yours to adjudicate. If they "
+                    "try a spell not listed, or have no "
                     "slot left, narrate that it fails (not prepared / out of "
                     "slots); do NOT let it succeed. [[CAST]] also checks that the "
                     "caster CAN cast — a creature that is Incapacitated, "
