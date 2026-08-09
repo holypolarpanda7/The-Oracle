@@ -1,6 +1,6 @@
 """Damage types and resistance — the arithmetic the engine never did.
 
-Offline, no GPU, no LLM, fresh scratch database. Five layers:
+Offline, no GPU, no LLM, fresh scratch database. Six layers:
 
     1. TYPES    — damage has a type, read out of prose an OCR pass mangled.
     2. DEFENCES — a bestiary row's resistances, in BOTH shapes it comes in,
@@ -11,6 +11,9 @@ Offline, no GPU, no LLM, fresh scratch database. Five layers:
                   fire elemental and a fireball, a raging barbarian.
     5. SPELLS   — a spell's damage and its type, derived from its own text,
                   because 17 of 430 rows carry a structured one.
+    6. FACTORING — the DM narrates and the engine calculates: a named check's
+                  modifier off the sheet, dice rolled rather than read as a
+                  number, and a fall priced by the rules.
 
     uv run python scripts/resistance_smoke.py
 """
@@ -286,6 +289,60 @@ after = tracker.get_combatant(elem.id).current_hp
 check("a fireball on a fire elemental does NOTHING", before == after,
       f"{before} → {after} HP; " + "; ".join(
           (rep.events[0].get("notes") if rep.events else rep.rejections) or []))
+
+# ----------------------------------------------------------------------
+section("6. the DM narrates; the engine factors")
+
+from rules import checks as chk                                   # noqa: E402
+
+check("every skill knows its ability",
+      len(chk.SKILL_ABILITY) == 18
+      and chk.ability_for("Stealth") == "dex"
+      and chk.ability_for("Athletics") == "str",
+      "this table did not exist anywhere, which is why the model was asked "
+      "for the modifier — there was nothing to ask instead")
+check("a check can be named loosely",
+      chk.normalize("Dexterity (Acrobatics)") == "acrobatics"
+      and chk.normalize("a Perception check") == "perception"
+      and chk.normalize("WIS") == "wis")
+
+sneak = pc("Sly", [], cls="Rogue", level=5,
+           tags=["skill:stealth", "expertise:stealth"])
+cm = m._check_modifier(sneak, "stealth")
+check("expertise DOUBLES proficiency, and the code knows it",
+      cm.total == 2 + 3 * 2, cm.describe())
+plain = m._check_modifier(sneak, "athletics")
+check("...and an unproficient skill gets none", plain.total == 3, plain.describe())
+sneak.exhaustion = 2
+check("2024 exhaustion rides every D20 Test",
+      m._check_modifier(sneak, "stealth").total == 8 - 4,
+      "-2 per level, which no prose-written modifier ever remembered")
+sneak.exhaustion = 0
+
+out = m.resolve_roll_hooks("She melts into the dark. [[ROLL: Stealth | DC 15]]",
+                           sneak)
+check("[[ROLL: Stealth | DC 15]] resolves off the sheet",
+      "Dexterity (Stealth)" in out and "vs DC 15" in out, out.strip())
+check("...and raw dice still work for damage",
+      "2d6" in m.resolve_roll_hooks("[[ROLL: 2d6+3 | Greataxe damage]]", sneak))
+check("...and the legacy hand-computed form still resolves",
+      "vs DC 12" in m.resolve_roll_hooks(
+          "[[ROLL: 1d20+5 | Stealth | DC 12]]", sneak),
+      "a table mid-session must not break")
+
+amt, detail, dtype = m._hook_amount("2d6")
+check("a damage hook naming DICE is rolled, not read as a number",
+      2 <= amt <= 12, f"'2d6' -> {amt} ({detail})")
+check("...which is the bug this replaces: '2d6' used to apply as 26",
+      m._hook_amount("2d6")[0] < 26)
+amt, detail, dtype = m._hook_amount("fall 30")
+check("a fall is priced by the rules, not by the DM",
+      3 <= amt <= 18 and dtype == "bludgeoning", f"{detail}")
+check("...capped at 20d6 however far it is",
+      chk.falling_damage(1000) == ("20d6", "bludgeoning"))
+check("a flat total is still accepted as a ruling",
+      m._hook_amount("7")[0] == 7,
+      "refusing it would stop play; it simply isn't resisted")
 
 print()
 if _failures:

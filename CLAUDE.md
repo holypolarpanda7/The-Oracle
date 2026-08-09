@@ -110,6 +110,8 @@ Players create a character, "enter the world," and adventure while an LLM narrat
      backend, the arena's Quartermaster and the smoke tests share one answer.
    - `mastery.py` — the 2024 Weapon Mastery engine. Mechanisms committed, the
      weapon→mastery table and class counts in the gitignored slot.
+   - `checks.py` — the skill→ability table and the d20 modifier arithmetic,
+     so the DM names a check instead of computing one.
    - `damage.py` — damage TYPES: parsing typed dice out of (OCR-damaged) book
      prose, reading a creature's resistances out of either shape the bestiary
      stores them in, and the halve/double/zero arithmetic itself.
@@ -861,6 +863,23 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   in component enforcement: imported sheets routinely arrive with no pack, and
   a false refusal stops play dead where a missed enforcement only makes the
   game slightly generous. A pack with *something* in it is taken at its word.
+- **The DM narrates; the ENGINE factors. A number the model computed is a
+  number nothing checked.** Three places were still asking the LLM for
+  arithmetic, and all three are closed. `[[ROLL: Stealth | DC 15]]` names the
+  check and `rules/checks.py` works out the modifier off the sheet — ability,
+  proficiency, expertise (which DOUBLES it), 2024 exhaustion at -2 per level,
+  a curse penalty. **The skill→ability table did not exist anywhere in the
+  project**, which is exactly why the model was being asked: there was nothing
+  to ask instead. The old `[[ROLL: 1d20+5 | Stealth | DC 15]]` still resolves
+  so a table mid-session doesn't break. Deciding THAT a check happens and how
+  hard it is stays the DM's; what a character's Stealth is worth does not.
+- **`[[COMBAT: damage]]` takes DICE and a TYPE, and the code rolls them.** It
+  used to strip non-digits from the field, so a DM who wrote `2d6` dealt
+  TWENTY-SIX — a failure that reads at the table as a hard fight rather than a
+  bug. `fall 30` is priced by the rules themselves (1d6 bludgeoning per 10 ft,
+  capped at 20d6) and carries its type, so resistance applies. A flat total is
+  still accepted, because a DM adjudicating an exact amount is a real ruling —
+  but it is never resisted, and the board says so.
 - **Damage has a TYPE, and `rules/damage.py` is the one place it is reduced.**
   The engine dealt integers: a fire elemental took full damage from fire, a
   skeleton shrugged off a mace exactly as hard as a rapier, and a raging

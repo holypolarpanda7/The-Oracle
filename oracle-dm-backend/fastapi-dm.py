@@ -72,6 +72,7 @@ from rules import components as rules_components
 from rules import equipment as gear
 from rules import mastery
 from rules import damage as damage_rules
+from rules import checks
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import (CombatTracker, CombatEngine, PCProfile, PCWeapon,
                     Condition, monster_save_mod)
@@ -1283,24 +1284,137 @@ _ACTIVITY_ROLLS: _contextvars.ContextVar = _contextvars.ContextVar(
     "activity_rolls", default=None)
 
 
-def resolve_roll_hooks(text: str) -> str:
-    """Replace [[ROLL: expr | label | DC n]] hooks with rolled results inline.
+#: A raw dice expression, so a named check can be told apart from "2d6+3".
+_DICE_EXPR_RE = re.compile(r"^\d*d\d+([+-]\d+)?([+-]\d+)?$", re.I)
 
-    The DM model requests rolls; the backend rolls them with the internal dice
-    engine and substitutes the outcome, so the game stays in a single voice.
+#: "fall 30", "falling 30 ft", "fell 30 feet" — a drop the rules can price.
+_FALL_RE = re.compile(r"\bfall(?:ing|s|en)?\b\D{0,12}?(\d+)", re.I)
+
+
+def _hook_amount(raw: str, target=None) -> tuple[int, str, Optional[str]]:
+    """How much a DM's damage/heal hook is actually worth. ``(amount, detail)``.
+
+    The model names a SOURCE — dice, or a fall it just narrated — and the code
+    works out the number. Three forms, in the order they are tried:
+
+    * ``fall 30`` — the rules compute it: 1d6 bludgeoning per 10 feet, capped
+      at 20d6. The DM was inventing this one more than any other.
+    * ``2d6`` — rolled here. Before this, a hook that named dice had its
+      non-digits stripped and ``2d6`` was applied as TWENTY-SIX, which is the
+      kind of failure that looks like a hard fight rather than a bug.
+    * ``7`` — a flat number, still accepted: a DM adjudicating an exact amount
+      is a legitimate ruling, and refusing it would stop play.
+    """
+    txt = str(raw or "").strip()
+    fall = _FALL_RE.search(txt)
+    if fall:
+        dice, dtype = checks.falling_damage(int(fall.group(1)))
+        if not dice:
+            return 0, "", None
+        r = dice_roll(dice)
+        return (r.total, f"falls {fall.group(1)} ft — {dice} → {r.total}", dtype)
+    expr = re.search(r"\d*\s*d\s*\d+(?:\s*[+-]\s*\d+)?", txt, re.I)
+    if expr:
+        try:
+            r = dice_roll(expr.group().replace(" ", ""))
+            return max(0, r.total), r.detail, None
+        except Exception as e:
+            print(f"[hook amount] {e}")
+    m = re.search(r"\d+", txt)
+    return (int(m.group()) if m else 0), "", None
+
+
+def _check_modifier(char: "Character", name: str) -> "checks.CheckModifier":
+    """What this character's Stealth (or Athletics, or plain Strength) is worth.
+
+    Everything the model used to add up by eye: the ability modifier, the
+    proficiency bonus if the skill is on the sheet, DOUBLE it for expertise,
+    and the flat penalties this game already tracks — 2024 exhaustion is -2 per
+    level on every D20 Test, and a curse can carry its own.
+    """
+    ability = checks.ability_for(name) or "str"
+    prof_skills = {v.strip().lower() for v in _tag_values(char, "skill")}
+    expert = {v.strip().lower() for v in _tag_values(char, "expertise")}
+    n = (checks.normalize(name) or "").lower()
+    penalty = -2 * int(getattr(char, "exhaustion", 0) or 0)
+    try:
+        if char.id:
+            with Session(engine) as s:
+                pen, _ = _curse_combat_effect(s, char.id)
+                penalty += int(pen or 0)
+    except Exception as e:
+        print(f"[check modifier] curse: {e}")
+    return checks.check_modifier(
+        name,
+        ability_mod=ability_modifier(_ability_score(
+            char, checks.ABILITY_NAMES.get(ability, ability))),
+        proficiency_bonus=proficiency_bonus_for_level(char.level),
+        proficient=n in prof_skills,
+        expertise=n in expert,
+        penalty=penalty)
+
+
+def resolve_roll_hooks(text: str, char: Optional["Character"] = None) -> str:
+    """Replace [[ROLL: ...]] hooks with rolled results inline.
+
+    Two forms, and the first one is the point::
+
+        [[ROLL: Stealth | DC 15]]        the CODE works out the modifier
+        [[ROLL: 2d6+3 | Greataxe]]       raw dice, for damage and the like
+
+    The old form — ``[[ROLL: 1d20+5 | Stealth | DC 15]]`` — still resolves,
+    because a table mid-session should not break. But that ``+5`` was computed
+    by the language model from the character sheet, which makes the one number
+    that decides the outcome the one number nothing checked: it has to know the
+    ability, the proficiency bonus, whether the skill is proficient, whether it
+    has expertise, and any exhaustion or curse penalty riding on the d20. The
+    DM's job is to decide that a Stealth check happens and how hard it is.
+    Working out what the character's Stealth is worth is arithmetic, and
+    arithmetic belongs here.
     """
     def repl(match: re.Match) -> str:
         inner = match.group(1).strip()
         parts = [p.strip() for p in inner.split("|")]
         expr = parts[0] if parts else ""
         label = parts[1] if len(parts) > 1 else ""
+        # "[[ROLL: Stealth | DC 15]]" — the second field is the DC, not a
+        # label, and taking it as one printed "DC 15: d20[20]+8".
+        if re.fullmatch(r"(?:dc\s*)?\d+", label.strip(), re.I):
+            label = ""
         dc = None
-        if len(parts) > 2:
+        for p in parts[1:]:
+            dcm = re.search(r"\bdc\s*(\d+)", p, re.I)
+            if dcm:
+                dc = int(dcm.group(1))
+                break
+        if dc is None and len(parts) > 2:
             dcm = re.search(r"\d+", parts[2])
             if dcm:
                 dc = int(dcm.group())
         collector = _ACTIVITY_ROLLS.get()
         try:
+            # A NAMED check: the sheet decides what it is worth.
+            named = None if _DICE_EXPR_RE.match(expr.replace(" ", "")) \
+                else checks.normalize(expr)
+            if named and char is not None:
+                cm = _check_modifier(char, named)
+                lbl = label or cm.label
+                if dc is not None:
+                    res = ability_check(cm.total, dc=dc, label=lbl)
+                else:
+                    res = dice_roll(f"1d20{cm.total:+d}")
+                    res = type("R", (), {"detail": f"{lbl}: {res.detail}",
+                                         "total": res.total,
+                                         "success": None})()
+                out = f"\U0001F3B2 {res.detail}"
+                if collector is not None:
+                    collector.append({
+                        "expr": f"1d20{cm.total:+d}", "label": lbl, "dc": dc,
+                        "total": res.total, "detail": res.detail,
+                        "success": getattr(res, "success", None),
+                        "marker": out,
+                    })
+                return out
             compact = expr.replace(" ", "")
             m = _D20_EXPR.match(compact)
             if m and dc is not None:
@@ -6543,9 +6657,11 @@ _COMBAT_HOOKS_IDLE = (
 _COMBAT_HOOKS_ACTIVE = (
     "# Combat hooks (a fight is underway — keep the tracker true)\n"
     "Emit these alongside your narration; they are applied and hidden from players:\n"
-    "    [[COMBAT: damage | target | 7]]      damage dealt (temp HP absorbs first)\n"
-    "    [[COMBAT: heal | target | 5]]        healing received\n"
-    "    [[COMBAT: temp | target | 10]]       temporary hit points granted\n"
+    "    [[COMBAT: damage | target | 2d6 | fire]]   DICE and TYPE — the code rolls\n"
+    "                                         them, applies resistance, and reports it\n"
+    "    [[COMBAT: damage | target | fall 30]]  the rules price a drop themselves\n"
+    "    [[COMBAT: heal | target | 2d4+2]]     healing received\n"
+    "    [[COMBAT: temp | target | 5]]         temporary hit points granted\n"
     "    [[COMBAT: condition | target | poisoned]] / [[COMBAT: uncondition | target | poisoned]]\n"
     "    [[COMBAT: move | target | melee with Kara]]   spacing band: 'melee with <name>' | 'near' | 'far'\n"
     "    [[COMBAT: cover | target | half]]    cover: none | half | three-quarters | total\n"
@@ -6557,6 +6673,10 @@ _COMBAT_HOOKS_ACTIVE = (
     "Follow the board's initiative order: on a monster's or NPC's turn, run it in narration and\n"
     "record its outcome with damage/condition hooks, then emit [[COMBAT: next]]. Use [[ROLL: ...]]\n"
     "for attacks and saves as normal — COMBAT hooks record the OUTCOME on the tracker.\n"
+    "NEVER compute a number yourself. Name the DICE (from the stat block or the spell) and the\n"
+    "damage TYPE; the code rolls, applies resistance, immunity and vulnerability, and reports\n"
+    "what was actually taken. A flat total is a last resort and it is never resisted, so a\n"
+    "fire elemental you 'deal 18 fire damage' to will take all 18. Give the dice.\n"
     "\n"
     "Action economy — enforce strictly, every turn, PCs and monsters alike:\n"
     "- One ACTION (Attack, Dash, Disengage, Dodge, Help, Hide, Ready, cast a spell, use an\n"
@@ -6711,12 +6831,15 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                 if len(args) < 2:
                     continue
                 c = _combat_find(enc.id, args[0])
-                try:
-                    amount = int(re.sub(r"[^\d]", "", args[1] or "") or 0)
-                except ValueError:
-                    continue
+                # DICE, not a total. The DM's job is to say a gout of flame
+                # catches the goblin; how much it hurts is arithmetic, and the
+                # model should never be the thing doing it. `2d6` used to be
+                # stripped of its non-digits and applied as TWENTY-SIX.
+                amount, roll_detail, auto_type = _hook_amount(args[1], c)
                 if not c or amount <= 0:
                     continue
+                if roll_detail:
+                    notes.append(f"🎲 {c.name}: {roll_detail}")
                 if action == "damage":
                     # A third field names the TYPE — [[COMBAT: damage | Goblin
                     # | 12 | fire]]. Without one the blow is untyped and no
@@ -6724,7 +6847,7 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                     # DM-adjudicated hit before types existed; with one, the
                     # tracker halves it for a creature that resists fire.
                     dtype = damage_rules.normalize_type(
-                        args[2] if len(args) > 2 else None)
+                        args[2] if len(args) > 2 else None) or auto_type
                     magical = len(args) > 3 and "magic" in str(args[3]).lower()
                     rolled = [(damage_rules.Packet(
                         dice=str(amount), type=dtype, magical=magical,
@@ -9614,6 +9737,7 @@ def generate_dm_reply(
     username: str,
     message: str,
     extra_context: Optional[List[str]] = None,
+    character_id: Optional[int] = None,
 ) -> str:
     """DM brain via OpenRouter, grounded in world state + SRD rules.
 
@@ -9737,11 +9861,18 @@ def generate_dm_reply(
         "  your narration, and let harsh weather and hazards matter. Do NOT invent HP or\n"
         "  resource changes yourself — describe the fiction and emit roll hooks; the\n"
         "  system applies mechanical changes.\n\n"
-        "Dice - you roll them yourself; NEVER ask the player to roll or mention Avrae:\n"
-        "- When an action needs a roll, emit a hook and the system fills in the result:\n"
-        "    [[ROLL: 1d20+5 | Stealth | DC 15]]   for an ability check or saving throw\n"
-        "    [[ROLL: 2d6+3 | Greataxe damage]]     for damage or a generic roll\n"
+        "Dice - the SYSTEM rolls them; NEVER ask the player to roll or mention Avrae:\n"
+        "- NAME the check. Do not work out the modifier — the code reads the sheet for the\n"
+        "  ability, proficiency, expertise, exhaustion and any curse, and it cannot get them\n"
+        "  wrong the way arithmetic in prose can:\n"
+        "    [[ROLL: Stealth | DC 15]]        an ability check or a skill check\n"
+        "    [[ROLL: Dexterity | DC 13]]      a saving throw or a bare ability check\n"
+        "    [[ROLL: 2d6+3 | Greataxe damage]]  raw dice, where you know the expression\n"
+        "- Your job is to decide THAT a check happens and how hard it is (the DC). What the\n"
+        "  character's Stealth is worth is arithmetic, and arithmetic is the system's.\n"
         "- Put ONLY the hook (never invent a result). The roller substitutes the outcome inline.\n"
+        "- The same rule everywhere: name the source, never the total. Emit dice and let the\n"
+        "  code roll them; a number you calculated is a number nothing checked.\n"
         "\n"
         "Ambient music - set the mood, at most ONE cue per reply:\n"
         "- When the scene's location or mood changes (entering a new area, combat begins, a\n"
@@ -9851,7 +9982,17 @@ def generate_dm_reply(
     dm_raw = call_openrouter_dm(messages)
 
     # Resolve internal dice hooks ([[ROLL:...]]) inline using the dice roller.
-    return resolve_roll_hooks(dm_raw)
+    # The acting character comes with it so a NAMED check ("[[ROLL: Stealth |
+    # DC 15]]") can have its modifier computed from the sheet instead of by the
+    # model — see `resolve_roll_hooks`.
+    _rc = None
+    if character_id:
+        try:
+            with Session(engine) as _s:
+                _rc = _s.get(Character, character_id)
+        except Exception as e:
+            print(f"[roll hooks] character: {e}")
+    return resolve_roll_hooks(dm_raw, _rc)
 
 
 def _resolve_session_character(session_id: str, user_id: str) -> Optional[int]:
@@ -11846,6 +11987,10 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             username=req.username,
             message=req.message,
             extra_context=ctx_texts,
+            character_id=(_acting_member(
+                (_load_session_state(req.session_id).get("meta") or {}),
+                req.user_id) or {}).get("character_id")
+            or _resolve_session_character(req.session_id, req.user_id),
         )
     except Exception as e:
         print(f"[DM error] {e}")
