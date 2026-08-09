@@ -51,8 +51,22 @@ class ImageKind:
     #                          miles of country. Different LoRA, different
     #                          framing, and never interchangeable — see
     #                          eight_card_system/mapmaker.py.
+    MATERIAL = "material"  # -> one SURFACE the isometric board is built out of
+    #                          (stone floor, brickwork, mud), keyed by tile kind
+    #                          + the room's look. A third thing again: MAP is a
+    #                          picture of one room, WORLDMAP is miles of
+    #                          country, and this is a swatch of what a square is
+    #                          made of, tiled across every square made of it.
+    #
+    #                          It has to be its own kind rather than a MAP with
+    #                          a different prompt, because a kind carries LoRAs:
+    #                          rendered as a map, a "stone floor" came back as a
+    #                          complete battlemap with a decorative border and
+    #                          corner medallions — SDXL-Battlemaps and
+    #                          HadesLevel@0.9 doing exactly what they are for.
+    #                          No wording survives a LoRA at that strength.
 
-    ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE, MAP, WORLDMAP}
+    ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE, MAP, WORLDMAP, MATERIAL}
 
 
 def normalize_kind(kind: str) -> str:
@@ -63,7 +77,9 @@ def normalize_kind(kind: str) -> str:
                "portrait": ImageKind.PC, "hero": ImageKind.PC,
                "battlemap": ImageKind.MAP, "tactical": ImageKind.MAP,
                "worldmap": ImageKind.WORLDMAP, "world-map": ImageKind.WORLDMAP,
-               "region-map": ImageKind.WORLDMAP, "chart": ImageKind.WORLDMAP}
+               "region-map": ImageKind.WORLDMAP, "chart": ImageKind.WORLDMAP,
+               "texture": ImageKind.MATERIAL, "swatch": ImageKind.MATERIAL,
+               "surface": ImageKind.MATERIAL}
     k = aliases.get(k, k)
     return k if k in ImageKind.ALL else ImageKind.CREATURE
 

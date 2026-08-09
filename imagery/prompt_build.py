@@ -38,6 +38,20 @@ _KIND_FRAMING = {
         "flat lay, no perspective, no horizon, tabletop RPG battle map, "
         "even diffuse lighting, full-bleed edge to edge"
     ),
+    # A material is a SAMPLE, not a picture. The two ways it goes wrong are a
+    # picture of a thing and a picture of a place, and both come from the model
+    # reading "stone floor" as a scene brief — so the framing insists on flat,
+    # even, edge-to-edge coverage with nothing composed in it and, above all,
+    # no border. (Rendered as a MAP this came back as whole battlemaps with
+    # ornate frames; the kind exists to escape those LoRAs, and the framing has
+    # to agree with it rather than leave the door open again.)
+    ImageKind.MATERIAL: (
+        "flat seamless tileable texture swatch of a single surface material, "
+        "straight overhead orthographic view, uniform across the entire frame, "
+        "even diffuse lighting, filling the frame completely edge to edge, "
+        "no border, no frame, no ornament, no objects, no figures, "
+        "no walls, no room, no scene, no composition, no focal point"
+    ),
     # A world map is DRAWN COUNTRY, not photographed ground: miles per inch,
     # stylised relief, the conventions of a cartographer rather than a camera.
     # It also carries no writing — every label, dot, road, compass and scale bar

@@ -247,6 +247,187 @@ _SPRITE_FRAMING = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Surface materials: what the isometric board is built out of
+# ---------------------------------------------------------------------------
+#
+# The flat board is a painting of a whole room, rendered per layout. The
+# isometric board is geometry, and geometry wants MATERIALS — one swatch per
+# (what this surface is made of, what the room looks like), reused by every
+# square that is made of it.
+#
+# That is the same move the item-art catalogue and the debris sprites already
+# made, and it is the one that changes the arithmetic: a room's picture costs a
+# render every time the party finds a new room, and a catalogue costs a render
+# once, ever. `mapgen` is deterministic code, so with the swatches on disk a
+# brand-new room costs nothing at all.
+#
+# These are NOT matted. A sprite is a thing standing on the floor and needs its
+# background cut away; a material IS the floor, edge to edge, and rembg would
+# only find a subject in it and throw the rest away.
+
+MATERIAL_RENDER_PX = 512    # SDXL is happiest here, and a swatch stores small
+
+#: Bump when the FRAMING changes, exactly as with SPRITE_REV — the slug is the
+#: cache, so a reworded prompt reaches nobody who already holds the old swatch.
+MATERIAL_REV = 1
+
+#: Materials whose look does not depend on the room around them.
+#:
+#: Lava is lava in a cavern and in a ruin; a floor is not. Keeping these out of
+#: the per-look cross product is the `debris_ref` lesson applied to surfaces —
+#: key on the axes that actually change the picture and no others — and it is
+#: the difference between ~200 renders and ~270.
+LOOK_AGNOSTIC: frozenset[str] = frozenset({
+    "~", "W", "l", "x", "i", "%", "m", "f",
+})
+
+#: The look bucket a material with no setting of its own is filed under.
+ANY_LOOK = "any"
+
+#: Codes with no surface to draw: the board renders nothing there.
+NO_MATERIAL: frozenset[str] = frozenset({" ", "^"})
+
+#: The style a swatch is painted in. Deliberately NOT ``_MAP_STYLE``, which
+#: says "battlemap" — the one word this render must not hear.
+#:
+#: "Seamless" is asked for and not relied on: SDXL does not tile without help.
+#: It earns its place anyway because it biases toward flat even coverage with
+#: nothing composed in the middle, which is what a swatch needs. The board
+#: handles the rest by giving each square its own copy and varying the UVs, so
+#: an imperfect edge reads as grout between flagstones rather than as a seam.
+_MATERIAL_STYLE = (
+    "hand-painted texture, rich painterly surface detail, honest materials, "
+    "muted natural palette, even flat lighting"
+)
+
+#: What a swatch must not be. Anything implying a viewpoint turns a material
+#: into a photograph of a place, and anything implying a light source bakes a
+#: shadow into a surface that the board is going to light for itself.
+MATERIAL_NEGATIVE = (
+    "battlemap, map, floorplan, dungeon map, room, scene, composition, "
+    "border, frame, ornate border, decorative frame, corner ornament, "
+    "medallion, cartouche, inset panel, "
+    "perspective, isometric, three-quarter view, side view, elevation, "
+    "horizon, vanishing point, depth of field, object, furniture, creature, "
+    "person, text, label, watermark, vignette, "
+    "dramatic lighting, strong directional shadow, spotlight, gradient"
+)
+
+
+#: The looks the catalogue is pre-rendered for. Kept in step with
+#: scripts/material_prerender.py's CONTEXTS and debris_prerender.py's, so all
+#: three agree about what a "dungeon" looks like.
+BOARD_LOOKS: tuple[str, ...] = (
+    "underground", "dungeon", "woodland", "town", "cavern", "ruins",
+    "interior", "snow", "desert", "wetland",
+)
+
+#: Archetype -> the look its surfaces are drawn in. An archetype is a much
+#: better signal than a biome string: it is a closed set the generator chose,
+#: where `biome` is whatever the DM happened to type.
+_ARCH_LOOK: dict[str, str] = {
+    "dungeon-room": "dungeon", "dungeon-complex": "dungeon",
+    "crypt": "dungeon", "sewer": "underground", "cave": "cavern",
+    "mine": "underground", "forest": "woodland", "clearing": "woodland",
+    "swamp": "wetland", "reef": "wetland", "open-water": "wetland",
+    "street": "town", "tavern": "interior", "camp": "woodland",
+    "ship": "interior", "skyship": "interior", "arena": "town",
+    "ruins": "ruins", "bridge": "town", "mountain-pass": "snow",
+    "sky-islands": "woodland", "open": "woodland",
+}
+
+#: Words in a free-text biome that outrank the archetype. A dungeon room cut
+#: into a glacier is a snow board whatever the generator called it.
+_BIOME_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("snow", "ice", "glacier", "frozen", "tundra", "arctic"), "snow"),
+    (("desert", "dune", "sand", "arid", "badlands"), "desert"),
+    (("swamp", "marsh", "bog", "fen", "wetland", "mangrove"), "wetland"),
+    (("ruin", "derelict", "abandoned", "overgrown"), "ruins"),
+    (("cavern", "cave", "grotto"), "cavern"),
+    (("underdark", "underground", "tunnel", "mine", "sewer"), "underground"),
+    (("forest", "wood", "jungle", "grove", "thicket"), "woodland"),
+    (("city", "town", "village", "street", "market"), "town"),
+    (("tavern", "hall", "chamber", "indoor", "interior", "manor"), "interior"),
+    (("crypt", "dungeon", "vault", "keep"), "dungeon"),
+)
+
+
+def board_look(biome: str = "", archetype: str = "") -> str:
+    """Which of the ten catalogue looks this board's surfaces are drawn in.
+
+    The catalogue only pays for itself if boards actually HIT it, and a board's
+    `biome` is free text a DM typed ("damp underdark", "the old mill"). Slugged
+    straight into a context key that matches nothing, every board would miss and
+    re-render its own materials on demand — which is the per-room cost this
+    whole design exists to remove. So free text is mapped onto the closed set,
+    with the archetype as the fallback signal and "dungeon" as the floor.
+    """
+    b = (biome or "").strip().lower()
+    for words, look in _BIOME_WORDS:
+        if any(w in b for w in words):
+            return look
+    return _ARCH_LOOK.get((archetype or "").strip().lower(), "dungeon")
+
+
+def material_ref(code: str) -> str:
+    """The cache slug for a surface swatch. One picture per KIND of surface.
+
+    Keyed like `object_ref`: the code names the material and the CONTEXT names
+    the room's look, so a dungeon's flagstones and a cavern's floor are two
+    buckets of one slug rather than two slugs.
+    """
+    from .terrain import tile
+    return f"material-v{MATERIAL_REV}-{tile(code).name.replace(' ', '-')}"
+
+
+def material_look(code: str) -> str:
+    """Which look bucket this material is filed under, for a given board."""
+    return ANY_LOOK if code in LOOK_AGNOSTIC else ""
+
+
+def render_material(code: str, *, store=None, context: str = "",
+                    size_px: int = MATERIAL_RENDER_PX) -> Optional[int]:
+    """A tiling surface swatch for every square made of this stuff.
+
+    Returns an ``entity_image`` id, or None when art is unavailable — in which
+    case the board falls back to the flat tile colours it already has, which is
+    correct and playable, just plainer.
+    """
+    from .terrain import tile
+    if code in NO_MATERIAL:
+        return None
+    t = tile(code)
+    if not t.art:
+        return None
+    from imagery.models import ImageKind
+    if store is None:
+        try:
+            from imagery import ImageStore
+            store = ImageStore()
+        except Exception as e:
+            print(f"[vtt.art] imagery unavailable for material: {e}")
+            return None
+    ctx = ANY_LOOK if code in LOOK_AGNOSTIC else (context or "dungeon")
+    try:
+        res = store.ensure_image(
+            # The MATERIAL kind, never "map": a kind carries LoRAs, and the map
+            # kind's (SDXL-Battlemaps, HadesLevel@0.9) turn any surface into a
+            # framed battlemap however the prompt is worded.
+            ImageKind.MATERIAL, f"a surface of {t.art}", look=t.art, context=ctx,
+            ref_slug=material_ref(code),
+            extra=_MATERIAL_STYLE,
+            negative_extra=MATERIAL_NEGATIVE,
+            width=size_px, height=size_px, store_width=size_px,
+            max_per_bucket=1)
+    except Exception as e:
+        print(f"[vtt.art] material render failed: {e}")
+        return None
+    if res is None or res.offline or not res.image_id:
+        return None
+    return res.image_id
+
+
 def cutout(png_bytes: bytes, *, size_px: int = DEBRIS_PX) -> Optional[bytes]:
     """Cut a sprite free of its background and downscale it.
 

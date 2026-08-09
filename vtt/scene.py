@@ -82,6 +82,14 @@ DEFAULT_SIZE: dict[str, tuple[int, int]] = {
 #: Team colours the overlay falls back to when a token has no portrait.
 TEAM_COLORS = {Team.PARTY: "#4fa3ff", Team.FOE: "#ff5a5a", Team.NEUTRAL: "#d9b25a"}
 
+#: (tile code, look) -> the catalogue swatch's image id, or None if undrawn.
+#:
+#: Process-level rather than per-engine because that is what the thing being
+#: cached actually is: one swatch of dungeon flagstone serves every board in
+#: every session forever. Cleared by a restart, which is also when a re-render
+#: of the catalogue would be picked up.
+_MATERIAL_IDS: dict[tuple[str, str], Optional[int]] = {}
+
 
 class VttEngine:
     def __init__(self, engine: Optional[Engine] = None,
@@ -711,6 +719,48 @@ class VttEngine:
                         "axis": (aperture_axis(g, x, y)
                                  if code in APERTURES else ""),
                         "image_id": sprites.get(tile(code).name)})
+        return out
+
+    def materials_for(self, map_id: int) -> dict[str, int]:
+        """The surface swatch for every tile code on this board, {code: id}.
+
+        Looked up rather than stored, which is the one place this deliberately
+        departs from ``object_art``. An object sprite is drawn for a board and
+        recorded on it; a material belongs to the CATALOGUE — every dungeon
+        floor in every session is the same swatch — so a per-board copy would
+        be a second truth that goes stale the moment ``MATERIAL_REV`` is bumped
+        and the old pictures are pruned out from under it.
+
+        The lookup is memoised per process, so a board with eight tile kinds
+        costs eight queries once and nothing thereafter.
+        """
+        row = self.get_scene(map_id)
+        if row is None or self.image_store is None:
+            return {}
+        from imagery.models import ImageKind, context_key, slugify
+
+        from .art import NO_MATERIAL, board_look, material_look, material_ref
+
+        look = board_look(row.biome or "", row.archetype or "")
+        out: dict[str, int] = {}
+        for lvl in range(len(self.levels_of(row))):
+            g = self.grid_of(row, lvl)
+            for code in {g.get(x, y) for x, y in g.squares()}:
+                if code in NO_MATERIAL or code in out:
+                    continue
+                # A look-agnostic surface is filed once, under "any" — lava is
+                # lava wherever it is, and asking for a dungeon's lava would
+                # miss a bucket that already holds the answer.
+                bucket = material_look(code) or look
+                key = (code, bucket)
+                if key not in _MATERIAL_IDS:
+                    found = self.image_store.list_for(
+                        ImageKind.MATERIAL, slugify(material_ref(code)),
+                        context_key(bucket))
+                    _MATERIAL_IDS[key] = found[0]["image_id"] if found else None
+                got = _MATERIAL_IDS[key]
+                if got:
+                    out[code] = got
         return out
 
     def render_objects(self, map_id: int, *, conditions: str = "") -> int:
@@ -3042,6 +3092,10 @@ class VttEngine:
             "elevation": row.elevation or {},
             "debris": self.debris_for(map_id),
             "objects": self.objects_for(map_id),
+            # {tile code -> swatch image id}. The isometric board builds its
+            # geometry out of these; a code missing here just falls back to its
+            # flat tile colour, which is plainer and equally playable.
+            "materials": self.materials_for(map_id),
             "background_image_id": row.background_image_id,
             "art_status": row.art_status,
             "description": (row.notes or {}).get("description", ""),
