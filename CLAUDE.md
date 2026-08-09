@@ -19,10 +19,22 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 > not `uv run`. Use `uv run` for everything else (tests, DB work, parsing).
 >
 > Env vars do **not** cross into a Windows process by default; name them in
-> `WSLENV` or they arrive as `None`. Windows paths, not `/mnt/...`:
+> `WSLENV` or they arrive as `None`. Windows paths, not `/mnt/...` (spaces are
+> fine, quote them):
 > ```bash
-> DATABASE_URL="sqlite:///D:/path/no spaces/oracle.db" WSLENV=DATABASE_URL \
->   ./.venv/Scripts/python.exe -m imagery.species_portraits --audit
+> DATABASE_URL="sqlite:///D:/Projects/The Oracle/oracle-dm-backend/oracle.db" \
+>   WSLENV=DATABASE_URL ./.venv/Scripts/python.exe -m imagery.species_portraits --audit
+> ```
+> **The database is `oracle-dm-backend/oracle.db`, NOT `oracle.db` at the repo
+> root.** That is where the Linux-side default (`ImageStore()`, `get_engine()`)
+> resolves to, so a Windows run pointed anywhere else quietly writes a whole
+> second database that WSL never reads — the renders "succeed", the audit says
+> they exist, and every lookup from the backend returns nothing. Verify the two
+> sides agree before a long batch:
+> ```bash
+> uv run python -c "from imagery import ImageStore; print(ImageStore().engine.url)"
+> DATABASE_URL=... WSLENV=DATABASE_URL ./.venv/Scripts/python.exe -c \
+>   "from imagery import ImageStore; print(ImageStore().engine.url)"
 > ```
 >
 > If ComfyUI really is stopped, start it yourself and wait ~40s:

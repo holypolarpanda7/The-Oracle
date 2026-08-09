@@ -57,25 +57,47 @@ const DEPTH_STEPS = 8;
  *  Merging matters: a 40x30 board is 1200 floor tiles, and 1200 meshes is 1200
  *  draw calls, which is the difference between a board that runs on a phone
  *  inside a Discord webview and one that does not. */
+/** The four corner UVs of a quad, in the vertex order `quad` takes them. */
+const UV_SQUARE: readonly [number, number][] = [[0, 0], [0, 1], [1, 1], [1, 0]];
+
+/** One square's UVs, turned and flipped by its own coordinates.
+ *
+ *  Every tile of a kind gets the same swatch, so a plain mapping tiles the room
+ *  with one picture repeated in lockstep and the eye reads the repeat instantly.
+ *  Rotating and mirroring per square gives eight arrangements from one texture
+ *  for free, and doing it from the coordinates rather than at random keeps a
+ *  room looking the same every time it is drawn. */
+function tileUVs(x: number, z: number): readonly [number, number][] {
+  const h = ((x * 73856093) ^ (z * 19349663)) >>> 0;
+  const turns = h & 3;
+  const flip = (h >>> 2) & 1;
+  const out = UV_SQUARE.map((_, i) => UV_SQUARE[(i + turns) % 4]);
+  return flip ? out.map(([u, v]) => [1 - u, v] as [number, number]) : out;
+}
+
 class MeshBuilder {
   private pos: number[] = [];
   private norm: number[] = [];
   private col: number[] = [];
+  private uv: number[] = [];
 
   get empty(): boolean { return this.pos.length === 0; }
 
   /** One quad, wound counter-clockwise as seen from the side the normal faces. */
   quad(a: THREE.Vector3Like, b: THREE.Vector3Like, c: THREE.Vector3Like,
-       d: THREE.Vector3Like, color: THREE.Color): void {
+       d: THREE.Vector3Like, color: THREE.Color,
+       uvs: readonly [number, number][] = UV_SQUARE): void {
     const nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
     const ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
     const nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     const len = Math.hypot(nx, ny, nz) || 1;
-    for (const [p, q, r] of [[a, b, c], [a, c, d]] as const) {
-      for (const v of [p, q, r]) {
+    for (const [i, j, k] of [[0, 1, 2], [0, 2, 3]] as const) {
+      for (const idx of [i, j, k]) {
+        const v = [a, b, c, d][idx];
         this.pos.push(v.x, v.y, v.z);
         this.norm.push(nx / len, ny / len, nz / len);
         this.col.push(color.r, color.g, color.b);
+        this.uv.push(uvs[idx][0], uvs[idx][1]);
       }
     }
   }
@@ -85,8 +107,52 @@ class MeshBuilder {
     g.setAttribute("position", new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute("normal", new THREE.Float32BufferAttribute(this.norm, 3));
     g.setAttribute("color", new THREE.Float32BufferAttribute(this.col, 3));
+    g.setAttribute("uv", new THREE.Float32BufferAttribute(this.uv, 2));
     return g;
   }
+}
+
+/** Catalogue swatches by stored image id.
+ *
+ *  Module-level, like `boardSprites`, because that is what the thing being
+ *  cached is: one swatch of dungeon flagstone serves every board in every
+ *  session. A texture is created immediately and fills in when the bytes land,
+ *  so the mesh never has to be rebuilt on arrival — only redrawn. */
+const TEXTURES = new Map<number, THREE.Texture | null>();
+
+/** Dress a material in its swatch, once the bytes actually arrive.
+ *
+ *  Applied on SUCCESS rather than at build time, which matters more than it
+ *  looks. The geometry always carries its flat tile colour, so a swatch that
+ *  is missing, still loading, or 404 (no imagery server — the offline demo,
+ *  and the dev server until its proxy covers /imagery) leaves a board that is
+ *  merely plainer. Assigning the map up front and whitening the vertex colour
+ *  to keep it from tinting would turn every one of those cases into a WHITE
+ *  board instead. */
+function dress(mat: THREE.MeshLambertMaterial, id: number, redraw: () => void): void {
+  const cached = TEXTURES.get(id);
+  if (cached === null) return;                 // known bad; stay tile-coloured
+  const apply = (t: THREE.Texture) => {
+    mat.map = t;
+    mat.vertexColors = false;                  // the picture owns the colour now
+    mat.color.setHex(0xffffff);
+    mat.needsUpdate = true;
+    redraw();
+  };
+  if (cached) { apply(cached); return; }
+  new THREE.TextureLoader().load(
+    `/imagery/image/${id}`,
+    (t) => {
+      t.wrapS = THREE.RepeatWrapping;
+      t.wrapT = THREE.RepeatWrapping;
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = 4;
+      TEXTURES.set(id, t);
+      apply(t);
+    },
+    undefined,
+    () => { TEXTURES.set(id, null); },
+  );
 }
 
 const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
@@ -184,6 +250,19 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
    *  smashed pillar rebuilds and a walk does not. */
   let terrainKey = "";
 
+  /** The last frame's arguments, so a swatch arriving late can repaint without
+   *  the component being told. A texture fills into a material that is already
+   *  on the mesh, so this is a redraw and never a rebuild. */
+  let lastFrame: { st: PaintState; w: number; h: number } | null = null;
+  let pending = 0;
+  const redraw = () => {
+    if (pending || !lastFrame) return;
+    pending = requestAnimationFrame(() => {
+      pending = 0;
+      if (lastFrame) paintFrame(lastFrame.st, lastFrame.w, lastFrame.h);
+    });
+  };
+
   const heightUnits = (scene: VttScene, ft: number) => ft / (scene.square_ft || 5);
   const baseUnits = (scene: VttScene, level: number) =>
     heightUnits(scene, scene.levels?.[level]?.base_ft ?? 0);
@@ -210,9 +289,17 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       return r[x];
     };
 
-    const floor = new MeshBuilder();
-    const structure = new MeshBuilder();
+    // One builder per TILE CODE, not one for the whole floor: each code carries
+    // its own swatch, and a mesh has one material. Still a handful of draw
+    // calls for a whole board — a code, not a square.
+    const byCode = new Map<string, MeshBuilder>();
+    const builderFor = (code: string) => {
+      let b = byCode.get(code);
+      if (!b) { b = new MeshBuilder(); byCode.set(code, b); }
+      return b;
+    };
     const gridPts: number[] = [];
+    const swatches = scene.materials ?? {};
 
     for (let z = 0; z < rows.length; z++) {
       for (let x = 0; x < rows[z].length; x++) {
@@ -222,25 +309,28 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // would hide the hall below.
         if (code === " ") continue;
 
-        const style = tileStyle(code);
-        const color = new THREE.Color(style.fill);
+        // Always the flat tile colour. `dress` swaps to the swatch only once
+        // the bytes land, so a board with no imagery behind it is plain rather
+        // than blank.
+        const color = new THREE.Color(tileStyle(code).fill);
         const h = tileHeightFt(code);
+        const mb = builderFor(code);
 
         if (h > 0) {
           const top = base + heightUnits(scene, h);
           // Structure hides its shared faces from its neighbours; a discrete
           // object standing on its own square shows all four.
           const solid = STRUCTURE_CODES.has(code);
-          structure.quad(v3(x, base, z), v3(x, base, z + 1),
-                         v3(x + 1, base, z + 1), v3(x + 1, base, z), color);
-          block(structure, x, z, base, top, color, (dx, dz) => {
+          mb.quad(v3(x, base, z), v3(x, base, z + 1),
+                  v3(x + 1, base, z + 1), v3(x + 1, base, z), color, tileUVs(x, z));
+          block(mb, x, z, base, top, color, (dx, dz) => {
             if (!solid) return true;
             const n = at(x + dx, z + dz);
             return n === null || tileHeightFt(n) < h;
           });
         } else {
-          floor.quad(v3(x, base, z), v3(x, base, z + 1),
-                     v3(x + 1, base, z + 1), v3(x + 1, base, z), color);
+          mb.quad(v3(x, base, z), v3(x, base, z + 1),
+                  v3(x + 1, base, z + 1), v3(x + 1, base, z), color, tileUVs(x, z));
           if (showGrid) {
             gridPts.push(x, base, z, x + 1, base, z);
             gridPts.push(x, base, z, x, base, z + 1);
@@ -249,9 +339,12 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       }
     }
 
-    const mat = () => new THREE.MeshLambertMaterial({ vertexColors: true });
-    if (!floor.empty) terrainGroup.add(new THREE.Mesh(floor.build(), mat()));
-    if (!structure.empty) terrainGroup.add(new THREE.Mesh(structure.build(), mat()));
+    for (const [code, mb] of byCode) {
+      if (mb.empty) continue;
+      const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+      if (swatches[code]) dress(mat, swatches[code], redraw);
+      terrainGroup.add(new THREE.Mesh(mb.build(), mat));
+    }
     if (gridPts.length) {
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.Float32BufferAttribute(gridPts, 3));
@@ -352,6 +445,19 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     },
 
     draw(st: PaintState, w: number, h: number): void {
+      lastFrame = { st, w, h };
+      paintFrame(st, w, h);
+    },
+
+    dispose(): void {
+      if (pending) cancelAnimationFrame(pending);
+      lastFrame = null;
+      disposeTree(scene3);
+      renderer.dispose();
+    },
+  };
+
+  function paintFrame(st: PaintState, w: number, h: number): void {
       if (w === 0 || h === 0) return;
       const { scene, view } = st;
       const level = st.level ?? 0;
@@ -397,11 +503,5 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       camera.updateProjectionMatrix();
 
       renderer.render(scene3, camera);
-    },
-
-    dispose(): void {
-      disposeTree(scene3);
-      renderer.dispose();
-    },
-  };
+  }
 }

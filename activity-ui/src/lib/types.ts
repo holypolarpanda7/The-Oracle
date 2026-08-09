@@ -441,6 +441,11 @@ export interface VttScene {
   elevation: Record<string, number>;
   /** Discrete things standing on squares — read off the grid by the server. */
   objects?: VttObject[];
+  /** Tile code -> the surface swatch it is built from, via /imagery/image/{id}.
+   *  Shared by kind across every board in every session, so a code absent here
+   *  simply falls back to its flat tile colour. Objects resolve to what they
+   *  are MADE of, so a pillar and an altar arrive pointing at one stone. */
+  materials?: Record<string, number>;
   /** What broke, and what it left. */
   debris?: VttDebris[];
   background_image_id?: number | null;
