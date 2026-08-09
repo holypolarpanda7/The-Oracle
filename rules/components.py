@@ -127,6 +127,41 @@ def components_of(spell: Any) -> SpellComponents:
     return out
 
 
+#: Anything that stands in for a costless material component. Deliberately
+#: broad: every class's focus has a different name, a book may add another, and
+#: refusing a spell because a wand wasn't on a list is a far worse failure than
+#: letting one through. It lives here rather than in the backend because two
+#: callers now need it — the pack check that finds a focus, and the free-hand
+#: check that asks whether the focus is in a hand.
+FOCUS_WORDS = (
+    "component pouch", "spellcasting focus", "arcane focus", "druidic focus",
+    "holy symbol", "emblem", "reliquary", "amulet", "sprig of mistletoe",
+    "totem", "yew wand", "wand", "staff", "quarterstaff", "rod", "orb",
+    "crystal", "sceptre", "scepter", "prayer book",
+)
+
+#: The subset a caster does NOT have to hold. A holy symbol may be "held in
+#: hand, worn visibly, or borne on a shield", which is the only reason a cleric
+#: with a mace and a shield can cast anything at all.
+WORN_FOCUS_WORDS = ("holy symbol", "emblem", "reliquary", "amulet", "totem",
+                    "medallion", "pendant", "periapt")
+
+
+def _has_word(name: Optional[str], words: Tuple[str, ...]) -> bool:
+    n = re.sub(r"\s+", " ", (name or "").strip().lower())
+    return bool(n) and any(w in n for w in words)
+
+
+def is_focus(name: Optional[str]) -> bool:
+    """True if this item stands in for a costless material component."""
+    return _has_word(name, FOCUS_WORDS)
+
+
+def is_worn_focus(name: Optional[str]) -> bool:
+    """True if this focus works while worn rather than held."""
+    return _has_word(name, WORN_FOCUS_WORDS)
+
+
 def format_cost(gp: float) -> str:
     """Gold as a book would print it: 300 GP, 1 SP, 25,000 GP."""
     if gp >= 1:
