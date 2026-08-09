@@ -118,28 +118,23 @@ class MeshBuilder {
  *  cached is: one swatch of dungeon flagstone serves every board in every
  *  session. A texture is created immediately and fills in when the bytes land,
  *  so the mesh never has to be rebuilt on arrival — only redrawn. */
-const TEXTURES = new Map<number, THREE.Texture | null>();
+const TEXTURES = new Map<number, THREE.Texture | null | undefined>();
 
-/** Dress a material in its swatch, once the bytes actually arrive.
+/** Fetch a swatch, and tell the caller when its fate is decided.
  *
- *  Applied on SUCCESS rather than at build time, which matters more than it
- *  looks. The geometry always carries its flat tile colour, so a swatch that
- *  is missing, still loading, or 404 (no imagery server — the offline demo,
- *  and the dev server until its proxy covers /imagery) leaves a board that is
- *  merely plainer. Assigning the map up front and whitening the vertex colour
- *  to keep it from tinting would turn every one of those cases into a WHITE
- *  board instead. */
-function dress(mat: THREE.MeshLambertMaterial, id: number, redraw: () => void): void {
-  const cached = TEXTURES.get(id);
-  if (cached === null) return;                 // known bad; stay tile-coloured
-  const apply = (t: THREE.Texture) => {
-    mat.map = t;
-    mat.vertexColors = false;                  // the picture owns the colour now
-    mat.color.setHex(0xffffff);
-    mat.needsUpdate = true;
-    redraw();
-  };
-  if (cached) { apply(cached); return; }
+ *  Deliberately does NOT touch a material. Vertex colour carries fog, sight and
+ *  light (see `shade`), so a mesh must know whether it is textured at BUILD
+ *  time: textured, the vertex colour has to be a pure multiplier over white, or
+ *  the tile's own colour tints the picture; untextured, it has to be that tile
+ *  colour, or the board goes grey. Switching a live material from one to the
+ *  other is what silently erased the fog tiers the first time.
+ *
+ *  So a texture arriving invalidates the terrain instead, and the next frame
+ *  rebuilds knowing the answer. It resolves once per board and a rebuild is
+ *  cheap, which makes this the honest trade rather than the clever one. */
+function requestTexture(id: number, settled: () => void): void {
+  if (TEXTURES.has(id)) return;                // resolved, or already in flight
+  TEXTURES.set(id, undefined);
   new THREE.TextureLoader().load(
     `/imagery/image/${id}`,
     (t) => {
@@ -148,14 +143,57 @@ function dress(mat: THREE.MeshLambertMaterial, id: number, redraw: () => void): 
       t.colorSpace = THREE.SRGBColorSpace;
       t.anisotropy = 4;
       TEXTURES.set(id, t);
-      apply(t);
+      settled();
     },
     undefined,
-    () => { TEXTURES.set(id, null); },
+    // No imagery server (the offline demo) or a pruned id. Remembered as bad so
+    // it is asked for once, and the board simply stays flat-coloured.
+    () => { TEXTURES.set(id, null); settled(); },
   );
 }
 
 const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+
+/** How much of a square a door panel fills ACROSS its wall. Mirrors
+ *  vtt/render_image.py's _PANEL_THICKNESS and the flat renderer's: a door is a
+ *  plank in a wall, and drawn square and centred it reads as furniture parked
+ *  on the floor. */
+const PANEL_THICKNESS = 0.46;
+
+/** Apertures — a gap in a wall rather than a block filling a square. */
+const APERTURES: ReadonlySet<string> = new Set(["+", "/", "p"]);
+
+/** What the party can see of a square, right now.
+ *
+ *  Two tiers, and both are needed or a door means nothing: `fog` is MEMORY and
+ *  never dims, `sight` is recomputed per frame from real line of sight. With
+ *  memory only, closing a door behind you changes nothing; with sight only, the
+ *  party forgets the map every time it turns around. */
+const enum Seen { Never = 0, Remembered = 1, Watched = 2 }
+
+/** Dim and tint a tile for what can be seen of it and how lit it is.
+ *
+ *  Baked into the mesh rather than laid over it, because an overlay quad on the
+ *  floor cannot darken a ten-foot wall standing on that square — the fog would
+ *  stop at the skirting board. That is why fog, sight and light are part of the
+ *  terrain cache key: they change on a move, not on a pointer flick. */
+function shade(base: THREE.Color, seen: Seen, light: string): THREE.Color {
+  const c = base.clone();
+  if (seen === Seen.Never) return c.multiplyScalar(0.05);
+  if (seen === Seen.Remembered) {
+    // A cold veil: you remember the room, you are not watching it.
+    c.multiplyScalar(0.4);
+    return c.lerp(new THREE.Color(0x2b3c5e), 0.35);
+  }
+  if (light === "x") {
+    // Watched but unlit — someone is seeing this by darkvision, and the rule
+    // is that darkvision is greyscale. Rendering it merely dim would claim a
+    // colour nobody in the room can actually make out.
+    const g = c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
+    return c.setRGB(g, g, g).multiplyScalar(0.55);
+  }
+  return light === "d" ? c.multiplyScalar(0.72) : c;
+}
 
 /** A block with a chamfered top, emitting only the side faces that show.
  *
@@ -164,10 +202,28 @@ const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
  *  reads as a row of separate pillars rather than one wall. */
 function block(mb: MeshBuilder, x: number, z: number, y0: number, y1: number,
                color: THREE.Color, exposed: (dx: number, dz: number) => boolean): void {
+  boxFaces(mb, x, x + 1, z, z + 1, y0, y1, color, exposed);
+}
+
+/** A box over an arbitrary footprint, all four sides drawn.
+ *
+ *  For the things that do not fill their square: a door panel lying along its
+ *  wall run, and a heap of wreckage. Nothing abuts them, so there are no shared
+ *  faces to cull. */
+function panelBlock(mb: MeshBuilder, x0: number, x1: number, z0: number,
+                    z1: number, y0: number, y1: number, color: THREE.Color): void {
+  boxFaces(mb, x0, x1, z0, z1, y0, y1, color, () => true);
+}
+
+function boxFaces(mb: MeshBuilder, x0: number, x1: number, z0: number, z1: number,
+                  y0: number, y1: number, color: THREE.Color,
+                  exposed: (dx: number, dz: number) => boolean): void {
   const top = y1;
   const rim = Math.max(y0, y1 - BEVEL);
-  const b = BEVEL;
-  const [x0, x1, z0, z1] = [x, x + 1, z, z + 1];
+  // A chamfer can never eat more than half of the thing it is chamfering — a
+  // door panel is thinner than two bevels, and left unclamped its top face
+  // turns inside out.
+  const b = Math.min(BEVEL, (x1 - x0) / 3, (z1 - z0) / 3);
   const [ix0, ix1, iz0, iz1] = [x0 + b, x1 - b, z0 + b, z1 - b];
 
   // Top face, inset.
@@ -263,6 +319,10 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     });
   };
 
+  /** A swatch's fate has been decided: rebuild, because whether a code is
+   *  textured changes what its vertex colours have to mean. */
+  const invalidate = () => { terrainKey = ""; redraw(); };
+
   const heightUnits = (scene: VttScene, ft: number) => ft / (scene.square_ft || 5);
   const baseUnits = (scene: VttScene, level: number) =>
     heightUnits(scene, scene.levels?.[level]?.base_ft ?? 0);
@@ -301,6 +361,33 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     const gridPts: number[] = [];
     const swatches = scene.materials ?? {};
 
+    // Which way the wall runs through each aperture. Read off the server's own
+    // objects list rather than re-derived here: `aperture_axis` already
+    // answered it once, from the grid, for every view.
+    const axes = new Map<string, string>();
+    for (const o of scene.objects ?? []) {
+      if (o.axis) axes.set(`${o.x},${o.y}`, o.axis);
+    }
+    const wrecked = new Set((scene.debris ?? []).map((d) => `${d.x},${d.y}`));
+
+    // Which codes will actually be drawn with a picture on this pass. Anything
+    // still in flight counts as untextured for now and the mesh is rebuilt when
+    // it lands — see `requestTexture`.
+    const textured = new Set<string>();
+    for (const [code, id] of Object.entries(swatches)) {
+      const t = TEXTURES.get(id);
+      if (t instanceof THREE.Texture) textured.add(code);
+      else if (t === undefined) requestTexture(id, invalidate);
+    }
+
+    const seenAt = (x: number, z: number): Seen => {
+      if (!scene.fog) return Seen.Watched;          // no fog = all visible
+      if (scene.sight?.[z]?.[x] === "1") return Seen.Watched;
+      return scene.fog[z]?.[x] === "1" ? Seen.Remembered : Seen.Never;
+    };
+    const lightAt = (x: number, z: number): string =>
+      scene.light?.[z]?.[x] ?? "b";
+
     for (let z = 0; z < rows.length; z++) {
       for (let x = 0; x < rows[z].length; x++) {
         const code = rows[z][x];
@@ -309,41 +396,63 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // would hide the hall below.
         if (code === " ") continue;
 
-        // Always the flat tile colour. `dress` swaps to the swatch only once
-        // the bytes land, so a board with no imagery behind it is plain rather
-        // than blank.
-        const color = new THREE.Color(tileStyle(code).fill);
+        // Vertex colour is the tile's colour dimmed for fog and light — or,
+        // where a swatch is going to be drawn over it, a pure multiplier, so
+        // the picture keeps its own colours and still darkens with the room.
+        const seen = seenAt(x, z);
+        // NB: not `base` — that is the storey height, a few lines up.
+        const tint = textured.has(code) ? "#ffffff" : tileStyle(code).fill;
+        const color = shade(new THREE.Color(tint), seen, lightAt(x, z));
         const h = tileHeightFt(code);
         const mb = builderFor(code);
 
+        // Floor under everything: an object stands ON a square, and without
+        // this a pillar's base is a hole in the ground.
+        mb.quad(v3(x, base, z), v3(x, base, z + 1),
+                v3(x + 1, base, z + 1), v3(x + 1, base, z), color, tileUVs(x, z));
+        if (showGrid && seen !== Seen.Never) {
+          gridPts.push(x, base, z, x + 1, base, z);
+          gridPts.push(x, base, z, x, base, z + 1);
+        }
+
         if (h > 0) {
           const top = base + heightUnits(scene, h);
-          // Structure hides its shared faces from its neighbours; a discrete
-          // object standing on its own square shows all four.
-          const solid = STRUCTURE_CODES.has(code);
-          mb.quad(v3(x, base, z), v3(x, base, z + 1),
-                  v3(x + 1, base, z + 1), v3(x + 1, base, z), color, tileUVs(x, z));
-          block(mb, x, z, base, top, color, (dx, dz) => {
-            if (!solid) return true;
-            const n = at(x + dx, z + dz);
-            return n === null || tileHeightFt(n) < h;
-          });
-        } else {
-          mb.quad(v3(x, base, z), v3(x, base, z + 1),
-                  v3(x + 1, base, z + 1), v3(x + 1, base, z), color, tileUVs(x, z));
-          if (showGrid) {
-            gridPts.push(x, base, z, x + 1, base, z);
-            gridPts.push(x, base, z, x, base, z + 1);
+          const axis = axes.get(`${x},${z}`);
+          if (APERTURES.has(code) && axis) {
+            // A door belongs to the wall it interrupts: a thin panel lying
+            // along that wall's run, never a block filling its square.
+            const t = PANEL_THICKNESS / 2;
+            const [x0, x1] = axis === "ew" ? [x, x + 1] : [x + 0.5 - t, x + 0.5 + t];
+            const [z0, z1] = axis === "ew" ? [z + 0.5 - t, z + 0.5 + t] : [z, z + 1];
+            panelBlock(mb, x0, x1, z0, z1, base, top, color);
+          } else {
+            // Structure hides the faces it shares with its neighbours; a
+            // discrete object standing on its own square shows all four.
+            const solid = STRUCTURE_CODES.has(code);
+            block(mb, x, z, base, top, color, (dx, dz) => {
+              if (!solid) return true;
+              const n = at(x + dx, z + dz);
+              return n === null || tileHeightFt(n) < h;
+            });
           }
+        } else if (wrecked.has(`${x},${z}`)) {
+          // Something stood here and was broken. The square's terrain already
+          // changed to what it left, so the floor is right — but wreckage that
+          // is only a change of colour appears from nowhere. A low heap says a
+          // thing came down here.
+          panelBlock(mb, x + 0.12, x + 0.88, z + 0.12, z + 0.88,
+                     base, base + 0.22, color);
         }
       }
     }
 
     for (const [code, mb] of byCode) {
       if (mb.empty) continue;
-      const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
-      if (swatches[code]) dress(mat, swatches[code], redraw);
-      terrainGroup.add(new THREE.Mesh(mb.build(), mat));
+      const tex = textured.has(code) ? TEXTURES.get(swatches[code]) : null;
+      terrainGroup.add(new THREE.Mesh(mb.build(), new THREE.MeshLambertMaterial({
+        vertexColors: true,
+        ...(tex instanceof THREE.Texture ? { map: tex } : {}),
+      })));
     }
     if (gridPts.length) {
       const g = new THREE.BufferGeometry();
@@ -364,6 +473,25 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       [...m].map((k) => k.split(",").map(Number) as [number, number]);
 
     const add = (mesh: THREE.Mesh | null) => { if (mesh) decalGroup.add(mesh); };
+
+    // Spell areas, zones, auras and lingering hazards. Their `squares` are the
+    // SERVER's — already clipped by line of effect — so this only paints what
+    // it is handed and never works out a footprint of its own. Drawn first, so
+    // the things a player is deciding right now sit above them.
+    if (st.show.effects) {
+      for (const e of scene.effects ?? []) {
+        if ((e.level ?? 0) !== level || !e.squares?.length) continue;
+        add(decal(e.squares, y + 0.001, e.color || "#a86bff",
+                  Math.min(0.7, Math.max(0.12, e.opacity || 0.3))));
+      }
+    }
+
+    // A way off this floor is a feature of the room, and a player cannot choose
+    // a stair they cannot see. The destination's NAME is a DOM label; this is
+    // the mark on the board underneath it.
+    for (const s of st.stairs ?? []) {
+      add(decal([[s.x, s.y]], y + 0.009, "#e6bc64", 0.42));
+    }
 
     // Threatened ground goes UNDER the movement wash, so a player sees the
     // danger while choosing rather than after the pointer has settled.
@@ -467,7 +595,16 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
 
-      const key = `${scene.id}|${level}|${st.show.grid}|${(scene.terrain ?? []).join("|")}`;
+      // Fog, live sight and light are baked into the mesh (see `shade`), so
+      // they belong in the key. They change on a MOVE, not on a pointer flick,
+      // so this rebuilds when someone walks and stays cached while they aim.
+      const key = [
+        scene.id, level, st.show.grid, st.show.fog, st.show.terrain,
+        (scene.terrain ?? []).join(""),
+        (scene.fog ?? []).join(""), (scene.sight ?? []).join(""),
+        (scene.light ?? []).join(""),
+        (scene.debris ?? []).map((d) => `${d.x},${d.y}`).join(";"),
+      ].join("|");
       if (key !== terrainKey) {
         buildTerrain(scene, level, st.show.grid);
         terrainKey = key;
