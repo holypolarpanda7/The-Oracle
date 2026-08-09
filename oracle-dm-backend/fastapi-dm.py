@@ -70,6 +70,7 @@ from rules import metamagic
 from rules import summons
 from rules import components as rules_components
 from rules import equipment as gear
+from rules import mastery
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import (CombatTracker, CombatEngine, PCProfile, PCWeapon,
                     Condition, monster_save_mod)
@@ -373,7 +374,9 @@ async def lifespan(app: FastAPI):
                                      ("pending_saves", "JSON"),
                                      ("side", "VARCHAR"),
                                      ("summoned_by", "INTEGER"),
-                                     ("summon_spell", "VARCHAR")]:
+                                     ("summon_spell", "VARCHAR"),
+                                     ("interactions_used", "INTEGER DEFAULT 0"),
+                                     ("last_weapon", "VARCHAR")]:
                         if col not in cb_existing:
                             conn.exec_driver_sql(
                                 f"ALTER TABLE combat_combatant ADD COLUMN {col} {ddl}")
@@ -459,6 +462,39 @@ async def lifespan(app: FastAPI):
                             conn.exec_driver_sql(
                                 f"ALTER TABLE rules_race ADD COLUMN {col} {ddl}")
                             print(f"[Startup] Migrated rules_race: added {col}")
+
+                # How far a thrown weapon flies. The numbers were downloaded
+                # with everything else and have been sitting unread in each
+                # row's `raw` blob since the first ingest — the mapper simply
+                # never looked at `throw_range` — so this backfills rather than
+                # asking the network for anything.
+                ri_existing = {row[1] for row in conn.exec_driver_sql(
+                    'PRAGMA table_info("rules_item")')}
+                if ri_existing:
+                    added = False
+                    for col in ("throw_range_normal", "throw_range_long"):
+                        if col not in ri_existing:
+                            conn.exec_driver_sql(
+                                f"ALTER TABLE rules_item ADD COLUMN {col} INTEGER")
+                            added = True
+                            print(f"[Startup] Migrated rules_item: added {col}")
+                    if added:
+                        n = 0
+                        for rid, raw in conn.exec_driver_sql(
+                                "SELECT id, raw FROM rules_item "
+                                "WHERE raw LIKE '%throw_range%'").fetchall():
+                            try:
+                                tr = (json.loads(raw) or {}).get("throw_range") or {}
+                            except Exception:
+                                continue
+                            if not tr.get("normal"):
+                                continue
+                            conn.exec_driver_sql(
+                                "UPDATE rules_item SET throw_range_normal=?, "
+                                "throw_range_long=? WHERE id=?",
+                                (tr.get("normal"), tr.get("long"), rid))
+                            n += 1
+                        print(f"[Startup] Backfilled throw ranges for {n} weapons")
 
                 # Ratchet-clock + entropy + calendar columns on world_meta
                 # (pre-existing DBs). Calendar defaults mirror WorldMeta.
@@ -1580,15 +1616,46 @@ _GRIP_VERBS = {
 }
 
 
-def resolve_grip_hooks(text: str, char: "Character") -> str:
+def spend_object_interaction(session_id: Optional[str], char: "Character",
+                             what: str) -> tuple[bool, str]:
+    """Pay for handling an object mid-fight. ``(allowed, note)``.
+
+    One object interaction is free each turn — drawing a weapon, sheathing one,
+    opening a door. A SECOND costs the Action (Utilize). Without this the
+    free-hand rule had an unlimited remedy: a caster with both hands full could
+    stow a shield, cast, and re-draw it in the same turn for nothing, which is
+    every bit as wrong as never enforcing the hands at all.
+
+    Outside a fight there is no turn to spend, so nothing is charged — the
+    limit is per-turn and a table not in initiative has no turns.
+    """
+    seat = _combatant_for_character(session_id, char)
+    if seat is None:
+        return True, ""
+    try:
+        if int(getattr(seat, "interactions_used", 0) or 0) < 1:
+            combat.update_economy(seat.id, interactions_used=1)
+            return True, ""
+        if not seat.action_used:
+            combat.update_economy(seat.id, action_used=True,
+                                  interactions_used=int(seat.interactions_used) + 1)
+            return True, " (a second object interaction — it costs the Action)"
+        return False, (f"{char.name} has already handled an object this turn "
+                       f"and has no Action left to {what} again")
+    except Exception as e:
+        print(f"[object interaction] {e}")
+        return True, ""
+
+
+def resolve_grip_hooks(text: str, char: "Character",
+                       session_id: Optional[str] = None) -> str:
     """Resolve [[GRIP: draw|stow | <item> | <hand>]] — what the hands are doing.
 
     Drawing a weapon, raising a shield, sheathing one to free a hand and
     two-handing a versatile blade are all one decision the sheet never used to
     record. It matters because the free-hand rule is enforced now: a caster who
     is told their hands are full needs a way to empty one, and in 5e that is a
-    free object interaction, so a hook the DM emits mid-narration is exactly
-    the right size for it.
+    free object interaction — one per turn, which this hook actually charges.
 
     ``hand`` is optional and one of main / off / both; left out, a shield goes
     to the off hand, a weapon to the main one, and a two-handed weapon takes
@@ -1608,16 +1675,23 @@ def resolve_grip_hooks(text: str, char: "Character") -> str:
         if not name:
             return ""
         items = _inventory_items(char)
-        if _GRIP_VERBS.get(verb) == "stow":
+        stowing = _GRIP_VERBS.get(verb) == "stow"
+        if stowing:
             plan = gear.plan_stow(items, name, _item_row)
         else:
             plan = gear.plan_equip(items, name, _item_row,
                                    grip=hand or None)
         if not plan.ok:
             return f"🤚 {plan.error}"
+        if not plan.changes and not plan.additions:
+            return f"🤚 {plan.note}"          # nothing moved — nothing to pay
+        ok, note = spend_object_interaction(
+            session_id, char, "sheathe it" if stowing else "draw it")
+        if not ok:
+            return f"🤚 {note}."
         char.inventory = plan.apply(items)
         load = gear.read_loadout(items, _item_row)
-        return f"🤚 {plan.note} ({load.describe_hands()})"
+        return f"🤚 {plan.note}{note} ({load.describe_hands()})"
 
     return GRIP_HOOK_PATTERN.sub(repl, text)
 
@@ -7793,6 +7867,28 @@ _CASTING_ABILITY = {"bard": "cha", "sorcerer": "cha", "warlock": "cha",
                     "illrigger": "cha"}
 
 
+def _active_masteries(char: Character) -> set[str]:
+    """Which Weapon Masteries this character currently has chosen.
+
+    Two halves, both gated on the local table existing at all (the open SRD has
+    no masteries, so a bookless checkout gets an empty set and the whole system
+    stays off). The COUNT is a class feature; the CHOICES are recorded as
+    `mastery:` tags, so a player who has picked them keeps them until they
+    swap on a long rest. A character with the feature but no recorded picks
+    gets none rather than a guess — choosing is the player's.
+    """
+    try:
+        allowed = mastery.masteries_known(char.char_class, char.level)
+        if allowed <= 0:
+            return set()
+        picked = [m.strip().lower() for m in _tag_values(char, "mastery")
+                  if m.strip().lower() in mastery.MECHANISMS]
+        return set(picked[:allowed])       # the count is the cap, in pick order
+    except Exception as e:
+        print(f"[mastery] {e}")
+        return set()
+
+
 def _combat_pc_profile(char: Character) -> PCProfile:
     """Build the engine's acting numbers for a PC from the character sheet."""
     # Enforced curse numbers (a d20 penalty + whether HP regain is blocked).
@@ -7820,6 +7916,7 @@ def _combat_pc_profile(char: Character) -> PCProfile:
     load = gear.read_loadout(items, _item_row)
     held_any = bool(load.held)
     twf_style = _has_feat(char, "two-weapon-fighting")
+    active_masteries = _active_masteries(char)
     # By INDEX, never by name: two scimitars are two rows with one name, and
     # matching by name would put both of them in the same hand.
     by_index = {h.index: h for h in load.held}
@@ -7845,6 +7942,14 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         # Fighting style gives it back — and a NEGATIVE modifier is never
         # dropped, because the rule is a benefit, not a choice.
         off_dmg = dice + (f"{mod:+d}" if (twf_style or mod < 0) and mod else "")
+        # The 2024 Weapon Mastery, only when the character has CHOSEN it.
+        # Holding a weapon whose mastery you never picked gives you nothing —
+        # the gate is the feature. Absent local table = no masteries anywhere.
+        mast = None
+        if active_masteries:
+            m = mastery.resolve(row.name, base_name=str(it.get("base") or name),
+                                active=active_masteries)
+            mast = m.name if m else None
         # Range bands matter only when a board gives the engine exact distance;
         # they're carried always and simply ignored in theater of the mind.
         weapons.append(PCWeapon(
@@ -7854,6 +7959,8 @@ def _combat_pc_profile(char: Character) -> PCProfile:
             range_long=(getattr(row, "range_long", None) if ranged else None),
             grip=grip, stowed=(held_any and grip is None),
             light=wp.light, two_handed=wp.two_handed,
+            thrown=wp.thrown, throw_normal=wp.throw_normal,
+            throw_long=wp.throw_long, mastery=mast,
             offhand_damage=off_dmg))
     # Held first — main hand, then a two-handed grip, then the off hand — so
     # the engine's "its best weapon" fallback is what the character is holding.
@@ -7883,7 +7990,12 @@ def _combat_pc_profile(char: Character) -> PCProfile:
     if cls == "paladin" and lvl >= 2:
         features.add("divine smite")
     if cls == "monk":
+        # Two names on purpose: "bonus attack" is what the action economy
+        # spends, "martial arts" is what says the swing was NOT bought by the
+        # Light property — so the monk is never held to the two-weapon rule
+        # that the action attack must have been made with a Light weapon.
         features.add("bonus attack")
+        features.add("martial arts")
     # Two-weapon fighting is a fact about the HANDS, not about a class: the
     # Light property grants the extra bonus-action attack to anyone holding two
     # qualifying weapons, and nothing could ever answer "is this character
@@ -7961,6 +8073,52 @@ def _preparse_reaction_answer(message: str) -> Optional[bool]:
         return True
     if _PRE_REACT_NO.match(msg):
         return False
+    return None
+
+
+def _combat_draw_for_intents(session_id: str, char_id: int,
+                             intents: list[dict]) -> Optional[str]:
+    """Draw a stowed weapon a player is about to attack with.
+
+    "You can draw a weapon as part of the same action you use to attack" — so
+    naming a sheathed sword in an attack is a legal way to start a turn, not a
+    refusal. It still costs the turn's one free object interaction, which is
+    exactly what the rule spends; if that is gone the engine's own refusal
+    stands and tells them why.
+
+    Returns a line for the DM's board, or None when nothing was drawn.
+    """
+    wanted = [str(i.get("arg") or "").strip() for i in intents
+              if (i.get("verb") or "").lower() == "attack" and i.get("arg")]
+    if not wanted:
+        return None
+    with Session(engine) as s:
+        ch = s.get(Character, char_id)
+        if ch is None:
+            return None
+        items = _inventory_items(ch)
+        load = gear.read_loadout(items, _item_row)
+        if not load.held:
+            return None                  # holding nothing: nothing is stowed
+        for name in wanted:
+            if load.find(name) is not None:
+                continue                 # already in a hand
+            entry = _item_entry(ch, name)
+            if entry is None or not getattr(
+                    _item_row(str(entry.get("base") or entry.get("name"))),
+                    "damage_dice", None):
+                continue
+            plan = gear.plan_equip(items, name, _item_row)
+            if not plan.ok or not (plan.changes or plan.additions):
+                continue
+            ok, note = spend_object_interaction(session_id, ch, "draw it")
+            if not ok:
+                return None
+            ch.inventory = plan.apply(items)
+            s.add(ch)
+            s.commit()
+            return (f"DRAWN: {plan.note} (drawing a weapon is part of the "
+                    f"Attack action){note}")
     return None
 
 
@@ -8372,6 +8530,19 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
     if not halted() and combat.get_active(session_id) is not None and intents:
         cur = combat.current_combatant(enc.id)
         if cur is not None and cur.id == my.id:
+            # Naming a sheathed weapon in an attack draws it — that is part of
+            # the Attack action, not a separate turn. The profile is rebuilt
+            # afterwards because the hands have changed.
+            try:
+                drew = _combat_draw_for_intents(session_id, char_id, intents)
+                if drew:
+                    blocks.append(drew)
+                    with Session(engine) as s:
+                        ch_d = s.get(Character, char_id)
+                        if ch_d:
+                            profiles[char_id] = _combat_pc_profile(ch_d)
+            except Exception as e:
+                print(f"[combat-engine] pre-draw failed: {e}")
             rep = combat_engine.resolve(enc.id, intents, profiles, env=env)
             take(rep)
             over = _combat_fight_over(enc.id)
@@ -8411,6 +8582,26 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
                 s.commit()
         except Exception as e:
             print(f"[combat-engine] slot persist failed: {e}")
+
+    # A thrown weapon is no longer in the hand that threw it. The engine says
+    # which one left; only the sheet can take it out of the grip.
+    tossed = [(e.get("thrown_by") or char_id, e["thrown"])
+              for e in all_events if e.get("thrown")]
+    if tossed:
+        try:
+            with Session(engine) as s:
+                for cid, wname in tossed:
+                    ch = s.get(Character, cid)
+                    if ch is None:
+                        continue
+                    inv = _inventory_items(ch)
+                    plan = gear.plan_stow(inv, wname, _item_row)
+                    if plan.ok and plan.changes:
+                        ch.inventory = plan.apply(inv)
+                        s.add(ch)
+                s.commit()
+        except Exception as e:
+            print(f"[combat-engine] thrown weapon stow failed: {e}")
 
     # Mirror every PC's tracker HP back onto the character sheet — in engine
     # mode the tracker is where damage/healing lands first.
@@ -11665,7 +11856,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                         # interaction, so a DM who narrates "she sheathes the
                         # blade and casts" in one reply must have the hand
                         # freed before the casting's free-hand check runs.
-                        dm_text = resolve_grip_hooks(dm_text, ch)
+                        dm_text = resolve_grip_hooks(dm_text, ch, req.session_id)
                         # Metamagic BEFORE the cast: it decides whether the
                         # shaping is legal and what it costs, and a refusal
                         # there shouldn't have already spent the spell slot.

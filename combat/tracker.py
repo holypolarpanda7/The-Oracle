@@ -306,6 +306,8 @@ class CombatTracker:
             c.disengaging = False
             c.attacks_made = 0
             c.sneak_used = False
+            c.interactions_used = 0
+            c.last_weapon = None
             # Shield's +5 AC lasts until the start of the caster's next turn.
             if c.conditions:
                 c.conditions = [x for x in c.conditions
@@ -320,7 +322,8 @@ class CombatTracker:
         move_left, dodging, disengaging) on a combatant."""
         allowed = {"action_used", "bonus_used", "reaction_used",
                    "move_left", "dodging", "disengaging", "attacks_made",
-                   "sneak_used", "used_features"}
+                   "sneak_used", "used_features", "interactions_used",
+                   "last_weapon"}
         with Session(self.engine) as s:
             c = s.get(Combatant, combatant_id)
             if not c:
@@ -655,6 +658,8 @@ def _combatant_dict(c: Combatant) -> dict:
         "dodging": c.dodging,
         "disengaging": c.disengaging,
         "attacks_made": c.attacks_made,
+        "interactions_used": c.interactions_used,
+        "last_weapon": c.last_weapon,
         "used_features": list(c.used_features or []),
         "pending_saves": list(c.pending_saves or []),
         "conditions": list(c.conditions or []),

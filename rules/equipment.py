@@ -146,6 +146,10 @@ class WeaponProps:
     ranged: bool = False
     #: The die a versatile weapon does in two hands ("1d10"), else None.
     versatile_damage: Optional[str] = None
+    #: How far it flies when thrown (20/60 for a dagger), else None. Kept apart
+    #: from the weapon's REACH, which for a thrown melee weapon is 5 ft.
+    throw_normal: Optional[int] = None
+    throw_long: Optional[int] = None
 
     @property
     def melee(self) -> bool:
@@ -168,6 +172,8 @@ def weapon_props(row: Any, name: str) -> WeaponProps:
         reach="reach" in props,
         ranged=ranged,
         versatile_damage=getattr(row, "two_handed_damage_dice", None) or None,
+        throw_normal=getattr(row, "throw_range_normal", None) or None,
+        throw_long=getattr(row, "throw_range_long", None) or None,
     )
 
 
@@ -197,8 +203,11 @@ def two_weapon_pair(loadout: "Loadout",
         return None
     if not is_weapon(_row_for(get_item, off.name), off.name):
         return None
-    if not mp.light or mp.ranged:
+    if not mp.light:
         return None
+    # The Light property says nothing about melee, and a hand crossbow is Light
+    # — two of them is a real build, so ranged is not excluded here. Dual
+    # Wielder is the branch that IS melee-only, because its own text says so.
     if op.light:
         return (main, off)
     if dual_wielder and op.melee and not op.two_handed:
@@ -315,6 +324,17 @@ class Loadout:
     @property
     def two_handing(self) -> bool:
         return any(h.grip == BOTH for h in self.held)
+
+    @property
+    def can_free_a_hand(self) -> bool:
+        """True when a hand can be freed without putting anything down.
+
+        Exactly one case: both hands are on a single object. Taking one off it
+        and putting it back costs nothing, because the thing is never released
+        — which is why a greatsword is not the same problem as a sword and a
+        shield, where freeing a hand means actually stowing something.
+        """
+        return len(self.held) == 1 and self.held[0].grip == BOTH
 
     def at(self, grip: str) -> Optional[Held]:
         """What is in one hand — a two-handed weapon answers for both."""
@@ -752,6 +772,14 @@ def casting_hands(loadout: Loadout, comps: SpellComponents, *,
     if not comps.somatic and not comps.material:
         return HandsRuling()
     if loadout.free_hands >= 1:
+        return HandsRuling()
+    if loadout.can_free_a_hand:
+        # Both hands are on ONE haft. Letting go with one, gesturing and taking
+        # hold again is a movement, not an object interaction — you never let
+        # go of the weapon, so there is nothing to draw or stow. This is the
+        # ruling every table plays and the reason a greatsword paladin can cast
+        # at all; a sword AND a shield is the case it deliberately excludes,
+        # because putting the shield away is a real interaction.
         return HandsRuling()
 
     held_component = None

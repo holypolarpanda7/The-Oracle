@@ -139,6 +139,15 @@ class Combatant(SQLModel, table=True):
     # Attacks taken from the current Attack action (Extra Attack / Multiattack
     # allow several per action). Turn-scoped.
     attacks_made: int = Field(default=0, sa_column=Column(Integer))
+    # Object interactions spent this turn. You get ONE free — drawing a weapon,
+    # sheathing one, opening a door — and a second costs the Action (Utilize).
+    # Without this the free-hand rule had an unlimited remedy: a caster could
+    # stow a shield, cast, and re-draw it in the same turn at no cost at all.
+    interactions_used: int = Field(default=0, sa_column=Column(Integer))
+    # The weapon the last attack of this turn was made with. The two-weapon
+    # bonus attack must be made with a DIFFERENT weapon, and nothing else in
+    # the row could say which one was already swung. Turn-scoped.
+    last_weapon: Optional[str] = Field(default=None, sa_column=Column(String))
     # Sneak Attack lands once per turn. Turn-scoped.
     sneak_used: bool = Field(default=False, sa_column=Column(Boolean))
     # Encounter-scoped feature uses ("action surge", "second wind", ...) so
