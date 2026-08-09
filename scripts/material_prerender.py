@@ -59,17 +59,24 @@ def _catalogue(contexts: list[str]) -> list[tuple[str, str]]:
     renders to store one picture. That split is what keeps the catalogue near
     200 swatches instead of 270.
     """
-    from vtt.art import ANY_LOOK, LOOK_AGNOSTIC, NO_MATERIAL
+    from vtt.art import material_look, material_ref, material_subject
     from vtt.terrain import TILES
 
     out: list[tuple[str, str]] = []
-    for code, t in sorted(TILES.items()):
-        if code in NO_MATERIAL or not t.art:
+    seen: set[tuple[str, str]] = set()
+    for code in sorted(TILES):
+        if not material_subject(code):
             continue
-        if code in LOOK_AGNOSTIC:
-            out.append((code, ANY_LOOK))
-        else:
-            out.extend((code, ctx) for ctx in contexts)
+        agnostic = material_look(code)
+        for look in ([agnostic] if agnostic else contexts):
+            # Deduped by (REF, look), not by code: the nine object kinds
+            # resolve to four substances between them, so a pillar and an altar
+            # are one job and rendering both would draw the same stone twice.
+            key = (material_ref(code), look)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((code, look))
     return out
 
 
@@ -149,9 +156,16 @@ def main(argv=None) -> int:
     contexts = ([c.strip() for c in a.contexts.split(",") if c.strip()]
                 if a.contexts else CONTEXTS)
 
+    from vtt.art import SUBSTANCE
+
     jobs = []       # (code, look, label, thunk)
     for code, look in _catalogue(contexts):
-        jobs.append((code, look, tile(code).name,
+        # Name a shared substance by the SUBSTANCE, not by whichever tile code
+        # happened to sort first — the wood swatch is not "the door swatch",
+        # and labelling it that way makes the sheet unreadable.
+        label = (f"{SUBSTANCE[code]} (substance)" if code in SUBSTANCE
+                 else tile(code).name)
+        jobs.append((code, look, label,
                      lambda c=code, x=look: render_material(
                          c, store=store, context=x)))
 

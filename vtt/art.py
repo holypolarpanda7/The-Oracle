@@ -270,14 +270,14 @@ MATERIAL_RENDER_PX = 512    # SDXL is happiest here, and a swatch stores small
 
 #: Bump when the FRAMING changes, exactly as with SPRITE_REV — the slug is the
 #: cache, so a reworded prompt reaches nobody who already holds the old swatch.
-MATERIAL_REV = 1
+#: Rev 2: objects stopped being materials — see SUBSTANCE below.
+MATERIAL_REV = 2
 
 #: Materials whose look does not depend on the room around them.
 #:
 #: Lava is lava in a cavern and in a ruin; a floor is not. Keeping these out of
 #: the per-look cross product is the `debris_ref` lesson applied to surfaces —
-#: key on the axes that actually change the picture and no others — and it is
-#: the difference between ~200 renders and ~270.
+#: key on the axes that actually change the picture and no others.
 LOOK_AGNOSTIC: frozenset[str] = frozenset({
     "~", "W", "l", "x", "i", "%", "m", "f",
 })
@@ -287,6 +287,54 @@ ANY_LOOK = "any"
 
 #: Codes with no surface to draw: the board renders nothing there.
 NO_MATERIAL: frozenset[str] = frozenset({" ", "^"})
+
+#: Discrete objects, and what they are MADE OF.
+#:
+#: An object is not a material and asking for one as though it were gets a
+#: PICTURE OF THE THING: "a surface of heavy closed door" came back as a door
+#: seen face-on with a barrel beside it, which is a fine illustration and
+#: useless as a texture. The mistake was mine and it is a category error — a
+#: crate is a box the board builds out of geometry, and what it needs from this
+#: catalogue is a swatch of the timber it is planked from.
+#:
+#: It also collapses the catalogue: nine object kinds share four substances,
+#: and none of them care what room they are in, so they cost four swatches
+#: between them instead of ninety.
+SUBSTANCE: dict[str, str] = {
+    "O": "stone",   # pillar
+    "A": "stone",   # altar
+    "w": "stone",   # low wall
+    "o": "wood",    # crates
+    "n": "wood",    # furniture
+    "+": "wood",    # door
+    "/": "wood",    # open door (the panel; its square's floor is separate)
+    "T": "bark",    # tree
+    "p": "iron",    # portcullis
+}
+
+SUBSTANCE_ART: dict[str, str] = {
+    "stone": "dressed grey stone, close-up of the cut stone itself",
+    "wood": "old planked timber, close-up of the boards and their grain",
+    "iron": "dark pitted wrought iron, close-up of the bare metal",
+    "bark": "rough tree bark, close-up of the bark itself",
+}
+
+#: Concrete nouns for surfaces whose `tile.art` is too vague to render.
+#:
+#: `tile.art` is written for battlemap prompts, where "open floor" sits inside
+#: a whole scene and reads fine. Alone, as the entire subject of a swatch, it
+#: says almost nothing — and a diffusion model handed an under-specified frame
+#: fills it with composition, which is how "a surface of open floor" came back
+#: as a circular medallion. Naming the actual stuff underfoot leaves it nothing
+#: to invent.
+MATERIAL_SUBJECT: dict[str, str] = {
+    ".": "the bare ground underfoot, close-up of the paving or packed earth",
+    "=": "close-up of a cobbled road surface, the cobbles themselves",
+    "b": "close-up of weathered wooden deck planking",
+    "u": "close-up of worn stone step treads",
+    "g": "close-up of grass turf",
+    "s": "close-up of rippled packed sand",
+}
 
 #: The style a swatch is painted in. Deliberately NOT ``_MAP_STYLE``, which
 #: says "battlemap" — the one word this render must not hear.
@@ -371,19 +419,39 @@ def board_look(biome: str = "", archetype: str = "") -> str:
 
 
 def material_ref(code: str) -> str:
-    """The cache slug for a surface swatch. One picture per KIND of surface.
+    """The cache slug for whatever material this square is made of.
 
-    Keyed like `object_ref`: the code names the material and the CONTEXT names
+    Keyed like `object_ref`: the slug names the material and the CONTEXT names
     the room's look, so a dungeon's flagstones and a cavern's floor are two
     buckets of one slug rather than two slugs.
+
+    Objects resolve to their SUBSTANCE, so every stone thing on the board —
+    pillar, altar, low wall — shares one swatch and the dedup is automatic.
     """
     from .terrain import tile
+    if code in SUBSTANCE:
+        return f"material-v{MATERIAL_REV}-substance-{SUBSTANCE[code]}"
     return f"material-v{MATERIAL_REV}-{tile(code).name.replace(' ', '-')}"
 
 
+def material_subject(code: str) -> str:
+    """What to ask the model for. Empty when this code has no surface."""
+    from .terrain import tile
+    if code in NO_MATERIAL:
+        return ""
+    if code in SUBSTANCE:
+        return SUBSTANCE_ART[SUBSTANCE[code]]
+    return MATERIAL_SUBJECT.get(code) or tile(code).art
+
+
 def material_look(code: str) -> str:
-    """Which look bucket this material is filed under, for a given board."""
-    return ANY_LOOK if code in LOOK_AGNOSTIC else ""
+    """Which look bucket this material is filed under, for a given board.
+
+    A substance is as look-agnostic as lava: oak is oak in a cavern and in a
+    tavern, and the room it stands in is the board's lighting job, not the
+    swatch's.
+    """
+    return ANY_LOOK if (code in LOOK_AGNOSTIC or code in SUBSTANCE) else ""
 
 
 def render_material(code: str, *, store=None, context: str = "",
@@ -394,11 +462,8 @@ def render_material(code: str, *, store=None, context: str = "",
     case the board falls back to the flat tile colours it already has, which is
     correct and playable, just plainer.
     """
-    from .terrain import tile
-    if code in NO_MATERIAL:
-        return None
-    t = tile(code)
-    if not t.art:
+    subject = material_subject(code)
+    if not subject:
         return None
     from imagery.models import ImageKind
     if store is None:
@@ -408,13 +473,13 @@ def render_material(code: str, *, store=None, context: str = "",
         except Exception as e:
             print(f"[vtt.art] imagery unavailable for material: {e}")
             return None
-    ctx = ANY_LOOK if code in LOOK_AGNOSTIC else (context or "dungeon")
+    ctx = material_look(code) or (context or "dungeon")
     try:
         res = store.ensure_image(
             # The MATERIAL kind, never "map": a kind carries LoRAs, and the map
             # kind's (SDXL-Battlemaps, HadesLevel@0.9) turn any surface into a
             # framed battlemap however the prompt is worded.
-            ImageKind.MATERIAL, f"a surface of {t.art}", look=t.art, context=ctx,
+            ImageKind.MATERIAL, subject, look="", context=ctx,
             ref_slug=material_ref(code),
             extra=_MATERIAL_STYLE,
             negative_extra=MATERIAL_NEGATIVE,
