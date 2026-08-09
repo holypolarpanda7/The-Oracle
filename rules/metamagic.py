@@ -108,6 +108,23 @@ def _casting_time_kind(raw: str) -> str:
     return "other"
 
 
+#: The Range cell is OCR'd like everything else, and it is damaged in exactly
+#: the ways `rules.damage` already repairs inside dice: "10 feet" arrives as
+#: `l O feet` and "150 feet" as `l SO feet` or `1 SO feet`. Read strictly, ten
+#: spells in the corpus have NO readable range at all — which costs Distant
+#: Spell its condition and leaves a targeting UI with nothing to enforce.
+#: Applied only to a token already sitting in front of "feet"/"mile", so the
+#: substitution can't reach ordinary prose.
+_RANGE_DIGITS = str.maketrans({"l": "1", "i": "1", "o": "0", "s": "5"})
+_RANGE_NUM = r"([\dlios][\dlios\s]*?)\s*"
+
+
+def _range_number(raw: str) -> Optional[int]:
+    """``"l SO"`` -> ``150``. None when what's left isn't a number at all."""
+    digits = str(raw or "").replace(" ", "").translate(_RANGE_DIGITS)
+    return int(digits) if digits.isdigit() else None
+
+
 def _parse_range(raw: str) -> Tuple[str, Optional[int]]:
     t = (raw or "").strip().lower()
     if not t:
@@ -120,12 +137,16 @@ def _parse_range(raw: str) -> Tuple[str, Optional[int]]:
         return "sight", None
     if "unlimited" in t:
         return "unlimited", None
-    m = re.search(r"(\d+)\s*(?:feet|foot|ft)", t)
+    m = re.search(_RANGE_NUM + r"(?:feet|foot|ft)\b", t)
     if m:
-        return "ranged", int(m.group(1))
-    m = re.search(r"(\d+)\s*mile", t)
+        n = _range_number(m.group(1))
+        if n is not None:
+            return "ranged", n
+    m = re.search(_RANGE_NUM + r"mile", t)
     if m:
-        return "ranged", int(m.group(1)) * 5280
+        n = _range_number(m.group(1))
+        if n is not None:
+            return "ranged", n * 5280
     return "special", None
 
 
