@@ -73,6 +73,7 @@ from rules import equipment as gear
 from rules import mastery
 from rules import damage as damage_rules
 from rules import checks
+from rules import targeting as rules_targeting
 from rules import templates as monster_templates
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import (CombatTracker, CombatEngine, PCProfile, PCWeapon,
@@ -667,6 +668,19 @@ class ChatRequest(BaseModel):
     # Activity's secret input). The public reply is suppressed to the table and
     # returned only to this user; only an explicit [[PUBLIC: ...]] line is shared.
     private: bool = False
+    # Acts the player chose on the action bar rather than described in prose.
+    # When present the combat turn skips BOTH intent parsers — there is no
+    # sentence to read — and resolves these through the same engine.
+    #
+    # This route is public, so these arrive untrusted, and that is survivable
+    # for one reason: skipping the PARSE is not skipping the RULES. Every
+    # intent still goes through `CombatEngine.resolve`, which checks that it
+    # is this creature's turn, that the actor is the current combatant (so a
+    # player cannot act as someone else), that the economy has the action to
+    # spend, that the target exists and is in reach or range, and that a slot
+    # is available. A hand-posted intent can therefore do no more than a
+    # hand-typed sentence the extractor would have turned into the same thing.
+    intents: Optional[List[Dict[str, Any]]] = None
 
 
 class ChatResponse(BaseModel):
@@ -8565,7 +8579,8 @@ _PRE_CHARGE = re.compile(
 _PRE_RETREAT = re.compile(
     r"^\W*(i\s+)?(retreat|fall\s+back|back\s+away|back\s+off)\W*$", re.IGNORECASE)
 
-_COMBAT_INTENT_STATS = {"preparsed": 0, "llm": 0, "none": 0, "parse_fail": 0}
+_COMBAT_INTENT_STATS = {"preparsed": 0, "llm": 0, "none": 0, "parse_fail": 0,
+                        "actionbar": 0}
 
 # Answers to a frozen reaction question ("Shield or take the hit?" /
 # "take the opportunity attack?").
@@ -8832,11 +8847,19 @@ def _combat_fight_over(encounter_id: int) -> Optional[str]:
 
 
 def _combat_engine_turn(session_id: str, user_id: Optional[str],
-                        message: str) -> Optional[str]:
+                        message: str,
+                        intents: Optional[list[dict]] = None) -> Optional[str]:
     """Run one deterministic combat exchange for this player message.
 
     Returns the certified-resolution block for the narration prompt, or None
-    when the message wasn't a combat act (caller falls back to normal flow)."""
+    when the message wasn't a combat act (caller falls back to normal flow).
+
+    ``intents`` is the THIRD intent source, beside `_combat_preparse` and the
+    extraction LLM: the action bar already knows exactly what the player
+    chose, so there is no sentence to parse and no reason to guess at one.
+    Everything after the parse is deliberately shared — the same engine, the
+    same economy, the same certified block for the DM to narrate — because a
+    second resolution path is a second set of rules to keep in step."""
     enc = combat.get_active(session_id)
     if enc is None:
         return None
@@ -8955,7 +8978,9 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
 
     # ---- a frozen reaction question owns the table until answered ----
     pending = combat.get_pending_reaction(enc.id)
-    intents: Optional[list[dict]] = None
+    # NB: `intents` is the PARAMETER — anything the action bar passed in is
+    # already in it, and re-declaring it here would silently discard the bar's
+    # acts and send them back through the sentence parsers.
     if pending:
         kind = "reaction"
         owner = pending.get("target_char_id")
@@ -8999,6 +9024,15 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             over = _combat_fight_over(enc.id)
             if over:
                 blocks.append(over)
+    elif intents is not None:
+        # The action bar already knows what was chosen — there is no sentence
+        # to read. Nothing else short-circuits: the acts go to the same engine
+        # through the same economy below.
+        _COMBAT_INTENT_STATS["actionbar"] = \
+            _COMBAT_INTENT_STATS.get("actionbar", 0) + 1
+        parse_source = "actionbar"
+        print(f"[combat-intents] {_COMBAT_INTENT_STATS} :: "
+              f"{[i.get('verb') for i in intents]} (action bar)")
     else:
         cur = combat.current_combatant(enc.id)
         remaining = {}
@@ -12250,7 +12284,8 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             # the engine FIRST; the board below then reflects the new state.
             try:
                 _engine_block = _combat_engine_turn(
-                    req.session_id, req.user_id, req.message)
+                    req.session_id, req.user_id, req.message,
+                    intents=req.intents)
             except Exception as e:
                 print(f"[combat-engine] turn failed, hook fallback: {e}")
             board = combat.render(active_enc.id)
@@ -19965,6 +20000,374 @@ def _vtt_may_move(session_id: str, user_id: Optional[str], scene, tok) -> tuple[
     return True, ""
 
 
+# ===========================================================================
+#  The action bar — what this character can DO right now, and how it is aimed
+# ===========================================================================
+#
+# The board has only ever had movement verbs. Attacking and casting happened
+# by typing a sentence, which `_combat_preparse` or the intent-extraction LLM
+# turned into the `intents` list `CombatEngine.resolve` executes. So a player
+# could not see what they were able to do, what it would reach, or who it
+# could legally hit — and the one thing that knows all three (the board) was
+# never consulted before the act, only after.
+#
+# The bar is a THIRD intent source beside those two, not a second resolution
+# path: it emits exactly the same intent dicts, into exactly the same engine,
+# and the DM still narrates the certified result. Nothing here decides an
+# outcome; it decides what may be attempted, and hands the attempt over.
+
+#: The acts that are always available in a fight and take no gear to perform.
+#: `arg`/`targeting` mirror what the matching `_do_*` handler in
+#: `combat/engine.py` actually reads, so a bar entry cannot ask for something
+#: the engine will not understand.
+_BOARD_VERBS: tuple[dict, ...] = (
+    {"verb": "dash", "name": "Dash", "cost": "action", "targeting": "none",
+     "detail": "double your movement this turn"},
+    {"verb": "disengage", "name": "Disengage", "cost": "action", "targeting": "none",
+     "detail": "your movement provokes nothing this turn"},
+    {"verb": "dodge", "name": "Dodge", "cost": "action", "targeting": "none",
+     "detail": "attacks against you have disadvantage"},
+    {"verb": "hide", "name": "Hide", "cost": "action", "targeting": "none",
+     "detail": "a Stealth check against those who can't see you"},
+    {"verb": "help", "name": "Help", "cost": "action", "targeting": "creature",
+     "range_ft": 5, "team": "ally",
+     "detail": "give an ally advantage on their next attack"},
+    {"verb": "grapple", "name": "Grapple", "cost": "action", "targeting": "creature",
+     "range_ft": 5, "team": "enemy", "detail": "seize a creature — its Speed drops to 0"},
+    {"verb": "shove", "name": "Shove", "cost": "action", "targeting": "creature",
+     "range_ft": 5, "team": "enemy", "detail": "push it back 5 ft, or knock it prone"},
+    {"verb": "end_turn", "name": "End turn", "cost": "free", "targeting": "none",
+     "detail": "pass the turn along"},
+)
+
+
+def _weapon_action(w: "PCWeapon", idx: int, reach_ft: int) -> dict:
+    """One weapon in the hand (or the pack), as a bar entry.
+
+    The reach a bar entry advertises is the reach the ENGINE will measure it
+    at, which is not always the weapon's own: a Thrown melee weapon out of
+    reach becomes a throw, so its entry offers the throw range too. Getting
+    this wrong in the lenient direction is the safe one — the engine re-checks
+    every distance and refuses with a reason.
+    """
+    ranged = bool(w.ranged)
+    reach = int(w.range_normal or 0) if ranged else reach_ft
+    throw = int(w.throw_normal or 0) if (w.thrown and not ranged) else 0
+    bits = [w.damage or ""]
+    if w.damage_type:
+        bits.append(w.damage_type)
+    if w.grip:
+        bits.append({"main": "main hand", "off": "off hand",
+                     "both": "two-handed"}.get(w.grip, w.grip))
+    elif w.stowed:
+        bits.append("stowed")
+    if w.mastery:
+        bits.append(f"mastery: {w.mastery}")
+    return {
+        "id": f"attack:{idx}:{w.name}",
+        "kind": "attack",
+        "verb": "attack",
+        "arg": w.name,
+        "name": w.name,
+        "detail": " · ".join(b for b in bits if b),
+        "cost": "action",
+        "targeting": "creature",
+        "team": "enemy",
+        # A throw reaches further than an arm; advertise the longer of the two
+        # so the bar doesn't grey out a dagger the engine would happily throw.
+        "range_ft": max(reach, throw) or reach_ft,
+        "needs_sight": False,     # you may swing at what you cannot see
+        "attack_bonus": w.attack_bonus,
+        "ranged": ranged or bool(throw),
+        "stowed": bool(w.stowed),
+        "enabled": True,
+        "disabled_reason": "",
+    }
+
+
+def _spell_action(name: str, sp, prof, slots: dict) -> Optional[dict]:
+    """One castable spell as a bar entry, aimed by `rules.targeting`."""
+    if sp is None:
+        return None
+    spec = rules_targeting.spec_for(sp)
+    level = int(sp.level or 0)
+    # Which slots could pay for this. A cantrip is free; a leveled spell lists
+    # every slot at or above its own so the player can upcast from the bar
+    # instead of describing an upcast in prose and hoping the DM reads it.
+    slot_opts = ([] if level == 0
+                 else sorted(lv for lv, n in (slots or {}).items()
+                             if n > 0 and lv >= level))
+    cost = "bonus" if "bonus" in (sp.casting_time or "").lower() else "action"
+    if "reaction" in (sp.casting_time or "").lower():
+        cost = "reaction"
+    enabled, why = True, ""
+    if level > 0 and not slot_opts:
+        enabled = False
+        why = f"no level-{level} slot or higher remains"
+    detail = [f"level {level}" if level else "cantrip", sp.range or ""]
+    if spec.is_area:
+        size = spec.radius_ft or spec.length_ft
+        detail.append(f"{size}-ft {spec.shape}")
+    if sp.concentration:
+        detail.append("concentration")
+    return {
+        "id": f"cast:{sp.index_slug or name}",
+        "kind": "cast",
+        "verb": "cast",
+        "arg": sp.name,
+        "name": sp.name,
+        "detail": " · ".join(d for d in detail if d),
+        "cost": cost,
+        "level": level,
+        "slots": slot_opts,
+        # `special` means the text could not be read. The DM adjudicates it —
+        # never a silent refusal, which would make the spell uncastable, and
+        # never a silent pass, which would make the rule decoration.
+        "targeting": ("area" if spec.is_area else
+                      "none" if spec.kind == "self" else
+                      "dm" if spec.kind == "special" else "creature"),
+        "team": "any",
+        "range_ft": spec.range_ft,
+        "needs_sight": spec.needs_sight,
+        "shape": spec.shape,
+        "radius_ft": spec.radius_ft,
+        "length_ft": spec.length_ft,
+        "width_ft": spec.width_ft,
+        "origin": spec.origin,
+        "count": spec.count,
+        "note": spec.note,
+        "enabled": enabled,
+        "disabled_reason": why,
+    }
+
+
+def _activity_actions(session_id: str, user_id: Optional[str]) -> Optional[dict]:
+    """The action bar for whoever is asking: their acts, and their economy.
+
+    Returns None when there is nothing to show a bar for (no character, no
+    fight). The bar is deliberately built from the SAME sources the engine
+    resolves against — the loadout for weapons, `_castable_lists` for spells —
+    so an act the bar offers is an act the engine recognises.
+    """
+    if not session_id:
+        return None
+    member = _acting_member(_load_session_state(session_id).get("meta", {}) or {},
+                            user_id)
+    char_id = (member or {}).get("character_id") or \
+        _resolve_session_character(session_id, user_id)
+    if not char_id:
+        return None
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if char is None:
+            return None
+        try:
+            prof = _combat_pc_profile(char)
+        except Exception as e:
+            print(f"[actions] profile for {char.name} failed: {e}")
+            return None
+        cantrips, leveled = _castable_lists(char)
+
+    actions: list[dict] = []
+    # Weapons first, in GRIP order — the same order `_combat_pc_profile` puts
+    # them in, which is the order the engine picks from when no weapon is
+    # named. What is in the hand is what the bar offers first.
+    reach = 5
+    for i, w in enumerate(prof.weapons):
+        try:
+            actions.append(_weapon_action(w, i, reach))
+        except Exception as e:
+            print(f"[actions] weapon {getattr(w, 'name', '?')} failed: {e}")
+    if not prof.weapons:
+        actions.append({
+            "id": "attack:unarmed", "kind": "attack", "verb": "attack",
+            "arg": "Unarmed Strike", "name": "Unarmed Strike",
+            "detail": "1 + Strength bludgeoning", "cost": "action",
+            "targeting": "creature", "team": "enemy", "range_ft": 5,
+            "needs_sight": False, "enabled": True, "disabled_reason": "",
+        })
+
+    for name in list(cantrips) + list(leveled):
+        try:
+            act = _spell_action(name, rules_lib.get_spell(name), prof, prof.slots)
+        except Exception as e:
+            print(f"[actions] spell {name} failed: {e}")
+            continue
+        if act:
+            actions.append(act)
+
+    for v in _BOARD_VERBS:
+        actions.append({
+            "id": f"verb:{v['verb']}", "kind": "verb",
+            "needs_sight": False, "enabled": True, "disabled_reason": "",
+            **v})
+
+    # The economy, and whose turn it is. A bar that lets you spend an Action
+    # you have already spent is a bar that produces refusals, so the client
+    # greys those entries — but the ENGINE is still the authority and re-checks
+    # every one of them.
+    enc = combat.get_active(session_id)
+    economy: dict = {"in_combat": bool(enc), "my_turn": not enc}
+    if enc is not None:
+        me = next((c for c in combat.order(enc.id)
+                   if c.character_id == char_id), None)
+        cur = combat.current_combatant(enc.id)
+        if me is not None:
+            fresh = combat.get_combatant(me.id)
+            economy.update({
+                "my_turn": bool(cur is not None and cur.id == me.id),
+                "action": not fresh.action_used,
+                "bonus": not fresh.bonus_used,
+                "reaction": not fresh.reaction_used,
+                # `move_left` is BAND-steps (1 = a normal move), not feet —
+                # the band model predates the board. Real feet only exist
+                # where a token does, so they are read off it and the steps
+                # are reported as themselves.
+                "move_steps": max(0, int(fresh.move_left or 0)),
+                "attacks_made": int(fresh.attacks_made or 0),
+                "attacks_per_action": int(prof.attacks_per_action or 1),
+                "combatant_id": me.id,
+                "whose_turn": cur.name if cur is not None else "",
+            })
+            # The board is the only thing that knows real feet.
+            try:
+                scene = vtt_engine.active_scene(session_id) if _vtt_on() else None
+                tok = (vtt_engine.token_for_combatant(scene.id, me.id)
+                       if scene else None)
+                if tok is not None:
+                    economy["move_left_ft"] = max(
+                        0, int(tok.speed_ft or 0) - int(tok.moved_ft or 0))
+                    economy["speed_ft"] = int(tok.speed_ft or 0)
+                    economy["token_id"] = tok.id
+            except Exception as e:
+                print(f"[actions] board economy unavailable: {e}")
+    return {"character_id": char_id, "actions": actions, "economy": economy,
+            "slots": {str(k): v for k, v in (prof.slots or {}).items()}}
+
+
+def _board_action_plan(session_id: str, user_id: Optional[str],
+                       msg: dict) -> tuple[Optional[list[dict]], str, str]:
+    """Turn a chosen bar action into ``(intents, sentence, error)``.
+
+    The client sends an action id and what it aimed at. This re-derives the
+    action from the server's own catalogue and re-checks the aim against the
+    board — the client is not the authority, exactly as it isn't for a move.
+    A refusal comes back as text the player can act on, never a silent drop.
+
+    The ``sentence`` is what the DM is given to narrate. It is written here
+    rather than by the player because the mechanical facts are already known,
+    and a narrator handed "I attack the ogre with my longsword" alongside the
+    certified result writes the same scene as one handed a typed sentence.
+    """
+    bar = _activity_actions(session_id, user_id)
+    if not bar:
+        return None, "", "You have nothing to act with here."
+    action_id = str(msg.get("action_id") or "")
+    act = next((a for a in bar["actions"] if a["id"] == action_id), None)
+    if act is None:
+        return None, "", "That isn't something you can do."
+    if not act.get("enabled", True):
+        return None, "", act.get("disabled_reason") or "You can't do that right now."
+
+    econ = bar.get("economy") or {}
+    if econ.get("in_combat") and not econ.get("my_turn"):
+        who = econ.get("whose_turn") or "someone else"
+        return None, "", f"It's {who}'s turn."
+
+    scene = vtt_engine.active_scene(session_id) if _vtt_on() else None
+    tok = None
+    if scene is not None and econ.get("combatant_id"):
+        tok = vtt_engine.token_for_combatant(scene.id, econ["combatant_id"])
+
+    verb = act["verb"]
+    intent: dict = {"verb": verb}
+    if act.get("arg"):
+        intent["arg"] = act["arg"]
+    sentence = ""
+
+    if act["targeting"] == "creature":
+        tid = msg.get("target_token_id")
+        if tid is None:
+            return None, "", f"{act['name']} needs a target."
+        target = vtt_engine.get_token(int(tid)) if scene else None
+        if target is None or (scene and target.map_id != scene.id):
+            return None, "", "That target isn't on this board."
+        # Re-check legality against the board, with the SAME call the client
+        # used to light it up. A stale highlight is the ordinary case here:
+        # the archer stepped behind the pillar while the player was choosing.
+        if tok is not None:
+            # `include_defeated` so a refusal is always SPECIFIC. Without it a
+            # creature that dropped while the player was choosing simply isn't
+            # in the list, and the only thing left to say is a shrug — the
+            # failure mode the reasons exist to prevent.
+            found = next(
+                (t for t in vtt_engine.targets_for(
+                    scene.id, tok.name, range_ft=act.get("range_ft"),
+                    needs_sight=bool(act.get("needs_sight", True)),
+                    include_defeated=True,
+                )["targets"] if t["token_id"] == target.id), None)
+            if found is None:
+                return None, "", f"{target.name} isn't on the board any more."
+            if not found["legal"]:
+                return None, "", f"{target.name}: {found['reason']}."
+        intent["target"] = target.name
+        sentence = _board_action_sentence(act, target.name)
+
+    elif act["targeting"] == "area":
+        if tok is None or scene is None:
+            return None, "", "There's no board to aim on."
+        ox, oy = int(msg.get("x", tok.x)), int(msg.get("y", tok.y))
+        prev = vtt_engine.area_preview(
+            scene.id, tok.name, ox, oy, shape=act.get("shape") or "sphere",
+            radius_ft=int(act.get("radius_ft") or 0),
+            length_ft=int(act.get("length_ft") or 0),
+            width_ft=int(act.get("width_ft") or 5),
+            range_ft=act.get("range_ft"))
+        if not prev.get("ok"):
+            return None, "", prev.get("reason") or "That's not a legal place for it."
+        caught = [c["name"] for c in prev.get("caught") or []]
+        if not caught:
+            # Not an error: a template that catches nobody is a legal, and
+            # sometimes deliberate, thing to do (a wall of fire across a door).
+            sentence = f"I cast {act['name']}, centred where nothing is standing."
+        else:
+            intent["target"] = ", ".join(caught)
+            sentence = (f"I cast {act['name']}, catching "
+                        f"{_english_list(caught)} in it.")
+
+    elif act["targeting"] == "dm":
+        # The spell's own text couldn't be read well enough to aim it. Hand it
+        # to the DM as prose rather than refusing it or guessing a target.
+        sentence = f"I cast {act['name']}."
+    else:
+        sentence = _board_action_sentence(act, "")
+
+    if act["kind"] == "cast":
+        slot = msg.get("slot")
+        if slot:
+            intent["slot"] = str(int(slot))
+            if int(slot) > int(act.get("level") or 0):
+                sentence += f" (upcast with a level-{int(slot)} slot)"
+    return [intent], sentence, ""
+
+
+def _english_list(names: list[str]) -> str:
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _board_action_sentence(act: dict, target: str) -> str:
+    """What the player is taken to have said, so the DM has a line to narrate."""
+    name = act["name"]
+    if act["kind"] == "attack":
+        return (f"I attack {target} with my {name}." if target
+                else f"I attack with my {name}.")
+    if act["kind"] == "cast":
+        return f"I cast {name} at {target}." if target else f"I cast {name}."
+    return f"I {name.lower()}" + (f" {target}." if target else ".")
+
+
 def _activity_characters(user_id: str, channel: str) -> list[dict]:
     """The landing page's character list: this player's PCs with liveness and
     a resumable session id when one exists for this channel."""
@@ -20735,6 +21138,14 @@ async def activity_ws(ws: WebSocket, channel: str):
         await _activity_broadcast(
             session_id, {"t": "vtt", "scene": _vtt_scene_payload(session_id)},
             fallback=ws)
+        # The action bar. It goes to THIS socket only — a bar is one
+        # character's acts and one character's economy, so broadcasting it
+        # would hand every player at the table someone else's spell list.
+        try:
+            await ws.send_json({"t": "actions",
+                                "data": _activity_actions(session_id, user_id)})
+        except Exception as e:
+            print(f"[activity] action bar push failed: {e}")
         await send_levelup()
 
     sheet: Optional[dict] = None
@@ -21824,6 +22235,40 @@ async def activity_ws(ws: WebSocket, channel: str):
                                                   int(msg.get("y", 0)))})
                     continue
 
+                # Who this creature may legally hit with the action the player
+                # has picked up. Read-only and cheap, so it is not gated on
+                # whose turn it is: seeing what a spell WOULD reach is how you
+                # decide whether to walk first, and refusing to answer until
+                # your turn is how a player ends up guessing.
+                if kind == "vtt_targets":
+                    rng = msg.get("range_ft")
+                    await ws.send_json({
+                        "t": "vtt_targets",
+                        "action_id": msg.get("action_id"),
+                        **vtt_engine.targets_for(
+                            scene.id, tok.name,
+                            range_ft=None if rng is None else int(rng),
+                            needs_sight=bool(msg.get("needs_sight", True)),
+                            include_self=bool(msg.get("include_self")),
+                        )})
+                    continue
+
+                if kind == "vtt_area":
+                    rng = msg.get("range_ft")
+                    await ws.send_json({
+                        "t": "vtt_area",
+                        "action_id": msg.get("action_id"),
+                        **vtt_engine.area_preview(
+                            scene.id, tok.name,
+                            int(msg.get("x", 0)), int(msg.get("y", 0)),
+                            shape=str(msg.get("shape") or "sphere"),
+                            radius_ft=int(msg.get("radius_ft") or 0),
+                            length_ft=int(msg.get("length_ft") or 0),
+                            width_ft=int(msg.get("width_ft") or 5),
+                            range_ft=None if rng is None else int(rng),
+                        )})
+                    continue
+
                 if kind == "vtt_stairs":
                     # Changing floor is movement, so it goes through the same
                     # gate as movement: whose turn it is, and whose token this
@@ -21910,6 +22355,36 @@ async def activity_ws(ws: WebSocket, channel: str):
                                         "error": "The Chronicle is closed to you."})
                 continue
 
+            # What this character can do right now. A pure read of state the
+            # server already computes, so it is fetched on demand like the
+            # Chronicle rather than pushed on every turn.
+            if msg.get("t") == "actions":
+                try:
+                    await ws.send_json({"t": "actions",
+                                        "data": _activity_actions(session_id, user_id)})
+                except Exception as e:
+                    print(f"[activity] action bar failed: {e}")
+                    await ws.send_json({"t": "actions", "data": None})
+                continue
+
+            # ---- the action bar: an act CHOSEN on the board, not typed ----
+            # It becomes an ordinary player action carrying pre-built intents,
+            # so everything downstream — the echo, the rate limit, the chat
+            # call, the narration, the sheet refresh — is the path a typed
+            # sentence already takes. Only the parse is skipped.
+            bar_intents: Optional[list[dict]] = None
+            if msg.get("t") == "board_action":
+                try:
+                    bar_intents, sentence, err = _board_action_plan(
+                        session_id, user_id, msg)
+                except Exception as e:
+                    print(f"[activity] board action failed: {e}")
+                    bar_intents, sentence, err = None, "", "That act won't resolve."
+                if err:
+                    await ws.send_json({"t": "vtt_error", "detail": err})
+                    continue
+                msg = {"t": "action", "text": sentence}
+
             if msg.get("t") != "action" or not (msg.get("text") or "").strip():
                 continue
             text = msg["text"].strip()
@@ -21950,7 +22425,8 @@ async def activity_ws(ws: WebSocket, channel: str):
             try:
                 bt = BackgroundTasks()
                 req = ChatRequest(session_id=session_id, user_id=user_id,
-                                  username=username, message=text, private=is_private)
+                                  username=username, message=text,
+                                  private=is_private, intents=bar_intents)
                 # Sync endpoint with blocking I/O: run in a worker thread
                 # (contextvars propagate, so the roll collector works).
                 resp = await asyncio.to_thread(chat_endpoint, req, bt)

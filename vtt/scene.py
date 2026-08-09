@@ -2576,7 +2576,12 @@ class VttEngine:
             cover = ("none" if t.id == actor.id
                      else self.cover_for(map_id, actor.name, t.name))
             legal, reason = True, ""
-            if t.id != actor.id:
+            if t.defeated:
+                # Only reachable with include_defeated: a caller asking about
+                # a downed creature wants to hear that it is down, not to have
+                # it vanish from the answer.
+                legal, reason = False, f"{t.name} is already down"
+            elif t.id != actor.id:
                 # Range first: it is the cheaper refusal and the one the player
                 # can fix by walking, so it is the more useful thing to say.
                 if range_ft is not None and dist > int(range_ft):
