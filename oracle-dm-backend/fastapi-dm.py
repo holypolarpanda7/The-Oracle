@@ -6777,6 +6777,11 @@ _COVER_LEVELS = {"none": "none", "half": "half", "three-quarters": "three-quarte
 # _CONDITIONS_SHORT); the full verb list only ships while a fight is live.
 _COMBAT_HOOKS_IDLE = (
     "# Combat hooks\n"
+    "Harm outside a fight — a dog bites in the street, a trap springs, someone falls —\n"
+    "does NOT need an initiative order. Name the source and it lands on the sheet:\n"
+    "    [[COMBAT: damage | Kara | 1d6 | piercing]]   or  | fall 20   or  | Fire Bolt\n"
+    "    [[COMBAT: heal | Kara | 2d4+2]]   [[COMBAT: temp | Kara | 5]]\n"
+    "Resistances, temporary hit points and dropping to 0 all apply exactly as in a fight.\n"
     "When a real fight breaks out (not a mere threat), open the initiative tracker:\n"
     "    [[COMBAT: start | short encounter name]]\n"
     "    [[COMBAT: add | goblin | x2]]   (SRD monster; for one the bestiary lacks, base it\n"
@@ -6912,6 +6917,84 @@ def _combat_enroll_pcs(encounter_id: int, session_id: str) -> None:
             _combat_seat_pc(encounter_id, char)
 
 
+def _session_pc_named(session_id: str, ref: str) -> Optional["Character"]:
+    """A member PC of this session, by name — for hooks outside a fight."""
+    needle = (ref or "").strip().lower()
+    if not needle:
+        return None
+    state = _load_session_state(session_id)
+    with Session(engine) as s:
+        chars = []
+        for mem in _session_members(state.get("meta", {}) or {}).values():
+            cid = mem.get("character_id")
+            ch = s.get(Character, cid) if cid else None
+            if ch is not None:
+                chars.append(ch)
+        for ch in chars:
+            if ch.name.strip().lower() == needle:
+                s.expunge(ch)
+                return ch
+        for ch in chars:
+            if needle in ch.name.strip().lower() or \
+                    ch.name.strip().lower().startswith(needle):
+                s.expunge(ch)
+                return ch
+    return None
+
+
+def _hurt_out_of_combat(session_id: str, ref: str, amount: int,
+                        dtype: Optional[str], magical: bool = False
+                        ) -> Optional[str]:
+    """Damage a PC when there is no initiative order. Returns a note, or None.
+
+    A dog bites someone in a market street. That is not an encounter — nobody
+    rolled initiative and nobody is going to — and until now every COMBAT hook
+    but ``start`` was DROPPED when no fight was running, so the bite drew blood
+    in the narration and changed nothing on the sheet. The DM's only honest
+    options were to open a full initiative tracker for one bite or to let the
+    wound be imaginary.
+
+    The arithmetic is the same as in a fight, deliberately: temp HP absorbs
+    first, resistances apply (a tiefling shrugs off a torch in an alley exactly
+    as they would in a battle), and dropping to 0 starts dying.
+    """
+    char = _session_pc_named(session_id, ref)
+    if char is None or amount <= 0:
+        return None
+    with Session(engine) as s:
+        ch = s.get(Character, char.id)
+        if ch is None:
+            return None
+        note = ""
+        if dtype:
+            packet = damage_rules.Packet(dice=str(amount), type=dtype,
+                                         magical=magical, label="the blow")
+            applied = damage_rules.apply(_pc_defenses(ch), [(packet, amount)])
+            if applied.notes:
+                note = " (" + "; ".join(applied.notes) + ")"
+            amount = applied.total
+        th = int(getattr(ch, "temp_hp", 0) or 0)
+        absorbed = min(th, amount)
+        ch.temp_hp = th - absorbed
+        amount -= absorbed
+        ch.current_hp = max(0, ch.current_hp - amount)
+        downed = ch.current_hp == 0
+        if downed:
+            ch.stable = False
+            ch.death_save_successes = 0
+            ch.death_save_failures = 0
+        ch.updated_at = _utcnow()
+        s.add(ch)
+        s.commit()
+        out = (f"🩸 {ch.name} takes {amount}{note} "
+               f"({ch.current_hp}/{ch.max_hp} HP)")
+        if absorbed:
+            out += f"; {absorbed} absorbed by temporary hit points"
+        if downed:
+            out += " — DROPPED to 0 and dying"
+        return out + "."
+
+
 def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
     """Apply COMBAT hooks to the session's encounter. Returns short notes
     appended to the narration (initiative line, downed foes, fight over)."""
@@ -6934,6 +7017,44 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                     started_now = True
                 continue
             if enc is None:
+                # Harm still lands with no initiative order running: a dog in
+                # a market street bites once and the fight never happens.
+                # Everything else genuinely needs an encounter.
+                if action in ("damage", "heal", "temp") and len(args) >= 2:
+                    amount, detail, auto_type = _hook_amount(args[1])
+                    if amount <= 0:
+                        continue
+                    if action == "damage":
+                        dtype = damage_rules.normalize_type(
+                            args[2] if len(args) > 2 else None) or auto_type
+                        if detail:
+                            notes.append(f"🎲 {detail}")
+                        hurt = _hurt_out_of_combat(
+                            session_id, args[0], amount, dtype,
+                            magical=len(args) > 3 and "magic" in str(args[3]).lower())
+                        if hurt:
+                            notes.append(hurt)
+                    else:
+                        ch = _session_pc_named(session_id, args[0])
+                        if ch is None:
+                            continue
+                        with Session(engine) as s:
+                            row = s.get(Character, ch.id)
+                            if row is None:
+                                continue
+                            if action == "heal":
+                                row.current_hp = min(row.max_hp,
+                                                     row.current_hp + amount)
+                                notes.append(f"✨ {row.name} regains {amount} "
+                                             f"({row.current_hp}/{row.max_hp} HP).")
+                            else:
+                                row.temp_hp = max(
+                                    int(getattr(row, "temp_hp", 0) or 0), amount)
+                                notes.append(f"✨ {row.name} has {row.temp_hp} "
+                                             "temporary hit points.")
+                            row.updated_at = _utcnow()
+                            s.add(row)
+                            s.commit()
                 continue  # every other verb needs a live encounter
             if action == "add":
                 if not args or not args[0]:

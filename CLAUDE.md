@@ -863,6 +863,15 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   in component enforcement: imported sheets routinely arrive with no pack, and
   a false refusal stops play dead where a missed enforcement only makes the
   game slightly generous. A pack with *something* in it is taken at its word.
+- **Harm outside a fight lands too, and needs no initiative order.** A dog
+  bites in a market street; that is not an encounter and nobody is going to
+  roll for one. Every COMBAT verb but `start` used to be DROPPED when no
+  encounter was live (`if enc is None: continue`), so the bite drew blood in
+  the narration and changed nothing on the sheet — the DM's only honest
+  options were to open a full tracker for one bite or to let the wound be
+  imaginary. `damage`/`heal`/`temp` now reach the character sheet directly,
+  with the SAME arithmetic: temp HP absorbs first, resistances apply, and
+  dropping to 0 starts dying.
 - **The DM narrates; the ENGINE factors. A number the model computed is a
   number nothing checked.** Three places were still asking the LLM for
   arithmetic, and all three are closed. `[[ROLL: Stealth | DC 15]]` names the

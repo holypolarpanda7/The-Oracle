@@ -1,6 +1,6 @@
 """Damage types and resistance — the arithmetic the engine never did.
 
-Offline, no GPU, no LLM, fresh scratch database. Seven layers:
+Offline, no GPU, no LLM, fresh scratch database. Eight layers:
 
     1. TYPES    — damage has a type, read out of prose an OCR pass mangled.
     2. DEFENCES — a bestiary row's resistances, in BOTH shapes it comes in,
@@ -17,6 +17,8 @@ Offline, no GPU, no LLM, fresh scratch database. Seven layers:
     7. SOURCES  — the DM names a spell or an attack and BOTH its dice and its
                   type come off the row; a foe the bestiary lacks is built
                   from one that it has.
+    8. OFF-BOARD — harm with no initiative order running still lands on the
+                  sheet, resistances and all.
 
     uv run python scripts/resistance_smoke.py
 """
@@ -406,6 +408,62 @@ check("...but a foe matching NOTHING yields none, so the caller can say so",
       m._custom_foe("Zzyzx Thing", None, None, None, None) is None,
       "it is still seated — refusing mid-fight stops play — but the invented "
       "numbers are named out loud instead of arriving from a default")
+
+# ----------------------------------------------------------------------
+section("8. harm outside a fight — the dog in the street")
+
+bitten = pc("Wren", [], cls="Fighter", level=3)
+bitten.max_hp = 30
+with Session(m.engine) as s:
+    row = s.get(m.Character, bitten.id)
+    row.max_hp, row.current_hp = 30, 30
+    s.add(row); s.commit()
+
+SID = "res:town"
+m._save_session_state(SID, {"meta": {"members": {
+    "u1": {"character_id": bitten.id, "name": "Wren"}}}}) \
+    if hasattr(m, "_save_session_state") else None
+state = m._load_session_state(SID)
+state.setdefault("meta", {})["members"] = {
+    "u1": {"character_id": bitten.id, "name": "Wren"}}
+m._store_session_state(SID, state) if hasattr(m, "_store_session_state") else None
+
+found = m._session_pc_named(SID, "Wren")
+check("a member PC is findable with no encounter running",
+      found is not None and found.id == bitten.id,
+      "this is the state a town scene is in")
+
+if found is not None:
+    note = m._hurt_out_of_combat(SID, "Wren", 6, "piercing")
+    with Session(m.engine) as s:
+        hp = s.get(m.Character, bitten.id).current_hp
+    check("a bite in the street actually draws blood", hp == 24,
+          note or "(no note)")
+    check("...and no initiative order was needed for it",
+          m.combat.get_active(SID) is None,
+          "every COMBAT verb but 'start' used to be DROPPED here, so the "
+          "wound was imaginary")
+
+    # Resistance applies out of combat exactly as it does in a fight.
+    with Session(m.engine) as s:
+        row = s.get(m.Character, bitten.id)
+        row.current_hp, row.tags = 30, ["resist:fire"]
+        s.add(row); s.commit()
+    m._hurt_out_of_combat(SID, "Wren", 10, "fire")
+    with Session(m.engine) as s:
+        hp = s.get(m.Character, bitten.id).current_hp
+    check("a resistance is a resistance wherever you are standing", hp == 25,
+          "10 fire → 5 against resist:fire")
+
+    with Session(m.engine) as s:
+        row = s.get(m.Character, bitten.id)
+        row.current_hp, row.temp_hp = 4, 0
+        s.add(row); s.commit()
+    note = m._hurt_out_of_combat(SID, "Wren", 9, "bludgeoning")
+    with Session(m.engine) as s:
+        row = s.get(m.Character, bitten.id)
+    check("...and dropping to 0 outside a fight starts dying",
+          row.current_hp == 0 and not row.stable, note or "")
 
 print()
 if _failures:
