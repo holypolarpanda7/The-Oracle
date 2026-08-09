@@ -128,6 +128,93 @@ def is_versatile(row: Any, name: str) -> bool:
     return "versatile" in props
 
 
+@dataclass
+class WeaponProps:
+    """The weapon properties that decide how a thing is HELD and swung.
+
+    Read once, here, because three callers were each parsing the same
+    ``properties`` list their own way: the combat profile builder, the grip
+    model, and the two-weapon rule.
+    """
+    light: bool = False
+    heavy: bool = False
+    two_handed: bool = False
+    versatile: bool = False
+    finesse: bool = False
+    thrown: bool = False
+    reach: bool = False
+    ranged: bool = False
+    #: The die a versatile weapon does in two hands ("1d10"), else None.
+    versatile_damage: Optional[str] = None
+
+    @property
+    def melee(self) -> bool:
+        return not self.ranged
+
+
+def weapon_props(row: Any, name: str) -> WeaponProps:
+    props = {_low(p) for p in (getattr(row, "properties", None) or [])}
+    it = _low(getattr(row, "item_type", None))
+    # An SRD melee weapon still carries range.normal = 5, so "has a range" is
+    # not "is ranged" — trust the type label first, then a range beyond reach.
+    ranged = "ranged" in it or (int(getattr(row, "range_normal", None) or 0) > 10)
+    return WeaponProps(
+        light="light" in props,
+        heavy="heavy" in props,
+        two_handed=is_two_handed(row, name),
+        versatile=is_versatile(row, name),
+        finesse="finesse" in props,
+        thrown="thrown" in props,
+        reach="reach" in props,
+        ranged=ranged,
+        versatile_damage=getattr(row, "two_handed_damage_dice", None) or None,
+    )
+
+
+def two_weapon_pair(loadout: "Loadout",
+                    get_item: Optional[Callable[[str], Any]] = None,
+                    *, dual_wielder: bool = False
+                    ) -> Optional[Tuple[Held, Held]]:
+    """``(main, off)`` when the hands qualify for the extra attack, else None.
+
+    The 2024 Light property: when you attack with a Light weapon, you may make
+    one extra attack as a Bonus Action with a *different* Light weapon in your
+    other hand. Dual Wielder relaxes the OFF hand only — it still wants Light
+    in the main hand, and the off weapon may then be any melee weapon lacking
+    Two-Handed.
+
+    Two weapons in two hands is the whole condition, and it is a fact about the
+    LOADOUT, which is why nothing could answer it before grips existed: two
+    shortswords in a pack and two shortswords in two hands were the same row.
+    """
+    main = loadout.at(MAIN)
+    off = loadout.at(OFF)
+    if main is None or off is None or main is off:
+        return None
+    mp = weapon_props(_row_for(get_item, main.name), main.name)
+    op = weapon_props(_row_for(get_item, off.name), off.name)
+    if not is_weapon(_row_for(get_item, main.name), main.name):
+        return None
+    if not is_weapon(_row_for(get_item, off.name), off.name):
+        return None
+    if not mp.light or mp.ranged:
+        return None
+    if op.light:
+        return (main, off)
+    if dual_wielder and op.melee and not op.two_handed:
+        return (main, off)
+    return None
+
+
+def _row_for(get_item: Optional[Callable[[str], Any]], name: str) -> Any:
+    if get_item is None:
+        return None
+    try:
+        return get_item(name)
+    except Exception:
+        return None
+
+
 def hands_needed(row: Any, name: str) -> int:
     """How many hands wielding this costs — 0 if it is worn or stowed gear.
 
@@ -273,6 +360,13 @@ def _norm(name: Any) -> str:
     return re.sub(r"\s+", " ", str(name or "").strip().lower())
 
 
+def _quantity(entry: Dict[str, Any]) -> int:
+    try:
+        return max(1, int(entry.get("quantity", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _lookup(get_item: Optional[Callable[[str], Any]], entry: Dict[str, Any]) -> Any:
     """The catalogue row behind an entry — by its BASE name.
 
@@ -413,6 +507,11 @@ class EquipPlan:
     changes: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     #: Names put away to make room, in the order they were displaced.
     displaced: List[str] = field(default_factory=list)
+    #: New rows to append. A stack has ONE grip, so dual-wielding two identical
+    #: shortswords means splitting one off the pile into its own row — without
+    #: it "2x Shortsword" can be in the main hand or the off hand and never in
+    #: both, which is the commonest two-weapon build there is.
+    additions: List[Dict[str, Any]] = field(default_factory=list)
     note: str = ""
 
     def apply(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -420,6 +519,7 @@ class EquipPlan:
         for idx, patch in self.changes.items():
             if 0 <= idx < len(items):
                 _patch(items[idx], patch)
+        items.extend(self.additions)
         return items
 
 
@@ -464,7 +564,7 @@ def plan_equip(items: Sequence[Dict[str, Any]], name: str,
     reason: ``_compute_ac`` reads whichever it meets last, and two suits worn
     at once is a state no character can be in.
     """
-    idx = _index_of(items, name)
+    idx = _index_of(items, name, grip=_low(grip) or None)
     if idx is None:
         return EquipPlan(ok=False, error=f"{name} isn't in the pack.")
     entry = items[idx]
@@ -472,7 +572,12 @@ def plan_equip(items: Sequence[Dict[str, Any]], name: str,
     row = _lookup(get_item, entry)
     slot = wear_slot(row, disp_name)
     if slot is None:
-        return EquipPlan(ok=False, error=f"{disp_name} isn't something you wear or wield.")
+        # The catalogue has never heard of it. A book weapon, a homebrew relic
+        # and a coil of rope all land here, so refusing outright would make a
+        # whole class of gear unwieldable. Naming a hand is the DM (or the
+        # player) saying it is held; saying nothing leaves it worn, which is
+        # the same permissive default `hands_needed` takes.
+        slot = "hand" if _low(grip) in GRIPS else "worn"
 
     plan = EquipPlan()
     if slot != "hand":
@@ -498,10 +603,23 @@ def plan_equip(items: Sequence[Dict[str, Any]], name: str,
     if want == BOTH:
         need = 2
 
+    # A STACK has one grip. Two scimitars filed as "2x Scimitar" can be in the
+    # main hand or the off hand and never in both, so asking for the other hand
+    # splits one off the pile into a row of its own. Only ever for an explicit
+    # request: "equip my scimitar" with no hand named means the one already in
+    # a hand, not a second one drawn from the same stack.
+    split = False
+    if (want is not None and entry.get("equipped")
+            and _low(entry.get("grip")) in GRIPS
+            and _low(entry.get("grip")) != want
+            and _quantity(entry) > 1 and need < 2):
+        split = True
+
     # Read the loadout as it will be WITHOUT this item, so re-gripping
     # something already in hand doesn't fight itself for its own hand.
     others = [dict(it) for it in items]
-    others[idx] = {**others[idx], "equipped": False}
+    if not split:
+        others[idx] = {**others[idx], "equipped": False}
     current = read_loadout(others, get_item, hands=hands)
 
     if want is None:
@@ -519,11 +637,20 @@ def plan_equip(items: Sequence[Dict[str, Any]], name: str,
                 plan.changes[h.index] = _stow_patch()
             plan.displaced.append(h.name)
 
-    plan.changes[idx] = {"equipped": True, "grip": want,
-                         "hands": 2 if want == BOTH else 1}
+    if split:
+        plan.changes[idx] = {"quantity": _quantity(entry) - 1}
+        fresh = {k: v for k, v in entry.items()
+                 if k not in ("quantity", "grip", "hands", "equipped")}
+        fresh.update({"name": disp_name, "quantity": 1, "equipped": True,
+                      "grip": want, "hands": 1})
+        plan.additions.append(fresh)
+    else:
+        plan.changes[idx] = {"equipped": True, "grip": want,
+                             "hands": 2 if want == BOTH else 1}
     where = ("both hands" if want == BOTH else
              "main hand" if want == MAIN else "off hand")
-    plan.note = f"{disp_name} is held in {'the ' if want != BOTH else ''}{where}."
+    plan.note = (f"{'a second ' if split else ''}{disp_name} is held in "
+                 f"{'the ' if want != BOTH else ''}{where}.")
     if plan.displaced:
         plan.note += " " + _and(plan.displaced) + \
             (" is" if len(plan.displaced) == 1 else " are") + " stowed to make room."
@@ -541,18 +668,35 @@ def _preferred_grip(current: Loadout, row: Any, name: str, need: int) -> str:
     return OFF if free_off else MAIN
 
 
-def _index_of(items: Sequence[Dict[str, Any]], name: str) -> Optional[int]:
+def _index_of(items: Sequence[Dict[str, Any]], name: str,
+              *, grip: Optional[str] = None) -> Optional[int]:
+    """Which row a name refers to. Exact match beats containment.
+
+    ``grip`` disambiguates the two-weapon case: a ranger carrying two
+    scimitars has two rows (or one stack) called the same thing, and "put a
+    scimitar in the off hand" must not re-grip the one already in the main
+    hand. A row already held in the wanted hand wins, then one that is free,
+    then the first match — so the request lands on a scimitar that can take it.
+    """
     n = _norm(name)
     if not n:
         return None
-    loose = None
-    for i, it in enumerate(items):
-        nm = _norm(it.get("name"))
-        if nm == n:
-            return i
-        if loose is None and nm and (n in nm or nm in n):
-            loose = i
-    return loose
+    exact = [i for i, it in enumerate(items) if _norm(it.get("name")) == n]
+    loose = [i for i, it in enumerate(items)
+             if _norm(it.get("name")) and _norm(it.get("name")) != n
+             and (n in _norm(it.get("name")) or _norm(it.get("name")) in n)]
+    for pool in (exact, loose):
+        if not pool:
+            continue
+        if grip in GRIPS:
+            for i in pool:
+                if _low(items[i].get("grip")) == grip:
+                    return i
+            for i in pool:
+                if not items[i].get("equipped"):
+                    return i
+        return pool[0]
+    return None
 
 
 def _and(names: Sequence[str]) -> str:

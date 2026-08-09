@@ -56,6 +56,21 @@ class PCWeapon:
     # are simply ignored.
     range_normal: Optional[int] = None
     range_long: Optional[int] = None
+    # ---- which hand this is in (rules/equipment.py) ----------------------
+    #: "main" / "off" / "both", or None when it is not in a hand at all. The
+    #: engine never derives this: the backend reads it off the loadout, which
+    #: is the only thing that knows a sword in the pack from one in a fist.
+    grip: Optional[str] = None
+    #: True when this PC is holding SOMETHING and this weapon isn't it. A PC
+    #: holding nothing has every weapon available exactly as before, the same
+    #: "unknown, not empty-handed" rule the material-component check uses.
+    stowed: bool = False
+    light: bool = False
+    two_handed: bool = False
+    #: Damage for the two-weapon bonus swing — the ability modifier is dropped
+    #: unless the Two-Weapon Fighting style is taken (or the modifier is
+    #: negative, which you never get to ignore). Set only on the off hand.
+    offhand_damage: Optional[str] = None
 
 
 @dataclass
@@ -513,26 +528,51 @@ class CombatEngine:
                             for x in (getattr(m, "condition_immunities", None) or [])}
         return False
 
+    @staticmethod
+    def _weapon_dict(cand: PCWeapon, *, offhand: bool = False) -> dict:
+        """One weapon as the attack resolver wants it.
+
+        ``offhand`` swaps in the bonus swing's damage, which is the same dice
+        without the ability modifier unless the Two-Weapon Fighting style
+        restored it — the backend has already decided that, because the style
+        is a feat and the engine knows nothing about feats.
+        """
+        return {"name": cand.name, "attack_bonus": cand.attack_bonus,
+                "damage": (cand.offhand_damage or cand.damage) if offhand
+                          else cand.damage,
+                "ranged": cand.ranged, "finesse": cand.finesse,
+                "range_normal": cand.range_normal,
+                "range_long": cand.range_long,
+                "grip": cand.grip, "stowed": cand.stowed,
+                "light": cand.light, "two_handed": cand.two_handed}
+
     def _attack_profile(self, c: Combatant, weapon: str,
-                        profiles: dict[int, PCProfile]) -> Optional[dict]:
-        """Resolve what this creature swings: named weapon, else its best."""
+                        profiles: dict[int, PCProfile],
+                        *, offhand: bool = False) -> Optional[dict]:
+        """Resolve what this creature swings: named weapon, else its best.
+
+        A PC's pool arrives ordered by the loadout — main hand, then both
+        hands, then off hand, then everything still in the pack — so "its best"
+        is now "what is actually in its hand", which is the only reading that
+        was ever right. A named weapon still wins, including a stowed one: it
+        comes back flagged, and the caller refuses it and names the draw. That
+        beats silently swinging something else, which is what happened before.
+        """
         w = (weapon or "").strip().lower()
         if c.character_id and c.character_id in profiles:
             p = profiles[c.character_id]
             pool = p.weapons or []
-
-            def as_dict(cand: PCWeapon) -> dict:
-                return {"name": cand.name, "attack_bonus": cand.attack_bonus,
-                        "damage": cand.damage, "ranged": cand.ranged,
-                        "finesse": cand.finesse,
-                        "range_normal": cand.range_normal,
-                        "range_long": cand.range_long}
-
+            # The bonus swing is made with the OTHER hand, whatever the action
+            # was made with — that is the whole rule, so it overrides the name.
+            if offhand:
+                off = next((x for x in pool if x.grip == "off"), None)
+                if off is not None:
+                    return self._weapon_dict(off, offhand=True)
             for cand in pool:
                 if w and w in cand.name.lower():
-                    return as_dict(cand)
+                    return self._weapon_dict(cand)
             if pool and w not in ("unarmed", "fist", "punch"):
-                return as_dict(pool[0])
+                return self._weapon_dict(pool[0])
             stray = p.ability_mods.get("str", 0)
             return {"name": "Unarmed strike", "attack_bonus": p.prof + stray,
                     "damage": f"1+{stray}" if stray > 0 else "1",
@@ -547,12 +587,16 @@ class CombatEngine:
 
     def _melee_profile(self, c: Combatant,
                        profiles: dict[int, PCProfile]) -> Optional[dict]:
+        """The weapon a reaction swings — an opportunity attack, a riposte.
+
+        Nobody draws a blade to take an opportunity attack, so a stowed weapon
+        is skipped outright rather than refused: a PC with both hands full of
+        shield swings a fist, which is what actually happens.
+        """
         if c.character_id and c.character_id in profiles:
             for cand in profiles[c.character_id].weapons:
-                if not cand.ranged:
-                    return {"name": cand.name, "attack_bonus": cand.attack_bonus,
-                            "damage": cand.damage, "ranged": False,
-                            "finesse": cand.finesse}
+                if not cand.ranged and not cand.stowed:
+                    return self._weapon_dict(cand)
             return self._attack_profile(c, "unarmed", profiles)
         for cand in self._monster_attacks(c):
             if not cand["ranged"]:
@@ -1140,7 +1184,9 @@ class CombatEngine:
                         or used.count(f) < spec["per_encounter"]):
                     opts.append(f.title())
             if "bonus attack" in prof.features and c.action_used:
-                opts.append("bonus-action attack")
+                off = next((w for w in prof.weapons if w.grip == "off"), None)
+                opts.append(f"off-hand attack with the {off.name}" if off
+                            else "bonus-action attack")
             if "cunning action" in prof.features:
                 opts.append("Cunning Action (Dash/Disengage/Hide)")
         return opts
@@ -1166,10 +1212,34 @@ class CombatEngine:
             rep.rejections.append({"intent": intent,
                                    "reason": "No living target by that name."})
             return
-        prof = self._attack_profile(actor, intent.get("arg") or "", profiles)
+        # Whether this swing is the two-weapon bonus attack has to be decided
+        # BEFORE the reach and range checks: the bonus swing is made with the
+        # other hand, and a dagger's reach is not a shortbow's range.
+        fresh0 = self.tracker.get_combatant(actor.id)
+        pc_prof = profiles.get(actor.character_id) if actor.character_id else None
+        allowed = (self._multiattack_count(actor) if actor.monster_slug
+                   else (pc_prof.attacks_per_action if pc_prof else 1))
+        is_bonus_swing = bool(
+            fresh0.action_used and fresh0.attacks_made >= allowed
+            and pc_prof and "bonus attack" in pc_prof.features
+            and not fresh0.bonus_used)
+        prof = self._attack_profile(actor, intent.get("arg") or "", profiles,
+                                    offhand=is_bonus_swing)
         if prof is None:
             rep.rejections.append({"intent": intent,
                                    "reason": f"{actor.name} has no attack to make."})
+            return
+        # A weapon in the pack is not a weapon in a hand. Drawing one is a free
+        # object interaction, so this is a remedy rather than a dead end — and
+        # it only ever fires for a PC who is holding something else, because a
+        # PC holding nothing has no stowed weapons at all.
+        if prof.get("stowed"):
+            rep.rejections.append({
+                "intent": intent,
+                "reason": (f"{prof['name']} is not in {actor.name}'s hands — "
+                           f"draw it first ([[GRIP: draw | {prof['name']}]], a "
+                           "free object interaction) or swing what they are "
+                           "holding.")})
             return
         # With a board out we know the exact gap, so a ranged weapon's bands
         # mean something: past normal range is disadvantage, past long range is
@@ -1214,10 +1284,9 @@ class CombatEngine:
         # Attack budget: monsters get their Multiattack routine per action; PCs
         # get attacks_per_action (Extra Attack). A "bonus attack" feature
         # (two-weapon fighting / Martial Arts) buys one more with the bonus.
+        # ``allowed`` and the bonus-swing decision were both made at the top,
+        # because the weapon had to be chosen before reach was checked.
         fresh = self.tracker.get_combatant(actor.id)
-        pc_prof = profiles.get(actor.character_id) if actor.character_id else None
-        allowed = (self._multiattack_count(actor) if actor.monster_slug
-                   else (pc_prof.attacks_per_action if pc_prof else 1))
         bonus_note = None
         if not fresh.action_used:
             self.tracker.update_economy(actor.id, action_used=True,
@@ -1228,7 +1297,9 @@ class CombatEngine:
         elif (pc_prof and "bonus attack" in pc_prof.features
               and not fresh.bonus_used):
             self.tracker.update_economy(actor.id, bonus_used=True)
-            bonus_note = "off-hand / bonus-action attack"
+            bonus_note = ("off-hand attack (bonus action)"
+                          if prof.get("grip") == "off"
+                          else "bonus-action attack")
         else:
             left = []
             if not fresh.bonus_used:

@@ -205,7 +205,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (V/S/M priced out of the book's prose, enforced at the cast hook, and the
   gate on a caster who can't act or can't speak), `grip` (what is worn and
   what is held, in which hand; the free-hand rule for Somatic and Material
-  components, War Caster, and the [[GRIP]] hook that frees one), `forge`
+  components, War Caster, the [[GRIP]] hook that frees one, and the combat
+  half — main/off-hand weapon choice, versatile dice, two-weapon fighting),
+  `forge`
   (tempering needs a smith), `routes` (roads costed from real geography, and
   no map data leaks), `map` (one terrain answer across scene/board/parchment;
   tool + knowledge gating; a sheet accrues across revisions), `airship`
@@ -877,6 +879,31 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   item to stow, because that is a free object interaction and a dead end would
   be worse than the old note. `[[GRIP: draw|stow | Item | main|off|both]]` is
   what changes it, and it runs BEFORE `[[CAST]]` in the same reply.
+- **The combat engine swings what is IN THE HAND.** It used to take
+  `weapons[0]` — the first row in the pack — so a rogue with three daggers and
+  a longbow attacked with whatever the inventory happened to list first, and a
+  weapon in the sack was as swingable as one in a fist. `_combat_pc_profile`
+  now orders the pool by grip (main, both, off, then stowed) and marks
+  `PCWeapon.stowed`; a named stowed weapon is REFUSED with the draw named,
+  never silently swapped for something else. `_melee_profile` (opportunity
+  attacks) skips stowed weapons instead — nobody draws a blade to take a
+  reaction. Consequences that were unreachable before: **a versatile weapon
+  rolls its bigger die only when gripped `both`** (`two_handed_damage_dice` had
+  been in the database since the first ingest and nothing ever read it), and
+  the free-hands safety applies here too — a PC holding NOTHING has every
+  weapon available exactly as before.
+- **Two-weapon fighting is a fact about the HANDS, not about a class.**
+  `gear.two_weapon_pair` grants `"bonus attack"` to anyone actually holding two
+  qualifying weapons: 2024 Light in the main hand plus a different Light weapon
+  in the other, or — with Dual Wielder — any melee weapon lacking Two-Handed in
+  the off hand (Dual Wielder relaxes the OFF hand only; it still wants Light in
+  the main). The bonus swing is made with the OFF hand whatever the DM named,
+  and it is chosen BEFORE the reach/range checks because a dagger's reach is
+  not a shortbow's range. Its damage drops the ability modifier unless the
+  Two-Weapon Fighting style is taken (a `feat:` tag — fighting styles are feats
+  in 2024) or the modifier is negative. **A stack has one grip**, so equipping
+  a second blade from a "2x Dagger" row SPLITS it — without that the commonest
+  two-weapon build in the game could never be expressed.
 - **A shield is only worth +2 while it is in a hand**, and only one suit of
   armour is on a body. Both used to be the same question as `equipped`, and
   `_compute_ac` took whichever armour row it met last. `gear.normalize` is what

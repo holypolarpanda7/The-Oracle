@@ -7810,31 +7810,55 @@ def _combat_pc_profile(char: Character) -> PCProfile:
     pb = proficiency_bonus_for_level(char.level)
     skills = {t.split(":", 1)[1].strip().lower() for t in (char.tags or [])
               if isinstance(t, str) and t.lower().startswith("skill:")}
+    # What is in the hands decides what can be swung, what die a versatile
+    # weapon rolls, and whether there is an off-hand attack at all. Before
+    # grips existed the engine took `weapons[0]` — the first row in the pack —
+    # so a rogue with three daggers and a longbow attacked with whatever the
+    # inventory happened to list first, and two shortswords in a sack fought
+    # exactly like two shortswords in two hands.
+    items = _inventory_items(char)
+    load = gear.read_loadout(items, _item_row)
+    held_any = bool(load.held)
+    twf_style = _has_feat(char, "two-weapon-fighting")
+    # By INDEX, never by name: two scimitars are two rows with one name, and
+    # matching by name would put both of them in the same hand.
+    by_index = {h.index: h for h in load.held}
     weapons: list[PCWeapon] = []
-    for it in _inventory_items(char):
+    for pos, it in enumerate(items):
         name = it.get("name") or ""
-        try:
-            row = rules_lib.get_item(name)
-        except Exception:
-            row = None
+        row = _item_row(str(it.get("base") or name))
         if row is None or not getattr(row, "damage_dice", None):
             continue
-        # SRD melee weapons still carry range.normal = 5, so "has a range" is
-        # not "is ranged" — trust the type label, else a range beyond reach.
-        itype = (getattr(row, "item_type", None) or "").lower()
-        ranged = "ranged" in itype or (getattr(row, "range_normal", None) or 0) > 10
-        props = " ".join(str(p) for p in (row.properties or [])).lower()
-        finesse = "finesse" in props
-        mod = mods["dex"] if (ranged or (finesse and mods["dex"] > mods["str"])) \
+        wp = gear.weapon_props(row, name)
+        ranged = wp.ranged
+        mod = mods["dex"] if (ranged or (wp.finesse and mods["dex"] > mods["str"])) \
             else mods["str"]
-        dmg = row.damage_dice + (f"{mod:+d}" if mod else "")
+        h = by_index.get(pos)
+        grip = h.grip if h is not None else None
+        # Versatile: the bigger die is what two hands on the haft BUY, so it
+        # is read off the grip and nowhere else. `two_handed_damage_dice` has
+        # been in the database since the first ingest and nothing ever used it.
+        dice = (wp.versatile_damage if (grip == gear.BOTH and wp.versatile_damage)
+                else row.damage_dice)
+        dmg = dice + (f"{mod:+d}" if mod else "")
+        # The bonus swing drops the ability modifier unless the Two-Weapon
+        # Fighting style gives it back — and a NEGATIVE modifier is never
+        # dropped, because the rule is a benefit, not a choice.
+        off_dmg = dice + (f"{mod:+d}" if (twf_style or mod < 0) and mod else "")
         # Range bands matter only when a board gives the engine exact distance;
         # they're carried always and simply ignored in theater of the mind.
         weapons.append(PCWeapon(
             name=row.name, attack_bonus=pb + mod, damage=dmg, ranged=ranged,
-            finesse=finesse,
+            finesse=wp.finesse,
             range_normal=(getattr(row, "range_normal", None) if ranged else None),
-            range_long=(getattr(row, "range_long", None) if ranged else None)))
+            range_long=(getattr(row, "range_long", None) if ranged else None),
+            grip=grip, stowed=(held_any and grip is None),
+            light=wp.light, two_handed=wp.two_handed,
+            offhand_damage=off_dmg))
+    # Held first — main hand, then a two-handed grip, then the off hand — so
+    # the engine's "its best weapon" fallback is what the character is holding.
+    _GRIP_ORDER = {gear.MAIN: 0, gear.BOTH: 1, gear.OFF: 2}
+    weapons.sort(key=lambda w: _GRIP_ORDER.get(w.grip or "", 3))
     cls = (char.char_class or "").strip().lower()
     lvl = char.level
     if cls == "fighter":
@@ -7859,6 +7883,14 @@ def _combat_pc_profile(char: Character) -> PCProfile:
     if cls == "paladin" and lvl >= 2:
         features.add("divine smite")
     if cls == "monk":
+        features.add("bonus attack")
+    # Two-weapon fighting is a fact about the HANDS, not about a class: the
+    # Light property grants the extra bonus-action attack to anyone holding two
+    # qualifying weapons, and nothing could ever answer "is this character
+    # holding two weapons" before grips existed. Dual Wielder relaxes what the
+    # off hand may be; it still wants Light in the main hand.
+    if gear.two_weapon_pair(load, _item_row,
+                            dual_wielder=_has_feat(char, "dual-wielder")):
         features.add("bonus attack")
     cast_key = _CASTING_ABILITY.get(cls)
     spell_atk = spell_dc = None
@@ -10273,6 +10305,14 @@ def _item_row(name: str):
         return None
 
 
+def _has_feat(char: Character, slug: str) -> bool:
+    """Does this sheet carry a feat, by slug? Fighting styles are feats in
+    2024, so Two-Weapon Fighting is `feat:two-weapon-fighting` whether it came
+    from the class list or from Fighting Initiate."""
+    want = slug.strip().lower()
+    return any(v.strip().lower() == want for v in _tag_values(char, "feat"))
+
+
 def _loadout(char: Character) -> "gear.Loadout":
     """What this character is wearing and holding, hands and all."""
     return gear.read_loadout(_inventory_items(char), _item_row)
@@ -10626,11 +10666,38 @@ def _equipment_summary(char: Character) -> str:
     except Exception as e:
         print(f"[equipment summary] loadout: {e}")
         return line
-    return (line + "\nWorn & wielded: " + load.describe()
-            + ". Drawing, sheathing or swapping a grip is a free object "
-              "interaction — narrate it AND emit [[GRIP: draw | Item | "
-              "main|off|both]] or [[GRIP: stow | Item]], because the hands "
-              "are enforced and only the hook changes them.")
+    out = (line + "\nWorn & wielded: " + load.describe()
+           + ". Drawing, sheathing or swapping a grip is a free object "
+             "interaction — narrate it AND emit [[GRIP: draw | Item | "
+             "main|off|both]] or [[GRIP: stow | Item]], because the hands "
+             "are enforced and only the hook changes them.")
+    if load.held:
+        out += (" A weapon that is not in a hand CANNOT be attacked with — the "
+                "combat engine refuses it and names the draw.")
+    elif any(getattr(_item_row(str(i.get("base") or i.get("name") or "")),
+                     "damage_dice", None) for i in items):
+        # Empty hands are taken at face value everywhere, so a character who
+        # is plainly fighting with a sword needs the sword written down once.
+        out += (" This character's hands are EMPTY. When they draw a weapon or "
+                "strap on armour — including the moment a fight starts — emit "
+                "[[GRIP: draw | Item]] so the sheet says what they are holding.")
+    try:
+        pair = gear.two_weapon_pair(load, _item_row,
+                                    dual_wielder=_has_feat(char, "dual-wielder"))
+    except Exception as e:
+        print(f"[equipment summary] two-weapon: {e}")
+        pair = None
+    if pair:
+        main, off = pair
+        out += (f" Two-weapon fighting is LIVE: after the Attack action with "
+                f"the {main.name}, one extra attack with the {off.name} as a "
+                f"BONUS ACTION"
+                + ("" if _has_feat(char, "two-weapon-fighting")
+                   else " — its damage adds no ability modifier, since this "
+                        "character lacks the Two-Weapon Fighting style")
+                + ". The engine applies this; don't hand out a second swing "
+                  "any other way.")
+    return out
 
 
 # Base walking speed by race (ft). Small races and dwarves move 25; a few move

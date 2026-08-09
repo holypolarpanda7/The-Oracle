@@ -307,6 +307,158 @@ check("...and no longer calls it the DM's own call to make",
       "that call is yours" not in block,
       "the last mechanic asked for by prose is now asked for by code")
 
+# ----------------------------------------------------------------------
+section("5. the combat engine swings what is in the hand")
+import random                                                    # noqa: E402
+from combat import CombatTracker, CombatEngine                    # noqa: E402
+from rules.models import Feat as _Feat                            # noqa: E402
+
+
+def fighter(inventory, *, feats=(), cls="Ranger", level=5, name="Rill"):
+    with Session(m.engine) as s:
+        ch = m.Character(
+            discord_user_id="grip2", name=name, char_class=cls, level=level,
+            stats={"strength": 12, "dexterity": 18, "constitution": 14,
+                   "intelligence": 10, "wisdom": 12, "charisma": 10},
+            max_hp=40, current_hp=40, inventory=inventory,
+            tags=[f"feat:{f}" for f in feats])
+        s.add(ch)
+        s.commit()
+        s.refresh(ch)
+        return ch
+
+
+TWO_BLADES = [
+    {"name": "Dagger", "quantity": 1, "equipped": True, "grip": "main"},
+    {"name": "Dagger", "quantity": 1, "equipped": True, "grip": "off"},
+    {"name": "Greatsword", "quantity": 1},
+]
+rill = fighter(TWO_BLADES)
+prof = m._combat_pc_profile(rill)
+names = [(w.name, w.grip, w.stowed, w.damage, w.offhand_damage) for w in prof.weapons]
+check("the held weapons come first, the packed one last",
+      names[0][1] == "main" and names[-1][0] == "Greatsword" and names[-1][2],
+      str(names))
+check("two Light weapons in two hands grant the bonus attack",
+      "bonus attack" in prof.features,
+      "a fact about the hands, not about a class")
+check("...and the off-hand swing drops the ability modifier",
+      names[1][4] == "1d4", f"main {names[0][3]}, off-hand {names[1][4]}")
+
+with Session(m.engine) as s:
+    s.add(_Feat(index_slug="two-weapon-fighting", name="Two-Weapon Fighting",
+                category="fighting-style",
+                benefit="When you make an extra attack from the Light "
+                        "property, you may add your ability modifier to that "
+                        "attack's damage."))
+    s.add(_Feat(index_slug="dual-wielder", name="Dual Wielder",
+                category="general", benefit="Enhanced Dual Wielding."))
+    s.commit()
+
+styled = m._combat_pc_profile(
+    fighter(TWO_BLADES, feats=["two-weapon-fighting"], name="Styled"))
+check("the Two-Weapon Fighting style gives the modifier back",
+      next(w.offhand_damage for w in styled.weapons if w.grip == "off") == "1d4+4")
+
+one_light = [{"name": "Dagger", "quantity": 1, "equipped": True, "grip": "main"},
+             {"name": "Mace", "quantity": 1, "equipped": True, "grip": "off"}]
+check("a non-Light off hand is NOT two-weapon fighting by itself",
+      "bonus attack" not in m._combat_pc_profile(
+          fighter(one_light, name="Plain")).features)
+check("...but Dual Wielder allows it",
+      "bonus attack" in m._combat_pc_profile(
+          fighter(one_light, feats=["dual-wielder"], name="Dualist")).features)
+check("a two-handed weapon is never two-weapon fighting",
+      "bonus attack" not in m._combat_pc_profile(fighter(
+          [{"name": "Greatsword", "quantity": 1, "equipped": True},
+           {"name": "Dagger", "quantity": 1}], name="Hewer")).features)
+
+versa = m._combat_pc_profile(fighter(
+    [{"name": "Longsword", "quantity": 1, "equipped": True, "grip": "both"}],
+    name="Vera"))
+check("a versatile weapon in both hands rolls its bigger die",
+      versa.weapons[0].damage == "1d10+1",
+      "two_handed_damage_dice has been in the database since the first ingest")
+one_hand = m._combat_pc_profile(fighter(
+    [{"name": "Longsword", "quantity": 1, "equipped": True, "grip": "main"},
+     {"name": "Shield", "quantity": 1, "equipped": True, "grip": "off"}],
+    name="Vane"))
+check("...and its smaller one in a single hand",
+      one_hand.weapons[0].damage == "1d8+1")
+
+check("a character holding NOTHING has every weapon available",
+      not any(w.stowed for w in m._combat_pc_profile(fighter(
+          [{"name": "Dagger", "quantity": 1},
+           {"name": "Greatsword", "quantity": 1}], name="Ghost")).weapons),
+      "unknown, not empty-handed — the same rule the pack check uses")
+
+# A stack has one grip: dual-wielding two identical blades has to split it.
+stack = [{"name": "Dagger", "quantity": 2, "equipped": True, "grip": "main"}]
+gear.plan_equip(stack, "Dagger", _row, grip="off").apply(stack)
+L = held(stack)
+check("a stack splits so both hands can hold one",
+      L.at("main") is not None and L.at("off") is not None
+      and L.at("main") is not L.at("off"), L.describe_hands())
+check("...and the pile is one lighter", stack[0]["quantity"] == 1, str(stack))
+check("...which is what makes two identical blades a real build",
+      "bonus attack" in m._combat_pc_profile(fighter(stack, name="Twin")).features)
+
+# A book weapon the catalogue never heard of still has to be holdable.
+exotic = [{"name": "Double-Bladed Scimitar", "quantity": 1}]
+p = gear.plan_equip(exotic, "Double-Bladed Scimitar", _row, grip="main")
+p.apply(exotic)
+check("an unknown item is held when a hand is named",
+      held(exotic).at("main") is not None, held(exotic).describe_hands())
+check("...and worn when one isn't, so it can never eat a hand by accident",
+      gear.plan_equip([{"name": "Odd Relic", "quantity": 1}],
+                      "Odd Relic", _row).note.endswith("is worn."))
+
+# ---- through a real encounter -----------------------------------------
+tracker = CombatTracker(database_url=os.environ["DATABASE_URL"])
+tracker.create_tables()
+engine_ = CombatEngine(tracker, rng=random.Random(11))
+enc = tracker.start_encounter("grip:fight", "Two blades")
+# Level 3: no Extra Attack, so the second swing of the turn can only be the
+# bonus-action one the off hand buys.
+duellist = fighter(TWO_BLADES, name="Duellist", level=3)
+prof = m._combat_pc_profile(duellist)
+tracker.add_pc(enc.id, name="Duellist", max_hp=40, armor_class=15, dex_mod=4,
+               character_id=duellist.id)
+straw = tracker.add_combatant(enc.id, "Straw Man", max_hp=200, armor_class=1,
+                              dex_mod=-5)
+tracker.set_position(straw.id, "melee with Duellist")
+tracker.roll_initiative(enc.id, rng=random.Random(1))
+while (cur := tracker.current_combatant(enc.id)) and cur.name != "Duellist":
+    tracker.next_turn(enc.id)
+
+profs = {duellist.id: prof}
+rep = engine_.resolve(enc.id, [{"verb": "attack", "target": "Straw Man"}], profs)
+check("the Attack action swings the MAIN hand",
+      rep.events and rep.events[0].get("weapon") == "Dagger", str(rep.rejections))
+rep = engine_.resolve(enc.id, [{"verb": "attack", "target": "Straw Man"}], profs)
+note = " ".join(rep.events[0].get("notes") or []) if rep.events else ""
+check("the second swing is the off-hand bonus attack", "off-hand" in note, note)
+check("...and a third is refused — the turn is spent",
+      bool(engine_.resolve(enc.id, [{"verb": "attack", "target": "Straw Man"}],
+                           profs).rejections))
+
+# Swinging something in the pack is refused, and the refusal names the draw.
+tracker.next_turn(enc.id)
+while (cur := tracker.current_combatant(enc.id)) and cur.name != "Duellist":
+    tracker.next_turn(enc.id)
+rep = engine_.resolve(enc.id, [{"verb": "attack", "target": "Straw Man",
+                                "arg": "Greatsword"}], profs)
+reason = rep.rejections[0]["reason"] if rep.rejections else ""
+check("a weapon in the pack cannot be swung", "not in" in reason, reason)
+check("...and the refusal names the draw", "[[GRIP: draw" in reason)
+
+summary = m._equipment_summary(duellist)
+check("the DM's board says two-weapon fighting is live",
+      "Two-weapon fighting is LIVE" in summary,
+      summary.splitlines()[-1][:120])
+check("...and that the off-hand damage carries no modifier",
+      "no ability modifier" in summary)
+
 print()
 if _failures:
     print(f"{RED}{_failures} check(s) failed{OFF}")
