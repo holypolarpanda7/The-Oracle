@@ -455,7 +455,110 @@ export interface VttScene {
 export interface VttOptions {
   token_id: number;
   budget_ft: number;
+  /** The storey the wash was costed on — a wash is per floor. */
+  level?: number;
   squares: { x: number; y: number; cost: number }[];
+  /** Squares where LEAVING provokes an opportunity attack. */
+  threatened?: { x: number; y: number }[];
+}
+
+/** One creature's standing as a target of the action being aimed.
+ *  Illegal ones are kept, with a reason: a target greyed out with a stated
+ *  cause is information, one missing from the list is indistinguishable
+ *  from a bug. */
+export interface VttTarget {
+  token_id: number;
+  name: string;
+  team: string;
+  kind: string;
+  x: number;
+  y: number;
+  level: number;
+  squares: number;
+  distance_ft: number;
+  cover: string;
+  legal: boolean;
+  reason: string;
+}
+
+export interface VttTargets {
+  action_id?: string;
+  ok: boolean;
+  actor?: string;
+  actor_token_id?: number;
+  range_ft?: number | null;
+  targets: VttTarget[];
+}
+
+/** Where a template would land, and who it would catch — including your own
+ *  party, which is the point of showing it before the slot is spent. */
+export interface VttArea {
+  action_id?: string;
+  ok: boolean;
+  reason?: string;
+  shape?: string;
+  origin?: [number, number];
+  level?: number;
+  distance_ft?: number;
+  squares: [number, number][];
+  caught: { token_id: number; name: string; team: string;
+            x: number; y: number }[];
+}
+
+/** One thing this character can do right now, and how it is aimed. */
+export interface BarAction {
+  id: string;
+  kind: "attack" | "cast" | "verb";
+  verb: string;
+  arg?: string;
+  name: string;
+  detail?: string;
+  cost: "action" | "bonus" | "reaction" | "free";
+  /** `dm` means the spell's own text couldn't be read well enough to aim it —
+   *  it is handed over as prose rather than refused or guessed at. */
+  targeting: "creature" | "area" | "none" | "dm";
+  team?: "enemy" | "ally" | "any";
+  range_ft?: number | null;
+  needs_sight?: boolean;
+  /** Spells only. */
+  level?: number;
+  slots?: number[];
+  shape?: string;
+  radius_ft?: number;
+  length_ft?: number;
+  width_ft?: number;
+  origin?: "self" | "point";
+  count?: number;
+  note?: string;
+  /** Attacks only. */
+  attack_bonus?: number;
+  ranged?: boolean;
+  stowed?: boolean;
+  enabled: boolean;
+  disabled_reason?: string;
+}
+
+export interface BarEconomy {
+  in_combat: boolean;
+  my_turn: boolean;
+  action?: boolean;
+  bonus?: boolean;
+  reaction?: boolean;
+  move_steps?: number;
+  move_left_ft?: number;
+  speed_ft?: number;
+  token_id?: number;
+  attacks_made?: number;
+  attacks_per_action?: number;
+  combatant_id?: number;
+  whose_turn?: string;
+}
+
+export interface ActionBarData {
+  character_id: number;
+  actions: BarAction[];
+  economy: BarEconomy;
+  slots: Record<string, number>;
 }
 
 export interface SubclassFeature {
@@ -647,6 +750,9 @@ export type ServerEvent =
   | { t: "vtt_preview"; token_id: number; ok: boolean; path?: [number, number][];
       cost_ft?: number; remaining_ft?: number; within_budget?: boolean;
       opportunity?: string[]; reason?: string }
+  | ({ t: "vtt_targets" } & VttTargets)
+  | ({ t: "vtt_area" } & VttArea)
+  | { t: "actions"; data: ActionBarData | null }
   | { t: "vtt_ping"; x: number; y: number; label?: string }
   | { t: "vtt_error"; detail: string }
   | { t: "scene"; url: string }
@@ -701,7 +807,20 @@ export type ClientEvent =
   /** Use the connector under my token. No square: you take the stair you are
    *  standing on, and the server checks that you are standing on one. */
   | { t: "vtt_stairs" }
-  | { t: "vtt_ping"; x: number; y: number; label?: string };
+  | { t: "vtt_ping"; x: number; y: number; label?: string }
+  /** Light up who this action could legally hit, from the actor's token. */
+  | { t: "vtt_targets"; token_id: number; action_id?: string;
+      range_ft?: number | null; needs_sight?: boolean; include_self?: boolean }
+  /** Where a template dropped here would land, and who it catches. */
+  | { t: "vtt_area"; token_id: number; action_id?: string; x: number; y: number;
+      shape: string; radius_ft?: number; length_ft?: number; width_ft?: number;
+      range_ft?: number | null }
+  /** Ask for a fresh action bar (it is also pushed after every turn). */
+  | { t: "actions" }
+  /** Take an act chosen on the bar. The server re-derives it from its own
+   *  catalogue and re-checks the aim — this is a request, not an instruction. */
+  | { t: "board_action"; action_id: string; target_token_id?: number;
+      x?: number; y?: number; slot?: number };
 
 export interface CCPayload {
   name: string;

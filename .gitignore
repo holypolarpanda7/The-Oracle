@@ -78,4 +78,5 @@ style-probe/
 # from scripts/lora_dataset.py, so it is derived data not source.
 lora-train/
 activity-ui/affix-shots/
+activity-ui/targeting-shots/
 activity-ui/route-shots/

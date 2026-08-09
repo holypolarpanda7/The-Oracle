@@ -95,6 +95,15 @@ export interface PaintState {
   pathLegal?: boolean;
   /** The route leaves an enemy's reach — drawn as a warning. */
   pathProvokes?: boolean;
+  /** Squares where LEAVING provokes. Drawn under the movement wash so a player
+   *  can see the threatened ground BEFORE choosing, the way they see a wall —
+   *  the opportunity warning on the path only arrives once the pointer has
+   *  already settled on the far end of the route. */
+  threatened?: Set<string> | null;
+  /** The squares an armed spell's template would cover, and whether it is a
+   *  legal place to put it. Drawn on the cursor while aiming. */
+  area?: [number, number][] | null;
+  areaLegal?: boolean;
   hover?: [number, number] | null;
   /** Measurement in progress: [from, to]. */
   measure?: [[number, number], [number, number]] | null;
@@ -285,6 +294,34 @@ export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: P
     ctx.lineWidth = 1.5;
     outline(ctx, v, [...st.reach.keys()].map((k) => k.split(",").map(Number) as [number, number]), cell);
     ctx.globalAlpha = 1;
+
+    // Threatened ground, hatched over the wash. Only where you could actually
+    // GO — hatching the whole board would be noise, and the question this
+    // answers is "does the square I am considering cost me an attack".
+    if (st.threatened && st.threatened.size) {
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = "#ff7a5c";
+      ctx.lineWidth = 1;
+      const step = Math.max(4, cell / 4);
+      for (const key of st.reach.keys()) {
+        if (!st.threatened.has(key)) continue;
+        const [x, y] = key.split(",").map(Number);
+        const [sx, sy] = toScreen(v, x, y);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(sx, sy, cell, cell);
+        ctx.clip();
+        ctx.beginPath();
+        for (let d = -cell; d < cell * 2; d += step) {
+          ctx.moveTo(sx + d, sy);
+          ctx.lineTo(sx + d + cell, sy + cell);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
   }
 
   // --- effects (spell areas, zones, auras, light) ---
@@ -458,6 +495,31 @@ export function paint(ctx: CanvasRenderingContext2D, w: number, h: number, st: P
       pill(ctx, sx + cell / 2, sy - 8,
         warn ? `${st.pathCost} ft · provokes` : `${st.pathCost} ft`, stroke);
     }
+  }
+
+  // --- the armed spell's template, on the cursor ---
+  // Drawn above the board's own effects on purpose: this is the thing being
+  // decided right now, and it has to be legible over whatever is already
+  // burning on the floor. The squares come from the SERVER — clipped by line
+  // of effect, so a fireball visibly stops at a wall rather than leaking
+  // through it and being silently trimmed after the slot is spent.
+  if (st.area && st.area.length) {
+    const legal = st.areaLegal !== false;
+    const fill = legal ? "rgba(255,166,64,0.30)" : "rgba(255,80,80,0.22)";
+    const edge = legal ? "#ffb457" : "#ff6a6a";
+    ctx.save();
+    ctx.fillStyle = fill;
+    for (const [x, y] of st.area) {
+      const [sx, sy] = toScreen(v, x, y);
+      ctx.fillRect(sx, sy, cell, cell);
+    }
+    ctx.globalAlpha = 0.95;
+    ctx.strokeStyle = edge;
+    ctx.lineWidth = 2;
+    if (!legal) ctx.setLineDash([6, 4]);
+    outline(ctx, v, st.area, cell);
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   // --- ruler ---

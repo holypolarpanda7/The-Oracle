@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { connect, type Connection } from "./lib/connection";
 import type {
-  Ally, ArenaState, CCPayload, CharacterSummary, CombatState, LevelUpData, LexEntry,
-  ChronicleData, Locale, RepData, RouteRow, ServerEvent, SheetData, VttOptions,
-  VttScene,
+  ActionBarData, Ally, ArenaState, BarAction, CCPayload, CharacterSummary,
+  CombatState, LevelUpData, LexEntry,
+  ChronicleData, Locale, RepData, RouteRow, ServerEvent, SheetData, VttArea,
+  VttOptions, VttScene, VttTargets,
 } from "./lib/types";
 import { Block, isTyped, makeOracleBlock, makeSpeechBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
@@ -52,8 +53,17 @@ export default function App({ session }: { session: Session }) {
   const [vttOptions, setVttOptions] = useState<VttOptions | null>(null);
   const [vttPing, setVttPing] = useState<{ x: number; y: number; label?: string; at: number } | null>(null);
   const [vttPreview, setVttPreview] = useState<
-    { token_id: number; ok: boolean; cost_ft?: number; opportunity?: string[] } | null>(null);
+    { token_id: number; ok: boolean; cost_ft?: number;
+      path?: [number, number][]; opportunity?: string[] } | null>(null);
   const [vttError, setVttError] = useState<string | null>(null);
+  // The action bar, and what is armed on it. `armed` is deliberately client
+  // state: choosing an act is not doing one, and nothing is sent until the
+  // board has been aimed.
+  const [actions, setActions] = useState<ActionBarData | null>(null);
+  const [armed, setArmed] = useState<BarAction | null>(null);
+  const [armedSlot, setArmedSlot] = useState<number | null>(null);
+  const [vttTargets, setVttTargets] = useState<VttTargets | null>(null);
+  const [vttArea, setVttArea] = useState<VttArea | null>(null);
   const [sceneUrl, setSceneUrl] = useState<string | null>(null);
   const [levelUp, setLevelUp] = useState<LevelUpData | null>(null);
   const [repData, setRepData] = useState<RepData | null>(null);
@@ -108,6 +118,14 @@ export default function App({ session }: { session: Session }) {
     }, 90000);
     connRef.current?.send({ t: "enter", ...opts });
   };
+
+  // A board coming out is the moment the bar becomes useful. The server also
+  // pushes a fresh one after every turn; this is what fills it the FIRST time,
+  // and it is how the offline demo gets one at all.
+  useEffect(() => {
+    if (vtt) connRef.current?.send({ t: "actions" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vtt?.id]);
 
   useEffect(() => {
     const channel = session.channel;
@@ -219,15 +237,36 @@ export default function App({ session }: { session: Session }) {
           break;
         case "vtt":
           setVtt(ev.scene);
-          if (!ev.scene) { setVttOptions(null); setVttError(null); setVttPreview(null); }
+          if (!ev.scene) {
+            setVttOptions(null); setVttError(null); setVttPreview(null);
+            // The board going away disarms whatever was aimed at it — an act
+            // waiting for a click it can no longer receive is a trap.
+            setArmed(null); setArmedSlot(null);
+            setVttTargets(null); setVttArea(null);
+          }
           break;
         case "vtt_options":
           setVttOptions({ token_id: ev.token_id, budget_ft: ev.budget_ft,
-                          squares: ev.squares });
+                          level: ev.level, squares: ev.squares,
+                          threatened: ev.threatened });
           break;
         case "vtt_preview":
           setVttPreview({ token_id: ev.token_id, ok: ev.ok, cost_ft: ev.cost_ft,
-                          opportunity: ev.opportunity });
+                          path: ev.path, opportunity: ev.opportunity });
+          break;
+        case "vtt_targets":
+          setVttTargets({ action_id: ev.action_id, ok: ev.ok,
+                          actor: ev.actor, actor_token_id: ev.actor_token_id,
+                          range_ft: ev.range_ft, targets: ev.targets });
+          break;
+        case "vtt_area":
+          setVttArea({ action_id: ev.action_id, ok: ev.ok, reason: ev.reason,
+                       shape: ev.shape, origin: ev.origin, level: ev.level,
+                       distance_ft: ev.distance_ft, squares: ev.squares,
+                       caught: ev.caught });
+          break;
+        case "actions":
+          setActions(ev.data);
           break;
         case "vtt_ping":
           setVttPing({ x: ev.x, y: ev.y, label: ev.label, at: Date.now() });
@@ -493,6 +532,42 @@ export default function App({ session }: { session: Session }) {
               vttPing={vttPing}
               vttPreview={vttPreview}
               vttError={vttError}
+              actions={actions}
+              armed={armed}
+              armedSlot={armedSlot}
+              vttTargets={vttTargets}
+              vttArea={vttArea}
+              onArm={(a) => {
+                setArmed(a);
+                // A fresh act starts at its own level; the previous act's
+                // upcast choice must not ride along onto a different spell.
+                setArmedSlot(a?.slots?.length ? a.slots[0] : null);
+                setVttTargets(null);
+                setVttArea(null);
+              }}
+              onArmedSlot={setArmedSlot}
+              onTakeAction={(a, aim) => {
+                connRef.current?.send({
+                  t: "board_action", action_id: a.id,
+                  target_token_id: aim?.targetTokenId,
+                  x: aim?.x, y: aim?.y,
+                  slot: armedSlot ?? a.slots?.[0],
+                });
+                setArmed(null);
+                setArmedSlot(null);
+                setVttTargets(null);
+                setVttArea(null);
+              }}
+              onVttTargets={(a, token_id) =>
+                connRef.current?.send({
+                  t: "vtt_targets", token_id, action_id: a.id,
+                  range_ft: a.range_ft, needs_sight: a.needs_sight !== false })}
+              onVttArea={(a, token_id, x, y) =>
+                connRef.current?.send({
+                  t: "vtt_area", token_id, action_id: a.id, x, y,
+                  shape: a.shape || "sphere", radius_ft: a.radius_ft,
+                  length_ft: a.length_ft, width_ft: a.width_ft,
+                  range_ft: a.range_ft })}
               onVttOptions={(token_id, dash) =>
                 connRef.current?.send({ t: "vtt_options", token_id, dash })}
               onVttPreview={(token_id, x, y) =>

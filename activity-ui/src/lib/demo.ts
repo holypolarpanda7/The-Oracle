@@ -1,4 +1,5 @@
-import type { ArenaEnv, ArenaEquipLine, ArenaOutfitLine, ArenaShop, ArenaState,
+import type { ActionBarData, ArenaEnv, ArenaEquipLine, ArenaOutfitLine,
+              ArenaShop, ArenaState,
               ArenaStockItem, ChronicleData, CombatState, ServerEvent, VttEffect,
               VttScene } from "./types";
 
@@ -545,9 +546,131 @@ const demoLevelUp: ServerEvent = {
   },
 };
 
+/** Chebyshev feet between two tokens' squares — the demo's stand-in for the
+ *  server's real 5-5-5 measurement with height folded in. */
+function demoGapFt(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y)) * 5;
+}
+
 export const demoVttApi = {
   scene: demoScene,
   options: demoReach,
+  /** Who an act could hit, offline. The same CONTRACT as the backend's
+   *  `targets_for`: every creature comes back, and the illegal ones carry a
+   *  reason. The demo has no line-of-sight model, so only range is judged —
+   *  enough to drive the picker, and honest about what it is. */
+  targets(tokenId: number, rangeFt: number | null | undefined) {
+    const scene = demoScene();
+    const me = scene.tokens.find((t) => t.id === tokenId);
+    if (!me) return { ok: false, targets: [] };
+    const targets = scene.tokens
+      .filter((t) => t.id !== tokenId && !t.defeated)
+      .map((t) => {
+        const d = demoGapFt(me, t);
+        const over = rangeFt != null && d > rangeFt;
+        return {
+          token_id: t.id, name: t.name, team: t.team, kind: t.kind,
+          x: t.x, y: t.y, level: t.level ?? 0, squares: t.squares,
+          distance_ft: d, cover: "none",
+          legal: !over,
+          reason: over ? `out of range — ${d} ft away, reaches ${rangeFt} ft` : "",
+        };
+      })
+      .sort((a, b) => Number(!a.legal) - Number(!b.legal)
+        || a.distance_ft - b.distance_ft);
+    return { ok: true, actor: me.name, actor_token_id: me.id,
+             range_ft: rangeFt ?? null, targets };
+  },
+  /** Where a template would land, offline. Walls are respected only as
+   *  impassable tiles, not by line of effect. */
+  area(tokenId: number, x: number, y: number, shape: string,
+       radiusFt: number, lengthFt: number, rangeFt: number | null | undefined) {
+    const scene = demoScene();
+    const me = scene.tokens.find((t) => t.id === tokenId);
+    if (!me) return { ok: false, reason: "no token", squares: [], caught: [] };
+    const dist = demoGapFt(me, { x, y });
+    const size = radiusFt || lengthFt || 10;
+    const r = Math.max(1, Math.round(size / 5));
+    const from = shape === "cone" || shape === "line" ? me : { x, y };
+    const squares: [number, number][] = [];
+    for (let yy = from.y - r; yy <= from.y + r; yy++) {
+      for (let xx = from.x - r; xx <= from.x + r; xx++) {
+        if (demoTileCost(xx, yy) == null) continue;
+        const dx = xx - from.x;
+        const dy = yy - from.y;
+        if (shape === "cube") {
+          if (Math.abs(dx) > r || Math.abs(dy) > r) continue;
+        } else if (Math.hypot(dx, dy) > r + 0.001) continue;
+        if (shape === "cone" && Math.sign(dx || 1) !== Math.sign((x - me.x) || 1)) continue;
+        squares.push([xx, yy]);
+      }
+    }
+    const hit = new Set(squares.map(([sx, sy]) => `${sx},${sy}`));
+    const caught = scene.tokens
+      .filter((t) => !t.defeated && hit.has(`${t.x},${t.y}`))
+      .map((t) => ({ token_id: t.id, name: t.name, team: t.team, x: t.x, y: t.y }));
+    const over = rangeFt != null && dist > rangeFt;
+    return {
+      ok: !over,
+      reason: over
+        ? `out of range — that point is ${dist} ft away, the spell reaches ${rangeFt} ft`
+        : "",
+      shape, origin: [x, y] as [number, number], level: 0,
+      distance_ft: dist, squares, caught,
+    };
+  },
+  /** A small action bar, offline. The real one is built from the loadout and
+   *  the prepared list by `_activity_actions`; this is enough to drive the
+   *  screens — one melee weapon, one bolt, one template, and the verbs. */
+  actions(): ActionBarData {
+    return {
+      character_id: 1,
+      slots: { "1": 3, "2": 2 },
+      economy: {
+        in_combat: true, my_turn: true, action: true, bonus: true,
+        reaction: true, move_left_ft: 30, speed_ft: 30, attacks_made: 0,
+        attacks_per_action: 1, whose_turn: "Kara Emberfall",
+      },
+      actions: [
+        { id: "attack:0:Rapier", kind: "attack", verb: "attack", arg: "Rapier",
+          name: "Rapier", detail: "1d8+3 piercing · main hand", cost: "action",
+          targeting: "creature", team: "enemy", range_ft: 5, needs_sight: false,
+          enabled: true },
+        { id: "attack:1:Shortbow", kind: "attack", verb: "attack", arg: "Shortbow",
+          name: "Shortbow", detail: "1d6+3 piercing · two-handed", cost: "action",
+          targeting: "creature", team: "enemy", range_ft: 80, ranged: true,
+          needs_sight: false, enabled: true },
+        { id: "cast:fire-bolt", kind: "cast", verb: "cast", arg: "Fire Bolt",
+          name: "Fire Bolt", detail: "cantrip · 120 feet", cost: "action",
+          targeting: "creature", team: "any", range_ft: 120, needs_sight: true,
+          level: 0, slots: [], enabled: true },
+        { id: "cast:burning-hands", kind: "cast", verb: "cast", arg: "Burning Hands",
+          name: "Burning Hands", detail: "level 1 · Self · 15-ft cone",
+          cost: "action", targeting: "area", team: "any", range_ft: 15,
+          needs_sight: false, level: 1, slots: [1, 2], shape: "cone",
+          radius_ft: 0, length_ft: 15, width_ft: 5, origin: "self",
+          enabled: true },
+        { id: "cast:shatter", kind: "cast", verb: "cast", arg: "Shatter",
+          name: "Shatter", detail: "level 2 · 60 feet · 10-ft sphere",
+          cost: "action", targeting: "area", team: "any", range_ft: 60,
+          needs_sight: false, level: 2, slots: [2], shape: "sphere",
+          radius_ft: 10, length_ft: 0, width_ft: 5, origin: "point",
+          enabled: true },
+        { id: "verb:dash", kind: "verb", verb: "dash", name: "Dash",
+          detail: "double your movement this turn", cost: "action",
+          targeting: "none", enabled: true },
+        { id: "verb:dodge", kind: "verb", verb: "dodge", name: "Dodge",
+          detail: "attacks against you have disadvantage", cost: "action",
+          targeting: "none", enabled: true },
+        { id: "verb:hide", kind: "verb", verb: "hide", name: "Hide",
+          detail: "a Stealth check against those who can't see you",
+          cost: "action", targeting: "none", enabled: true },
+        { id: "verb:end_turn", kind: "verb", verb: "end_turn", name: "End turn",
+          detail: "pass the turn along", cost: "free", targeting: "none",
+          enabled: true },
+      ],
+    };
+  },
   /** Mirrors the server's path preview: cost plus whose reach the route leaves. */
   preview(tokenId: number, x: number, y: number) {
     const scene = demoScene();

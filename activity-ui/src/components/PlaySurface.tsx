@@ -6,9 +6,10 @@ import { RevealedSpans, isTyped, type Block } from "./Narration";
 import { useResizable, resetAllPanels, dropPanel } from "../lib/useResizable";
 import { InitiativeCarousel } from "./InitiativeCarousel";
 import { VttOverlay } from "./VttOverlay";
+import { ActionBar } from "./ActionBar";
 import type {
-  Ally, CombatState, Locale, RollResult, RouteRow, SheetData, VttOptions,
-  VttScene,
+  ActionBarData, Ally, BarAction, CombatState, Locale, RollResult, RouteRow,
+  SheetData, VttArea, VttOptions, VttScene, VttTargets,
 } from "../lib/types";
 
 function hpMood(hp: number, max: number): string {
@@ -192,8 +193,20 @@ export interface PlayProps {
   vttOptions: VttOptions | null;
   vttPing: { x: number; y: number; label?: string; at: number } | null;
   vttPreview: { token_id: number; ok: boolean; cost_ft?: number;
-                opportunity?: string[] } | null;
+                path?: [number, number][]; opportunity?: string[] } | null;
   vttError: string | null;
+  /** The action bar, and the act currently armed on it. */
+  actions: ActionBarData | null;
+  armed: BarAction | null;
+  armedSlot: number | null;
+  vttTargets: VttTargets | null;
+  vttArea: VttArea | null;
+  onArm: (a: BarAction | null) => void;
+  onArmedSlot: (n: number) => void;
+  onTakeAction: (a: BarAction, aim?: { targetTokenId?: number;
+                                       x?: number; y?: number }) => void;
+  onVttTargets: (a: BarAction, tokenId: number) => void;
+  onVttArea: (a: BarAction, tokenId: number, x: number, y: number) => void;
   onVttOptions: (tokenId: number, dash: boolean) => void;
   onVttPreview: (tokenId: number, x: number, y: number) => void;
   onVttMove: (tokenId: number, x: number, y: number) => void;
@@ -274,15 +287,36 @@ export function PlaySurface(p: PlayProps) {
               myCharacterId={p.sheet?.character_id ?? null}
               options={p.vttOptions}
               preview={p.vttPreview}
+              armed={p.armed}
+              targets={p.vttTargets}
+              area={p.vttArea}
               ping={p.vttPing}
               error={p.vttError}
               onRequestOptions={p.onVttOptions}
               onPreviewPath={p.onVttPreview}
               onMove={p.onVttMove}
+              onRequestTargets={p.onVttTargets}
+              onPreviewArea={p.onVttArea}
+              onTakeAimed={(a, aim) => p.onTakeAction(a, aim)}
               onPing={p.onVttPing}
               onTakeStairs={p.onVttStairs}
             onDismissError={p.onVttDismissError}
-            />
+            >
+              {/* The action bar lives INSIDE the board panel, because aiming is
+                  a conversation between the two: you pick here, and the board
+                  answers with who that could hit. It is absent when there is no
+                  board — with no positions there is nothing to aim, and typing
+                  what you do is the older and still-supported path. */}
+              <ActionBar
+                data={p.actions}
+                armed={p.armed}
+                slot={p.armedSlot}
+                onArm={p.onArm}
+                onSlot={p.onArmedSlot}
+                onTake={(a) => p.onTakeAction(a)}
+                disabled={p.busy}
+              />
+            </VttOverlay>
           ) : p.sceneUrl ? (
             <Frame className="scene" panel={scene} bare>
               <div className="in"><img src={p.sceneUrl} alt="Scene" /></div>

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { CombatState, VttOptions, VttScene, VttToken } from "../lib/types";
+import type { ReactNode } from "react";
+import type {
+  BarAction, CombatState, VttArea, VttOptions, VttScene, VttTarget, VttToken,
+} from "../lib/types";
 import { SPRITES, loadSprites } from "../lib/boardSprites";
 import { useResizable } from "../lib/useResizable";
 import {
@@ -59,18 +62,37 @@ export interface VttProps {
   /** The viewer's character, so we know which token is theirs to move. */
   myCharacterId?: number | null;
   options: VttOptions | null;
-  /** The server's answer for the square being hovered (cost + who it provokes). */
+  /** The server's answer for the square being hovered: the real route it
+   *  would walk, what it costs, and who it provokes. */
   preview: { token_id: number; ok: boolean; cost_ft?: number;
-             opportunity?: string[] } | null;
+             path?: [number, number][]; opportunity?: string[] } | null;
+  /** The act armed on the action bar, waiting for the board to be aimed. */
+  armed?: BarAction | null;
+  /** Who that act may legally hit, with reasons for the rest. */
+  targets?: { action_id?: string; targets: VttTarget[] } | null;
+  /** Where the armed template would land, for the square under the cursor. */
+  area?: VttArea | null;
   ping: { x: number; y: number; label?: string; at: number } | null;
   error?: string | null;
   onRequestOptions: (tokenId: number, dash: boolean) => void;
   onPreviewPath: (tokenId: number, x: number, y: number) => void;
   onMove: (tokenId: number, x: number, y: number) => void;
+  /** Ask the server what the armed act could hit from here. */
+  onRequestTargets: (a: BarAction, tokenId: number) => void;
+  /** Ask where the armed template would land if dropped on this square. */
+  onPreviewArea: (a: BarAction, tokenId: number, x: number, y: number) => void;
+  /** Aim the armed act and take it. */
+  onTakeAimed: (a: BarAction, aim: { targetTokenId?: number;
+                                     x?: number; y?: number }) => void;
   onPing: (x: number, y: number) => void;
   /** Use the connector under my token — the server checks I'm on one. */
   onTakeStairs: () => void;
   onDismissError: () => void;
+  /** The action bar, rendered INSIDE the board panel. It belongs here rather
+   *  than as a sibling in the stage: the stage scrolls, the board is tall, and
+   *  a bar below the fold is a bar nobody uses. The two are also in
+   *  conversation — you pick on one and the other answers. */
+  children?: ReactNode;
 }
 
 export function VttOverlay(p: VttProps) {
@@ -168,6 +190,62 @@ export function VttOverlay(p: VttProps) {
     return m;
   }, [p.options, selectedToken]);
 
+  /** Squares where leaving provokes — server-computed, same rule as the
+   *  opportunity check the move itself runs. */
+  const threatened = useMemo(() => {
+    if (!p.options?.threatened || !selectedToken
+        || p.options.token_id !== selectedToken.id) return null;
+    return new Set(p.options.threatened.map((s) => `${s.x},${s.y}`));
+  }, [p.options, selectedToken]);
+
+  // ---- targeting ----------------------------------------------------------
+  // An armed act takes the board over: the movement wash goes away (you are
+  // choosing a target, not a destination) and the tokens become the things
+  // you click. The legality is entirely the SERVER's — this only draws it.
+  //
+  // Deliberately NOT re-gated on whose turn it is. The action bar already
+  // refuses to arm an act the economy can't pay for, and it decides that from
+  // the engine's own turn order; asking `scene.current_token_id` here as well
+  // would be a second answer to the same question, and the two drift. Seeing
+  // what a spell WOULD reach is also how a player decides whether to walk
+  // first, which is a thing worth being able to do while waiting.
+  const aiming = !!p.armed;
+  const aimingArea = aiming && p.armed!.targeting === "area";
+
+  const targetById = useMemo(() => {
+    const m = new Map<number, VttTarget>();
+    if (aiming && p.targets && (!p.targets.action_id
+        || p.targets.action_id === p.armed!.id)) {
+      for (const t of p.targets.targets) m.set(t.token_id, t);
+    }
+    return m;
+  }, [aiming, p.targets, p.armed]);
+
+  // Ask the server who this act can hit, whenever the act or the board changes.
+  useEffect(() => {
+    if (!p.armed || !myToken || p.armed.targeting !== "creature") return;
+    p.onRequestTargets(p.armed, myToken.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.armed?.id, myToken?.id, scene.revision]);
+
+  // …and where the template would land, for the square under the cursor. A
+  // template is clipped by line of effect, which only the server can work out,
+  // so this is debounced the same way the path preview is.
+  useEffect(() => {
+    if (!aimingArea || !myToken || !hover) return;
+    const [hx, hy] = hover;
+    const id = window.setTimeout(
+      () => p.onPreviewArea(p.armed!, myToken.id, hx, hy), 90);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aimingArea, hover?.[0], hover?.[1], myToken?.id, p.armed?.id]);
+
+  const areaSquares = useMemo(() => {
+    if (!aimingArea || !p.area) return null;
+    if (p.area.action_id && p.area.action_id !== p.armed!.id) return null;
+    return p.area.squares;
+  }, [aimingArea, p.area, p.armed]);
+
   // ---- sizing -------------------------------------------------------------
   useEffect(() => {
     const el = wrapRef.current;
@@ -250,11 +328,27 @@ export function VttOverlay(p: VttProps) {
     ? p.preview.opportunity ?? []
     : [];
 
+  // The route drawn is the route the server WOULD WALK. `path_preview` returns
+  // its own A* result and that is what gets drawn the moment it lands; the
+  // cost-map descent below is only the instant stand-in for the ~180 ms before
+  // it does. They can genuinely differ — equal-cost neighbours break ties
+  // differently, and the descent knows nothing of the extra costs the server
+  // applied — so drawing the guess and walking the other one was a "proof of
+  // path" that occasionally proved the wrong path.
   const path = useMemo(() => {
-    if (!reach || !selectedToken || !hover) return null;
+    if (!selectedToken || !hover || aiming) return null;
+    const served = p.preview;
+    if (served && served.ok && served.token_id === selectedToken.id
+        && served.path && served.path.length
+        && served.path[served.path.length - 1][0] === hover[0]
+        && served.path[served.path.length - 1][1] === hover[1]) {
+      return served.path;
+    }
+    if (!reach) return null;
     return pathFromCosts(reach, [selectedToken.x, selectedToken.y], hover);
-  }, [reach, selectedToken, hover]);
-  const pathCost = hover && reach ? reach.get(`${hover[0]},${hover[1]}`) : undefined;
+  }, [reach, selectedToken, hover, p.preview, aiming]);
+  const pathCost = hover && reach && !aiming
+    ? reach.get(`${hover[0]},${hover[1]}`) : undefined;
 
   // ---- draw ---------------------------------------------------------------
   const draw = useCallback(() => {
@@ -276,14 +370,19 @@ export function VttOverlay(p: VttProps) {
       view, art: artRef.current,
       // A movement wash is a plan for a creature standing on YOUR floor; drawn
       // over a storey you are only looking at, it is an invitation to a move
-      // that cannot happen.
-      reach: level === myLevel ? reach : null,
+      // that cannot happen. While aiming it goes away entirely — you are
+      // choosing a target, and two overlapping washes read as neither.
+      reach: level === myLevel && !aiming ? reach : null,
+      threatened: level === myLevel && !aiming ? threatened : null,
       path: level === myLevel ? path : null,
       pathCost,
       pathLegal: pathCost !== undefined, pathProvokes: provokes.length > 0,
+      area: level === myLevel ? areaSquares : null,
+      areaLegal: p.area?.ok !== false,
       hover, measure, show, pings, sprites: SPRITES, now: Date.now(),
     });
   }, [floor, onThisFloor, stairsHere, floors, level, myLevel, view, size, reach,
+      threatened, aiming, areaSquares, p.area?.ok,
       path, pathCost, hover, measure, show, pings, provokes.length, spriteTick]);
 
   useEffect(() => {
@@ -351,6 +450,15 @@ export function VttOverlay(p: VttProps) {
     setDrag(null);
     if (measuring) return;
     if (!sq || moved) return;
+    // Aiming owns the click. A template is placed on a SQUARE, so it lands
+    // here; a creature target is a click on the token itself (below), because
+    // clicking the ground near someone is not choosing them.
+    if (aimingArea && myToken) {
+      if (p.area?.ok === false) return;    // an illegal placement is not a move
+      p.onTakeAimed(p.armed!, { x: sq[0], y: sq[1] });
+      return;
+    }
+    if (aiming) return;
     // A click on a reachable square with your own token selected = a move.
     if (selectedToken && isMine(selectedToken) && reach?.has(`${sq[0]},${sq[1]}`)) {
       const occupied = scene.tokens.some(
@@ -424,11 +532,20 @@ export function VttOverlay(p: VttProps) {
       .map((c) => COND_PIP[c.toLowerCase()])
       .filter(Boolean)
       .slice(0, 3);
+    // While aiming, every token says whether it may be chosen. The illegal
+    // ones stay on the board wearing their reason — a target that simply
+    // vanished would be indistinguishable from a bug, and the reason is
+    // usually the thing the player needs (walk closer, break line of sight).
+    const tgt = aiming ? targetById.get(t.id) : undefined;
+    const inArea = aimingArea
+      && !!p.area?.caught?.some((c) => c.token_id === t.id);
     const cls = [
       "vtt-token", `team-${t.team}`, `kind-${t.kind}`,
       active ? "active" : "", t.defeated ? "down" : "",
       t.prone ? "prone" : "", t.hidden ? "ghost" : "",
       selected === t.id ? "selected" : "", isMine(t) ? "mine" : "",
+      tgt ? (tgt.legal ? "targetable" : "untargetable") : "",
+      inArea ? "in-area" : "",
     ].filter(Boolean).join(" ");
     return (
       <div
@@ -438,11 +555,25 @@ export function VttOverlay(p: VttProps) {
           left: sx, top: sy, width: px, height: px,
           ["--tok" as string]: t.color || undefined,
         }}
-        title={`${t.name}` +
-          (vit ? ` — ${vit.hp}/${vit.max} HP${vit.temp ? ` (+${vit.temp} temp)` : ""}` : "") +
-          (t.elevation_ft ? ` · ${t.elevation_ft} ft up` : "") +
-          ` · ${t.moved_ft}/${t.speed_ft} ft moved`}
-        onPointerDown={(e) => { e.stopPropagation(); setSelected(t.id); }}
+        title={tgt
+          ? `${t.name} — ${tgt.distance_ft} ft`
+            + (tgt.legal
+              ? (tgt.cover && tgt.cover !== "none" ? ` · ${tgt.cover} cover` : "")
+              : ` · ${tgt.reason}`)
+          : `${t.name}` +
+            (vit ? ` — ${vit.hp}/${vit.max} HP${vit.temp ? ` (+${vit.temp} temp)` : ""}` : "") +
+            (t.elevation_ft ? ` · ${t.elevation_ft} ft up` : "") +
+            ` · ${t.moved_ft}/${t.speed_ft} ft moved`}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          // Aiming: this click CHOOSES, it doesn't select. An illegal target
+          // is inert rather than an error — its reason is already on it.
+          if (aiming && p.armed!.targeting === "creature") {
+            if (tgt?.legal) p.onTakeAimed(p.armed!, { targetTokenId: t.id });
+            return;
+          }
+          setSelected(t.id);
+        }}
       >
         <div className="vtt-disc">
           {t.image_id
@@ -578,7 +709,29 @@ export function VttOverlay(p: VttProps) {
       />
 
       <footer className="vtt-foot">
-        {selectedToken ? (
+        {aiming ? (
+          <>
+            <span className="vtt-sel">{p.armed!.name}</span>
+            {aimingArea ? (
+              <span className={`vtt-hint${p.area?.ok === false ? " bad" : ""}`}>
+                {p.area?.ok === false
+                  ? `⚠ ${p.area.reason}`
+                  : (p.area?.caught?.length
+                    ? `catches ${p.area.caught.map((c) => c.name).join(", ")}`
+                    : "click to place it · it catches nobody yet")}
+              </span>
+            ) : (
+              <span className="vtt-hint">
+                {(() => {
+                  const legal = [...targetById.values()].filter((t) => t.legal);
+                  return legal.length
+                    ? `click a ringed target — ${legal.length} in reach`
+                    : "nothing is in reach of that — walk closer, or pick something else";
+                })()}
+              </span>
+            )}
+          </>
+        ) : selectedToken ? (
           <>
             <span className="vtt-sel">{selectedToken.name}</span>
             {isMine(selectedToken) ? (
@@ -642,6 +795,8 @@ export function VttOverlay(p: VttProps) {
           ))}
         </div>
       )}
+
+      {p.children}
     </div>
   );
 }

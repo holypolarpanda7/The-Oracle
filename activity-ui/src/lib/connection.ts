@@ -208,6 +208,30 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
     onEvent({ t: "vtt_preview", ...demoVttApi.preview(ev.token_id, ev.x, ev.y) });
     return;
   }
+  if (ev.t === "actions") {
+    onEvent({ t: "actions", data: demoVttApi.actions() });
+    return;
+  }
+  if (ev.t === "vtt_targets") {
+    onEvent({ t: "vtt_targets", action_id: ev.action_id,
+              ...demoVttApi.targets(ev.token_id, ev.range_ft) });
+    return;
+  }
+  if (ev.t === "vtt_area") {
+    onEvent({ t: "vtt_area", action_id: ev.action_id,
+              ...demoVttApi.area(ev.token_id, ev.x, ev.y, ev.shape,
+                                 ev.radius_ft ?? 0, ev.length_ft ?? 0,
+                                 ev.range_ft) });
+    return;
+  }
+  if (ev.t === "board_action") {
+    // Offline there is no engine to resolve into, so an act is narrated and
+    // the bar is re-sent. Enough to exercise the picking flow end to end.
+    onEvent({ t: "narration",
+              text: `*You commit to ${ev.action_id.split(":").pop()}.*` });
+    onEvent({ t: "actions", data: demoVttApi.actions() });
+    return;
+  }
   if (ev.t === "inspect_item") {
     onEvent({ t: "item_detail", item: demoItemDetail(ev.name) });
     return;

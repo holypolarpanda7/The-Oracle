@@ -331,3 +331,134 @@
 .play .vtt-take-stairs:disabled {
   opacity: 0.45; cursor: not-allowed; background: transparent;
 }
+
+/* ---------- targeting ----------
+   While an act is armed the board stops being a place to walk and becomes a
+   list of things to choose. Legal targets are RINGED and reachable; the rest
+   stay on the board wearing their reason in the tooltip, because a target
+   that simply vanished would be indistinguishable from a bug. */
+.play .vtt-token.targetable { pointer-events: auto; cursor: crosshair; }
+.play .vtt-token.targetable .vtt-disc {
+  outline: 2px solid var(--ember);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 0 16px rgba(245, 154, 60, 0.55);
+  animation: vtt-aim 1.4s ease-in-out infinite;
+}
+@keyframes vtt-aim {
+  50% { outline-offset: 5px; box-shadow: 0 0 0 1px rgba(0,0,0,0.6), 0 0 24px rgba(245, 154, 60, 0.8); }
+}
+.play .vtt-token.untargetable { opacity: 0.34; filter: grayscale(0.7); cursor: not-allowed; }
+.play .vtt-token.in-area .vtt-disc {
+  outline: 2px dashed var(--ember); outline-offset: 3px;
+}
+.play .vtt-hint.bad { color: #f4b9be; }
+
+/* ---------- the action bar ----------
+   Picking here does not DO anything: an act that needs aiming arms the board
+   and waits for the click, so a player can see what a spell would reach — and
+   who it would catch — before it costs them the slot. */
+.play .abar {
+  flex: none;
+  display: flex; flex-direction: column; gap: 0;
+  border-top: 1px solid var(--edge);
+  /* Pinned to the bottom of the stage's scrollport. The stage scrolls on
+     purpose (a board during a fight is taller than the column), which would
+     otherwise carry the bar — the thing you act with — below the fold exactly
+     when a fight makes it matter. Opaque, because the board scrolls behind it. */
+  position: sticky; bottom: 0; z-index: 12;
+  background:
+    linear-gradient(180deg, rgba(9, 12, 21, 0.97), rgba(12, 16, 30, 0.99));
+  box-shadow: 0 -8px 18px rgba(0, 0, 0, 0.45);
+}
+.play .abar.busy { opacity: 0.55; pointer-events: none; }
+
+.play .abar-econ {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--edge) 55%, transparent);
+  font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+.play .abar-pip { color: var(--gold-2); font-size: 0.8rem; line-height: 1; }
+.play .abar-pip.spent { color: var(--text-faint); opacity: 0.4; }
+.play .abar-move { color: var(--teal); }
+.play .abar-wait { color: var(--text-faint); font-style: italic; margin-left: auto; }
+
+.play .abar-groups { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+.play .abar-group { display: flex; flex-direction: column; min-width: 0; }
+.play .abar-group.open { flex: 1 1 100%; }
+.play .abar-tab {
+  padding: 5px 12px; background: transparent; border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--edge) 55%, transparent);
+  color: var(--text-dim); font-family: var(--mono); font-size: 0.58rem;
+  letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
+}
+.play .abar-group.open .abar-tab { color: var(--gold-2); background: rgba(230, 188, 100, 0.07); }
+.play .abar-tab em { font-style: normal; opacity: 0.5; margin-left: 4px; }
+
+.play .abar-list {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  padding: 7px 12px 9px;
+  border-top: 1px solid color-mix(in srgb, var(--edge) 45%, transparent);
+}
+.play .abar-act {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--edge); border-radius: 4px;
+  background: rgba(9, 12, 21, 0.7);
+  color: var(--text); font-family: var(--serif); font-size: 0.76rem;
+  cursor: pointer; transition: border-color 0.12s, box-shadow 0.12s;
+}
+.play .abar-act:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--gold) 50%, var(--edge));
+}
+.play .abar-act.armed {
+  border-color: var(--ember);
+  box-shadow: inset 0 0 10px rgba(245, 154, 60, 0.22), 0 0 12px rgba(245, 154, 60, 0.3);
+  color: var(--gold-2);
+}
+.play .abar-act.off, .play .abar-act:disabled {
+  opacity: 0.38; cursor: not-allowed;
+}
+.play .abar-act.stowed .abar-name { font-style: italic; opacity: 0.8; }
+.play .abar-cost { color: var(--gold-dim); font-size: 0.66rem; }
+.play .abar-act.cost-bonus .abar-cost { color: var(--teal); }
+.play .abar-act.cost-free .abar-cost { opacity: 0.5; }
+.play .abar-range, .play .abar-shape {
+  font-family: var(--mono); font-size: 0.54rem; letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.play .abar-armed {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--ember) 40%, var(--edge));
+  background: rgba(245, 154, 60, 0.07);
+  font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.06em;
+}
+.play .abar-armed-name { color: var(--gold-2); text-transform: uppercase; letter-spacing: 0.1em; }
+.play .abar-armed-hint { color: var(--text-dim); font-style: italic; }
+.play .abar-slots { display: inline-flex; align-items: center; gap: 4px; color: var(--text-faint); }
+.play .abar-slots button {
+  min-width: 20px; padding: 1px 5px;
+  border: 1px solid var(--edge); border-radius: 3px;
+  background: rgba(9, 12, 21, 0.7); color: var(--text-dim);
+  font-family: var(--mono); font-size: 0.58rem; cursor: pointer;
+}
+.play .abar-slots button.on {
+  color: var(--gold-2); border-color: color-mix(in srgb, var(--gold) 55%, var(--edge));
+  background: rgba(230, 188, 100, 0.12);
+}
+.play .abar-cancel {
+  margin-left: auto; padding: 2px 8px;
+  border: 1px solid var(--edge); border-radius: 3px;
+  background: transparent; color: var(--text-faint);
+  font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.08em;
+  text-transform: uppercase; cursor: pointer;
+}
+.play .abar-cancel:hover { color: var(--text); border-color: var(--gold-dim); }
+
+@media (max-width: 860px) {
+  .play .abar-act { font-size: 0.82rem; padding: 6px 10px; }
+  .play .abar-tab { padding: 7px 10px; }
+}
