@@ -309,6 +309,42 @@ class BoardSpatial:
         t = self._tok(c)
         return int(t.reach_ft or 5) if t is not None else 5
 
+    def size(self, c) -> Optional[str]:
+        """This creature's size category, or None when the board has no token.
+        Push is gated on it — "Large or smaller"."""
+        t = self._tok(c)
+        return t.size if t is not None else None
+
+    def push(self, target, away_from, distance_ft: int) -> Optional[int]:
+        """Forced movement for a Weapon Mastery, in real feet.
+
+        The board already owns this: ``shove`` ignores the target's speed,
+        provokes no opportunity attack and stops at the first obstacle, which
+        is exactly what a Push is. Returning the distance actually travelled
+        matters — a creature shoved into a wall goes as far as the wall.
+        """
+        tt, ta = self._tok(target), self._tok(away_from)
+        if tt is None or ta is None:
+            return None
+        out = self.vtt.shove(tt.id, away_from=ta.name,
+                             distance_ft=int(distance_ft))
+        moved = out.get("moved_ft") if isinstance(out, dict) else None
+        return int(moved) if moved is not None else None
+
+    def slow(self, c, amount_ft: int) -> bool:
+        """Take feet off a creature's Speed for the rest of the round.
+
+        The board is where a speed reduction can actually be FELT: its movement
+        budget is real feet (``speed_ft - moved_ft``), where the gridless band
+        model has nothing finer than a whole move to take away.
+        """
+        t = self._tok(c)
+        if t is None:
+            return False
+        self.vtt.update_token(
+            t.id, speed_ft=max(0, int(t.speed_ft or 30) - int(amount_ft)))
+        return True
+
     def cover(self, attacker, target) -> Optional[str]:
         ta, tb = self._tok(attacker), self._tok(target)
         if ta is None or tb is None:

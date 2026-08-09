@@ -77,6 +77,17 @@ class PCWeapon:
     #: the assignment is book data the engine must not have to read. None when
     #: mastery is off, the weapon has none, or it wasn't chosen.
     mastery: Optional[str] = None
+    #: The ability modifier THIS weapon's attack roll uses, already decided by
+    #: the backend (finesse picks the better of Str/Dex, ranged takes Dex).
+    #: Graze and Topple both say "the ability modifier used to make the attack
+    #: roll", and guessing it from the profile got a finesse weapon wrong.
+    ability_mod: int = 0
+    #: What the weapon deals. Graze's damage "is the same type dealt by the
+    #: weapon", which is the only place this engine has ever needed a type.
+    damage_type: Optional[str] = None
+    #: The damage dice with NO ability modifier — what Cleave's second target
+    #: takes, and the same expression the off-hand swing uses.
+    damage_flat: Optional[str] = None
     #: Damage for the two-weapon bonus swing — the ability modifier is dropped
     #: unless the Two-Weapon Fighting style is taken (or the modifier is
     #: negative, which you never get to ignore). Set only on the off hand.
@@ -572,7 +583,12 @@ class CombatEngine:
                 "grip": cand.grip, "stowed": cand.stowed,
                 "light": cand.light, "two_handed": cand.two_handed,
                 "thrown": cand.thrown, "throw_normal": cand.throw_normal,
-                "throw_long": cand.throw_long, "mastery": cand.mastery}
+                "throw_long": cand.throw_long, "mastery": cand.mastery,
+                "ability_mod": cand.ability_mod,
+                "damage_type": cand.damage_type,
+                # The dice WITHOUT the ability modifier — Cleave's second
+                # target takes the weapon's damage and no modifier with it.
+                "damage_flat": cand.damage_flat}
 
     def _bonus_swing_earned(self, c: Combatant, prof: PCProfile) -> bool:
         """Did the Attack action actually earn the two-weapon bonus attack?
@@ -783,17 +799,19 @@ class CombatEngine:
                 notes.append(f"underwater: {name or 'that weapon'} fights the "
                              f"water — disadvantage")
         ac_conds, tc_conds = self._conds(atk), self._conds(tgt)
-        # Weapon Mastery riders. Both are ONE attack long and both are spent
-        # here — a mastery that leaves a permanent condition on the target is a
-        # label, not a rule, which is the whole failure this system exists to
-        # avoid. Sap is on the creature that was hit; Vex is on the one that
-        # hit, and names who it may be spent against.
-        if "sapped" in ac_conds:
+        # Weapon Mastery riders. Each is ONE attack long AND time-limited, and
+        # both bounds are enforced here — a rider that waits forever for its
+        # victim to swing is a better rider than the book prints. Sap is on the
+        # creature that was hit; Vex is on the one that hit, and names who it
+        # may be spent against.
+        rnd = int(getattr(self.tracker.get_encounter(encounter_id), "round", 1) or 1)
+        sap = self._live_rider(atk, "sapped:", rnd)
+        if sap:
             dis = True
             notes.append("Sap: disadvantage on this attack")
-            self.tracker.remove_condition(atk.id, "sapped")
-        vex = f"vexing {tgt.name.lower()}"
-        if vex in ac_conds:
+            self.tracker.remove_condition(atk.id, sap)
+        vex = self._live_rider(atk, f"vexing:{tgt.name.lower()}:", rnd)
+        if vex:
             adv = True
             notes.append(f"Vex: advantage against {tgt.name}")
             self.tracker.remove_condition(atk.id, vex)
@@ -1545,76 +1563,250 @@ class CombatEngine:
                 ev["defeated"] = True
             self._note_concentration(out, ev)
             self._apply_mastery(encounter_id, actor, target, prof, pc_prof,
-                                ev, notes, rolls, hit=True)
+                                ev, notes, rolls, profiles, hit=True,
+                                damage=total)
         else:
             self._apply_mastery(encounter_id, actor, target, prof, pc_prof,
-                                ev, notes, rolls, hit=False)
+                                ev, notes, rolls, profiles, hit=False)
         rep.events.append(ev)
 
     # ---------------- 2024 Weapon Mastery ----------------
 
+    def _live_rider(self, c: Combatant, prefix: str, rnd: int) -> Optional[str]:
+        """A time-limited mastery rider on this creature, if it hasn't lapsed.
+
+        The expiry ROUND is stamped into the condition ("sapped:4") rather than
+        kept anywhere else, because a condition is already a string the tracker
+        persists and a second table for four riders would be the more complex
+        answer. A lapsed one is cleared on the way past, so it never lingers on
+        a sheet or in a UI.
+        """
+        for raw in (c.conditions or []):
+            s = str(raw).lower()
+            if not s.startswith(prefix.lower()):
+                continue
+            try:
+                until = int(s.rsplit(":", 1)[1])
+            except (ValueError, IndexError):
+                until = rnd
+            if rnd <= until:
+                return str(raw)
+            self.tracker.remove_condition(c.id, str(raw))
+        return None
+
+    def _creature_size(self, c: Combatant,
+                       profiles: dict[int, PCProfile]) -> str:
+        """A creature's size, lowercased. PCs are Medium unless a board says
+        otherwise; a monster's stat block knows. Push is gated on it."""
+        if self.spatial is not None:
+            try:
+                s = self.spatial.size(c)
+                if s:
+                    return str(s).lower()
+            except Exception:
+                pass
+        m = self._monster(c)
+        return str(getattr(m, "size", None) or "Medium").lower()
+
     def _apply_mastery(self, encounter_id: int, actor: Combatant,
                        target: Combatant, prof: dict,
-                       pc_prof: Optional[PCProfile], ev: dict,
-                       notes: list, rolls: list, *, hit: bool) -> None:
+                       pc_prof: Optional[PCProfile], ev: dict, notes: list,
+                       rolls: list, profiles: dict[int, PCProfile],
+                       *, hit: bool, damage: int = 0) -> None:
         """The weapon's mastery, if it has one and this character chose it.
 
         The backend resolves WHICH mastery is in play (the assignment is book
         data — see ``rules/mastery.py``); everything here is the mechanism, so
-        an SRD-only checkout simply never has one to apply. Nick is absent from
-        this method on purpose: it changes the action economy, which happened
-        long before the roll.
+        an SRD-only checkout never has one to apply. Nick is absent on purpose:
+        it changes the action economy, which happened long before the roll.
+
+        Every rider here is bounded in time, and the bound is enforced by
+        stamping the round it expires into the condition — "before the start of
+        your next turn" is a real limit, and a Sap that lasts until its victim
+        happens to attack is a different, much better rider than the one the
+        book prints.
         """
         m = (prof.get("mastery") or "").lower()
         if not m or m == "nick":
             return
-        dmg_mod = (pc_prof.ability_mods.get("str", 0) if pc_prof else 0)
-        if prof.get("finesse") or prof.get("ranged"):
-            dmg_mod = max(dmg_mod, pc_prof.ability_mods.get("dex", 0)
-                          if pc_prof else 0)
+        # "The ability modifier you used to make the attack roll" — decided by
+        # the backend when it built this weapon, not guessed at from the sheet.
+        amod = int(prof.get("ability_mod") or 0)
+        enc = self.tracker.get_encounter(encounter_id)
+        rnd = int(getattr(enc, "round", 1) or 1)
+
         if not hit:
-            # Graze: a miss still scores the ability modifier in damage. It is
-            # the only mastery that does anything at all on a miss.
-            if m == "graze" and dmg_mod > 0:
-                out = self.tracker.apply_damage(target.id, dmg_mod)
-                ev["damage"] = dmg_mod
+            # Graze — the only mastery that does anything on a MISS. The damage
+            # is the ability modifier and nothing else: no crit, no Rage, no
+            # Sneak Attack, because it "can be increased only by increasing the
+            # ability modifier".
+            if m == "graze" and amod > 0:
+                out = self.tracker.apply_damage(target.id, amod)
+                ev["damage"] = amod
                 ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
                 if out.get("defeated"):
                     ev["defeated"] = True
-                notes.append(f"Graze — the miss still scores {dmg_mod}")
+                dtype = prof.get("damage_type") or ""
+                notes.append(f"Graze — the miss still scores {amod}"
+                             + (f" {dtype}" if dtype else ""))
                 self._note_concentration(out, ev)
             return
+
         if m == "topple":
-            dc = 8 + (pc_prof.prof if pc_prof else 2) + dmg_mod
-            sv = saving_throw(self._save_mod(target, "con", None), dc,
+            dc = 8 + (pc_prof.prof if pc_prof else 2) + amod
+            t_mod = self._save_mod(target, "con", profiles)
+            t_mod += self._combat_roll_mod(target, profiles)
+            sv = saving_throw(t_mod, dc=dc,
                               label=f"{target.name} Con save (Topple)",
                               rng=self.rng)
             rolls.append(self._roll_dict(f"Topple — {target.name}", sv.detail,
                                          sv.total, dc=dc, success=bool(sv.success)))
-            if not sv.success and not self._immune_to(target, "prone", {}):
+            if not sv.success and not self._immune_to(target, "prone", profiles):
                 self.tracker.add_condition(target.id, "prone")
                 notes.append(f"Topple — {target.name} is knocked prone")
             else:
                 notes.append(f"Topple — {target.name} keeps their feet")
+
         elif m == "push":
-            # Forced movement, so it is a band change and never a walk.
-            notes.append(f"Push — {target.name} is driven 10 ft back")
-            ev["push"] = target.name
+            # "up to 10 feet straight away from yourself if it is Large or
+            # smaller" — a size gate, and forced movement rather than a walk.
+            size = self._creature_size(target, profiles)
+            if size in ("huge", "gargantuan"):
+                notes.append(f"Push — {target.name} is {size.title()}: too big "
+                             "to shift")
+            else:
+                moved = self._push(actor, target, 10)
+                notes.append(f"Push — {target.name} is driven "
+                             f"{moved if moved is not None else 10} ft back")
+                ev["push"] = target.name
+
         elif m == "sap":
-            self.tracker.add_condition(target.id, "sapped")
+            # "Disadvantage on its NEXT attack roll before the start of your
+            # next turn" — one attack, and it lapses either way.
+            self.tracker.add_condition(target.id, f"sapped:{rnd + 1}")
             notes.append(f"Sap — {target.name} has disadvantage on its next "
                          "attack roll")
+
         elif m == "slow":
-            self.tracker.add_condition(target.id, "slowed")
-            notes.append(f"Slow — {target.name}'s Speed drops by 10 ft")
+            # "If you hit a creature ... and DEAL DAMAGE to it." The reduction
+            # never exceeds 10 ft however many times it lands.
+            if damage > 0:
+                if self._slow(target, 10, until_round=rnd + 1):
+                    notes.append(f"Slow — {target.name}'s Speed drops by 10 ft")
+                else:
+                    notes.append(f"Slow — {target.name} is already slowed "
+                                 "(it doesn't stack)")
+
         elif m == "vex":
-            self.tracker.add_condition(actor.id, f"vexing {target.name.lower()}")
-            notes.append(f"Vex — advantage on the next attack against "
-                         f"{target.name}")
+            # Also gated on damage, and it lasts until the END of your next
+            # turn — one round longer than Sap.
+            if damage > 0:
+                self.tracker.add_condition(
+                    actor.id, f"vexing:{target.name.lower()}:{rnd + 1}")
+                notes.append("Vex — advantage on the next attack against "
+                             f"{target.name}")
+
         elif m == "cleave":
-            ev["cleave"] = True
-            notes.append("Cleave — a second creature within 5 ft of the target "
-                         "may be struck (declare it as another attack)")
+            self._cleave(encounter_id, actor, target, prof, profiles, ev,
+                         notes, rolls)
+
+    def _push(self, actor: Combatant, target: Combatant,
+              distance_ft: int) -> Optional[int]:
+        """Shove a creature straight back. Returns the feet it actually moved.
+
+        The board already owns forced movement — it ignores the target's speed,
+        provokes no opportunity attack, and stops at the first obstacle — so
+        Push is that primitive with a distance, not a second implementation.
+        Without a board there is nothing finer than a band, and 10 ft is less
+        than a band, so it is narrated instead.
+        """
+        if self.spatial is None:
+            return None
+        try:
+            return self.spatial.push(target, actor, distance_ft)
+        except Exception as e:
+            print(f"[mastery] push: {e}")
+            return None
+
+    def _slow(self, target: Combatant, amount_ft: int,
+              *, until_round: int) -> bool:
+        """Reduce a creature's Speed. True if this application changed anything.
+
+        The condition is the record even when a board is out, because the
+        gridless table has no feet to take away and still has to know the
+        creature is slowed. The board's own speed is reduced on top, which is
+        where the 10 ft is actually felt.
+        """
+        if any(str(c).lower().startswith("slowed:")
+               for c in (target.conditions or [])):
+            return False                     # "doesn't exceed 10 feet"
+        self.tracker.add_condition(target.id, f"slowed:{until_round}")
+        if self.spatial is not None:
+            try:
+                self.spatial.slow(target, amount_ft)
+            except Exception as e:
+                print(f"[mastery] slow: {e}")
+        return True
+
+    def _cleave(self, encounter_id: int, actor: Combatant,
+                first: Combatant, prof: dict, profiles: dict[int, PCProfile],
+                ev: dict, notes: list, rolls: list) -> None:
+        """A second melee attack roll against a creature beside the first.
+
+        Once per turn, melee only, and the second creature "takes the weapon's
+        damage" with NO ability modifier — so this is a real attack roll and a
+        real damage roll, not a note asking the DM to make one. Sneak Attack,
+        Smite and Rage are deliberately not re-applied: they are riders on the
+        attack you took, and this is the mastery's own swing.
+        """
+        if prof.get("ranged"):
+            return
+        fresh = self.tracker.get_combatant(actor.id)
+        if any(str(f).lower() == "cleave" for f in (fresh.used_features or [])):
+            return
+        # "within 5 feet of the first that is also within your reach". With a
+        # board that is two real measurements; without one, the bands cannot
+        # express 5 ft at all, and two creatures both in melee with the same
+        # attacker are as adjacent as a gridless table can say.
+        def beside(c: Combatant) -> bool:
+            if not self._engaged_with(actor, c):
+                return False
+            gap = self._spatial_gap(first, c)
+            return gap[0] <= 5 if gap is not None else True
+
+        second = next(
+            (c for c in self.tracker.order(encounter_id)
+             if not c.defeated and c.id not in (first.id, actor.id)
+             and self._side(c) != self._side(actor) and beside(c)),
+            None)
+        if second is None:
+            notes.append("Cleave — nobody else stands within 5 ft of "
+                         f"{first.name}")
+            return
+        self.tracker.update_economy(
+            actor.id, used_features=[*(fresh.used_features or []), "cleave"])
+        adv, dis, _ = self._attack_advantage(actor, second, False, encounter_id,
+                                             weapon=prof)
+        atk = attack_roll(prof["attack_bonus"], self._eff_ac(second),
+                          advantage=adv, disadvantage=dis,
+                          label=f"Cleave ({actor.name})", rng=self.rng)
+        rolls.append(self._roll_dict(f"Cleave — {second.name}", atk.detail,
+                                     atk.total, dc=self._eff_ac(second),
+                                     success=bool(atk.hit)))
+        if not atk.hit:
+            notes.append(f"Cleave — the follow-through misses {second.name}")
+            return
+        expr = prof.get("damage_flat") or prof["damage"]
+        dmg = damage_roll(expr, crit=atk.is_crit, rng=self.rng)
+        out = self.tracker.apply_damage(second.id, dmg.total)
+        rolls.append(self._roll_dict("Cleave damage", dmg.detail, dmg.total,
+                                     expr=expr))
+        notes.append(f"Cleave — {second.name} is also struck for {dmg.total}")
+        ev["cleave"] = {"target": second.name, "damage": dmg.total,
+                        "target_hp": f"{out['current_hp']}/{out['max_hp']}"}
+        if out.get("defeated"):
+            ev["cleave"]["defeated"] = True
+        self._note_concentration(out, ev)
 
     def _do_move(self, encounter_id, actor, intent, profiles, rep):
         band_raw = (intent.get("arg") or intent.get("target") or "").strip()

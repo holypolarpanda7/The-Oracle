@@ -937,12 +937,30 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   says which weapon carries which and how many a class may have active. Absent
   file = mastery OFF, which is correct for an SRD-only checkout — the open SRD
   has none. Holding a weapon whose mastery you never CHOSE gives nothing
-  (`mastery:` tags are the picks); the gate is the feature. **Nick is the one
-  that changes the action economy** — it moves the Light property's extra
-  attack into the Attack action, so the bonus action stays free, which is the
-  difference between two swings a turn and three. Sap and Vex are conditions
-  the engine SPENDS in `_attack_advantage` — a mastery that leaves a permanent
-  label on a creature is decoration, not a rule.
+  (`mastery:` tags are the picks); the gate is the feature.
+  **All eight are applied by the code, not narrated.** Nick changes the action
+  ECONOMY (the Light extra attack moves into the Attack action, so the bonus
+  action stays free — two swings a turn versus three). Cleave rolls a real
+  second attack and a real damage roll against a creature beside the first,
+  once per turn, with `damage_flat` so no ability modifier rides along. Graze
+  is the only one that fires on a MISS, for exactly the attack's ability
+  modifier and nothing else — no crit, no Rage, no Sneak Attack, because it
+  "can be increased only by increasing the ability modifier". Topple rolls the
+  Con save at DC 8 + that same modifier + proficiency. Push is the board's
+  `shove` (forced movement, no opportunity attack, stops at the first
+  obstacle), gated on Large-or-smaller. Slow takes real feet off the board's
+  movement budget and does not stack.
+  **Every timed rider stamps its expiry ROUND into the condition** —
+  `sapped:4`, `vexing:goblin:5`, `slowed:4` — because a condition is already a
+  string the tracker persists, and `_live_rider` clears a lapsed one on the way
+  past. Sap and Vex are then SPENT in `_attack_advantage`: a rider that waits
+  forever for its victim to swing is a different, better rider than the book
+  prints, and a mastery that leaves a permanent label on a creature is
+  decoration rather than a rule.
+  Graze and Topple both say "the ability modifier used to make the attack
+  roll", so `PCWeapon.ability_mod` carries it — the backend already chose it
+  (finesse takes the better of Str/Dex), and re-deriving it in the engine got
+  finesse weapons wrong.
 - **A shield is only worth +2 while it is in a hand**, and only one suit of
   armour is on a body. Both used to be the same question as `equipped`, and
   `_compute_ac` took whichever armour row it met last. `gear.normalize` is what

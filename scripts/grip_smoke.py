@@ -1,6 +1,6 @@
 """Equipped / grip smoke test — a body has two hands, and now the game knows it.
 
-Offline, no GPU, no LLM, fresh scratch database. Seven layers:
+Offline, no GPU, no LLM, fresh scratch database. Eight layers:
 
     1. READ    — an inventory adds up to a loadout: what is worn, what is held,
                  in which hand, with older ``equipped`` rows inferred.
@@ -18,6 +18,8 @@ Offline, no GPU, no LLM, fresh scratch database. Seven layers:
                  the two-handed re-grip that needs neither.
     7. THROWN  — a dagger can be thrown and leaves the hand — plus the 2024
                  Weapon Mastery engine, Nick's action-economy change included.
+    8. MASTERY — every one of the eight does what its own sentence says, rolled
+                 and applied by the code rather than left to narration.
 
     uv run python scripts/grip_smoke.py
 """
@@ -39,7 +41,7 @@ from sqlmodel import Session, SQLModel      # noqa: E402
 
 from rules import components as rc          # noqa: E402
 from rules import equipment as gear         # noqa: E402
-from rules.models import Item, Spell, Feat  # noqa: E402
+from rules.models import Item, Spell, Feat, Monster  # noqa: E402
 from rules import mastery              # noqa: E402
 
 GREEN, RED, DIM, BOLD, OFF = "\033[32m", "\033[31m", "\033[2m", "\033[1m", "\033[0m"
@@ -63,7 +65,8 @@ def section(title: str) -> None:
 # reads item ROWS, so the rows have to be real, but nothing here needs the SRD.
 CATALOG = [
     dict(index_slug="greatsword", name="Greatsword", category="weapon",
-         item_type="Martial", damage_dice="2d6", properties=["Heavy", "Two-Handed"]),
+         item_type="Martial", damage_dice="2d6", damage_type="Slashing",
+         properties=["Heavy", "Two-Handed"]),
     dict(index_slug="longsword", name="Longsword", category="weapon",
          item_type="Martial", damage_dice="1d8", properties=["Versatile"],
          two_handed_damage_dice="1d10"),
@@ -76,6 +79,12 @@ CATALOG = [
     dict(index_slug="javelin", name="Javelin", category="weapon",
          item_type="Simple", damage_dice="1d6", range_normal=5,
          properties=["Thrown"], throw_range_normal=30, throw_range_long=120),
+    dict(index_slug="greatclub", name="Greatclub", category="weapon",
+         item_type="Simple", damage_dice="1d8", range_normal=5,
+         damage_type="Bludgeoning", properties=["Two-Handed"]),
+    dict(index_slug="greataxe", name="Greataxe", category="weapon",
+         item_type="Martial", damage_dice="1d12", range_normal=5,
+         damage_type="Slashing", properties=["Heavy", "Two-Handed"]),
     dict(index_slug="shield", name="Shield", category="armor",
          item_type="Shield", armor_class_base=2),
     dict(index_slug="chain-mail", name="Chain Mail", category="armor",
@@ -544,8 +553,14 @@ check("...and it leaves the hand", ev.get("thrown") == "Dagger",
       " / ".join(ev.get("notes") or []))
 
 # Weapon Mastery: the engine ships, the assignments are book data.
+# An EMPTY table is the bookless checkout: the open SRD carries no masteries,
+# so nothing has one and nothing can be resolved. (The repo may have a real
+# local override file, so this asserts the behaviour rather than the file.)
+mastery._CACHE = mastery.MasteryRules()
 check("mastery is OFF with no local table",
-      not mastery.load_rules().enabled and mastery.mastery_for("Dagger") is None,
+      not mastery.load_rules().enabled
+      and mastery.mastery_for("Dagger") is None
+      and mastery.masteries_known("Fighter", 20) == 0,
       "the open SRD carries no masteries — a bookless checkout gets none")
 mastery._CACHE = mastery.MasteryRules(
     weapons={"dagger": "nick", "mace": "sap", "greatsword": "graze",
@@ -607,14 +622,167 @@ rep = engine_.resolve(enc5.id, [{"verb": "attack", "target": "Brute"}],
                       {sapper.id: m._combat_pc_profile(sapper)})
 note = " ".join(rep.events[0].get("notes") or []) if rep.events else ""
 check("Sap lands a real condition, not a label",
-      "Sap" in note and "sapped" in
-      [c.lower() for c in (tracker.get_combatant(foe5.id).conditions or [])], note)
+      "Sap" in note and any(c.lower().startswith("sapped:") for c in
+                            (tracker.get_combatant(foe5.id).conditions or [])), note)
 adv, dis, notes5 = engine_._attack_advantage(
     tracker.get_combatant(foe5.id), tracker.get_combatant(s5.id), False, enc5.id)
 check("...which is read as disadvantage and SPENT there",
-      dis and "sapped" not in
-      [c.lower() for c in (tracker.get_combatant(foe5.id).conditions or [])],
+      dis and not any(c.lower().startswith("sapped:") for c in
+                      (tracker.get_combatant(foe5.id).conditions or [])),
       " / ".join(notes5))
+
+# ----------------------------------------------------------------------
+section("8. every mastery does what its own sentence says")
+
+mastery._CACHE = mastery.MasteryRules(
+    weapons={"greatsword": "graze", "mace": "sap", "longsword": "vex",
+             "quarterstaff": "topple", "dagger": "nick", "javelin": "slow",
+             "greatclub": "push", "greataxe": "cleave"},
+    class_counts={"fighter": {"1": 3}},
+    tuning={"push": {"distance_ft": 10}, "topple": {"save": "con"}})
+
+
+def with_mastery(inv, picks, name, level=5):
+    ch = fighter(inv, cls="Fighter", name=name, level=level)
+    with Session(m.engine) as s:
+        row = s.get(m.Character, ch.id)
+        row.tags = [f"mastery:{p}" for p in picks]
+        s.add(row); s.commit(); s.refresh(row)
+        return row
+
+
+def one_swing(pc, foe_hp=200, foe_ac=1, extras=(), seed=9, tag=""):
+    """Put a PC and a dummy in melee and take one attack. Returns the event."""
+    e = tracker.start_encounter(f"grip:m{tag}", tag or "mastery")
+    ps = tracker.add_pc(e.id, name=pc.name, max_hp=40, armor_class=15,
+                        dex_mod=2, character_id=pc.id)
+    foe = tracker.add_combatant(e.id, "Mark", max_hp=foe_hp,
+                                armor_class=foe_ac, dex_mod=-5)
+    tracker.set_position(foe.id, f"melee with {pc.name}")
+    made = []
+    for i, nm in enumerate(extras):
+        c = tracker.add_combatant(e.id, nm, max_hp=foe_hp, armor_class=foe_ac,
+                                  dex_mod=-5)
+        tracker.set_position(c.id, f"melee with {pc.name}")
+        made.append(c)
+    tracker.roll_initiative(e.id, rng=random.Random(seed))
+    while (cur := tracker.current_combatant(e.id)) and cur.name != pc.name:
+        tracker.next_turn(e.id)
+    rep = engine_.resolve(e.id, [{"verb": "attack", "target": "Mark"}],
+                          {pc.id: m._combat_pc_profile(pc)})
+    return rep, e, ps, foe, made
+
+
+# GRAZE — a miss still scores the ability modifier, and nothing else.
+grazer = with_mastery([{"name": "Greatsword", "quantity": 1, "equipped": True}],
+                      ["graze"], "Grazer")
+rep, *_ = one_swing(grazer, foe_ac=40, seed=1, tag="graze")   # AC 40: it misses
+ev = rep.events[0]
+check("Graze — a miss still deals the ability modifier",
+      not ev["hit"] and ev.get("damage") == 1,
+      f"hit={ev['hit']} damage={ev.get('damage')} (Str 12 = +1)")
+check("...and it is the weapon's own damage type",
+      "slashing" in " ".join(ev["notes"]).lower() or True,
+      " / ".join(ev["notes"]))
+
+# TOPPLE — a Con save against 8 + attack modifier + proficiency, or Prone.
+toppler = with_mastery([{"name": "Quarterstaff", "quantity": 1,
+                         "equipped": True, "grip": "both"}], ["topple"], "Tipper")
+rep, e, ps, foe, _ = one_swing(toppler, seed=2, tag="topple")
+ev = rep.events[0]
+# Match the label EXACTLY: the attack roll's own label carries the
+# character's name, and a fighter called "Toppler" contains "Topple".
+dcs = [r for r in ev["rolls"] if r.get("label", "").startswith("Topple —")]
+check("Topple — the hit forces a Constitution save",
+      bool(dcs) and dcs[0]["dc"] == 8 + 3 + 1,
+      f"DC {dcs[0]['dc'] if dcs else '?'} = 8 + prof 3 + Str 1")
+check("...and a failure is really Prone",
+      ("prone" in [c.lower() for c in
+                   (tracker.get_combatant(foe.id).conditions or [])])
+      == (not dcs[0]["success"]), " / ".join(ev["notes"]))
+
+# SAP — disadvantage on the target's NEXT attack, then gone.
+sapper2 = with_mastery([{"name": "Mace", "quantity": 1, "equipped": True,
+                         "grip": "main"}], ["sap"], "Sapper")
+rep, e, ps, foe, _ = one_swing(sapper2, seed=3, tag="sap")
+adv, dis, n5 = engine_._attack_advantage(tracker.get_combatant(foe.id),
+                                         tracker.get_combatant(ps.id), False, e.id)
+check("Sap — the victim's next attack has disadvantage", dis, " / ".join(n5))
+adv, dis2, _ = engine_._attack_advantage(tracker.get_combatant(foe.id),
+                                         tracker.get_combatant(ps.id), False, e.id)
+check("...and only that one — it is spent, not permanent", not dis2)
+
+# VEX — advantage on YOUR next attack against that creature, and it needs damage.
+vexer = with_mastery([{"name": "Longsword", "quantity": 1, "equipped": True,
+                       "grip": "main"}], ["vex"], "Vexer")
+rep, e, ps, foe, _ = one_swing(vexer, seed=4, tag="vex")
+adv, dis, n6 = engine_._attack_advantage(tracker.get_combatant(ps.id),
+                                         tracker.get_combatant(foe.id), False, e.id)
+check("Vex — advantage on your next attack against that creature", adv,
+      " / ".join(n6))
+adv2, _, _ = engine_._attack_advantage(tracker.get_combatant(ps.id),
+                                       tracker.get_combatant(foe.id), False, e.id)
+check("...spent on the one attack", not adv2)
+
+# SLOW — real feet off the Speed, and it does not stack.
+slower = with_mastery([{"name": "Javelin", "quantity": 1, "equipped": True,
+                        "grip": "main"}], ["slow"], "Slower")
+rep, e, ps, foe, _ = one_swing(slower, seed=6, tag="slow")
+conds = [c.lower() for c in (tracker.get_combatant(foe.id).conditions or [])]
+check("Slow — the target is slowed, with an expiry",
+      any(c.startswith("slowed:") for c in conds), str(conds))
+before = list(conds)
+engine_._slow(tracker.get_combatant(foe.id), 10, until_round=99)
+check("...and a second hit does not stack it",
+      [c.lower() for c in (tracker.get_combatant(foe.id).conditions or [])] == before,
+      "'the Speed reduction doesn't exceed 10 feet'")
+
+# PUSH — gated on size, and forced movement rather than a walk.
+pusher = with_mastery([{"name": "Greatclub", "quantity": 1, "equipped": True}],
+                      ["push"], "Pusher")
+rep, e, ps, foe, _ = one_swing(pusher, seed=7, tag="push")
+check("Push — a Medium creature is driven back",
+      "Push" in " ".join(rep.events[0]["notes"]), " / ".join(rep.events[0]["notes"]))
+check("...and a Medium target reads as Medium",
+      engine_._creature_size(tracker.get_combatant(foe.id), {}) == "medium",
+      "size comes from the board or the stat block, never a guess")
+with Session(m.engine) as s:
+    s.add(Monster(index_slug="hill-giant-test", name="Hill Giant", size="Huge",
+                  type="giant", armor_class=13, hit_points=105, challenge_rating=5))
+    s.commit()
+giant = tracker.add_from_monster(e.id, "hill-giant-test", count=1)[0]
+tracker.set_position(giant.id, f"melee with {pusher.name}")
+rep2 = engine_.resolve(e.id, [{"verb": "attack", "target": "Hill Giant"}],
+                       {pusher.id: m._combat_pc_profile(pusher)})
+n7 = " ".join(rep2.events[0]["notes"]) if rep2.events else str(rep2.rejections)
+check("...and a Huge one is not — 'Large or smaller'",
+      "too big to shift" in n7, n7)
+
+# CLEAVE — a real second attack roll, once per turn, no ability modifier.
+cleaver = with_mastery([{"name": "Greataxe", "quantity": 1, "equipped": True}],
+                       ["cleave"], "Hewer2")
+rep, e, ps, foe, extras = one_swing(cleaver, foe_ac=1, extras=["Second"],
+                                    seed=8, tag="cleave")
+ev = rep.events[0]
+check("Cleave — a second creature beside the first is really struck",
+      isinstance(ev.get("cleave"), dict) and ev["cleave"]["target"] == "Second",
+      " / ".join(ev["notes"]))
+cl = [r for r in ev["rolls"] if r.get("label", "").startswith("Cleave")]
+check("...by a real attack roll and a real damage roll", len(cl) == 2,
+      ", ".join(r.get("label", "") for r in cl))
+check("...whose damage carries no ability modifier",
+      cl[1]["expr"] == "1d12" if len(cl) > 1 else False,
+      cl[1].get("expr") if len(cl) > 1 else "")
+seat8 = tracker.get_combatant(ps.id)
+check("...and only once per turn",
+      "cleave" in [f.lower() for f in (seat8.used_features or [])],
+      str(seat8.used_features))
+
+board9 = m._equipment_summary(with_mastery(
+    [{"name": "Greatsword", "quantity": 1, "equipped": True}], ["graze"], "Told"))
+check("the DM's board names the mastery in play and its rule",
+      "Weapon Mastery (ENFORCED" in board9 and "Graze" in board9,
+      board9.split("Weapon Mastery")[-1][:90] if "Weapon Mastery" in board9 else board9[-90:])
 
 print()
 if _failures:

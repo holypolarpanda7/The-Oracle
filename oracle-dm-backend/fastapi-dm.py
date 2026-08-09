@@ -7961,6 +7961,12 @@ def _combat_pc_profile(char: Character) -> PCProfile:
             light=wp.light, two_handed=wp.two_handed,
             thrown=wp.thrown, throw_normal=wp.throw_normal,
             throw_long=wp.throw_long, mastery=mast,
+            # Graze and Topple both key on "the ability modifier used to make
+            # the attack roll", and Cleave's second target takes the dice with
+            # no modifier at all — so both are decided here, once, beside the
+            # arithmetic that already chose them.
+            ability_mod=mod, damage_type=getattr(row, "damage_type", None),
+            damage_flat=dice,
             offhand_damage=off_dmg))
     # Held first — main hand, then a two-handed grip, then the off hand — so
     # the engine's "its best weapon" fallback is what the character is holding.
@@ -10878,6 +10884,27 @@ def _equipment_summary(char: Character) -> str:
     except Exception as e:
         print(f"[equipment summary] two-weapon: {e}")
         pair = None
+    # A mastery nobody can see does nothing — the same rule that put feats on
+    # the sheet. The DM is told what is in play and, explicitly, that the code
+    # applies it, because a DM narrating a Topple by hand would double it.
+    try:
+        act = _active_masteries(char)
+        if act:
+            lines = []
+            for h in load.held:
+                mrow = mastery.resolve(str(h.name),
+                                       base_name=_item_base_name(char, h.name),
+                                       active=act)
+                if mrow is not None:
+                    desc = (mastery.load_rules().tuning.get(mrow.name) or {}).get("desc")
+                    lines.append(f"{h.name} — {mrow.label}"
+                                 + (f": {desc}" if desc else ""))
+            if lines:
+                out += (" Weapon Mastery (ENFORCED — the engine rolls and "
+                        "applies these; narrate the result, never add one "
+                        "yourself): " + " | ".join(lines))
+    except Exception as e:
+        print(f"[equipment summary] mastery: {e}")
     if pair:
         main, off = pair
         out += (f" Two-weapon fighting is LIVE: after the Attack action with "
