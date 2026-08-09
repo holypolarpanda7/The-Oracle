@@ -21,6 +21,12 @@ const ITEM_BADGE: Record<string, string> = {
   spellbook: "📖", charged: "✨", consumable: "🧪", container: "🎒", attunement: "◈",
 };
 
+// Which hand a piece is in. "worn" no longer covers it: a slung shield and a
+// raised one are the same flag and only one of them defends anything.
+const GRIP_LABEL: Record<string, string> = {
+  main: "main hand", off: "off hand", both: "both hands",
+};
+
 function mod(v: number): string {
   const m = Math.floor((v - 10) / 2);
   return m >= 0 ? `+${m}` : `${m}`;
@@ -268,6 +274,27 @@ export function CharacterSheet({ sheet, panel, onInspect, onItemAction, onPortra
               aria-label="Search inventory"
             />
           </div>
+          {/* Worn & wielded, above the pack. A spell can be refused for having
+              no hand free, so the hands have to be readable before that
+              happens rather than explained afterwards. */}
+          {sheet.loadout && (sheet.loadout.hands?.length || sheet.loadout.armor) ? (
+            <div className="loadout">
+              {(sheet.loadout.hands ?? []).map((h) => (
+                <span className="ld-slot" key={h.grip + h.name}>
+                  <em>{GRIP_LABEL[h.grip]}</em> {h.name}
+                </span>
+              ))}
+              {(sheet.loadout.free_hands ?? 0) > 0 && (
+                <span className="ld-slot free">
+                  <em>free</em> {sheet.loadout.free_hands} hand
+                  {sheet.loadout.free_hands === 1 ? "" : "s"}
+                </span>
+              )}
+              {sheet.loadout.armor && (
+                <span className="ld-slot"><em>worn</em> {sheet.loadout.armor}</span>
+              )}
+            </div>
+          ) : null}
           <div className="invgrid">
             {shownItems.length
               ? shownItems.map((it, i) => (
@@ -285,7 +312,10 @@ export function CharacterSheet({ sheet, panel, onInspect, onItemAction, onPortra
                           </span>}
                       {it.qty && it.qty > 1 ? <em className="ic-qty">×{it.qty}</em> : null}
                       {(it.equipped || it.attuned) && (
-                        <em className="ic-worn">{it.attuned ? "attuned" : "worn"}</em>
+                        <em className="ic-worn">
+                          {it.attuned ? "attuned"
+                            : it.grip ? GRIP_LABEL[it.grip] : "worn"}
+                        </em>
                       )}
                     </button>
                     <button className="ic-name" onClick={() => onInspect(it.name)}>

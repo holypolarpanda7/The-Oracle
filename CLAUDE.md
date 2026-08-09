@@ -105,6 +105,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - `ingest.py` — `ingest_srd()` downloads 5e-bits/5e-database JSON, upserts by slug.
    - `query.py` — `RulesLibrary` (get/search monsters & spells, `find_mentions`) +
      `format_*_brief` renderers for prompt injection; `ability_modifier`.
+   - `equipment.py` — the loadout: what is WORN and what is HELD, in which
+     hand. Pure logic over inventory dicts + a catalogue lookup, so the
+     backend, the arena's Quartermaster and the smoke tests share one answer.
    - Structured half only; prose-rules RAG is a later, separate layer.
 5. **`dice/`** — internal **dice roller** (no Avrae copy-paste).
    - `roller.py` — `roll(expr)` (NdM, modifiers, kh/kl), `double_dice` for crits.
@@ -200,7 +203,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   piece keeps its stats), `cultural_scripts` (culture -> typeface mapping),
   `affix` (a drop rolls properties that reach real mechanics), `components`
   (V/S/M priced out of the book's prose, enforced at the cast hook, and the
-  gate on a caster who can't act or can't speak), `forge`
+  gate on a caster who can't act or can't speak), `grip` (what is worn and
+  what is held, in which hand; the free-hand rule for Somatic and Material
+  components, War Caster, and the [[GRIP]] hook that frees one), `forge`
   (tempering needs a smith), `routes` (roads costed from real geography, and
   no map data leaks), `map` (one terrain answer across scene/board/parchment;
   tool + knowledge gating; a sheet accrues across revisions), `airship`
@@ -845,11 +850,41 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   in component enforcement: imported sheets routinely arrive with no pack, and
   a false refusal stops play dead where a missed enforcement only makes the
   game slightly generous. A pack with *something* in it is taken at its word.
-- **Free hands are the DM's call, and the board says so.** Somatic and Material
-  components need one, and nothing in the schema records which hand holds what
-  — a shield and a greatsword are inventory rows, not grips. Enforcing it would
-  mean guessing, and a guess that refuses a spell is worse than a rule left to
-  a person, so the DM board states that one explicitly as theirs.
+- **A body has two hands, and `rules/equipment.py` is the one place a loadout
+  is decided.** `equipped` was a single boolean, which answers "is this
+  strapped on" — enough for armour class and a portrait, and unable to answer
+  the question the casting rules ask: *is a hand free?* A shield and a
+  greatsword were two rows both flagged equipped with nothing saying they were
+  fighting over the same two hands, so the free-hand rule was left to the DM as
+  a note on their board. `grip` (`main`/`off`/`both`) is now recorded beside
+  `equipped`, and the model is deliberately NARROW: only weapons, shields and
+  obviously-held gear (a torch, a wand, a staff) cost a hand. Everything else
+  is *worn* and can never cause a refusal — a wrong guess that eats a hand
+  stops a spell, a wrong guess that doesn't merely makes the game generous,
+  which is the direction `_material_check` already errs in. Nothing equipped =
+  two free hands, so turning it on cannot break an imported sheet. An older row
+  flagged `equipped` before grips existed is placed DETERMINISTICALLY
+  (two-handed → both, shield → off, weapon → main) so it reads the same twice.
+- **Free hands are ENFORCED, and the refusal names the remedy.** `_hands_gate`
+  runs after `_material_check`, because a component already in a hand casts a
+  spell that the same component in the pack cannot. One free hand does both S
+  and M; with none free, the hand holding the focus or the component performs
+  the somatic for the SAME spell; a WORN holy symbol pays a material component
+  with no hand (the only reason a cleric with a shield can cast at all) but
+  gestures with nothing; and War Caster waives the somatic requirement — read
+  off the feat's own BENEFIT TEXT ("somatic component"), not a name check, so a
+  book feat granting the same thing works. A refusal always names the single
+  item to stow, because that is a free object interaction and a dead end would
+  be worse than the old note. `[[GRIP: draw|stow | Item | main|off|both]]` is
+  what changes it, and it runs BEFORE `[[CAST]]` in the same reply.
+- **A shield is only worth +2 while it is in a hand**, and only one suit of
+  armour is on a body. Both used to be the same question as `equipped`, and
+  `_compute_ac` took whichever armour row it met last. `gear.normalize` is what
+  puts an impossible loadout right — a bulk outfitter (the arena's
+  Quartermaster, an imported sheet, a creation kit) sets `equipped` line by
+  line and never asks whether the result fits on a body, so the excess is
+  stowed and named rather than reaching the rules as fewer free hands than a
+  body has.
 - **Silence is a place, and `MapEffect.silences` is where it lives.** Its own
   column for the same reason `obscured` has one: `kind` says how the UI paints
   an area, not what standing in it does. `silenced_at`/`token_silenced` answer

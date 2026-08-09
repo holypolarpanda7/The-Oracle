@@ -39,7 +39,8 @@ const sheet: ServerEvent = {
     skills: ["Persuasion +7", "Performance +7", "Perception +3", "Deception +7"],
     inventory: [
       { name: "Keen Rapier of the Ember", qty: 1, type: "Martial", rarity: "Rare",
-        weight: 2, equipped: true, action: { id: "unequip", label: "Unequip" },
+        weight: 2, equipped: true, grip: "main",
+        action: { id: "unequip", label: "Unequip" },
         affixes: [
           { slug: "keen", name: "Keen", kind: "prefix", tier: 1,
             text: "Ground to a wicked edge. +1 to attack rolls.", temper_gp: 87 },
@@ -78,6 +79,16 @@ const sheet: ServerEvent = {
     gold: 37,
     carried: 24.5,
     capacity: 150,
+    // What is on the body: the rapier is in a hand, the armour is worn, and
+    // one hand is still free — which is the difference between casting and not.
+    loadout: {
+      hands: [{ name: "Keen Rapier of the Ember", grip: "main" }],
+      free_hands: 1,
+      armor: "Leather Armor",
+      rings: ["Ring of Protection"],
+      worn: [],
+      text: "main hand: Keen Rapier of the Ember; 1 hand free; wearing Leather Armor",
+    },
     race: "Dragonborn",
     script: "draconic",
     char_class: "Bard",

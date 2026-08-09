@@ -21,6 +21,10 @@ async function run(name, viewport) {
   console.log(name, "cards:", await page.locator(".icard").count(),
               "verbs:", await page.locator(".ic-act").count(),
               "worn:", await page.locator(".ic-worn").count());
+  // Worn & wielded: the hands are shown above the pack, and a held piece's
+  // badge names its grip rather than saying "worn" like everything else.
+  console.log(name, "loadout:", await page.locator(".ld-slot").allTextContents());
+  console.log(name, "badges:", await page.locator(".ic-worn").allTextContents());
   await page.screenshot({ path: `${OUT}/${name}-1-pack.png` });
   await page.locator(".ph-find").fill("potion");
   await page.waitForTimeout(400);

@@ -16,6 +16,12 @@ export interface ItemView {
   renaming?: boolean;
 }
 
+// Which hand a piece is in. The equip badge says "Equipped" for anything worn
+// and names the grip for anything held, because those are different facts.
+const GRIP_LABEL: Record<string, string> = {
+  main: "Main Hand", off: "Off Hand", both: "Both Hands",
+};
+
 const LEVELS = ["Cantrip", "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th"];
 function spellLevel(l?: number | null): string {
   if (l === undefined || l === null) return "—";
@@ -92,7 +98,11 @@ export function ItemInspector({ view, onClose, onInscribe, onAction, onDescribe,
 
           {(d?.equipped || d?.attuned) && (
             <div className="item-state">
-              {d?.equipped && <span className="state-badge on">Equipped</span>}
+              {d?.equipped && (
+                <span className="state-badge on">
+                  {d.grip ? GRIP_LABEL[d.grip] : "Equipped"}
+                </span>
+              )}
               {d?.attuned && <span className="state-badge att">Attuned</span>}
             </div>
           )}

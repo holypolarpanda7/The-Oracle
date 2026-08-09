@@ -676,6 +676,25 @@
 .play .ph-find:focus { border-color: var(--gold); }
 .play .ph-find::placeholder { color: var(--text-faint); font-style: italic; }
 
+/* Worn & wielded — what is on the body, above what is in the pack. It sits
+   here rather than in the pack grid because the hands are a fact about the
+   character (a spell can be refused for having none free), not about an item. */
+.play .loadout {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 9px;
+}
+.play .ld-slot {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  padding: 4px 8px; border-radius: 4px; font-size: 0.74rem; color: #dfe8ec;
+  background: rgba(8, 11, 20, 0.6);
+  border: 1px solid color-mix(in srgb, var(--teal) 35%, var(--edge));
+}
+.play .ld-slot em {
+  font-family: var(--mono); font-style: normal; font-size: 0.52rem;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--teal);
+}
+.play .ld-slot.free { border-color: var(--edge); color: var(--text-faint); }
+.play .ld-slot.free em { color: var(--gold-2); }
+
 .play .invgrid {
   /* 84px keeps three to a row inside the 340px sheet rail; wider panels simply
      fit more. */
@@ -908,6 +927,9 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
 .iact.use { border-color: color-mix(in srgb, var(--teal) 45%, var(--edge)); color: #d6fff4; }
 .iact.attune, .iact.unattune { border-color: color-mix(in srgb, var(--amethyst) 45%, var(--edge)); color: #e7dcff; }
 .iact.expend { border-color: color-mix(in srgb, var(--ember) 45%, var(--edge)); color: #ffe6c9; }
+/* Move a held piece from one hand to the other, or take it in both. */
+.iact.grip_main, .iact.grip_off, .iact.grip_both {
+  border-color: color-mix(in srgb, var(--teal) 45%, var(--edge)); color: #d6fff4; }
 
 /* container widget (Bag of Holding etc.) */
 .container-w { margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--edge); }

@@ -62,7 +62,8 @@ const DEMO_BOOK_DESC =
   "A leather-bound tome of 100 vellum pages. Its inscribed spells can be cast, " +
   "and a trained hand may write more into the blank leaves.";
 
-const demoState = { wandCharges: 7, potions: 2, ringAttuned: false, armorEquipped: false };
+const demoState = { wandCharges: 7, potions: 2, ringAttuned: false,
+                    armorEquipped: false, rapierGrip: "main" as "main" | "off" };
 const demoBag: { name: string; qty: number }[] = [{ name: "Torch", qty: 3 }, { name: "Grappling Hook", qty: 1 }];
 
 function demoItemDetail(name: string): ItemDetail {
@@ -73,7 +74,15 @@ function demoItemDetail(name: string): ItemDetail {
       description: "A finesse blade, ground thin and warm to the touch.",
       stats: ["Damage: 1d8 piercing", "Properties: finesse", "Weight: 2 lb"],
       equipped: true,
-      actions: [{ id: "unequip", label: "Unequip" }],
+      // A rapier is one-handed and not versatile, so the only grip on offer is
+      // the other hand — the server decides that, and the demo mirrors it.
+      grip: demoState.rapierGrip,
+      actions: [
+        { id: "unequip", label: "Unequip" },
+        demoState.rapierGrip === "main"
+          ? { id: "grip_off", label: "Off Hand" }
+          : { id: "grip_main", label: "Main Hand" },
+      ],
       affixes: [
         { slug: "keen", name: "Keen", kind: "prefix", tier: 1,
           text: "Ground to a wicked edge. +1 to attack rolls.", temper_gp: 87 },
@@ -209,6 +218,8 @@ function demoRespond(ev: ClientEvent, onEvent: (ev: ServerEvent) => void) {
     else if (ev.action === "recharge" && /wand/.test(n)) demoState.wandCharges = 7;
     else if (ev.action === "attune") demoState.ringAttuned = true;
     else if (ev.action === "unattune") demoState.ringAttuned = false;
+    else if (ev.action === "grip_main") demoState.rapierGrip = "main";
+    else if (ev.action === "grip_off") demoState.rapierGrip = "off";
     else if (ev.action === "equip") demoState.armorEquipped = true;
     else if (ev.action === "unequip") demoState.armorEquipped = false;
     else if (ev.action === "take_out" && ev.target) {

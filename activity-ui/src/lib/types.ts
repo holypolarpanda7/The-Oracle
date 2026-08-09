@@ -134,6 +134,21 @@ export interface SheetFeature {
   kind?: "fire" | "arcane" | "martial" | "other";
 }
 
+/** Which hand something is held in. "both" is a two-handed weapon (or a
+ *  versatile one taken in earnest) and occupies main and off together. */
+export type Grip = "main" | "off" | "both";
+
+/** What is on the body rather than in the pack (rules/equipment.py). */
+export interface Loadout {
+  hands?: { name: string; grip: Grip; shield?: boolean }[];
+  free_hands?: number;
+  armor?: string | null;
+  rings?: string[];
+  worn?: string[];
+  /** One line, already phrased by the server. */
+  text?: string;
+}
+
 export interface InventoryItem {
   name: string;
   qty?: number;
@@ -146,6 +161,9 @@ export interface InventoryItem {
   art?: string;
   equipped?: boolean;
   attuned?: boolean;
+  /** Which hand this is in, when it is in one — "equipped" alone can't tell a
+   *  slung shield from a raised one, and the free-hand rule needs the answer. */
+  grip?: Grip;
   weight?: number;
   /** The one verb the card offers; the inspector still has the full set. */
   action?: { id: string; label: string };
@@ -181,6 +199,7 @@ export interface ItemDetail {
   charges?: ItemCharges;
   equipped?: boolean;
   attuned?: boolean;
+  grip?: Grip;
   // spellbook widget
   spells?: SpellEntry[];
   can_inscribe?: boolean;
@@ -214,6 +233,9 @@ export interface SheetData {
   gold?: number;
   carried?: number;       // lb carried
   capacity?: number;      // lb you can carry (SRD: Strength score x 15)
+  /** Worn and wielded — the hands especially, since a spell can be refused
+   *  for having none free. */
+  loadout?: Loadout;
   // ---- v1 additions (all optional; the UI degrades gracefully when absent) ----
   gender?: string | null;          // gender identity (free-form)
   race?: string | null;
