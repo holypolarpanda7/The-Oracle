@@ -69,6 +69,7 @@ from rules import leveling
 from rules import metamagic
 from rules import summons
 from rules import components as rules_components
+from rules import equipment as gear
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import (CombatTracker, CombatEngine, PCProfile, PCWeapon,
                     Condition, monster_save_mod)
@@ -1298,12 +1299,13 @@ def resolve_cast_hooks(text: str, char: "Character",
                        session_id: Optional[str] = None) -> str:
     """Resolve [[CAST: Spell | slot level]] hooks — the whole price of a casting.
 
-    Four things have to be true, and they are checked in the order that makes a
+    Five things have to be true, and they are checked in the order that makes a
     refusal cheap: the PC must KNOW the spell, be ABLE to cast it (conditions
     and the Verbal component — see :func:`_casting_gate`), HAVE the material
-    component, and have an open SLOT. The slot is expended last, so a casting
-    refused for any other reason has not already burned one. A consumed
-    material is destroyed only after the slot is actually spent.
+    component, have a HAND for the somatic and material components (see
+    :func:`_hands_gate`), and have an open SLOT. The slot is expended last, so
+    a casting refused for any other reason has not already burned one. A
+    consumed material is destroyed only after the slot is actually spent.
 
     Mutates ``char.spell_slots_used`` and ``char.inventory``; the caller
     persists both.
@@ -1342,6 +1344,13 @@ def resolve_cast_hooks(text: str, char: "Character",
         if not ok:
             note(None)
             return f"✨ {disp} won't come — it {why}."
+        # Hands last of the free checks: it needs to know WHICH pack entry pays
+        # the material component, because a component already in a hand casts
+        # the spell that a component in the pack cannot.
+        handless = _hands_gate(char, sp, entry)
+        if handless:
+            note(None)
+            return f"✨ {disp} won't come — {char.name} {handless}."
         comps = rules_components.components_of(sp)
         if (spell_level or 0) == 0:
             note(0)
@@ -1468,7 +1477,7 @@ def _strip_mechanic_hooks(text: str) -> str:
     two arms that gave up used to list the patterns by hand, so a hook added
     later leaks raw into the narration from whichever arm was missed."""
     for pat in (CAST_HOOK_PATTERN, USE_HOOK_PATTERN, METAMAGIC_HOOK_PATTERN,
-                SUMMON_HOOK_PATTERN):
+                SUMMON_HOOK_PATTERN, GRIP_HOOK_PATTERN):
         text = pat.sub("", text)
     return text
 
@@ -1558,6 +1567,59 @@ def resolve_use_hooks(text: str, char: "Character") -> str:
         return f"⚡ {res['name']} {amt}spent ({res['remaining']} left)"
 
     return USE_HOOK_PATTERN.sub(repl, text)
+
+
+GRIP_HOOK_PATTERN = re.compile(r"\[\[GRIP:(.+?)\]\]", re.IGNORECASE)
+
+#: What the DM may ask for, and what it means.
+_GRIP_VERBS = {
+    "draw": None, "hold": None, "wield": None, "equip": None,
+    "wear": None, "don": None,
+    "stow": "stow", "sheathe": "stow", "sheath": "stow", "put away": "stow",
+    "doff": "stow", "remove": "stow", "unequip": "stow", "drop": "stow",
+}
+
+
+def resolve_grip_hooks(text: str, char: "Character") -> str:
+    """Resolve [[GRIP: draw|stow | <item> | <hand>]] — what the hands are doing.
+
+    Drawing a weapon, raising a shield, sheathing one to free a hand and
+    two-handing a versatile blade are all one decision the sheet never used to
+    record. It matters because the free-hand rule is enforced now: a caster who
+    is told their hands are full needs a way to empty one, and in 5e that is a
+    free object interaction, so a hook the DM emits mid-narration is exactly
+    the right size for it.
+
+    ``hand`` is optional and one of main / off / both; left out, a shield goes
+    to the off hand, a weapon to the main one, and a two-handed weapon takes
+    both whatever anyone asked for. Anything already in the way is stowed
+    rather than refused — that is what swapping weapons is.
+
+    Mutates ``char.inventory``; the caller persists it.
+    """
+    def repl(match: re.Match) -> str:
+        parts = [p.strip() for p in match.group(1).split("|")]
+        verb = (parts[0] if parts else "").strip().lower()
+        name = parts[1] if len(parts) > 1 else ""
+        hand = parts[2] if len(parts) > 2 else ""
+        if verb not in _GRIP_VERBS and name:
+            # "[[GRIP: Longsword | both]]" — the DM naming the item first.
+            verb, name, hand = "draw", parts[0], (parts[1] if len(parts) > 1 else "")
+        if not name:
+            return ""
+        items = _inventory_items(char)
+        if _GRIP_VERBS.get(verb) == "stow":
+            plan = gear.plan_stow(items, name, _item_row)
+        else:
+            plan = gear.plan_equip(items, name, _item_row,
+                                   grip=hand or None)
+        if not plan.ok:
+            return f"🤚 {plan.error}"
+        char.inventory = plan.apply(items)
+        load = gear.read_loadout(items, _item_row)
+        return f"🤚 {plan.note} ({load.describe_hands()})"
+
+    return GRIP_HOOK_PATTERN.sub(repl, text)
 
 
 MUSIC_HOOK_PATTERN = re.compile(r"\[\[MUSIC:(.+?)\]\]", re.IGNORECASE)
@@ -9299,6 +9361,13 @@ def generate_dm_reply(
         "  aren't carrying it and ask what they actually do (improvise, use fists, draw a\n"
         "  different listed weapon, etc.). Natural, always-available actions (unarmed\n"
         "  strikes, shoving, spells they know) are fine without an inventory entry.\n"
+        "- A 'Worn & wielded:' line follows the inventory and says what is on the PC's\n"
+        "  BODY — which hand holds what, how many hands are free, and the armour worn.\n"
+        "  Carrying is not wielding: a sword in the pack is not a sword in a hand. When\n"
+        "  the fiction changes a grip (drawing, sheathing, raising a shield, taking a\n"
+        "  versatile weapon in both hands, strapping on armour), narrate it AND emit\n"
+        "  [[GRIP: draw | Item | main|off|both]] or [[GRIP: stow | Item]] — only the hook\n"
+        "  changes it, and the free-hand rule for spells is enforced against it.\n"
         "- Guardrails apply across ALL systems (combat, exploration, social, downtime,\n"
         "  crafting, hazards, travel). Before allowing an action, verify prerequisites:\n"
         "  required gear/tools in inventory, required capability (class features, spells,\n"
@@ -10022,16 +10091,11 @@ def _add_inventory_item(char: Character, name: str, *, quantity: int = 1, extra:
     char.inventory = inv
 
 
-#: Anything that stands in for a costless material component. Deliberately
-#: broad: every class's focus has a different name, a book may add another, and
-#: refusing a spell because a wand wasn't on a list is a far worse failure than
-#: letting one through.
-_FOCUS_WORDS = (
-    "component pouch", "spellcasting focus", "arcane focus", "druidic focus",
-    "holy symbol", "emblem", "reliquary", "amulet", "sprig of mistletoe",
-    "totem", "yew wand", "wand", "staff", "quarterstaff", "rod", "orb",
-    "crystal", "sceptre", "scepter", "prayer book",
-)
+#: What stands in for a costless material component. The list lives in
+#: ``rules.components`` because the free-hand check needs the same answer —
+#: two lists would eventually disagree about whether a wand is a focus, and
+#: one of them would refuse a spell over it.
+_FOCUS_WORDS = rules_components.FOCUS_WORDS
 #: Words in a material line that describe the SPELL rather than the object.
 _MATERIAL_STOPWORDS = {
     "a", "an", "the", "of", "or", "and", "at", "least", "worth", "which",
@@ -10170,11 +10234,12 @@ def _casting_gate(char: Character, spell, session_id: Optional[str]) -> str:
       the `silenced` condition answers the same question at a table with no
       board, and either one is enough.
 
-    Deliberately NOT decided here: whether a hand is free for the Somatic and
-    Material components. Nothing in the schema says which hand holds what — a
-    shield and a two-handed weapon are inventory rows, not grips — so enforcing
-    it would mean guessing, and a guess that refuses a spell is worse than a
-    rule left to the DM. That one is stated on the DM's board instead.
+    The free-hand rule for the Somatic and Material components used to be
+    stated here as the DM's to apply, because the sheet recorded no grips.
+    It does now (``rules/equipment.py``), so it is enforced — but by
+    :func:`_hands_gate`, one step later, where the material component's own
+    inventory entry has already been found and the check can ask whether THAT
+    is the thing in the caster's hand.
     """
     conds = {str(c).strip().lower() for c in (char.conditions or [])}
     seat = _combatant_for_character(session_id, char)
@@ -10197,6 +10262,72 @@ def _casting_gate(char: Character, spell, session_id: Optional[str]) -> str:
     except Exception as e:
         print(f"[casting gate] board check failed: {e}")
     return ""
+
+
+def _item_row(name: str):
+    """The catalog row for an item name, or None. The one lookup the loadout
+    model is handed, so it never has to know about the rules library."""
+    try:
+        return rules_lib.get_item(name)
+    except Exception:
+        return None
+
+
+def _loadout(char: Character) -> "gear.Loadout":
+    """What this character is wearing and holding, hands and all."""
+    return gear.read_loadout(_inventory_items(char), _item_row)
+
+
+def _somatic_waived(char: Character) -> bool:
+    """True if a feat lets this caster gesture with both hands full.
+
+    Read off the feat's BENEFIT TEXT rather than its name, the same door the
+    cartography check opens for the Artificer's Cartographer: War Caster is the
+    feat everyone means, and a book feat that grants the identical benefit
+    should not have to be added to a list to work.
+    """
+    for slug in _tag_values(char, "feat"):
+        row = None
+        try:
+            row = rules_lib.get_feat(slug)
+        except Exception:
+            pass
+        text = " ".join(str(getattr(row, f, "") or "") for f in ("benefit", "desc"))
+        if "somatic component" in text.lower():
+            return True
+    return False
+
+
+def _hands_gate(char: Character, spell,
+                component: Optional[Dict[str, Any]] = None) -> str:
+    """Why the caster's hands can't perform this spell, or "" when they can.
+
+    This is the rule that spent the whole project so far written on the DM's
+    board as theirs to remember: Somatic and Material components need a hand,
+    and until ``rules/equipment.py`` the sheet had no way to say which hand
+    held what. It bites in exactly one situation — a character who has
+    deliberately equipped enough weaponry to fill both hands — and the refusal
+    always names the single item to stow, because putting one thing away is a
+    free object interaction and a dead end would be worse than the old note.
+    """
+    comps = rules_components.components_of(spell)
+    if not comps.somatic and not comps.material:
+        return ""
+    try:
+        load = _loadout(char)
+        ruling = gear.casting_hands(
+            load, comps,
+            somatic_waived=_somatic_waived(char),
+            component_name=str((component or {}).get("name") or "") or None)
+    except Exception as e:
+        print(f"[hands gate] {e}")
+        return ""
+    if ruling.ok:
+        return ""
+    # Prose, not a hook: this text is substituted into the narration the table
+    # reads, so the remedy has to be a sentence a player understands. The hook
+    # that performs it is taught on the DM's board instead.
+    return ruling.reason + (f" ({ruling.remedy})" if ruling.remedy else "")
 
 
 def _character_spell_names(char: Character) -> List[str]:
@@ -10474,7 +10605,13 @@ def _format_inventory(char: Character) -> Dict[str, Any]:
 
 
 def _equipment_summary(char: Character) -> str:
-    """One-line 'what the player is carrying/wielding' summary for the DM prompt."""
+    """What the player is carrying — and, separately, what is on their BODY.
+
+    Carrying and wielding are two different facts and the pack line only ever
+    said the first. A greatsword in the sack and a greatsword in both hands
+    read identically, which is why the free-hand rule could not be enforced and
+    why a fighter could arrive in the arena with their chain mail still stowed.
+    """
     items = _inventory_items(char)
     if not items:
         return "Inventory: (empty — the player carries no listed gear)"
@@ -10483,7 +10620,17 @@ def _equipment_summary(char: Character) -> str:
         qty = it.get("quantity", 1) or 1
         nm = it.get("name", "item")
         names.append(f"{qty}x {nm}" if qty and qty != 1 else nm)
-    return "Inventory: " + ", ".join(names)
+    line = "Inventory: " + ", ".join(names)
+    try:
+        load = gear.read_loadout(items, _item_row)
+    except Exception as e:
+        print(f"[equipment summary] loadout: {e}")
+        return line
+    return (line + "\nWorn & wielded: " + load.describe()
+            + ". Drawing, sheathing or swapping a grip is a free object "
+              "interaction — narrate it AND emit [[GRIP: draw | Item | "
+              "main|off|both]] or [[GRIP: stow | Item]], because the hands "
+              "are enforced and only the hook changes them.")
 
 
 # Base walking speed by race (ft). Small races and dwarves move 25; a few move
@@ -10792,6 +10939,24 @@ def _resolve_active_portrait(char: Character) -> Optional[ImageResult]:
     return image_store.get_portrait(char.name)
 
 
+def _loadout_payload(char: Character) -> Dict[str, Any]:
+    """The sheet's view of the body: hands, armour, rings, other worn gear."""
+    try:
+        load = _loadout(char)
+    except Exception as e:
+        print(f"[loadout payload] {e}")
+        return {}
+    return {
+        "hands": [{"name": h.name, "grip": h.grip, "shield": h.shield}
+                  for h in load.held],
+        "free_hands": load.free_hands,
+        "armor": load.armor,
+        "rings": load.rings,
+        "worn": load.worn,
+        "text": load.describe(),
+    }
+
+
 def _build_character_sheet(char: Character) -> Dict[str, Any]:
     """Render a D&D-Beyond-style character sheet from stored data (no AI)."""
     stats = char.stats or {}
@@ -10849,6 +11014,9 @@ def _build_character_sheet(char: Character) -> Dict[str, Any]:
         "inventory": inv["items"],
         "inventory_lines": inv["lines"],
         "carried_weight": inv["carried_weight"],
+        # What is actually on the body, apart from what's in the pack. The
+        # free-hand rule is enforced, so the sheet has to show the hands.
+        "loadout": _loadout_payload(char),
         "conditions": _character_conditions(char),
         # Feats and the options each was resolved to — the sheet is where a
         # player checks which invocation or fighting style they actually took.
@@ -11083,10 +11251,28 @@ def _character_resource_block(character_id: int) -> str:
                     "and a spell with a Verbal component fails inside magical "
                     "silence — and that a costly material is in the pack, "
                     "destroying it when the spell consumes it. It reports every "
-                    "refusal; narrate what it says rather than overruling it. "
-                    "The ONE casting rule left to you: whether a hand is free "
-                    "for the Somatic and Material components — the sheet doesn't "
-                    "record which hand holds what, so that call is yours.")
+                    "refusal; narrate what it says rather than overruling it.")
+                try:
+                    _load = _loadout(char)
+                    _free = _load.free_hands
+                    lines.append(
+                        f"Hands (ENFORCED): {_load.describe_hands()}. A spell "
+                        "with a Somatic or Material component needs ONE free "
+                        "hand — the hand holding a focus or the component "
+                        "itself counts for both, and a worn holy symbol pays "
+                        "the material without a hand. "
+                        + ("With no hand free, [[CAST]] will refuse; free one "
+                           "with [[GRIP: stow | Item]] (a free object "
+                           "interaction) in the same reply, before the "
+                           "[[CAST]]. "
+                           if _free < 1 else "")
+                        + "Drawing, sheathing, raising a shield or taking a "
+                        "versatile weapon in both hands: [[GRIP: draw | Item | "
+                        "main|off|both]] / [[GRIP: stow | Item]] — narrate it "
+                        "and emit the hook; never describe a change of grip the "
+                        "hook didn't make.")
+                except Exception as e:
+                    print(f"[spellcasting block] hands: {e}")
                 # Summoning spells only: the conjured creature's whole stat block
                 # is computed from the slot and this caster, so the DM must never
                 # invent its numbers — it names the spell and the choice, and the
@@ -11399,7 +11585,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
 
     # Mechanical enforcement: expend the PC's spell slot for a [[CAST]] and class
     # resources (Rage/Ki/…) for a [[USE]], and block the ones they can't afford.
-    if re.search(r"\[\[(CAST|USE|METAMAGIC|SUMMON):", dm_text, re.IGNORECASE):
+    if re.search(r"\[\[(CAST|USE|METAMAGIC|SUMMON|GRIP):", dm_text, re.IGNORECASE):
         try:
             state = _load_session_state(req.session_id)
             cid = (_acting_member(state.get("meta", {}) or {}, req.user_id) or {}).get("character_id") \
@@ -11408,6 +11594,11 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 with Session(engine) as s:
                     ch = s.get(Character, cid)
                     if ch:
+                        # Hands FIRST: sheathing a sword is a free object
+                        # interaction, so a DM who narrates "she sheathes the
+                        # blade and casts" in one reply must have the hand
+                        # freed before the casting's free-hand check runs.
+                        dm_text = resolve_grip_hooks(dm_text, ch)
                         # Metamagic BEFORE the cast: it decides whether the
                         # shaping is legal and what it costs, and a refusal
                         # there shouldn't have already spent the spell slot.
@@ -17460,6 +17651,26 @@ def _item_caps(row, name: str, inv_item: Optional[dict], char: Character,
         actions.append({"id": "unequip" if equipped else "equip",
                         "label": "Unequip" if equipped else "Equip"})
 
+    # Hands. A piece that takes a hand says WHICH hand it is in and offers the
+    # grips it can actually be held in — a versatile weapon is the only thing
+    # that gets a choice, and offering "both hands" on a rapier would record a
+    # grip that buys nothing while eating a hand.
+    if gear.hands_needed(row, name) > 0:
+        gr = str(inv_item.get("grip") or "").lower()
+        if equipped:
+            caps["grip"] = gr if gr in gear.GRIPS else (
+                "both" if gear.hands_needed(row, name) >= 2 else
+                "off" if gear.is_shield(row, name) else "main")
+            offer = []
+            if gear.hands_needed(row, name) < 2:
+                offer = [("grip_main", "Main Hand", "main"),
+                         ("grip_off", "Off Hand", "off")]
+                if gear.is_versatile(row, name):
+                    offer.append(("grip_both", "Both Hands", "both"))
+            for aid, label, want in offer:
+                if caps["grip"] != want:
+                    actions.append({"id": aid, "label": label})
+
     if actions:
         caps["actions"] = actions
     return caps
@@ -17471,13 +17682,28 @@ def _compute_ac(char: Character) -> int:
     Unarmored is 10 + Dex; equipped armor uses its base + a Dex bonus capped by
     the armor (0 for heavy). A ``+N`` in an item's name adds its bonus; an
     attuned Ring/Cloak of Protection adds its bonus (default +1). Best effort —
-    not every exotic AC-setter is modelled, but it beats the old flat 10."""
+    not every exotic AC-setter is modelled, but it beats the old flat 10.
+
+    A shield is worth +2 only while it is IN A HAND. That used to be the same
+    question as "equipped" and now isn't: a character can own a shield, have it
+    slung, and be swinging a greatsword — and the loadout is the only thing
+    that knows which. Same for armour: two suits both flagged equipped is a
+    state no body can be in, so the loadout's single ``armor`` is the one that
+    counts rather than whichever row this loop happened to meet last."""
     dex = ability_modifier(_ability_score(char, "dexterity"))
     base = 10 + dex
     shield = 0
     misc = 0
     armored = False
-    for it in _inventory_items(char):
+    items = _inventory_items(char)
+    try:
+        load = gear.read_loadout(items, _item_row)
+        held_names = {_normalize_item_name(h.name) for h in load.held}
+        worn_armor = _normalize_item_name(load.armor) if load.armor else None
+    except Exception as e:
+        print(f"[ac] loadout: {e}")
+        held_names, worn_armor = None, None
+    for it in items:
         name = it.get("name") or ""
         low = name.lower()
         equipped = bool(it.get("equipped"))
@@ -17508,10 +17734,18 @@ def _compute_ac(char: Character) -> int:
             row = None
         it_type = (getattr(row, "item_type", "") or "").lower() if row else ""
         if "shield" in low or "shield" in it_type or "shield" in str(it.get("base") or "").lower():
-            shield = max(shield, 2 + plus)
+            # A slung shield defends nothing. ``held_names`` is None only when
+            # the loadout couldn't be read at all, in which case the old
+            # equipped-means-held behaviour stands.
+            if held_names is None or _normalize_item_name(name) in held_names:
+                shield = max(shield, 2 + plus)
             continue
         acb = getattr(row, "armor_class_base", None) if row else None
         low_base = str(it.get("base") or name).lower()
+        # Only one suit is on the body; a second flagged row is a leftover.
+        if (worn_armor is not None and _normalize_item_name(name) != worn_armor
+                and (acb is not None or "armor" in it_type)):
+            continue
         if acb is not None or "armor" in it_type or "armor" in low or "armor" in low_base:
             acb = acb if acb is not None else 11
             if getattr(row, "armor_dex_bonus", None) is False:
@@ -17679,6 +17913,14 @@ def _activity_inventory(char: Character) -> list[dict]:
             obj["art"] = art
         if it.get("equipped"):
             obj["equipped"] = True
+            # Which hand, when it is in one at all — "equipped" alone can't
+            # tell a slung shield from a raised one.
+            grip = str(it.get("grip") or "").lower()
+            if grip in gear.GRIPS:
+                obj["grip"] = grip
+            elif gear.hands_needed(row, base_name) > 0:
+                obj["grip"] = ("both" if gear.hands_needed(row, base_name) >= 2
+                               else "off" if gear.is_shield(row, base_name) else "main")
         if it.get("attuned"):
             obj["attuned"] = True
         weight = float(it.get("weight", 0) or 0)
@@ -18098,6 +18340,10 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         "inventory": inventory[:48],
         "carried": carried,
         "capacity": capacity,
+        # What is on the body rather than in the pack. The hands matter to the
+        # player because the free-hand rule is enforced — a spell refused for a
+        # full grip has to be visible on the sheet before it is refused.
+        "loadout": sheet.get("loadout") or {},
         "gold": (sheet.get("purse") or {}).get("gp"),
         # ---- v1 structured / themeable fields ----
         "race": sheet.get("race"),
@@ -19408,14 +19654,27 @@ def _arena_apply_loadout(session_id: str, cart: list, equip: list) -> dict:
             # bought one is flagged, so the next re-outfit takes back exactly
             # what the stall sold and never the character's own gear.
             bought.append(entry)
-        char.inventory = kept + bought
+        final = kept + bought
+        # The stall sets `equipped` line by line and never asks whether the
+        # result fits on a body — a greatsword AND a shield is two clicks. The
+        # loadout model decides the hands; anything that doesn't fit is stowed
+        # and reported rather than walking into the sand as an impossible grip.
+        try:
+            stowed = gear.normalize(final, _item_row)
+        except Exception as e:
+            print(f"[arena outfit] loadout: {e}")
+            stowed = []
+        char.inventory = final
         char.updated_at = _utcnow()
         s.add(char)
         s.commit()
 
     _arena_set_run(session_id, cart=priced.lines, spent=priced.spent,
                    purse=priced.purse, rejected=priced.rejected)
-    return {"ok": True, **priced.payload()}
+    out = {"ok": True, **priced.payload()}
+    if stowed:
+        out["stowed"] = stowed
+    return out
 
 
 def _arena_guide(run: dict) -> str:
@@ -20556,10 +20815,24 @@ async def activity_ws(ws: WebSocket, channel: str):
                         row = None
                     desc = getattr(row, "desc", "") if row else ""
                     err = None
-                    if action == "equip":
-                        item["equipped"] = True
-                    elif action == "unequip":
-                        item["equipped"] = False
+                    if action in ("equip", "unequip") or action.startswith("grip_"):
+                        # Hands and armour go through the loadout model, never
+                        # a bare flag: strapping on a greatsword has to put the
+                        # shield away, and only one thing knows that.
+                        inv = [(dict(r) if isinstance(r, dict)
+                                else {"name": r, "quantity": 1}) for r in inv]
+                        want = {"grip_main": "main", "grip_off": "off",
+                                "grip_both": "both"}.get(action)
+                        if action == "unequip":
+                            plan = gear.plan_stow(inv, name, _item_row)
+                        else:
+                            plan = gear.plan_equip(inv, name, _item_row, grip=want)
+                        if not plan.ok:
+                            await ws.send_json({"t": "item_error",
+                                                "detail": plan.error})
+                            continue
+                        plan.apply(inv)
+                        item = inv[idx]          # the tail rewrite is a no-op
                     elif action == "attune":
                         if not item.get("attuned") and _attuned_count(ch) >= 3:
                             err = "You can be attuned to only three items at once."

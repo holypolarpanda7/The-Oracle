@@ -239,8 +239,9 @@ check("a costless one is NOT listed as a cost",
       "bat guano" not in block, "Fireball's component is covered by a focus")
 check("the DM is told the game enforces the gate",
       "Incapacitated" in block and "magical silence" in block)
-check("...and told which call is still theirs",
-      "hand is free" in block)
+check("...including the free-hand rule, which is code now too",
+      "Hands (ENFORCED)" in block and "ONE free hand" in block,
+      "see scripts/grip_smoke.py — it used to be the DM's call to make")
 
 print()
 if _failures:
