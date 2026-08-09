@@ -67,10 +67,36 @@ class PCWeapon:
     stowed: bool = False
     light: bool = False
     two_handed: bool = False
+    #: A thrown weapon LEAVES the hand: it can be attacked with at range, and
+    #: afterwards it is on the floor or in the target rather than in a fist.
+    thrown: bool = False
+    throw_normal: Optional[int] = None
+    throw_long: Optional[int] = None
+    #: The 2024 Weapon Mastery this weapon carries AND this character has
+    #: chosen — resolved by the backend through ``rules/mastery.py``, because
+    #: the assignment is book data the engine must not have to read. None when
+    #: mastery is off, the weapon has none, or it wasn't chosen.
+    mastery: Optional[str] = None
     #: Damage for the two-weapon bonus swing — the ability modifier is dropped
     #: unless the Two-Weapon Fighting style is taken (or the modifier is
     #: negative, which you never get to ignore). Set only on the off hand.
     offhand_damage: Optional[str] = None
+
+
+def _mark_last_weapon(prof: dict) -> str:
+    """``Combatant.last_weapon`` for a resolved attack: ``"<grip>:<name>"``.
+
+    The grip is what matters and the name is what a reader wants, so both are
+    stored. Two identical shortswords are two weapons with one name, and the
+    two-weapon rule is about the OTHER HAND — matching on the name alone would
+    decide that a duellist had already used both of them.
+    """
+    return f"{prof.get('grip') or ''}:{prof.get('name') or ''}"
+
+
+def _split_last_weapon(raw: Optional[str]) -> tuple[str, str]:
+    grip, _, name = (raw or "").partition(":")
+    return grip.strip().lower(), name.strip().lower()
 
 
 @dataclass
@@ -544,7 +570,33 @@ class CombatEngine:
                 "range_normal": cand.range_normal,
                 "range_long": cand.range_long,
                 "grip": cand.grip, "stowed": cand.stowed,
-                "light": cand.light, "two_handed": cand.two_handed}
+                "light": cand.light, "two_handed": cand.two_handed,
+                "thrown": cand.thrown, "throw_normal": cand.throw_normal,
+                "throw_long": cand.throw_long, "mastery": cand.mastery}
+
+    def _bonus_swing_earned(self, c: Combatant, prof: PCProfile) -> bool:
+        """Did the Attack action actually earn the two-weapon bonus attack?
+
+        The Light property hangs the extra attack off attacking WITH A LIGHT
+        WEAPON, not off merely holding one — a Dual Wielder who opened with the
+        non-Light blade in their off hand has not met the condition. A monk's
+        Martial Arts swing is a different feature with no such requirement, so
+        a PC who has it is never held to this.
+        """
+        if "martial arts" in prof.features:
+            return True
+        held = [w for w in prof.weapons if w.grip in ("main", "off")]
+        if not any(w.light for w in held):
+            return True                # not a two-weapon build; some other
+                                       # feature granted the bonus attack
+        used_grip, used_name = _split_last_weapon(c.last_weapon)
+        if not used_grip and not used_name:
+            return True                # nothing recorded — don't invent a bar
+        for w in held:
+            if (used_grip and w.grip == used_grip) or \
+                    (not used_grip and w.name.strip().lower() == used_name):
+                return w.light
+        return True
 
     def _attack_profile(self, c: Combatant, weapon: str,
                         profiles: dict[int, PCProfile],
@@ -562,12 +614,24 @@ class CombatEngine:
         if c.character_id and c.character_id in profiles:
             p = profiles[c.character_id]
             pool = p.weapons or []
-            # The bonus swing is made with the OTHER hand, whatever the action
-            # was made with — that is the whole rule, so it overrides the name.
+            # The bonus swing is made with a DIFFERENT weapon in the other
+            # hand, whatever the DM named — that is the whole rule, so it
+            # overrides the name. "The other hand" is read off what was already
+            # swung this turn rather than assumed to be the off hand: a
+            # character who took the Attack action with their off-hand blade
+            # makes the extra attack with the main-hand one.
             if offhand:
-                off = next((x for x in pool if x.grip == "off"), None)
-                if off is not None:
-                    return self._weapon_dict(off, offhand=True)
+                used_grip, used_name = _split_last_weapon(c.last_weapon)
+                held = [x for x in pool if x.grip in ("main", "off")]
+                # By HAND first, because two identical shortswords are two
+                # weapons with one name and the rule is about the other hand.
+                other = next((x for x in held if used_grip
+                              and x.grip != used_grip), None)
+                if other is None:
+                    other = next((x for x in held if x.name.strip().lower()
+                                  != used_name), None)
+                if other is not None:
+                    return self._weapon_dict(other, offhand=True)
             for cand in pool:
                 if w and w in cand.name.lower():
                     return self._weapon_dict(cand)
@@ -719,6 +783,20 @@ class CombatEngine:
                 notes.append(f"underwater: {name or 'that weapon'} fights the "
                              f"water — disadvantage")
         ac_conds, tc_conds = self._conds(atk), self._conds(tgt)
+        # Weapon Mastery riders. Both are ONE attack long and both are spent
+        # here — a mastery that leaves a permanent condition on the target is a
+        # label, not a rule, which is the whole failure this system exists to
+        # avoid. Sap is on the creature that was hit; Vex is on the one that
+        # hit, and names who it may be spent against.
+        if "sapped" in ac_conds:
+            dis = True
+            notes.append("Sap: disadvantage on this attack")
+            self.tracker.remove_condition(atk.id, "sapped")
+        vex = f"vexing {tgt.name.lower()}"
+        if vex in ac_conds:
+            adv = True
+            notes.append(f"Vex: advantage against {tgt.name}")
+            self.tracker.remove_condition(atk.id, vex)
         if ranged and self._engaged_enemies(encounter_id, atk):
             dis = True
             notes.append("ranged attack while in melee: disadvantage")
@@ -1217,14 +1295,26 @@ class CombatEngine:
         # other hand, and a dagger's reach is not a shortbow's range.
         fresh0 = self.tracker.get_combatant(actor.id)
         pc_prof = profiles.get(actor.character_id) if actor.character_id else None
-        allowed = (self._multiattack_count(actor) if actor.monster_slug
-                   else (pc_prof.attacks_per_action if pc_prof else 1))
+        base_allowed = (self._multiattack_count(actor) if actor.monster_slug
+                        else (pc_prof.attacks_per_action if pc_prof else 1))
+        # Nick moves the Light property's extra attack OUT of the Bonus Action
+        # and into the Attack action. Expressed as one more attack in the
+        # action's budget, which is exactly what it is — and which leaves the
+        # bonus action free, the whole reason anyone takes it.
+        nick = bool(pc_prof and "bonus attack" in pc_prof.features
+                    and any(w.mastery == "nick" for w in pc_prof.weapons
+                            if w.grip in ("main", "off"))
+                    and self._bonus_swing_earned(fresh0, pc_prof))
+        allowed = base_allowed + (1 if nick else 0)
+        is_nick_swing = bool(nick and fresh0.action_used
+                             and fresh0.attacks_made == base_allowed)
         is_bonus_swing = bool(
             fresh0.action_used and fresh0.attacks_made >= allowed
             and pc_prof and "bonus attack" in pc_prof.features
-            and not fresh0.bonus_used)
+            and not fresh0.bonus_used
+            and self._bonus_swing_earned(fresh0, pc_prof))
         prof = self._attack_profile(actor, intent.get("arg") or "", profiles,
-                                    offhand=is_bonus_swing)
+                                    offhand=is_bonus_swing or is_nick_swing)
         if prof is None:
             rep.rejections.append({"intent": intent,
                                    "reason": f"{actor.name} has no attack to make."})
@@ -1241,6 +1331,20 @@ class CombatEngine:
                            "free object interaction) or swing what they are "
                            "holding.")})
             return
+        # A thrown weapon reaches past its wielder's arm. Before this a dagger
+        # could not be thrown AT ALL: it is a melee weapon, so an out-of-reach
+        # target was simply refused, and the throw ranges the SRD ships with
+        # (20/60 for a dagger, 30/120 for a javelin) had never been read out of
+        # the downloaded rows. Out of reach and Thrown means it is a throw.
+        thrown_now = False
+        if (not prof.get("ranged") and prof.get("thrown")
+                and prof.get("throw_normal")
+                and self._steps_between(actor, target) > 0):
+            prof = {**prof, "ranged": True,
+                    "range_normal": prof.get("throw_normal"),
+                    "range_long": prof.get("throw_long")}
+            thrown_now = True
+
         # With a board out we know the exact gap, so a ranged weapon's bands
         # mean something: past normal range is disadvantage, past long range is
         # not a shot at all. Without a board (or without range data) this is
@@ -1288,17 +1392,25 @@ class CombatEngine:
         # because the weapon had to be chosen before reach was checked.
         fresh = self.tracker.get_combatant(actor.id)
         bonus_note = None
+        # Which weapon was swung is recorded on every attack: the two-weapon
+        # bonus attack has to be made with a DIFFERENT weapon, and the Light
+        # property hangs it off what the ACTION attacked with.
+        mark = _mark_last_weapon(prof)
         if not fresh.action_used:
             self.tracker.update_economy(actor.id, action_used=True,
-                                        attacks_made=1)
+                                        attacks_made=1, last_weapon=mark)
         elif fresh.attacks_made < allowed:
-            self.tracker.update_economy(actor.id,
+            self.tracker.update_economy(actor.id, last_weapon=mark,
                                         attacks_made=fresh.attacks_made + 1)
+            if is_nick_swing:
+                bonus_note = ("off-hand attack (Nick — part of the Attack "
+                              "action, the bonus action is still free)")
         elif (pc_prof and "bonus attack" in pc_prof.features
-              and not fresh.bonus_used):
-            self.tracker.update_economy(actor.id, bonus_used=True)
+              and not fresh.bonus_used and is_bonus_swing):
+            self.tracker.update_economy(actor.id, bonus_used=True,
+                                        last_weapon=mark)
             bonus_note = ("off-hand attack (bonus action)"
-                          if prof.get("grip") == "off"
+                          if prof.get("grip") in ("main", "off")
                           else "bonus-action attack")
         else:
             left = []
@@ -1306,11 +1418,19 @@ class CombatEngine:
                 left.append("a bonus action")
             if fresh.move_left > 0:
                 left.append("movement")
+            why = ""
+            if (pc_prof and "bonus attack" in pc_prof.features
+                    and not fresh.bonus_used and not is_bonus_swing):
+                # The hands qualify but the Attack action didn't: the Light
+                # property buys the extra swing off attacking WITH a Light
+                # weapon, not off merely holding one.
+                why = (" — the extra attack from the Light property needs the "
+                       "Attack action to have been made with a Light weapon")
             rep.rejections.append({
                 "intent": intent,
-                "reason": f"{actor.name} has no attacks left this turn"
-                          + (f" — still available: {', '.join(left)}" if left
-                             else " — declare the end of the turn")
+                "reason": f"{actor.name} has no attacks left this turn" + why
+                          + (f" — still available: {', '.join(left)}" if left and not why
+                             else "" if why else " — declare the end of the turn")
                           + "."})
             return
 
@@ -1353,6 +1473,12 @@ class CombatEngine:
         ev = {"kind": "attack", "actor": actor.name, "target": target.name,
               "weapon": prof["name"], "hit": hit, "crit": atk.is_crit,
               "notes": notes, "rolls": rolls}
+        if thrown_now:
+            # It left the hand. The engine never touches the character DB, so
+            # it says so and the backend takes it out of the grip.
+            ev["thrown"] = prof["name"]
+            ev["thrown_by"] = actor.character_id
+            notes.append(f"the {prof['name']} leaves {actor.name}'s hand")
         if "hidden" in self._conds(actor):
             self.tracker.remove_condition(actor.id, "hidden")
         if "helped" in self._conds(actor):
@@ -1418,7 +1544,77 @@ class CombatEngine:
             if out.get("defeated"):
                 ev["defeated"] = True
             self._note_concentration(out, ev)
+            self._apply_mastery(encounter_id, actor, target, prof, pc_prof,
+                                ev, notes, rolls, hit=True)
+        else:
+            self._apply_mastery(encounter_id, actor, target, prof, pc_prof,
+                                ev, notes, rolls, hit=False)
         rep.events.append(ev)
+
+    # ---------------- 2024 Weapon Mastery ----------------
+
+    def _apply_mastery(self, encounter_id: int, actor: Combatant,
+                       target: Combatant, prof: dict,
+                       pc_prof: Optional[PCProfile], ev: dict,
+                       notes: list, rolls: list, *, hit: bool) -> None:
+        """The weapon's mastery, if it has one and this character chose it.
+
+        The backend resolves WHICH mastery is in play (the assignment is book
+        data — see ``rules/mastery.py``); everything here is the mechanism, so
+        an SRD-only checkout simply never has one to apply. Nick is absent from
+        this method on purpose: it changes the action economy, which happened
+        long before the roll.
+        """
+        m = (prof.get("mastery") or "").lower()
+        if not m or m == "nick":
+            return
+        dmg_mod = (pc_prof.ability_mods.get("str", 0) if pc_prof else 0)
+        if prof.get("finesse") or prof.get("ranged"):
+            dmg_mod = max(dmg_mod, pc_prof.ability_mods.get("dex", 0)
+                          if pc_prof else 0)
+        if not hit:
+            # Graze: a miss still scores the ability modifier in damage. It is
+            # the only mastery that does anything at all on a miss.
+            if m == "graze" and dmg_mod > 0:
+                out = self.tracker.apply_damage(target.id, dmg_mod)
+                ev["damage"] = dmg_mod
+                ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
+                if out.get("defeated"):
+                    ev["defeated"] = True
+                notes.append(f"Graze — the miss still scores {dmg_mod}")
+                self._note_concentration(out, ev)
+            return
+        if m == "topple":
+            dc = 8 + (pc_prof.prof if pc_prof else 2) + dmg_mod
+            sv = saving_throw(self._save_mod(target, "con", None), dc,
+                              label=f"{target.name} Con save (Topple)",
+                              rng=self.rng)
+            rolls.append(self._roll_dict(f"Topple — {target.name}", sv.detail,
+                                         sv.total, dc=dc, success=bool(sv.success)))
+            if not sv.success and not self._immune_to(target, "prone", {}):
+                self.tracker.add_condition(target.id, "prone")
+                notes.append(f"Topple — {target.name} is knocked prone")
+            else:
+                notes.append(f"Topple — {target.name} keeps their feet")
+        elif m == "push":
+            # Forced movement, so it is a band change and never a walk.
+            notes.append(f"Push — {target.name} is driven 10 ft back")
+            ev["push"] = target.name
+        elif m == "sap":
+            self.tracker.add_condition(target.id, "sapped")
+            notes.append(f"Sap — {target.name} has disadvantage on its next "
+                         "attack roll")
+        elif m == "slow":
+            self.tracker.add_condition(target.id, "slowed")
+            notes.append(f"Slow — {target.name}'s Speed drops by 10 ft")
+        elif m == "vex":
+            self.tracker.add_condition(actor.id, f"vexing {target.name.lower()}")
+            notes.append(f"Vex — advantage on the next attack against "
+                         f"{target.name}")
+        elif m == "cleave":
+            ev["cleave"] = True
+            notes.append("Cleave — a second creature within 5 ft of the target "
+                         "may be struck (declare it as another attack)")
 
     def _do_move(self, encounter_id, actor, intent, profiles, rep):
         band_raw = (intent.get("arg") or intent.get("target") or "").strip()

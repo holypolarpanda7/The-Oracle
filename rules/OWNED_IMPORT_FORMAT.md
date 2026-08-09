@@ -170,6 +170,38 @@ hit points and speed). `kind` must name the attack the way a stat block does
 (`melee weapon`, `ranged spell`) because the combat engine parses reach and
 range out of the rendered prose.
 
+## `weapon_masteries_overrides.json` → nothing  (engine: `rules/mastery.py`)
+```json
+{
+  "weapons": {
+    "greatsword": "graze", "longsword": "sap", "dagger": "nick",
+    "shortsword": "vex", "maul": "topple", "greataxe": "cleave"
+  },
+  "classes": {
+    "fighter": {"1": 3, "4": 4, "10": 5, "16": 6},
+    "barbarian": {"1": 2, "4": 3}, "ranger": {"1": 2, "9": 3},
+    "paladin": {"1": 2, "9": 3}, "rogue": {"1": 2}, "monk": {"1": 2}
+  },
+  "tuning": {"push": {"distance_ft": 10}, "topple": {"save": "con"}}
+}
+```
+The 2024 Weapon Mastery table. Like `summons_overrides.json` it is **not
+upserted into a table** — it is read at runtime and cached once (restart after
+editing). The MECHANISMS are committed in `rules/mastery.py`: the eight names
+are structural (an on-miss rider, a save, an economy change), and the engine
+applies them. What is book data — and therefore lives only here — is **which
+mastery each weapon carries** and **how many a class may have active**.
+
+**With this file absent, Weapon Mastery is simply OFF**, which is the correct
+state for an SRD-only checkout: the open SRD carries no masteries at all. A
+character then needs the numbers you supply here plus their own `mastery:`
+tags, because choosing which ones you have is the player's, not the table's —
+a class with the feature and no recorded picks gets none rather than a guess.
+
+`nick` is the one that changes the action economy rather than an outcome: it
+moves the Light property's extra attack out of the Bonus Action and into the
+Attack action, which is the difference between two swings a turn and three.
+
 ## `items_overrides.json` → `rules_item`  (loader: `ingest_items_overrides`)
 ```json
 {

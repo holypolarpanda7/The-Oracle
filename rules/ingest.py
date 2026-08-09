@@ -243,6 +243,8 @@ def _map_item(e: dict) -> Item:
         two_handed_damage_dice=two.get("damage_dice"),
         range_normal=rng.get("normal"),
         range_long=rng.get("long"),
+        throw_range_normal=(e.get("throw_range") or {}).get("normal"),
+        throw_range_long=(e.get("throw_range") or {}).get("long"),
         properties=[p.get("name") for p in (e.get("properties") or [])] or None,
         armor_class_base=armor.get("base"),
         armor_dex_bonus=armor.get("dex_bonus"),

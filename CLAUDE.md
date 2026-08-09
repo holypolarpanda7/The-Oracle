@@ -108,6 +108,8 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - `equipment.py` — the loadout: what is WORN and what is HELD, in which
      hand. Pure logic over inventory dicts + a catalogue lookup, so the
      backend, the arena's Quartermaster and the smoke tests share one answer.
+   - `mastery.py` — the 2024 Weapon Mastery engine. Mechanisms committed, the
+     weapon→mastery table and class counts in the gitignored slot.
    - Structured half only; prose-rules RAG is a later, separate layer.
 5. **`dice/`** — internal **dice roller** (no Avrae copy-paste).
    - `roller.py` — `roll(expr)` (NdM, modifiers, kh/kl), `double_dice` for crits.
@@ -252,7 +254,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
     concise-mechanical, never verbatim.
     Paste-and-translate override slots (all gitignored, see
     `rules/OWNED_IMPORT_FORMAT.md`): species, feats, **classes**, subclasses,
-    spells, monsters, items, puzzles, backgrounds, **bastion facilities**
+    spells, monsters, items, puzzles, backgrounds, the **weapon-mastery table**
+    (`weapon_masteries_overrides.json` — which mastery each weapon carries and
+    how many a class may have; absent = mastery off), **bastion facilities**
     (`bastion_facilities_overrides.json`), the **airship fleet**
     (`airships_overrides.json` — vessels, stations and tuning) and the
     **summoned spirits** (`summons_overrides.json` — recipes, not rows). A class from
@@ -904,6 +908,41 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   in 2024) or the modifier is negative. **A stack has one grip**, so equipping
   a second blade from a "2x Dagger" row SPLITS it — without that the commonest
   two-weapon build in the game could never be expressed.
+- **One object interaction a turn, and the hook CHARGES it.** Drawing,
+  sheathing or swapping a grip is free once per turn; a second costs the Action
+  (Utilize), and with neither left it is refused. Without this the free-hand
+  rule had an unlimited remedy — a caster could stow a shield, cast, and
+  re-draw it in the same turn for nothing, which is as wrong as never enforcing
+  the hands. `Combatant.interactions_used` is turn-scoped like `attacks_made`;
+  outside a fight nothing is charged, because the limit is per-TURN and a table
+  not in initiative has no turns. Two consequences: naming a sheathed weapon in
+  an attack DRAWS it (`_combat_draw_for_intents` — "you can draw a weapon as
+  part of the same action you use to attack"), spending that same interaction;
+  and **both hands on one haft can still free a hand to cast** —
+  `Loadout.can_free_a_hand` — because letting go of a greatsword and taking
+  hold again puts nothing down. A sword AND a shield is the case it excludes:
+  freeing that hand means actually stowing something.
+- **A thrown weapon leaves the hand, and it can be thrown at all.** A dagger is
+  a melee weapon, so an out-of-reach target was refused outright and the SRD's
+  own throw ranges (20/60 for a dagger, 30/120 for a javelin) had sat unread in
+  each row's `raw` blob since the first ingest — `range_normal` is the 5 ft
+  REACH, which is why reading one for the other loses the throw entirely.
+  `Item.throw_range_normal/long` now carry it (backfilled from `raw`, no
+  re-download). Out of reach + Thrown = a throw, and the engine reports
+  `ev["thrown"]` so the backend takes it out of the grip — the engine never
+  touches the character DB.
+- **Weapon Mastery is an ENGINE here and NUMBERS in the slot.** `rules/mastery.py`
+  holds the eight 2024 masteries as mechanisms (an on-miss rider, a save, an
+  economy change); `owned_books/weapon_masteries_overrides.json` (gitignored)
+  says which weapon carries which and how many a class may have active. Absent
+  file = mastery OFF, which is correct for an SRD-only checkout — the open SRD
+  has none. Holding a weapon whose mastery you never CHOSE gives nothing
+  (`mastery:` tags are the picks); the gate is the feature. **Nick is the one
+  that changes the action economy** — it moves the Light property's extra
+  attack into the Attack action, so the bonus action stays free, which is the
+  difference between two swings a turn and three. Sap and Vex are conditions
+  the engine SPENDS in `_attack_advantage` — a mastery that leaves a permanent
+  label on a creature is decoration, not a rule.
 - **A shield is only worth +2 while it is in a hand**, and only one suit of
   armour is on a body. Both used to be the same question as `equipped`, and
   `_compute_ac` took whichever armour row it met last. `gear.normalize` is what

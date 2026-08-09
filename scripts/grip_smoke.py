@@ -1,6 +1,6 @@
 """Equipped / grip smoke test — a body has two hands, and now the game knows it.
 
-Offline, no GPU, no LLM, fresh scratch database. Four layers:
+Offline, no GPU, no LLM, fresh scratch database. Seven layers:
 
     1. READ    — an inventory adds up to a loadout: what is worn, what is held,
                  in which hand, with older ``equipped`` rows inferred.
@@ -12,6 +12,12 @@ Offline, no GPU, no LLM, fresh scratch database. Four layers:
                  board asking them to remember it.
     4. REACH   — the same answer arrives at the DM's board, the sheet, the
                  armour class and the [[GRIP]] hook.
+    5. COMBAT  — the engine swings what is in the hand: main/off selection,
+                 versatile dice, and the two-weapon bonus attack.
+    6. ECONOMY — one object interaction a turn (a second costs the Action), and
+                 the two-handed re-grip that needs neither.
+    7. THROWN  — a dagger can be thrown and leaves the hand — plus the 2024
+                 Weapon Mastery engine, Nick's action-economy change included.
 
     uv run python scripts/grip_smoke.py
 """
@@ -34,6 +40,7 @@ from sqlmodel import Session, SQLModel      # noqa: E402
 from rules import components as rc          # noqa: E402
 from rules import equipment as gear         # noqa: E402
 from rules.models import Item, Spell, Feat  # noqa: E402
+from rules import mastery              # noqa: E402
 
 GREEN, RED, DIM, BOLD, OFF = "\033[32m", "\033[31m", "\033[2m", "\033[1m", "\033[0m"
 _failures = 0
@@ -63,7 +70,12 @@ CATALOG = [
     dict(index_slug="mace", name="Mace", category="weapon", item_type="Simple",
          damage_dice="1d6"),
     dict(index_slug="dagger", name="Dagger", category="weapon",
-         item_type="Simple", damage_dice="1d4", properties=["Finesse", "Light"]),
+         item_type="Simple", damage_dice="1d4", range_normal=5,
+         properties=["Finesse", "Light", "Thrown"],
+         throw_range_normal=20, throw_range_long=60),
+    dict(index_slug="javelin", name="Javelin", category="weapon",
+         item_type="Simple", damage_dice="1d6", range_normal=5,
+         properties=["Thrown"], throw_range_normal=30, throw_range_long=120),
     dict(index_slug="shield", name="Shield", category="armor",
          item_type="Shield", armor_class_base=2),
     dict(index_slug="chain-mail", name="Chain Mail", category="armor",
@@ -458,6 +470,151 @@ check("the DM's board says two-weapon fighting is live",
       summary.splitlines()[-1][:120])
 check("...and that the off-hand damage carries no modifier",
       "no ability modifier" in summary)
+
+# ----------------------------------------------------------------------
+section("6. the turn economy — a free hand is not a free lunch")
+
+# One object interaction per turn; a second costs the Action. Without this the
+# free-hand rule had an unlimited remedy.
+board = fighter([{"name": "Mace", "quantity": 1, "equipped": True, "grip": "main"},
+                 {"name": "Shield", "quantity": 1, "equipped": True, "grip": "off"}],
+                cls="Cleric", name="Brand")
+enc2 = tracker.start_encounter("grip:economy", "Hands full")
+seat = tracker.add_pc(enc2.id, name="Brand", max_hp=30, armor_class=18,
+                      dex_mod=0, character_id=board.id)
+tracker.add_combatant(enc2.id, "Dummy", max_hp=99, armor_class=10, dex_mod=-5)
+tracker.roll_initiative(enc2.id, rng=random.Random(3))
+tracker.start_turn(seat.id) if hasattr(tracker, "start_turn") else None
+m.combat = tracker                      # the hook reads the live tracker
+
+out = m.resolve_grip_hooks("[[GRIP: stow | Shield]]", board, "grip:economy")
+check("the first object interaction of the turn is free",
+      "stowed" in out and "costs the Action" not in out, out.strip())
+out = m.resolve_grip_hooks("[[GRIP: draw | Shield | off]]", board, "grip:economy")
+check("...a second one costs the Action", "costs the Action" in out, out.strip())
+out = m.resolve_grip_hooks("[[GRIP: stow | Shield]]", board, "grip:economy")
+check("...and a third is refused outright",
+      "no Action left" in out, out.strip())
+check("outside a fight nothing is charged",
+      "stowed" in m.resolve_grip_hooks("[[GRIP: stow | Mace]]", board, None))
+
+# A two-handed weapon: let go with one hand, gesture, take hold again.
+great = held([{"name": "Greatsword", "quantity": 1, "equipped": True}])
+check("both hands on ONE haft can still free a hand to cast",
+      gear.casting_hands(great, VS).ok,
+      "letting go and re-gripping puts nothing down")
+check("...but a sword AND a shield cannot", not gear.casting_hands(full, VS).ok,
+      "freeing that hand means actually stowing something")
+
+# ----------------------------------------------------------------------
+section("7. thrown weapons, and the masteries that change a turn")
+
+check("the throw range is read off the row now",
+      m._item_row("Dagger").throw_range_normal == 20
+      and m._item_row("Javelin").throw_range_normal == 30,
+      "20/60 for a dagger, 30/120 for a javelin — downloaded with everything "
+      "else and never mapped")
+check("...and the weapon's REACH is still 5 ft, not its throw",
+      m._item_row("Dagger").range_normal == 5,
+      "reading one for the other is why a dagger could not be thrown at all")
+
+thrower = fighter([{"name": "Dagger", "quantity": 1, "equipped": True,
+                    "grip": "main"}], name="Pitch", level=3)
+tp = m._combat_pc_profile(thrower)
+check("a thrown weapon carries its flight", tp.weapons[0].thrown
+      and tp.weapons[0].throw_normal == 20)
+
+enc3 = tracker.start_encounter("grip:throw", "At range")
+pseat = tracker.add_pc(enc3.id, name="Pitch", max_hp=20, armor_class=14,
+                       dex_mod=4, character_id=thrower.id)
+mark = tracker.add_combatant(enc3.id, "Post", max_hp=99, armor_class=5, dex_mod=-5)
+# One band apart: out of arm's reach, well inside a dagger's 20 ft throw.
+tracker.set_position(pseat.id, "near")
+tracker.set_position(mark.id, "far")
+tracker.roll_initiative(enc3.id, rng=random.Random(5))
+while (cur := tracker.current_combatant(enc3.id)) and cur.name != "Pitch":
+    tracker.next_turn(enc3.id)
+rep = engine_.resolve(enc3.id, [{"verb": "attack", "target": "Post"}],
+                      {thrower.id: tp})
+ev = rep.events[0] if rep.events else {}
+check("a dagger can be THROWN at a target out of reach",
+      ev.get("weapon") == "Dagger" and not rep.rejections,
+      str(rep.rejections or ev.get("notes")))
+check("...and it leaves the hand", ev.get("thrown") == "Dagger",
+      " / ".join(ev.get("notes") or []))
+
+# Weapon Mastery: the engine ships, the assignments are book data.
+check("mastery is OFF with no local table",
+      not mastery.load_rules().enabled and mastery.mastery_for("Dagger") is None,
+      "the open SRD carries no masteries — a bookless checkout gets none")
+mastery._CACHE = mastery.MasteryRules(
+    weapons={"dagger": "nick", "mace": "sap", "greatsword": "graze",
+             "longsword": "vex", "quarterstaff": "topple"},
+    class_counts={"ranger": {"1": 2}, "cleric": {"1": 1}, "fighter": {"1": 3}})
+check("...and ON once one exists", mastery.mastery_for("Dagger") == "nick")
+check("a mastery you did NOT choose does nothing",
+      mastery.resolve("Dagger", active=set()) is None,
+      "the gate is the feature")
+check("...and one you did is resolved",
+      mastery.resolve("Dagger", active={"nick"}).name == "nick")
+check("the count is a class feature",
+      mastery.masteries_known("Ranger", 5) == 2
+      and mastery.masteries_known("Wizard", 20) == 0)
+
+nicker = fighter(TWO_BLADES, name="Nimble", level=3)
+with Session(m.engine) as s:
+    ch = s.get(m.Character, nicker.id)
+    ch.tags = ["mastery:nick"]
+    s.add(ch); s.commit(); s.refresh(ch)
+    nicker = ch
+np_ = m._combat_pc_profile(nicker)
+check("Nick reaches the weapon the engine reads",
+      np_.weapons[0].mastery == "nick")
+
+enc4 = tracker.start_encounter("grip:nick", "Nick")
+nseat = tracker.add_pc(enc4.id, name="Nimble", max_hp=30, armor_class=15,
+                       dex_mod=4, character_id=nicker.id)
+dummy = tracker.add_combatant(enc4.id, "Sack", max_hp=200, armor_class=1, dex_mod=-5)
+tracker.set_position(dummy.id, "melee with Nimble")
+tracker.roll_initiative(enc4.id, rng=random.Random(2))
+while (cur := tracker.current_combatant(enc4.id)) and cur.name != "Nimble":
+    tracker.next_turn(enc4.id)
+profs4 = {nicker.id: np_}
+engine_.resolve(enc4.id, [{"verb": "attack", "target": "Sack"}], profs4)
+rep = engine_.resolve(enc4.id, [{"verb": "attack", "target": "Sack"}], profs4)
+note = " ".join(rep.events[0].get("notes") or []) if rep.events else ""
+check("Nick moves the extra attack into the Attack action", "Nick" in note, note)
+seat4 = tracker.get_combatant(nseat.id)
+check("...leaving the bonus action free — which is the whole point",
+      not seat4.bonus_used, f"bonus_used={seat4.bonus_used}")
+
+# A mastery that leaves a permanent label on a creature is not a rule. Each
+# rider is one attack long and is SPENT where it is read.
+sapper = fighter([{"name": "Mace", "quantity": 1, "equipped": True, "grip": "main"}],
+                 cls="Cleric", name="Tamp", level=3)
+with Session(m.engine) as s:
+    ch = s.get(m.Character, sapper.id); ch.tags = ["mastery:sap"]
+    s.add(ch); s.commit(); s.refresh(ch); sapper = ch
+enc5 = tracker.start_encounter("grip:sap", "Sap")
+s5 = tracker.add_pc(enc5.id, name="Tamp", max_hp=30, armor_class=15, dex_mod=0,
+                    character_id=sapper.id)
+foe5 = tracker.add_combatant(enc5.id, "Brute", max_hp=200, armor_class=1, dex_mod=-5)
+tracker.set_position(foe5.id, "melee with Tamp")
+tracker.roll_initiative(enc5.id, rng=random.Random(4))
+while (cur := tracker.current_combatant(enc5.id)) and cur.name != "Tamp":
+    tracker.next_turn(enc5.id)
+rep = engine_.resolve(enc5.id, [{"verb": "attack", "target": "Brute"}],
+                      {sapper.id: m._combat_pc_profile(sapper)})
+note = " ".join(rep.events[0].get("notes") or []) if rep.events else ""
+check("Sap lands a real condition, not a label",
+      "Sap" in note and "sapped" in
+      [c.lower() for c in (tracker.get_combatant(foe5.id).conditions or [])], note)
+adv, dis, notes5 = engine_._attack_advantage(
+    tracker.get_combatant(foe5.id), tracker.get_combatant(s5.id), False, enc5.id)
+check("...which is read as disadvantage and SPENT there",
+      dis and "sapped" not in
+      [c.lower() for c in (tracker.get_combatant(foe5.id).conditions or [])],
+      " / ".join(notes5))
 
 print()
 if _failures:

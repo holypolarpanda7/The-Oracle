@@ -284,6 +284,12 @@ class Item(SQLModel, table=True):
     two_handed_damage_dice: Optional[str] = Field(default=None, sa_column=Column(String))
     range_normal: Optional[int] = Field(default=None, sa_column=Column(Integer))
     range_long: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    # How far a THROWN weapon flies (a dagger is 20/60, a javelin 30/120).
+    # Kept apart from range_normal, which for a thrown melee weapon is its
+    # 5 ft reach — reading one for the other is how a dagger ends up unable to
+    # be thrown at all, which is exactly what happened before these existed.
+    throw_range_normal: Optional[int] = Field(default=None, sa_column=Column(Integer))
+    throw_range_long: Optional[int] = Field(default=None, sa_column=Column(Integer))
     properties: Optional[Any] = Field(default=None, sa_column=Column(JSON))   # list[str]
 
     # Armor numbers
