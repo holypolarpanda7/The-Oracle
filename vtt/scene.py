@@ -25,6 +25,7 @@ altar — never whether it was legal.
 """
 from __future__ import annotations
 
+import math
 import os
 import random
 from pathlib import Path
@@ -986,12 +987,17 @@ class VttEngine:
         row = self.get_scene(tok.map_id)
         if row is None:
             return {}
-        g = self.grid_of(row)
+        # A creature reaches across ITS OWN storey. Costing the wash against the
+        # ground floor put the archer on the gallery a walk through the hall's
+        # furniture, and `move_token` — which has always been level-aware —
+        # then refused the move the wash had just offered.
+        lvl = int(tok.level or 0)
+        g = self.grid_of(row, lvl)
         budget = int(budget_ft if budget_ft is not None
                      else max(0, tok.speed_ft * (2 if dash else 1) - tok.moved_ft))
-        blocked = self._occupied(tok.map_id, exclude=token_id,
+        blocked = self._occupied(tok.map_id, exclude=token_id, level=lvl,
                                  ignore_teams=(tok.team,) if tok.team else ())
-        hard = self._occupied(tok.map_id, exclude=token_id)
+        hard = self._occupied(tok.map_id, exclude=token_id, level=lvl)
         costs = geo.reachable_costs(
             g, (tok.x, tok.y), budget, size=size_squares(tok.size),
             mode=tok.movement_mode, blocked=blocked,
@@ -1000,9 +1006,54 @@ class VttEngine:
         return {
             "token_id": token_id,
             "budget_ft": budget,
+            "level": lvl,
             "squares": [{"x": x, "y": y, "cost": c} for (x, y), c in costs.items()
                         if (x, y) not in hard or (x, y) == (tok.x, tok.y)],
+            "threatened": [{"x": x, "y": y} for x, y in
+                           sorted(self.threatened_squares(tok.map_id, tok))],
         }
+
+    def threatened_squares(self, map_id: int, tok: MapToken) -> set[Square]:
+        """Every square where leaving would provoke, for this creature.
+
+        The opportunity-attack warning already exists, but it only lands after
+        the path preview round-trips — you learn the route provokes once the
+        pointer has settled on the far end of it. A creature deciding where to
+        go needs to see the threatened ground the way it sees the walls: before
+        choosing, not after. Same rule the engine applies in ``_opportunity``,
+        asked of the ground instead of a path.
+        """
+        out: set[Square] = set()
+        row = self.get_scene(map_id)
+        if row is None:
+            return out
+        lvl = int(tok.level or 0)
+        g = self.grid_of(row, lvl)
+        square_ft = max(1, int(row.square_ft or 5))
+        for other in self.tokens(map_id):
+            # The same exclusions _opportunity makes, for the same reasons: a
+            # corpse, a marker and a crate take no reactions, and an ally's
+            # reach is not a threat.
+            if other.id == tok.id or other.defeated or other.team == tok.team:
+                continue
+            if other.kind in (TokenKind.MARKER, TokenKind.OBJECT):
+                continue
+            if int(other.level or 0) != lvl:
+                continue
+            reach = other.reach_ft or 5
+            # Height alone can put the mover out of reach — the wyvern rule
+            # from _opportunity. This is measured against the MOVER's height,
+            # which is the same everywhere on its own storey.
+            if self.height_gap_ft(row, other, tok) > reach:
+                continue
+            reach_sq = max(1, (reach + square_ft - 1) // square_ft)
+            for sx, sy in geo.footprint(other.x, other.y, size_squares(other.size)):
+                for dy in range(-reach_sq, reach_sq + 1):
+                    for dx in range(-reach_sq, reach_sq + 1):
+                        sq = (sx + dx, sy + dy)
+                        if g.in_bounds(*sq):
+                            out.add(sq)
+        return out
 
     def path_preview(self, token_id: int, x: int, y: int) -> dict:
         """The route a token would take to a square, and what it would cost."""
@@ -1012,8 +1063,9 @@ class VttEngine:
         row = self.get_scene(tok.map_id)
         if row is None:
             return {"ok": False, "reason": "no board"}
-        g = self.grid_of(row)
-        blocked = self._occupied(tok.map_id, exclude=token_id,
+        lvl = int(tok.level or 0)
+        g = self.grid_of(row, lvl)
+        blocked = self._occupied(tok.map_id, exclude=token_id, level=lvl,
                                  ignore_teams=(tok.team,) if tok.team else ())
         path, cost = geo.find_path(
             g, (tok.x, tok.y), (int(x), int(y)), size=size_squares(tok.size),
@@ -1024,6 +1076,7 @@ class VttEngine:
             return {"ok": False, "reason": "no route to that square"}
         remaining = max(0, tok.speed_ft - tok.moved_ft)
         return {"ok": True, "path": [list(p) for p in path], "cost_ft": cost,
+                "level": lvl,
                 "remaining_ft": remaining, "within_budget": cost <= remaining,
                 "opportunity": [t["name"] for t in
                                 self._opportunity(tok, path, row)]}
@@ -2475,6 +2528,144 @@ class VttEngine:
 
     def can_see(self, map_id: int, a_ref: str, b_ref: str) -> bool:
         return bool(self.vision(map_id, a_ref, b_ref).get("sees"))
+
+    # ============================================================= targeting
+
+    def targets_for(self, map_id: int, actor_ref: str, *,
+                    range_ft: Optional[int] = None,
+                    needs_sight: bool = True,
+                    include_self: bool = False,
+                    include_allies: bool = True,
+                    include_defeated: bool = False) -> dict:
+        """Who this creature may legally target, and WHY the rest are refused.
+
+        "A creature you can see within range" is the coupling between the
+        senses layer and the spell layer, and until now nothing could check it:
+        :meth:`vision` has always been the complete answer to the first half
+        and ``range_ft`` to the second, but no caller ever asked them together
+        on a player's behalf. The board is the only thing that knows both.
+
+        Every creature on the board comes back — the illegal ones carry a
+        ``reason``, because a target the player can see greyed out with a
+        stated cause is information, and one silently missing from the list is
+        a bug they cannot tell from a rule. Same doctrine as a refused move
+        naming the remedy.
+
+        ``range_ft`` of None means "no range limit" (a touch spell's caller
+        passes the reach); ``needs_sight`` off is for the handful of effects
+        that don't require seeing the target.
+        """
+        actor = self.find_token(map_id, actor_ref)
+        row = self.get_scene(map_id)
+        if actor is None or row is None:
+            return {"ok": False, "reason": "not on the board", "targets": []}
+        out: list[dict] = []
+        a_fp = geo.footprint(actor.x, actor.y, size_squares(actor.size))
+        for t in self.tokens(map_id):
+            if t.kind == TokenKind.MARKER:
+                continue
+            if t.id == actor.id and not include_self:
+                continue
+            if t.defeated and not include_defeated:
+                continue
+            if not include_allies and t.id != actor.id and t.team == actor.team:
+                continue
+            dist = geo.token_distance_ft(
+                a_fp, geo.footprint(t.x, t.y, size_squares(t.size)),
+                row.square_ft, dz_ft=self.height_gap_ft(row, actor, t))
+            cover = ("none" if t.id == actor.id
+                     else self.cover_for(map_id, actor.name, t.name))
+            legal, reason = True, ""
+            if t.id != actor.id:
+                # Range first: it is the cheaper refusal and the one the player
+                # can fix by walking, so it is the more useful thing to say.
+                if range_ft is not None and dist > int(range_ft):
+                    legal = False
+                    reason = f"out of range — {int(dist)} ft away, reaches {int(range_ft)} ft"
+                elif needs_sight:
+                    v = self.vision(map_id, actor.name, t.name)
+                    if not v.get("sees"):
+                        legal = False
+                        reason = v.get("note") or "can't be seen from here"
+                # Total cover is not a modifier, it is a wall — 5e says such a
+                # target "can't be targeted directly", so it is refused even
+                # for the effects that don't need sight.
+                if legal and cover == "total":
+                    legal = False
+                    reason = f"{t.name} is behind total cover"
+            out.append({
+                "token_id": t.id, "name": t.name, "team": t.team,
+                "kind": t.kind, "x": t.x, "y": t.y, "level": int(t.level or 0),
+                "squares": size_squares(t.size),
+                "distance_ft": int(dist), "cover": cover,
+                "legal": legal, "reason": reason,
+            })
+        out.sort(key=lambda d: (not d["legal"], d["distance_ft"], d["name"]))
+        return {"ok": True, "actor": actor.name, "actor_token_id": actor.id,
+                "range_ft": range_ft, "needs_sight": needs_sight,
+                "targets": out}
+
+    def area_preview(self, map_id: int, actor_ref: str, x: int, y: int, *,
+                     shape: str = "sphere", radius_ft: int = 0,
+                     length_ft: int = 0, width_ft: int = 5,
+                     range_ft: Optional[int] = None) -> dict:
+        """Where a template dropped on (x, y) would actually land, and who it catches.
+
+        `geo.area_squares` has clipped templates by line of effect since the
+        board was built, and no player has ever been able to aim one — the DM
+        placed every fireball by narrating it. This is that same call made
+        answerable before the spell is spent: the squares, the creatures
+        standing in them, and whether the origin is even a legal place to put it.
+        """
+        actor = self.find_token(map_id, actor_ref)
+        row = self.get_scene(map_id)
+        if actor is None or row is None:
+            return {"ok": False, "reason": "not on the board", "squares": []}
+        lvl = int(actor.level or 0)
+        g = self.grid_of(row, lvl)
+        origin = (int(x), int(y))
+        if not g.in_bounds(*origin):
+            return {"ok": False, "reason": "that square is off the map",
+                    "squares": []}
+        a_fp = geo.footprint(actor.x, actor.y, size_squares(actor.size))
+        dist = geo.token_distance_ft(a_fp, [origin], row.square_ft)
+        ok, reason = True, ""
+        if range_ft is not None and dist > int(range_ft):
+            ok = False
+            reason = (f"out of range — that point is {int(dist)} ft away, "
+                      f"the spell reaches {int(range_ft)} ft")
+        elif not geo.line_of_effect(g, (actor.x, actor.y), origin):
+            # Line of EFFECT, not of sight: you may aim into darkness, but not
+            # through a wall. The template itself is clipped the same way below.
+            ok = False
+            reason = "no line of effect to that point — something solid is in the way"
+        # A cone or a line is thrown in a direction; a sphere is dropped on a
+        # point. Both are aimed by the same click, so the direction is derived
+        # from it rather than asked for separately.
+        direction = math.degrees(math.atan2(origin[1] - actor.y,
+                                            origin[0] - actor.x))
+        squares = geo.area_squares(
+            shape, origin if shape not in ("cone", "line") else (actor.x, actor.y),
+            radius_ft=radius_ft, length_ft=length_ft, width_ft=width_ft,
+            direction_deg=direction, square_ft=row.square_ft,
+            origin_size=size_squares(actor.size) if shape in ("cone", "line") else 1,
+            grid=g, respect_walls=True)
+        hit = {tuple(s) for s in squares}
+        caught: list[dict] = []
+        for t in self.tokens(map_id):
+            if t.defeated or t.kind == TokenKind.MARKER:
+                continue
+            if int(t.level or 0) != lvl:
+                continue
+            if any(sq in hit for sq in
+                   geo.footprint(t.x, t.y, size_squares(t.size))):
+                caught.append({"token_id": t.id, "name": t.name,
+                               "team": t.team, "x": t.x, "y": t.y})
+        return {"ok": ok, "reason": reason, "shape": shape,
+                "origin": [origin[0], origin[1]], "level": lvl,
+                "distance_ft": int(dist),
+                "squares": [[s[0], s[1]] for s in squares],
+                "caught": caught}
 
     # =============================================================== hiding
 
