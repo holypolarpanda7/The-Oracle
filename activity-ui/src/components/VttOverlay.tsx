@@ -5,9 +5,8 @@ import type {
 } from "../lib/types";
 import { SPRITES, loadSprites } from "../lib/boardSprites";
 import { useResizable } from "../lib/useResizable";
-import {
-  CELL, fitView, paint, pathFromCosts, toScreen, toSquare, type View,
-} from "../lib/vttPaint";
+import { pathFromCosts, type BoardView, type View } from "../lib/boardView";
+import { createCanvasBoardView } from "../lib/canvasBoardView";
 
 /** The tactical board.
  *
@@ -104,8 +103,19 @@ export function VttOverlay(p: VttProps) {
   // split and it persists. The canvas already repaints on resize (see the
   // ResizeObserver below), so this is honest resizing, not a stretched bitmap.
   const boardR = useResizable("vtt-board", { minH: 220, axis: "y" });
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // The canvas is held as STATE rather than a ref because the renderer is built
+  // from it: a ref never notifies, so the board would be constructed against
+  // whatever the element happened to be on first render (null).
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
   const artRef = useRef<HTMLImageElement | null>(null);
+
+  // Which renderer is drawing. Every other line in this component goes through
+  // the `BoardView` interface, so this is the single place that decides — the
+  // isometric board joins by extending this one expression.
+  const board: BoardView | null = useMemo(
+    () => (canvasEl ? createCanvasBoardView(canvasEl) : null), [canvasEl]);
+  useEffect(() => () => board?.dispose(), [board]);
+
   const [view, setView] = useState<View | null>(null);
   const [size, setSize] = useState<[number, number]>([0, 0]);
   const [selected, setSelected] = useState<number | null>(null);
@@ -261,9 +271,9 @@ export function VttOverlay(p: VttProps) {
   // Fit the board when it changes identity or the viewport resizes.
   const fitKey = `${scene.id}:${size[0]}x${size[1]}`;
   useEffect(() => {
-    if (size[0] > 0 && size[1] > 0) setView(fitView(scene, size[0], size[1]));
+    if (board && size[0] > 0 && size[1] > 0) setView(board.fit(scene, size[0], size[1]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitKey]);
+  }, [fitKey, board]);
 
   // ---- battlemap art ------------------------------------------------------
   useEffect(() => {
@@ -352,19 +362,8 @@ export function VttOverlay(p: VttProps) {
 
   // ---- draw ---------------------------------------------------------------
   const draw = useCallback(() => {
-    const c = canvasRef.current;
-    if (!c || !view || size[0] === 0) return;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    if (c.width !== size[0] * dpr || c.height !== size[1] * dpr) {
-      c.width = size[0] * dpr;
-      c.height = size[1] * dpr;
-      c.style.width = `${size[0]}px`;
-      c.style.height = `${size[1]}px`;
-    }
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    paint(ctx, size[0], size[1], {
+    if (!board || !view || size[0] === 0) return;
+    board.draw({
       scene: { ...floor, tokens: floor.tokens.filter(onThisFloor) },
       stairs: stairsHere, levels: floors, level,
       view, art: artRef.current,
@@ -380,8 +379,8 @@ export function VttOverlay(p: VttProps) {
       area: level === myLevel ? areaSquares : null,
       areaLegal: p.area?.ok !== false,
       hover, measure, show, pings, sprites: SPRITES, now: Date.now(),
-    });
-  }, [floor, onThisFloor, stairsHere, floors, level, myLevel, view, size, reach,
+    }, size[0], size[1]);
+  }, [board, floor, onThisFloor, stairsHere, floors, level, myLevel, view, size, reach,
       threatened, aiming, areaSquares, p.area?.ok,
       path, pathCost, hover, measure, show, pings, provokes.length, spriteTick]);
 
@@ -412,10 +411,9 @@ export function VttOverlay(p: VttProps) {
 
   // ---- pointer ------------------------------------------------------------
   const squareAt = (e: React.PointerEvent | React.MouseEvent): [number, number] | null => {
-    const c = canvasRef.current;
-    if (!c || !view) return null;
-    const r = c.getBoundingClientRect();
-    return toSquare(view, e.clientX - r.left, e.clientY - r.top);
+    if (!canvasEl || !board || !view) return null;
+    const r = canvasEl.getBoundingClientRect();
+    return board.squareAt(view, floor, e.clientX - r.left, e.clientY - r.top, level);
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -470,17 +468,10 @@ export function VttOverlay(p: VttProps) {
   };
 
   const onWheel = (e: React.WheelEvent) => {
-    if (!view) return;
-    const c = canvasRef.current;
-    if (!c) return;
-    const r = c.getBoundingClientRect();
-    const mx = e.clientX - r.left;
-    const my = e.clientY - r.top;
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const scale = Math.max(0.2, Math.min(3, view.scale * factor));
-    // Zoom about the cursor so the square under it stays put.
-    const k = scale / view.scale;
-    setView({ scale, ox: mx - (mx - view.ox) * k, oy: my - (my - view.oy) * k });
+    if (!view || !board || !canvasEl) return;
+    const r = canvasEl.getBoundingClientRect();
+    setView(board.zoomAt(view, e.clientX - r.left, e.clientY - r.top,
+                         e.deltaY < 0 ? 1.12 : 1 / 1.12));
   };
 
   const onContextMenu = (e: React.MouseEvent) => {
@@ -520,11 +511,13 @@ export function VttOverlay(p: VttProps) {
     return false;
   }, [show.fog, scene.sight]);
 
-  const tokenNodes = view && scene.tokens.filter(onThisFloor)
+  const tokenNodes = view && board && scene.tokens.filter(onThisFloor)
     .filter(inSight).map((t) => {
-    const cell = CELL * view.scale;
-    const [sx, sy] = toScreen(view, t.x, t.y);
-    const px = cell * t.squares;
+    // Where this creature lands on screen is the renderer's answer, not this
+    // component's. That indirection is the whole of what makes a token work on
+    // an isometric board: a DOM element over a canvas already faces the camera,
+    // so "billboarded character" needs no billboard — only a projection.
+    const at = board.screenOf(view, floor, t.x, t.y, t.squares, level, t.elevation_ft);
     const active = scene.current_token_id === t.id;
     const vit = t.combatant_id != null ? vitals.get(t.combatant_id) : undefined;
     const hpPct = vit ? Math.max(0, Math.min(100, (100 * vit.hp) / vit.max)) : null;
@@ -546,13 +539,18 @@ export function VttOverlay(p: VttProps) {
       selected === t.id ? "selected" : "", isMine(t) ? "mine" : "",
       tgt ? (tgt.legal ? "targetable" : "untargetable") : "",
       inArea ? "in-area" : "",
+      // Something opaque stands between the camera and this square. Drawn as a
+      // silhouette rather than hidden — see TokenPlacement. Never set by the
+      // flat board, which has nothing to stand in the way.
+      at.occluded ? "occluded" : "",
     ].filter(Boolean).join(" ");
     return (
       <div
         key={t.id}
         className={cls}
         style={{
-          left: sx, top: sy, width: px, height: px,
+          left: at.left, top: at.top, width: at.size, height: at.size,
+          zIndex: Math.round(1000 - at.depth),
           ["--tok" as string]: t.color || undefined,
         }}
         title={tgt
@@ -642,7 +640,7 @@ export function VttOverlay(p: VttProps) {
           <button className={measuring ? "on" : ""} title="Measure distance"
             onClick={() => { setMeasuring((m) => !m); setMeasure(null); }}>📏</button>
           <button title="Fit the board"
-            onClick={() => size[0] && setView(fitView(scene, size[0], size[1]))}>⤢</button>
+            onClick={() => board && size[0] && setView(board.fit(scene, size[0], size[1]))}>⤢</button>
           <button title="Minimise" onClick={() => setCollapsed(true)}>—</button>
         </div>
       </header>
@@ -695,7 +693,7 @@ export function VttOverlay(p: VttProps) {
         onWheel={onWheel}
         onContextMenu={onContextMenu}
       >
-        <canvas ref={canvasRef} />
+        <canvas ref={setCanvasEl} />
         <div className="vtt-tokens">{tokenNodes}</div>
         {p.error && (
           <div className="vtt-error" onClick={p.onDismissError}>{p.error}</div>

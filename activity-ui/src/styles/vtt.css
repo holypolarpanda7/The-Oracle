@@ -92,7 +92,11 @@
     radial-gradient(120% 100% at 50% 40%, rgba(20, 28, 52, 0.5), rgba(4, 6, 12, 0.9));
 }
 .play .vtt-board canvas { position: absolute; inset: 0; display: block; }
-.play .vtt-tokens { position: absolute; inset: 0; pointer-events: none; }
+/* `isolation` matters: tokens carry a z-index so the isometric board can stack
+   them by distance from the camera, and an absolutely-positioned parent with
+   `z-index: auto` makes no stacking context of its own — those values would
+   escape and paint over the error banner and the floor strip. */
+.play .vtt-tokens { position: absolute; inset: 0; pointer-events: none; isolation: isolate; }
 
 /* ---------- tokens ---------- */
 .play .vtt-token {
