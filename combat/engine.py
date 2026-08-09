@@ -35,6 +35,7 @@ from sqlmodel import Session, select
 
 from dice import ability_modifier
 from dice.mechanics import ability_check, attack_roll, damage_roll, saving_throw
+from rules import damage as dmgtypes
 from rules.models import Monster, Spell
 
 from .models import Combatant
@@ -412,11 +413,21 @@ class CombatEngine:
         for a in (m.actions if m else []) or []:
             if a.get("attack_bonus") is None:
                 continue
-            dmg = ""
+            # EVERY damage entry, not the first: a dragon's bite is piercing
+            # PLUS acid, and reading one of them dropped the rider damage on
+            # the floor along with both types. The extras ride as their own
+            # typed lumps so a creature immune to the acid still takes the bite.
+            dmg, dtype, extra = "", None, []
             for d in a.get("damage") or []:
-                if d.get("damage_dice"):
-                    dmg = d["damage_dice"]
-                    break
+                if not d.get("damage_dice"):
+                    continue
+                dt = ((d.get("damage_type") or {}).get("name")
+                      if isinstance(d.get("damage_type"), dict)
+                      else d.get("damage_type"))
+                if not dmg:
+                    dmg, dtype = d["damage_dice"], dt
+                else:
+                    extra.append({"dice": d["damage_dice"], "type": dt})
             if not dmg:
                 continue
             desc = (a.get("desc") or "").lower()
@@ -425,7 +436,13 @@ class CombatEngine:
             reach = re.search(r"reach\s+(\d+)\s*(?:ft|feet)", desc)
             out.append({"name": a.get("name") or "attack",
                         "attack_bonus": int(a["attack_bonus"]),
-                        "damage": dmg,
+                        "damage": dmg, "damage_type": dtype,
+                        "damage_extra": extra,
+                        # A monster's natural weapons and its spell-like
+                        # attacks are magical for the purposes of a resistance
+                        # to nonmagical damage only when the block says so;
+                        # "magic weapon attacks" is how it says it.
+                        "magical": "magic" in desc,
                         "ranged": desc.startswith("ranged")
                                   or "ranged weapon attack" in desc,
                         "range_normal": int(rng.group(1)) if rng else None,
@@ -1018,7 +1035,10 @@ class CombatEngine:
             total = self._maybe_prompt_uncanny(
                 payload.get("attacker", "the attacker"), target, dmg.total,
                 profiles, ev_ctx=ev, after=payload.get("after"))
-            out = self.tracker.apply_damage(target.id, total)
+            out = self.tracker.apply_damage(
+                target.id, rolled=[(self._packet(weapon), total)])
+            total = out.get("damage_taken", total)
+            self._note_resistance(out, ev.setdefault("notes", []))
             ev["damage"] = total
             ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
             if out.get("defeated"):
@@ -1045,7 +1065,10 @@ class CombatEngine:
                                "spell": "Uncanny Dodge", "rolls": [],
                                "notes": [f"halves the blow ({total} → {halved})"]})
             total = halved
-        out = self.tracker.apply_damage(target.id, total)
+        out = self.tracker.apply_damage(
+            target.id, rolled=[(self._packet(payload.get("weapon") or {}), total)])
+        total = out.get("damage_taken", total)
+        self._note_resistance(out, ev.setdefault("notes", []))
         ev["damage"] = total
         ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
         if out.get("defeated"):
@@ -1136,7 +1159,10 @@ class CombatEngine:
             dmg = damage_roll(mprof["damage"], crit=atk.is_crit, rng=self.rng)
             total = self._maybe_prompt_uncanny(enemy.name, mover, dmg.total,
                                                profiles, ev_ctx=oa, after=after)
-            out = self.tracker.apply_damage(mover.id, total)
+            out = self.tracker.apply_damage(
+                mover.id, rolled=self._attack_parts(mprof, total))
+            total = out.get("damage_taken", total)
+            self._note_resistance(out, notes)
             oa_rolls.append(self._roll_dict(
                 f"{mprof['name']} damage", dmg.detail, total,
                 expr=mprof["damage"]))
@@ -1506,6 +1532,11 @@ class CombatEngine:
             total = dmg.total
             rolls.append(self._roll_dict(f"{prof['name']} damage", dmg.detail,
                                          dmg.total, expr=prof["damage"]))
+            # Every rider below is its OWN typed lump: Sneak Attack is the
+            # weapon's type, a Smite is Radiant, and a creature immune to one
+            # is not immune to the other. Summing them into a single number and
+            # resisting that once is the mistake this list prevents.
+            parts: list = self._attack_parts(prof, dmg.total)
 
             # Sneak Attack — auto-applied once per turn when the rogue
             # qualifies: finesse/ranged weapon, and either advantage or an
@@ -1519,6 +1550,8 @@ class CombatEngine:
                 ndice = (pc_prof.level + 1) // 2
                 sneak = damage_roll(f"{ndice}d6", crit=atk.is_crit, rng=self.rng)
                 total += sneak.total
+                parts.append((self._packet(prof, actor, label="Sneak Attack"),
+                              sneak.total))   # a rogue's dice, the weapon's type
                 rolls.append(self._roll_dict("Sneak Attack", sneak.detail,
                                              sneak.total, expr=f"{ndice}d6"))
                 notes.append(f"Sneak Attack +{sneak.total}")
@@ -1540,6 +1573,9 @@ class CombatEngine:
                     ndice = min(5, 1 + lv)  # 2d8 at 1st, +1d8/slot level, cap 5d8
                     sm = damage_roll(f"{ndice}d8", crit=atk.is_crit, rng=self.rng)
                     total += sm.total
+                    parts.append((dmgtypes.Packet(
+                        dice=f"{ndice}d8", type="radiant", magical=True,
+                        label="Divine Smite"), sm.total))
                     ev["slot_spent"] = lv
                     rolls.append(self._roll_dict(f"Divine Smite (L{lv})",
                                                  sm.detail, sm.total,
@@ -1552,11 +1588,16 @@ class CombatEngine:
                     and "raging" in self._conds(actor)):
                 rb = 2 if pc_prof.level < 9 else 3 if pc_prof.level < 16 else 4
                 total += rb
+                parts.append((self._packet(prof, actor, label="Rage"), rb))
                 notes.append(f"Rage +{rb}")
 
-            total = self._maybe_prompt_uncanny(actor.name, target, total,
-                                               profiles, ev_ctx=ev, after=None)
-            out = self.tracker.apply_damage(target.id, total)
+            shaved = self._maybe_prompt_uncanny(actor.name, target, total,
+                                                profiles, ev_ctx=ev, after=None)
+            parts = self._scale_parts(parts, total, shaved)
+            total = shaved
+            out = self.tracker.apply_damage(target.id, rolled=parts)
+            total = out.get("damage_taken", total)
+            self._note_resistance(out, notes)
             ev["damage"] = total
             ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
             if out.get("defeated"):
@@ -1571,6 +1612,78 @@ class CombatEngine:
         rep.events.append(ev)
 
     # ---------------- 2024 Weapon Mastery ----------------
+
+    # ---------------- damage typing ----------------
+
+    @staticmethod
+    def _packet(prof: dict, actor: Optional[Combatant] = None,
+                label: str = "") -> "dmgtypes.Packet":
+        """The typed lump one weapon or attack deals.
+
+        ``magical`` decides whether a "nonmagical" resistance applies, and half
+        the bestiary carries one — so getting it wrong is the difference
+        between a specter taking a full hit and half of it. A +N weapon is
+        magical by name, which is the only signal the catalogue reliably gives.
+        """
+        name = str(prof.get("name") or "")
+        magical = bool(prof.get("magical")) or bool(re.search(r"\+\d", name))
+        materials = set()
+        low = name.lower()
+        for mat in ("silvered", "adamantine"):
+            if mat in low:
+                materials.add(mat)
+        return dmgtypes.Packet(dice=str(prof.get("damage") or ""),
+                               type=prof.get("damage_type"), magical=magical,
+                               materials=materials, label=label or name)
+
+    def _attack_parts(self, prof: dict, total: int) -> list:
+        """A monster attack's typed lumps, main damage plus any rider.
+
+        The rider is rolled at PARSE time in the profile, so here it is only
+        given its type; the point is that a bite that is piercing plus acid
+        meets an acid-immune target as two separate lumps.
+        """
+        extras = prof.get("damage_extra") or []
+        if not extras:
+            return [(self._packet(prof), total)]
+        parts = [(self._packet(prof), total)]
+        for ex in extras:
+            r = damage_roll(str(ex.get("dice") or "0"), rng=self.rng)
+            parts.append((dmgtypes.Packet(
+                dice=str(ex.get("dice") or ""), type=ex.get("type"),
+                magical=bool(prof.get("magical")),
+                label=str(prof.get("name") or "")), r.total))
+        return parts
+
+    @staticmethod
+    def _scale_parts(parts: list, before: int, after: int) -> list:
+        """Re-spread a total that something outside the type system changed.
+
+        Uncanny Dodge halves a whole blow, not one type of it, and it does so
+        before resistances. Rather than lose the breakdown, each lump keeps its
+        share of the new total — the last one absorbs the rounding so the parts
+        still sum to exactly what was dealt.
+        """
+        if after == before or before <= 0 or not parts:
+            return parts
+        out, running = [], 0
+        for i, (pk, n) in enumerate(parts):
+            share = (after - running) if i == len(parts) - 1 \
+                else int(n * after / before)
+            out.append((pk, max(0, share)))
+            running += share
+        return out
+
+    @staticmethod
+    def _note_resistance(out: dict, notes: list) -> None:
+        """Say what the target's defences did. A halving nobody is told about
+        reads at the table as a bad damage roll."""
+        for n in out.get("damage_notes") or []:
+            notes.append(n)
+        rolled = out.get("damage_rolled")
+        took = out.get("damage_taken")
+        if rolled is not None and took is not None and rolled != took:
+            notes.append(f"{rolled} rolled → {took} taken")
 
     def _live_rider(self, c: Combatant, prefix: str, rnd: int) -> Optional[str]:
         """A time-limited mastery rider on this creature, if it hasn't lapsed.
@@ -1641,7 +1754,10 @@ class CombatEngine:
             # Sneak Attack, because it "can be increased only by increasing the
             # ability modifier".
             if m == "graze" and amod > 0:
-                out = self.tracker.apply_damage(target.id, amod)
+                out = self.tracker.apply_damage(
+                    target.id,
+                    rolled=[(self._packet(prof, actor, label="Graze"), amod)])
+                amod = out.get("damage_taken", amod)
                 ev["damage"] = amod
                 ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
                 if out.get("defeated"):
@@ -1798,7 +1914,10 @@ class CombatEngine:
             return
         expr = prof.get("damage_flat") or prof["damage"]
         dmg = damage_roll(expr, crit=atk.is_crit, rng=self.rng)
-        out = self.tracker.apply_damage(second.id, dmg.total)
+        out = self.tracker.apply_damage(
+            second.id,
+            rolled=[(self._packet(prof, actor, label="Cleave"), dmg.total)])
+        self._note_resistance(out, notes)
         rolls.append(self._roll_dict("Cleave damage", dmg.detail, dmg.total,
                                      expr=expr))
         notes.append(f"Cleave — {second.name} is also struck for {dmg.total}")
@@ -2169,10 +2288,13 @@ class CombatEngine:
             darts = 3 + max(0, (slot_spent or base_lv) - base_lv)
             expr = f"{darts}d4+{darts}"
             dmg = damage_roll(expr, rng=self.rng)
-            out = self.tracker.apply_damage(target.id, dmg.total)
+            out = self.tracker.apply_damage(target.id, rolled=[(
+                dmgtypes.Packet(dice=expr, type="force", magical=True,
+                                label=sp.name), dmg.total)])
+            self._note_resistance(out, ev["notes"])
             ev["rolls"].append(self._roll_dict(
                 f"{sp.name} ({darts} darts)", dmg.detail, dmg.total, expr=expr))
-            ev["damage"] = dmg.total
+            ev["damage"] = out.get("damage_taken", dmg.total)
             ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
             ev["notes"].append("auto-hit")
             if out.get("defeated"):
@@ -2219,10 +2341,13 @@ class CombatEngine:
             ev["hit"] = s_hit
             if s_hit and dmg_expr:
                 dmg = damage_roll(dmg_expr, crit=atk.is_crit, rng=self.rng)
-                out = self.tracker.apply_damage(target.id, dmg.total)
+                out = self.tracker.apply_damage(target.id, rolled=[(
+                    dmgtypes.Packet(dice=dmg_expr, type=self._spell_type(sp),
+                                    magical=True, label=sp.name), dmg.total)])
+                self._note_resistance(out, ev["notes"])
                 ev["rolls"].append(self._roll_dict(
                     f"{sp.name} damage", dmg.detail, dmg.total, expr=dmg_expr))
-                ev["damage"] = dmg.total
+                ev["damage"] = out.get("damage_taken", dmg.total)
                 ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"
                 if out.get("defeated"):
                     ev["defeated"] = True
@@ -2282,12 +2407,25 @@ class CombatEngine:
                             self.tracker.set_pending_saves(tgt.id, saves)
                 if shared is not None:
                     total = shared.total
-                    if save.success and (sp.dc_success or "").lower() == "half":
+                    # "half as much damage on a successful one" is a phrase in
+                    # the description for most of these rows — `dc_success` is
+                    # populated on a handful — so the prose is the fallback,
+                    # and without it every Fireball a target saved against
+                    # dealt nothing instead of half.
+                    halves = ((sp.dc_success or "").lower() == "half"
+                              or dmgtypes.save_halves(getattr(sp, "desc", None)))
+                    if save.success and halves:
                         total //= 2
                     elif save.success:
                         total = 0
                     if total > 0:
-                        out = self.tracker.apply_damage(tgt.id, total)
+                        out = self.tracker.apply_damage(tgt.id, rolled=[(
+                            dmgtypes.Packet(dice=dmg_expr or "",
+                                            type=self._spell_type(sp),
+                                            magical=True, label=sp.name),
+                            total)])
+                        total = out.get("damage_taken", total)
+                        self._note_resistance(out, ev["notes"])
                         res["damage"] = total
                         res["hp"] = f"{out['current_hp']}/{out['max_hp']}"
                         if out.get("defeated"):
@@ -2339,10 +2477,36 @@ class CombatEngine:
             ev["notes"].append(f"concentrating on {sp.name}")
         rep.events.append(ev)
 
+    def _spell_type(self, sp: Optional[Spell]) -> Optional[str]:
+        """A spell's damage type, from its structured row or its own prose.
+
+        Only 17 of 430 spell rows in this project carry a structured `damage`
+        dict — the rest came from a PDF parse that kept the description and
+        nothing else — so the sentence is where a Fireball's "Fire" is
+        actually written down. Derived at read time, like a component's price.
+        """
+        if sp is None:
+            return None
+        if isinstance(sp.damage, dict):
+            t = dmgtypes.normalize_type(
+                (sp.damage.get("damage_type") or {}).get("name")
+                if isinstance(sp.damage.get("damage_type"), dict)
+                else sp.damage.get("damage_type"))
+            if t:
+                return t
+        packets = dmgtypes.parse_damage(getattr(sp, "desc", None))
+        return packets[0].type if packets else None
+
     def _spell_damage(self, sp: Optional[Spell], prof: Optional[PCProfile],
                       slot: Optional[int] = None) -> Optional[str]:
-        if sp is None or not isinstance(sp.damage, dict):
+        if sp is None:
             return None
+        if not isinstance(sp.damage, dict):
+            # No structured row: read the dice out of the description, the
+            # same place the type comes from. Without this the engine rolled
+            # to hit with a Fire Bolt and then dealt nothing at all.
+            packets = dmgtypes.parse_damage(getattr(sp, "desc", None))
+            return packets[0].dice if packets else None
         lvl = prof.level if prof else 1
         slots = sp.damage.get("damage_at_slot_level") or {}
         chars = sp.damage.get("damage_at_character_level") or {}
@@ -2480,8 +2644,15 @@ class CombatEngine:
                 if not save.success:
                     expr = str(hz.get("damage", "1d6"))
                     dmg = damage_roll(expr, rng=self.rng)
-                    out = self.tracker.apply_damage(c.id, dmg.total)
-                    ev["damage"] = dmg.total
+                    # An arcane site's hazard says what kind of harm it is
+                    # ("necrotic", "fire"); a creature immune to that walks
+                    # through it, which is most of the point of being a fire
+                    # elemental in a burning place.
+                    out = self.tracker.apply_damage(c.id, rolled=[(
+                        dmgtypes.Packet(dice=expr, type=hz.get("damage_type"),
+                                        magical=True, label=hname), dmg.total)])
+                    self._note_resistance(out, ev["notes"])
+                    ev["damage"] = out.get("damage_taken", dmg.total)
                     ev["rolls"].append(self._roll_dict(f"{hname} damage", dmg.detail,
                                                        dmg.total, expr=expr))
                     ev["target_hp"] = f"{out['current_hp']}/{out['max_hp']}"

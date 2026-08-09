@@ -110,6 +110,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
      backend, the arena's Quartermaster and the smoke tests share one answer.
    - `mastery.py` — the 2024 Weapon Mastery engine. Mechanisms committed, the
      weapon→mastery table and class counts in the gitignored slot.
+   - `damage.py` — damage TYPES: parsing typed dice out of (OCR-damaged) book
+     prose, reading a creature's resistances out of either shape the bestiary
+     stores them in, and the halve/double/zero arithmetic itself.
    - Structured half only; prose-rules RAG is a later, separate layer.
 5. **`dice/`** — internal **dice roller** (no Avrae copy-paste).
    - `roller.py` — `roll(expr)` (NdM, modifiers, kh/kl), `double_dice` for crits.
@@ -210,7 +213,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   components, War Caster, the [[GRIP]] hook that frees one, and the combat
   half — main/off-hand weapon choice, versatile dice, two-weapon fighting),
   `forge`
-  (tempering needs a smith), `routes` (roads costed from real geography, and
+  (tempering needs a smith), `resistance` (damage types out of scanned prose,
+  defences out of both bestiary shapes, and the arithmetic through the real
+  engine — a mace on a skeleton, a fireball on a fire elemental), `routes` (roads costed from real geography, and
   no map data leaks), `map` (one terrain answer across scene/board/parchment;
   tool + knowledge gating; a sheet accrues across revisions), `airship`
   (core/helm/damage/repair/crash/upgrade + passages + mobile bastions), `bonds`
@@ -856,6 +861,47 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   in component enforcement: imported sheets routinely arrive with no pack, and
   a false refusal stops play dead where a missed enforcement only makes the
   game slightly generous. A pack with *something* in it is taken at its word.
+- **Damage has a TYPE, and `rules/damage.py` is the one place it is reduced.**
+  The engine dealt integers: a fire elemental took full damage from fire, a
+  skeleton shrugged off a mace exactly as hard as a rapier, and a raging
+  barbarian resisted nothing. Thirteen damage types were in the data and in
+  none of the arithmetic. Reduction happens inside `tracker.apply_damage`,
+  beside the concentration save and for the same reason — it is the one place
+  all of the engine's damage paths and the DM's own hook meet. **`rolled` is a
+  LIST of `(Packet, amount)`**, because a flame tongue's slashing and its fire
+  meet a creature's defences separately and summing first is the mistake the
+  signature exists to prevent. An UNTYPED amount passes through untouched,
+  which is exactly what every caller got before types existed.
+  A PC's defences come through `defenses_for`, the `con_save_mod_for`
+  precedent: species trait TEXT is read for "Resistance to Fire damage" (the
+  same door War Caster and the cartography check open), `resist:`/`immune:`/
+  `vulnerable:` tags are the explicit record, and **Rage is neither** — it is a
+  condition, resistance to the physical three while it lasts.
+- **The bestiary holds defences in two incompatible shapes, and one of them is
+  a trap.** Half was ingested from the open SRD (a tidy list, with prose
+  qualifiers like "from nonmagical weapons"); half was parsed out of a PDF into
+  ONE string with a semicolon in it — `"Fire,Poison;Exhaustion,Grappled"` —
+  where everything after the semicolon is a CONDITION immunity sitting in the
+  damage column. Read naively a skeleton comes out immune to "exhaustion
+  damage". `parse_defenses` splits them, rescues bare condition lists that have
+  no separator at all, and matches condition names tolerantly because the
+  source contains `Petrifed`. 363 of 366 rows with defence data now parse; the
+  three that don't are genuinely garbage (`'Damag'`, `'fre'`).
+- **Spell damage is DERIVED from the description, because 17 of 430 rows have
+  it.** Every spell in this project came from the owned-book PDF parse, not the
+  SRD JSON, so `Spell.damage` is null almost everywhere and the engine's spell
+  branch — which keys on it — dealt **no damage at all** for a Fire Bolt.
+  `_spell_damage`/`_spell_type` fall back to `damage.parse_damage(sp.desc)`,
+  which is OCR-tolerant on purpose: `ldlO` is `1d10` and `Necr otic` is
+  necrotic, and a parser that only accepts clean input reads the ~3% that
+  happen to be clean. Same doctrine as `rules/components.py` — derived at read
+  time, never stored beside the prose it came from. `save_halves(desc)` is the
+  matching fallback for "half as much damage on a successful one", without
+  which every Fireball a target saved against dealt nothing instead of half.
+- **A monster attack's SECOND damage entry used to be dropped.** The parser
+  read `damage[0]` and broke; a dragon's bite is piercing PLUS acid, and both
+  the rider damage and both types went on the floor. `damage_extra` carries the
+  rest, each as its own typed lump.
 - **A body has two hands, and `rules/equipment.py` is the one place a loadout
   is decided.** `equipped` was a single boolean, which answers "is this
   strapped on" — enough for armour class and a portrait, and unable to answer

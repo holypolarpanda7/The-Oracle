@@ -71,6 +71,7 @@ from rules import summons
 from rules import components as rules_components
 from rules import equipment as gear
 from rules import mastery
+from rules import damage as damage_rules
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import (CombatTracker, CombatEngine, PCProfile, PCWeapon,
                     Condition, monster_save_mod)
@@ -884,6 +885,11 @@ def _con_save_mod(c) -> int:
 
 
 combat.con_save_mod_for = _con_save_mod
+# The other thing the tracker can't know about a PC: what they resist. A
+# monster's defences are in its stat block and the tracker reads them itself.
+# Bound through a forwarder because `_combat_defenses_for` reads the character
+# sheet and so is defined far below, with the rest of the sheet code.
+combat.defenses_for = lambda c: _combat_defenses_for(c)
 # Deterministic turn engine on top of it: validates intents, rolls real dice,
 # enforces action economy and spacing; the LLM only proposes and narrates.
 combat_engine = CombatEngine(combat)
@@ -6712,7 +6718,21 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                 if not c or amount <= 0:
                     continue
                 if action == "damage":
-                    out = combat.apply_damage(c.id, amount)
+                    # A third field names the TYPE — [[COMBAT: damage | Goblin
+                    # | 12 | fire]]. Without one the blow is untyped and no
+                    # resistance touches it, which is what happened to every
+                    # DM-adjudicated hit before types existed; with one, the
+                    # tracker halves it for a creature that resists fire.
+                    dtype = damage_rules.normalize_type(
+                        args[2] if len(args) > 2 else None)
+                    magical = len(args) > 3 and "magic" in str(args[3]).lower()
+                    rolled = [(damage_rules.Packet(
+                        dice=str(amount), type=dtype, magical=magical,
+                        label="the blow"), amount)] if dtype else None
+                    out = (combat.apply_damage(c.id, rolled=rolled) if rolled
+                           else combat.apply_damage(c.id, amount))
+                    for n in (out.get("damage_notes") or []):
+                        notes.append(f"⚔ {c.name} {n}.")
                     if out.get("defeated"):
                         notes.append(f"⚔ {c.name} goes down.")
                     # The tracker rolled the concentration save (see
@@ -7865,6 +7885,75 @@ _CASTING_ABILITY = {"bard": "cha", "sorcerer": "cha", "warlock": "cha",
                     "paladin": "cha", "cleric": "wis", "druid": "wis",
                     "ranger": "wis", "wizard": "int", "artificer": "int",
                     "illrigger": "cha"}
+
+
+#: "you have Resistance to Fire damage", "Resistance to poison damage"
+_RESIST_TEXT_RE = re.compile(
+    r"\b(resistance|immunity|vulnerability|immune|resistant|vulnerable)\b"
+    r"[^.]{0,60}?\b(" + "|".join(damage_rules.DAMAGE_TYPES) + r")\b", re.I)
+
+
+def _pc_defenses(char: Character, combatant=None) -> "damage_rules.Defenses":
+    """What a PC resists — species traits, tags, and what they are doing now.
+
+    Three sources, in the order they were reachable. TAGS
+    (`resist:fire`) are the explicit record, so a DM or an importer can state
+    one outright. FEATURE TEXT is read for the rest — a Tiefling's "Resistance
+    to Fire damage" is a sentence in the species trait, and reading it is the
+    same door the cartography check and War Caster already open, so a species
+    from an owned book needs nothing added to a list. And RAGE is a condition,
+    not a trait: it is resistance to the physical three while it lasts, which
+    no amount of reading the sheet would ever say.
+    """
+    out = damage_rules.Defenses()
+
+    def add(table, types, qual=None):
+        for t in types:
+            table[t] = qual or damage_rules.Qualifier()
+
+    for prefix, table in (("resist", out.resist), ("immune", out.immune),
+                          ("vulnerable", out.vulnerable)):
+        for v in _tag_values(char, prefix):
+            t = damage_rules.normalize_type(v)
+            if t:
+                table[t] = damage_rules.Qualifier()
+    try:
+        with Session(engine) as s:
+            for f in _sheet_features(s, char):
+                text = f"{f.get('name') or ''} {f.get('note') or ''}"
+                for kind, dtype in _RESIST_TEXT_RE.findall(text):
+                    t = damage_rules.normalize_type(dtype)
+                    if not t:
+                        continue
+                    k = kind.lower()
+                    if k.startswith("immun"):
+                        add(out.immune, [t])
+                    elif k.startswith("vulnerab"):
+                        add(out.vulnerable, [t])
+                    else:
+                        add(out.resist, [t])
+    except Exception as e:
+        print(f"[pc defenses] traits: {e}")
+    conds = {str(c).strip().lower() for c in (char.conditions or [])}
+    if combatant is not None:
+        conds |= {str(c).strip().lower() for c in (combatant.conditions or [])}
+    if "raging" in conds:
+        add(out.resist, damage_rules.PHYSICAL)
+    return out
+
+
+def _combat_defenses_for(combatant):
+    """The tracker's callback: a PC's defences, looked up by character id."""
+    cid = getattr(combatant, "character_id", None)
+    if not cid:
+        return None
+    try:
+        with Session(engine) as s:
+            ch = s.get(Character, cid)
+            return _pc_defenses(ch, combatant) if ch else None
+    except Exception as e:
+        print(f"[pc defenses] {e}")
+        return None
 
 
 def _active_masteries(char: Character) -> set[str]:

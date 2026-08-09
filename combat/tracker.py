@@ -26,6 +26,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from dice import roll as dice_roll, ability_modifier
+from rules import damage as dmg
 from rules.models import Monster
 
 from .models import Encounter, Combatant, CombatantKind
@@ -44,7 +45,7 @@ def _default_engine(database_url: Optional[str] = None) -> Engine:
 class CombatTracker:
     def __init__(self, engine: Optional[Engine] = None,
                  database_url: Optional[str] = None,
-                 con_save_mod_for=None):
+                 con_save_mod_for=None, defenses_for=None):
         self.engine = engine or _default_engine(database_url)
         # ``con_save_mod_for(combatant) -> int`` — the one thing the tracker
         # cannot know about a creature it holds a row for. With it, damage
@@ -54,6 +55,28 @@ class CombatTracker:
         # caller that never installs one loses nothing. The DC has always been
         # computed here, so the save belongs beside it.
         self.con_save_mod_for = con_save_mod_for
+        # ``defenses_for(combatant) -> rules.damage.Defenses | None`` — the
+        # same shape and the same reason. A MONSTER's resistances are in its
+        # stat block and read here; a PC's come from species traits, Rage and
+        # spells, none of which the tracker can see. Without it, monsters still
+        # resist correctly and PCs simply don't, which is where the game was.
+        self.defenses_for = defenses_for
+
+    def defenses(self, c: Combatant):
+        """What this creature resists — its stat block, or the callback."""
+        if c.character_id and self.defenses_for is not None:
+            try:
+                got = self.defenses_for(c)
+                if got is not None:
+                    return got
+            except Exception as e:
+                print(f"[defenses] {e}")
+        if not c.monster_slug:
+            return None
+        with Session(self.engine) as s:
+            row = s.exec(select(Monster).where(
+                Monster.index_slug == c.monster_slug)).first()
+        return dmg.defenses_of(row) if row is not None else None
 
     def create_tables(self) -> None:
         SQLModel.metadata.create_all(self.engine)
@@ -378,8 +401,31 @@ class CombatTracker:
 
     # ----- damage / healing / status -----
 
-    def apply_damage(self, combatant_id: int, amount: int) -> dict:
-        """Deal ``amount`` damage (temp HP absorbs first). Returns the new state."""
+    def apply_damage(self, combatant_id: int, amount: int = 0, *,
+                     rolled: Optional[list] = None) -> dict:
+        """Deal damage — TYPED, if the caller says what kind. New state back.
+
+        ``rolled`` is a list of ``(rules.damage.Packet, amount)``: one entry
+        per damage type in the blow, because a flame tongue's slashing and its
+        fire meet a creature's defences separately and a fire elemental takes
+        one and not the other. Summing them first and reducing once is the
+        mistake the signature exists to prevent.
+
+        Resistance is applied HERE, before temp HP and before the concentration
+        DC, for the same reason the save is rolled here: this is the one place
+        all of the engine's damage paths and the DM's own damage hook meet, so
+        it is the only place a rule about damage can be written once. An
+        untyped ``amount`` is passed through untouched, which is exactly what
+        every caller got before types existed.
+        """
+        reduce_notes: list[str] = []
+        raw_total = int(amount or 0)
+        if rolled:
+            raw_total = sum(int(n) for _, n in rolled)
+            live = self.get_combatant(combatant_id)
+            applied = dmg.apply(self.defenses(live) if live else None, rolled)
+            amount = applied.total
+            reduce_notes = applied.notes
         amount = max(0, amount)
         with Session(self.engine) as s:
             c = s.get(Combatant, combatant_id)
@@ -421,6 +467,11 @@ class CombatTracker:
             s.refresh(c)
             out = _combatant_dict(c)
             out["damage_taken"] = amount
+            if reduce_notes or raw_total != amount:
+                # What the defences did, so the table sees WHY a blow landed
+                # soft. A halving nobody is told about reads as a bad roll.
+                out["damage_rolled"] = raw_total
+                out["damage_notes"] = reduce_notes
             # True only when concentration was actually LOST (or, with no
             # modifier callback installed, when a save is owed and unrolled).
             out["concentration_check"] = broke_conc
