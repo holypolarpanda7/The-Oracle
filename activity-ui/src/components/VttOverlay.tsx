@@ -7,6 +7,7 @@ import { SPRITES, loadSprites } from "../lib/boardSprites";
 import { useResizable } from "../lib/useResizable";
 import { pathFromCosts, type BoardView, type View } from "../lib/boardView";
 import { createCanvasBoardView } from "../lib/canvasBoardView";
+import { createIsoBoardView } from "../lib/vttScene3d";
 
 /** The tactical board.
  *
@@ -110,11 +111,38 @@ export function VttOverlay(p: VttProps) {
   const artRef = useRef<HTMLImageElement | null>(null);
 
   // Which renderer is drawing. Every other line in this component goes through
-  // the `BoardView` interface, so this is the single place that decides — the
-  // isometric board joins by extending this one expression.
-  const board: BoardView | null = useMemo(
-    () => (canvasEl ? createCanvasBoardView(canvasEl) : null), [canvasEl]);
-  useEffect(() => () => board?.dispose(), [board]);
+  // the `BoardView` interface, so this is the only place that decides.
+  //
+  // The flat board is kept as a fallback while the isometric one is brought to
+  // parity, and retires with it. Note the `key` on the <canvas> below: a canvas
+  // element can only ever hand out ONE kind of context, so a 2D canvas can
+  // never become a WebGL one — switching has to remount the element.
+  const [mode, setMode] = useState<"iso" | "flat">("iso");
+  const [board, setBoard] = useState<BoardView | null>(null);
+  useEffect(() => {
+    // `data-mode` is the guard, and it is not belt-and-braces. Changing `mode`
+    // re-renders before the ref callback hands over the replacement element, so
+    // for one render the new mode is paired with the OLD canvas — and building
+    // a WebGL renderer on a canvas that already returned a 2D context throws,
+    // which took the whole board down. Waiting until the element agrees costs
+    // one frame and removes the window entirely.
+    if (!canvasEl || canvasEl.dataset.mode !== mode) return;
+    let made: BoardView;
+    try {
+      made = mode === "iso" ? createIsoBoardView(canvasEl)
+                            : createCanvasBoardView(canvasEl);
+    } catch (e) {
+      // No usable WebGL — an old phone, a locked-down webview. This is exactly
+      // what the flat board is being kept for, so fall back to it rather than
+      // showing an empty panel.
+      console.warn("[vtt] isometric board unavailable; using the flat board", e);
+      setMode("flat");
+      return;
+    }
+    setBoard(made);
+    // Cleared before disposal so nothing can draw into a released context.
+    return () => { setBoard(null); made.dispose(); };
+  }, [canvasEl, mode]);
 
   const [view, setView] = useState<View | null>(null);
   const [size, setSize] = useState<[number, number]>([0, 0]);
@@ -639,6 +667,10 @@ export function VttOverlay(p: VttProps) {
           )}
           <button className={measuring ? "on" : ""} title="Measure distance"
             onClick={() => { setMeasuring((m) => !m); setMeasure(null); }}>📏</button>
+          <button className={mode === "iso" ? "on" : ""}
+            title={mode === "iso" ? "Isometric board — switch to flat"
+                                  : "Flat board — switch to isometric"}
+            onClick={() => setMode((m) => (m === "iso" ? "flat" : "iso"))}>◪</button>
           <button title="Fit the board"
             onClick={() => board && size[0] && setView(board.fit(scene, size[0], size[1]))}>⤢</button>
           <button title="Minimise" onClick={() => setCollapsed(true)}>—</button>
@@ -693,7 +725,7 @@ export function VttOverlay(p: VttProps) {
         onWheel={onWheel}
         onContextMenu={onContextMenu}
       >
-        <canvas ref={setCanvasEl} />
+        <canvas key={mode} data-mode={mode} ref={setCanvasEl} />
         <div className="vtt-tokens">{tokenNodes}</div>
         {p.error && (
           <div className="vtt-error" onClick={p.onDismissError}>{p.error}</div>

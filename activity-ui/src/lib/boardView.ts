@@ -80,6 +80,43 @@ export function tileStyle(code: string): TileStyle {
   return TILE_STYLES[code] ?? TILE_STYLES["."];
 }
 
+/** How tall each tile stands, in feet. 0 is floor you walk on.
+ *
+ *  Mirrors vtt/terrain.py, and takes its numbers from two different places
+ *  there. Anything with a `cover_height_ft` uses that value, because the rules
+ *  already decided how tall a crate is when they decided you can lie down
+ *  behind one. Everything else is full-height structure, where the exact figure
+ *  is the picture's business and not the rules': cover from a pillar does not
+ *  depend on how tall the pillar is, only on it being taller than you.
+ *
+ *  Flat boards ignore this entirely. It exists because an isometric board has
+ *  to put something in the third dimension, and guessing per-render would let
+ *  two frames disagree about the same room. */
+export const TILE_HEIGHT_FT: Record<string, number> = {
+  "#": 10,   // wall
+  R: 10,     // rock face
+  T: 12,     // tree — the canopy, not the trunk
+  O: 10,     // pillar
+  "+": 8,    // closed door, filling its opening
+  p: 8,      // portcullis
+  o: 4,      // crate        \
+  A: 4,      // altar         | these four carry a cover_height_ft in the
+  n: 3,      // furniture     | rules, and this is that number
+  w: 3,      // low wall     /
+};
+
+export function tileHeightFt(code: string): number {
+  return TILE_HEIGHT_FT[code] ?? 0;
+}
+
+/** Codes that are the BUILDING rather than something standing in it.
+ *
+ *  The same split vtt/terrain.py makes with `OBJECT_SPRITES`: everything in
+ *  that table is a discrete thing which can be attacked and broken, so it has
+ *  to be able to change and is drawn per-square; what is left is structure,
+ *  which the painted layer is conditioned on and never has to change. */
+export const STRUCTURE_CODES: ReadonlySet<string> = new Set(["#", "R"]);
+
 /** Everything a renderer needs to draw one frame. */
 export interface PaintState {
   scene: VttScene;

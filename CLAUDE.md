@@ -335,13 +335,36 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   fact, and labelling both prints each over the other. Wreckage also gets a
   deterministic dark scuff under its sprite, because stone rubble on a
   flagstone floor is the low-contrast case a render can lose.
-- **Both boards draw the same room.** `render_image.py` (Discord PNG) and
-  `activity-ui/src/lib/vttPaint.ts` (canvas) read the identical `state()`
+- **Every board draws the same room.** `render_image.py` (Discord PNG),
+  `activity-ui/src/lib/vttScene3d.ts` (the isometric board) and
+  `vttPaint.ts` (the flat canvas it is replacing) read the identical `state()`
   dict and must stay in step — objects, wreckage, panels, labels, fog tiers,
   and which tokens are visible. Sprites are matted ONCE by `art.sprite_png`
   and served to the browser over `/imagery/sprite/{id}`; a browser cannot run
   rembg, and two views cutting their own pillars differently is the same
   disagreement the grid-is-truth rule exists to prevent.
+  The browser renderers meet at `lib/boardView.ts` — a `BoardView` is all
+  `VttOverlay` knows, so the interaction shell, the action bar and the token
+  layer are written once. **Tokens are DOM over the canvas, never painted into
+  it**, which is what makes a camera-facing character free on the isometric
+  board: an element over a canvas already faces the viewer, so a billboard
+  needs a projection (`BoardView.screenOf`) and no character art at all.
+  `vttPaint.ts` and `canvasBoardView.ts` are a deliberate fallback for a
+  webview with no usable WebGL, and retire together once the isometric board
+  reaches parity.
+- **The isometric camera is ORTHOGRAPHIC and never rotates, and that buys
+  three things.** The projection is a plain affine map, so it inverts in closed
+  form and picking is arithmetic; pan and zoom are a translate-and-scale, so
+  one `View` (`scale`/`ox`/`oy`) drives both browser renderers and the camera
+  needs no state of its own; and a painting baked at one framing stays aligned
+  at every other. Offering rotation would cost all three at once.
+  `activity-ui/src/lib/isocam.ts` is the only place the camera is defined, and
+  `vtt/isocam.py` will mirror it so the server can rasterize a depth map of the
+  SAME view for a depth ControlNet. **Change one and you must change the
+  other** — a degree of drift puts every painted shadow beside the thing
+  casting it. Winding is load-bearing in the mesh builder for a related reason:
+  normals are derived from vertex order, so a reversed face gets a normal
+  pointing into the block and the light finds nothing to catch.
 - **Fog is MEMORY; sight is LIVE. Both, or a door means nothing.**
   `TacticalMap.fog` records everywhere the party has ever seen and never dims
   — right for "have we been here", useless for "can we see it now".
