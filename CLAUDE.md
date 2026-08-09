@@ -873,13 +873,28 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   to ask instead. The old `[[ROLL: 1d20+5 | Stealth | DC 15]]` still resolves
   so a table mid-session doesn't break. Deciding THAT a check happens and how
   hard it is stays the DM's; what a character's Stealth is worth does not.
-- **`[[COMBAT: damage]]` takes DICE and a TYPE, and the code rolls them.** It
-  used to strip non-digits from the field, so a DM who wrote `2d6` dealt
-  TWENTY-SIX — a failure that reads at the table as a hard fight rather than a
-  bug. `fall 30` is priced by the rules themselves (1d6 bludgeoning per 10 ft,
-  capped at 20d6) and carries its type, so resistance applies. A flat total is
-  still accepted, because a DM adjudicating an exact amount is a real ruling —
-  but it is never resisted, and the board says so.
+- **`[[COMBAT: damage]]` takes a SOURCE, and the code supplies every number.**
+  Name a spell or an attack of a creature in the fight (`| Fire Bolt`,
+  `| Bite`) and the dice AND the damage type come off the row — the DM
+  supplies only the fiction. `fall 30` is priced by the rules themselves (1d6
+  bludgeoning per 10 ft, capped at 20d6). Dice are rolled; the field used to
+  have its non-digits stripped, so a DM who wrote `2d6` dealt TWENTY-SIX, a
+  failure that reads at the table as a hard fight rather than as a bug. A flat
+  total is still accepted — reading a number off a page is transcription, not
+  arithmetic — and a total WITH a type is resisted normally. What is never
+  resisted is damage with NO TYPE, so that case is now reported to the DM
+  rather than applied silently.
+- **A foe the bestiary lacks is BASED on a real one.**
+  `[[COMBAT: add | Cult Fanatic | like acolyte | tough]]` runs the bestiary row
+  through `rules/templates.py`'s `scale_monster` — which is what that module
+  was always for — and keeps the chassis' SLUG, so the new creature's
+  resistances, senses and attacks all still resolve. Failing that, the name is
+  searched against the bestiary (whole name first, then its significant words,
+  because a search is a containment match and "Acolyte of the Deep" never
+  matches the row called "Acolyte"). The creature is still SEATED when nothing
+  matches — the fiction has already happened and refusing mid-fight stops play
+  dead — but the invented numbers are named out loud with the fix beside them,
+  where the old code seated a silent flat 10 HP and no AC.
 - **Damage has a TYPE, and `rules/damage.py` is the one place it is reduced.**
   The engine dealt integers: a fire elemental took full damage from fire, a
   skeleton shrugged off a mace exactly as hard as a rapier, and a raging

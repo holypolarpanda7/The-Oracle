@@ -1,6 +1,6 @@
 """Damage types and resistance — the arithmetic the engine never did.
 
-Offline, no GPU, no LLM, fresh scratch database. Six layers:
+Offline, no GPU, no LLM, fresh scratch database. Seven layers:
 
     1. TYPES    — damage has a type, read out of prose an OCR pass mangled.
     2. DEFENCES — a bestiary row's resistances, in BOTH shapes it comes in,
@@ -14,6 +14,9 @@ Offline, no GPU, no LLM, fresh scratch database. Six layers:
     6. FACTORING — the DM narrates and the engine calculates: a named check's
                   modifier off the sheet, dice rolled rather than read as a
                   number, and a fall priced by the rules.
+    7. SOURCES  — the DM names a spell or an attack and BOTH its dice and its
+                  type come off the row; a foe the bestiary lacks is built
+                  from one that it has.
 
     uv run python scripts/resistance_smoke.py
 """
@@ -343,6 +346,66 @@ check("...capped at 20d6 however far it is",
 check("a flat total is still accepted as a ruling",
       m._hook_amount("7")[0] == 7,
       "refusing it would stop play; it simply isn't resisted")
+
+# ----------------------------------------------------------------------
+section("7. the DM names the SOURCE; every number comes off a row")
+
+with Session(m.engine) as s:
+    s.add(Spell(index_slug="fire-bolt", name="Fire Bolt", level=0,
+                school="Evocation", casting_time="Action", range="120 feet",
+                duration="Instantaneous", components=["V", "S"],
+                classes=["wizard"],
+                desc="Make a ranged spell attack against the target. On a hit, "
+                     "the target takes ldlO Fire damage."))
+    s.add(Monster(index_slug="dire-wolf", name="Dire Wolf", size="Large",
+                  type="beast", armor_class=14, hit_points=37,
+                  challenge_rating=1,
+                  actions=[{"name": "Bite", "attack_bonus": 5,
+                            "damage": [{"damage_dice": "2d6",
+                                        "damage_type": {"name": "Piercing"}}],
+                            "desc": "Melee Weapon Attack: reach 5 ft."}]))
+    s.add(Monster(index_slug="acolyte", name="Acolyte", size="Medium",
+                  type="humanoid", armor_class=10, hit_points=9,
+                  challenge_rating=0.25))
+    s.commit()
+
+src = m._source_damage("Fire Bolt")
+check("a spell name yields BOTH its dice and its type",
+      src and src[0] == "1d10" and src[1] == "fire", str(src))
+
+e = tracker.start_encounter("res:source", "sources")
+tracker.add_pc(e.id, name="Mark", max_hp=40, armor_class=12, dex_mod=0,
+               character_id=pc("Mark", []).id)
+tracker.add_from_monster(e.id, "dire-wolf", count=1)
+src = m._source_damage("Bite", e.id)
+check("...and so does an attack of a creature actually in this fight",
+      src and src[0] == "2d6" and src[1] == "piercing", str(src))
+check("a name that is neither yields nothing rather than a guess",
+      m._source_damage("a nasty wallop", e.id) is None)
+
+amt, detail, dtype = m._hook_amount("Fire Bolt", None, e.id)
+check("the damage hook resolves a named source end to end",
+      1 <= amt <= 10 and dtype == "fire", detail)
+
+# A foe the bestiary lacks is BASED on one, never invented.
+built = m._custom_foe("Cult Fanatic", "acolyte", "tough", None, None)
+check("a custom foe is built from a real creature",
+      built and built["slug"] == "acolyte" and built["hp"] > 9,
+      f"{built['note']} — hp {built['hp']}, ac {built['ac']}" if built else "None")
+check("...keeping the chassis' slug, so its stat block still resolves",
+      built["slug"] == "acolyte",
+      "resistances, senses and attacks all look up through it")
+check("a DM transcribing a stat block is still allowed",
+      m._custom_foe("Ogre Chief", None, None, 59, 16)["hp"] == 59,
+      "reading numbers off a page is transcription, not arithmetic")
+check("...and a name close to a real creature finds its chassis",
+      (m._custom_foe("Acolyte of the Deep", None, None, None, None) or {})
+      .get("slug") == "acolyte",
+      "a chassis found by name is still a chassis from data")
+check("...but a foe matching NOTHING yields none, so the caller can say so",
+      m._custom_foe("Zzyzx Thing", None, None, None, None) is None,
+      "it is still seated — refusing mid-fight stops play — but the invented "
+      "numbers are named out loud instead of arriving from a default")
 
 print()
 if _failures:

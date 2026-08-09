@@ -73,6 +73,7 @@ from rules import equipment as gear
 from rules import mastery
 from rules import damage as damage_rules
 from rules import checks
+from rules import templates as monster_templates
 from rules.models import Subclass, DndClass, Item, SrdEntry, Monster
 from combat import (CombatTracker, CombatEngine, PCProfile, PCWeapon,
                     Condition, monster_save_mod)
@@ -1291,19 +1292,142 @@ _DICE_EXPR_RE = re.compile(r"^\d*d\d+([+-]\d+)?([+-]\d+)?$", re.I)
 _FALL_RE = re.compile(r"\bfall(?:ing|s|en)?\b\D{0,12}?(\d+)", re.I)
 
 
-def _hook_amount(raw: str, target=None) -> tuple[int, str, Optional[str]]:
-    """How much a DM's damage/heal hook is actually worth. ``(amount, detail)``.
+def _custom_foe(name: str, like: Optional[str], template: Optional[str],
+                hp: Optional[int], ac: Optional[int]) -> Optional[dict]:
+    """Numbers for a foe that isn't in the bestiary, or None if there are none.
 
-    The model names a SOURCE — dice, or a fall it just narrated — and the code
-    works out the number. Three forms, in the order they are tried:
+    Three honest ways to know what a creature is, and inventing it is not among
+    them. It can be BASED on a real one (`like veteran | tough` runs the
+    bestiary row through `rules.templates.scale_monster`, which is what that
+    module is for); it can carry a stat block the DM is reading off a page,
+    which is transcription rather than arithmetic; or it can be neither, in
+    which case the caller refuses. The old behaviour was a flat 10 HP and no
+    AC — numbers nobody chose, arriving from a default.
+    """
+    base = None
+    if like:
+        try:
+            base = rules_lib.get_monster(like)
+        except Exception:
+            base = None
+    if base is not None:
+        block = monster_templates.monster_to_dict(base)
+        note = f"{name} is built from {base.name}"
+        if template:
+            try:
+                block = monster_templates.scale_monster(block, template)
+                note += f", {monster_templates.MONSTER_TEMPLATES[template]['label'].lower()}"
+            except Exception as e:
+                print(f"[custom foe] template: {e}")
+        return {"hp": int(hp or block.get("hit_points") or 1),
+                "ac": int(ac if ac is not None else (block.get("armor_class") or 10)),
+                # Keep the chassis' slug: its resistances, senses and attacks
+                # all resolve through it, so a "Cult Fanatic" built from an
+                # acolyte still has an acolyte's stat block behind it.
+                "slug": base.index_slug, "note": note + "."}
+    if hp is not None:
+        return {"hp": int(hp), "ac": int(ac if ac is not None else 10),
+                "slug": None, "note": ""}
+    # Nothing said what it is. Search the bestiary for something with a name
+    # like it — "bandit captain" for "Captain of the Bandits" — before giving
+    # up, because a chassis found by name is still a chassis from data.
+    try:
+        # By the whole name first, then by its significant WORDS, longest
+        # first: a search is a containment match, so "Acolyte of the Deep"
+        # never matches the row called "Acolyte" — but "acolyte" does.
+        found = rules_lib.search_monsters(name, limit=1)
+        if not found:
+            words = sorted((w for w in re.findall(r"[A-Za-z]{4,}", name)
+                            if w.lower() not in ("the", "of", "and", "lord",
+                                                 "lady", "elder", "great")),
+                           key=len, reverse=True)
+            for w in words:
+                found = rules_lib.search_monsters(w, limit=1)
+                if found:
+                    break
+        if found:
+            block = monster_templates.monster_to_dict(found[0])
+            return {"hp": int(block.get("hit_points") or 1),
+                    "ac": int(block.get("armor_class") or 10),
+                    "slug": found[0].index_slug,
+                    "note": f"{name} is run as {found[0].name} "
+                            "(nothing said what it is)."}
+    except Exception as e:
+        print(f"[custom foe] search: {e}")
+    return None
 
+
+def _source_damage(name: str, encounter_id: Optional[int] = None
+                   ) -> Optional[tuple[str, Optional[str], str]]:
+    """``(dice, type, what it was)`` for a named damage SOURCE, or None.
+
+    The DM's job is to say a bolt of fire hits the goblin. Both numbers that
+    follow from that — how many dice and what kind of harm — are written down
+    already, in the spell row or in the attacker's stat block, so neither is
+    ever the model's to supply. Spells are looked up first because a spell name
+    is the more specific thing to have written.
+    """
+    n = (name or "").strip()
+    if not n or _DICE_EXPR_RE.match(n.replace(" ", "")):
+        return None
+    try:
+        sp = rules_lib.get_spell(n)
+    except Exception:
+        sp = None
+    if sp is not None:
+        packets = damage_rules.parse_damage(getattr(sp, "desc", None))
+        if isinstance(getattr(sp, "damage", None), dict):
+            dice = (sp.damage.get("damage_at_slot_level") or {}).get(
+                str(sp.level)) if sp.damage else None
+            if dice:
+                return dice, damage_rules.normalize_type(
+                    (sp.damage.get("damage_type") or {}).get("name")
+                    if isinstance(sp.damage.get("damage_type"), dict)
+                    else sp.damage.get("damage_type")), sp.name
+        if packets:
+            return packets[0].dice, packets[0].type, sp.name
+    # A monster ATTACK, by name, from whoever is actually in this fight.
+    if encounter_id:
+        try:
+            for c in combat.order(encounter_id):
+                if not c.monster_slug:
+                    continue
+                mon = rules_lib.get_monster(c.monster_slug)
+                for a in (getattr(mon, "actions", None) or []):
+                    if n.lower() not in str(a.get("name") or "").lower():
+                        continue
+                    for d in (a.get("damage") or []):
+                        if not d.get("damage_dice"):
+                            continue
+                        dt = ((d.get("damage_type") or {}).get("name")
+                              if isinstance(d.get("damage_type"), dict)
+                              else d.get("damage_type"))
+                        return (d["damage_dice"],
+                                damage_rules.normalize_type(dt),
+                                f"{c.name}'s {a.get('name')}")
+        except Exception as e:
+            print(f"[source damage] {e}")
+    return None
+
+
+def _hook_amount(raw: str, target=None, encounter_id: Optional[int] = None
+                 ) -> tuple[int, str, Optional[str]]:
+    """What a DM's damage/heal hook is worth. ``(amount, detail, type)``.
+
+    The model names a SOURCE and the code works out every number. Four forms,
+    in the order they are tried:
+
+    * ``Fire Bolt`` / ``Bite`` — a spell or an attack that is in this fight.
+      Both the dice AND the damage type come off the row, so the DM supplies
+      only the fiction. This is the form the board asks for.
     * ``fall 30`` — the rules compute it: 1d6 bludgeoning per 10 feet, capped
       at 20d6. The DM was inventing this one more than any other.
     * ``2d6`` — rolled here. Before this, a hook that named dice had its
       non-digits stripped and ``2d6`` was applied as TWENTY-SIX, which is the
       kind of failure that looks like a hard fight rather than a bug.
-    * ``7`` — a flat number, still accepted: a DM adjudicating an exact amount
-      is a legitimate ruling, and refusing it would stop play.
+    * ``7`` — a flat number. Still accepted, because a DM reading a total off a
+      page is transcribing rather than calculating; it simply carries no type
+      unless one is named, and untyped damage is resisted by nobody.
     """
     txt = str(raw or "").strip()
     fall = _FALL_RE.search(txt)
@@ -1313,6 +1437,11 @@ def _hook_amount(raw: str, target=None) -> tuple[int, str, Optional[str]]:
             return 0, "", None
         r = dice_roll(dice)
         return (r.total, f"falls {fall.group(1)} ft — {dice} → {r.total}", dtype)
+    src = _source_damage(txt, encounter_id)
+    if src is not None:
+        dice, dtype, what = src
+        r = dice_roll(dice)
+        return r.total, f"{what}: {dice} → {r.total}", dtype
     expr = re.search(r"\d*\s*d\s*\d+(?:\s*[+-]\s*\d+)?", txt, re.I)
     if expr:
         try:
@@ -6650,7 +6779,8 @@ _COMBAT_HOOKS_IDLE = (
     "# Combat hooks\n"
     "When a real fight breaks out (not a mere threat), open the initiative tracker:\n"
     "    [[COMBAT: start | short encounter name]]\n"
-    "    [[COMBAT: add | goblin | x2]]   (SRD monster; or add | Name | hp 20 | ac 13 for a custom foe)\n"
+    "    [[COMBAT: add | goblin | x2]]   (SRD monster; for one the bestiary lacks, base it\n"
+    "                                     on a real creature: add | Name | like veteran | tough)\n"
     "The party is seated automatically and initiative is rolled for everyone. Narrate as usual.\n"
 )
 
@@ -6665,7 +6795,10 @@ _COMBAT_HOOKS_ACTIVE = (
     "    [[COMBAT: condition | target | poisoned]] / [[COMBAT: uncondition | target | poisoned]]\n"
     "    [[COMBAT: move | target | melee with Kara]]   spacing band: 'melee with <name>' | 'near' | 'far'\n"
     "    [[COMBAT: cover | target | half]]    cover: none | half | three-quarters | total\n"
-    "    [[COMBAT: add | wolf | x1]]          reinforcements arrive\n"
+    "    [[COMBAT: add | wolf | x1]]          reinforcements arrive (SRD bestiary)\n"
+    "    [[COMBAT: add | Cult Fanatic | like acolyte | tough]]   a foe the bestiary\n"
+    "                                         lacks: BASE it on a real creature and the\n"
+    "                                         code derives HP, AC and its stat block\n"
     "    [[COMBAT: next]]                     the current creature's turn is resolved\n"
     "    [[COMBAT: end]]                      the fight is over (victory, flight, or surrender)\n"
     "If the party (or a foe) breaks and RUNS, end the fight and run it as a chase: "
@@ -6806,6 +6939,7 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                 if not args or not args[0]:
                     continue
                 name, count, hp, ac = args[0], 1, None, None
+                like, template = None, None
                 for extra in args[1:]:
                     e = (extra or "").strip().lower()
                     if m := re.fullmatch(r"x\s*(\d+)", e):
@@ -6814,18 +6948,48 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                         hp = int(m.group(1))
                     elif m := re.fullmatch(r"ac\s*(\d+)", e):
                         ac = int(m.group(1))
+                    elif m := re.fullmatch(r"like\s+(.+)", e):
+                        like = m.group(1).strip()
+                    elif e in monster_templates.MONSTER_TEMPLATES:
+                        template = e
                 mon = None
                 try:
                     mon = rules_lib.get_monster(name)
                 except Exception:
                     pass
-                if mon and hp is None:
+                if mon and hp is None and not template:
                     combat.add_from_monster(enc.id, mon.index_slug, count=count)
+                elif (built := _custom_foe(name, like or (mon.index_slug if mon
+                                                          else None), template,
+                                          hp, ac)) is not None:
+                    for i in range(count):
+                        label = name if count == 1 else f"{name} {i + 1}"
+                        combat.add_combatant(
+                            enc.id, label, max_hp=built["hp"],
+                            armor_class=built["ac"],
+                            monster_slug=built.get("slug"))
+                    if built.get("note"):
+                        notes.append(f"⚔ {built['note']}")
                 else:
+                    # Nothing in the bestiary matches and nothing said what it
+                    # is. The creature is STILL seated — the fiction has already
+                    # happened and refusing mid-fight stops play dead, which
+                    # this project holds to be worse than being generous — but
+                    # the invented numbers are named out loud instead of
+                    # arriving silently from a default, with the fix beside
+                    # them. That is the difference from the old flat 10 HP.
                     for i in range(count):
                         label = name if count == 1 else f"{name} {i + 1}"
                         combat.add_combatant(enc.id, label, max_hp=hp or 10,
                                              armor_class=ac)
+                    notes.append(
+                        f"⚠ nothing in the bestiary matches '{name}' and no "
+                        f"stat block was given, so it is standing there with "
+                        f"{hp or 10} HP and AC {ac or 10} — numbers nobody "
+                        "chose. Say what it is: [[COMBAT: add | " + name +
+                        " | like <a real creature> | tough]] (templates: "
+                        + ", ".join(monster_templates.MONSTER_TEMPLATES)
+                        + "), or give its stat block: | hp 45 | ac 15.")
                 roster_changed = True
             elif action in ("damage", "heal", "temp"):
                 if len(args) < 2:
@@ -6835,7 +6999,8 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                 # catches the goblin; how much it hurts is arithmetic, and the
                 # model should never be the thing doing it. `2d6` used to be
                 # stripped of its non-digits and applied as TWENTY-SIX.
-                amount, roll_detail, auto_type = _hook_amount(args[1], c)
+                amount, roll_detail, auto_type = _hook_amount(
+                    args[1], c, enc.id)
                 if not c or amount <= 0:
                     continue
                 if roll_detail:
@@ -6856,6 +7021,15 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                            else combat.apply_damage(c.id, amount))
                     for n in (out.get("damage_notes") or []):
                         notes.append(f"⚔ {c.name} {n}.")
+                    if not dtype:
+                        # Untyped damage is resisted by NOBODY. That is a real
+                        # hole in the fiction, so it is reported rather than
+                        # quietly applied — name the source or the type.
+                        notes.append(
+                            f"⚠ untyped damage to {c.name}: no resistance, "
+                            "immunity or vulnerability could apply. Name the "
+                            "source ([[COMBAT: damage | X | Fire Bolt]]) or "
+                            "the type ([[COMBAT: damage | X | 2d6 | fire]]).")
                     if out.get("defeated"):
                         notes.append(f"⚔ {c.name} goes down.")
                     # The tracker rolled the concentration save (see
