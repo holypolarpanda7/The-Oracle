@@ -135,7 +135,7 @@ def bounds_of(w: int, h: int, tallest: float, base_y: float = 0.0) -> Bounds:
 # room turned inside out.
 
 
-def _tri(buf, pts, zs) -> None:
+def _tri(buf, pts, zs, rgb=None, colour=None, tint: float = 1.0) -> None:
     """Rasterize one triangle into a float depth buffer, keeping the nearest.
 
     Depth is interpolated with barycentric weights, which is EXACT here rather
@@ -168,12 +168,21 @@ def _tri(buf, pts, zs) -> None:
         return
     z = a * zs[0] + b * zs[1] + c * zs[2]
     view = buf[min_y:max_y + 1, min_x:max_x + 1]
-    np.copyto(view, z, where=inside & (z < view))
+    win = inside & (z < view)
+    if rgb is not None and colour is not None:
+        # Same z-test as the depth write, so the colour picture and the depth
+        # picture can never disagree about which surface is in front.
+        sub = rgb[min_y:max_y + 1, min_x:max_x + 1]
+        for ch in range(3):
+            np.copyto(sub[:, :, ch],
+                      np.full(win.shape, colour[ch] * tint, dtype=np.float64),
+                      where=win)
+    np.copyto(view, z, where=win)
 
 
-def _quad(buf, pts, zs) -> None:
-    _tri(buf, (pts[0], pts[1], pts[2]), (zs[0], zs[1], zs[2]))
-    _tri(buf, (pts[0], pts[2], pts[3]), (zs[0], zs[2], zs[3]))
+def _quad(buf, pts, zs, rgb=None, colour=None, tint: float = 1.0) -> None:
+    _tri(buf, (pts[0], pts[1], pts[2]), (zs[0], zs[1], zs[2]), rgb, colour, tint)
+    _tri(buf, (pts[0], pts[2], pts[3]), (zs[0], zs[2], zs[3]), rgb, colour, tint)
 
 
 #: How thick a wall is DRAWN, as a fraction of its square.
@@ -342,14 +351,27 @@ OBJECT_VARIANTS: dict[str, tuple[tuple[tuple[float, float, float, float, float, 
 OBJECT_PARTS = {k: v[0] for k, v in OBJECT_VARIANTS.items()}
 
 
+#: Face shading for the colour pass. Top full, the two visible sides darker —
+#: without it the init image is a flat plan and the model paints a flat plan.
+TOP_TINT, SIDE_A_TINT, SIDE_B_TINT = 1.0, 0.72, 0.58
+
+
 def _box(face, x0: float, x1: float, z0: float, z1: float,
-         y1: float, y0: float = 0.0) -> None:
+         y1: float, y0: float = 0.0, shade=None) -> None:
     """A box: top face plus the two sides this camera can see."""
+    if shade:
+        shade(TOP_TINT)
     face([(x0, y1, z0), (x0, y1, z1), (x1, y1, z1), (x1, y1, z0)])
     # Only +x and +z face the camera at yaw 45; the other two are never visible
     # and rasterizing them is work the z-buffer throws away.
+    if shade:
+        shade(SIDE_A_TINT)
     face([(x1, y0, z1), (x1, y1, z1), (x0, y1, z1), (x0, y0, z1)])
+    if shade:
+        shade(SIDE_B_TINT)
     face([(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)])
+    if shade:
+        shade(TOP_TINT)
 
 
 def _prism(face, cx: float, cz: float, r: float, y1: float,
@@ -371,6 +393,27 @@ def _prism(face, cx: float, cz: float, r: float, y1: float,
         face([(ax, y0, az), (ax, y1, az), (bx, y1, bz), (bx, y0, bz)])
 
 
+def terrain_image(rows: Sequence[str], *, colour_of, **kw) -> bytes:
+    """The board painted in its own terrain colours. PNG bytes.
+
+    The companion to the depth map, and the half it cannot supply. Depth says
+    how far away everything is and nothing about what it is MADE of — fine for
+    a walled room, where the walls carry the meaning, and useless outdoors,
+    where the board's whole character is FLAT. Water, grass, road and ice all
+    sit at height zero and are invisible to depth, which is why a forest came
+    back with a pond painted where the grid has none: the model knew water
+    belonged somewhere and had no way to learn where.
+
+    Same geometry, same camera, same silhouette — only the output differs. Used
+    as an img2img base, it hands the model layout, terrain type and scale, and
+    leaves it the one job it is good at.
+
+    ``colour_of(code) -> (r, g, b)``; taking those from the material catalogue
+    keeps this picture and the geometry board describing the same room.
+    """
+    return depth_image(rows, _colour_of=colour_of, **kw)
+
+
 def coverage_mask(rows: Sequence[str], **kw) -> bytes:
     """Where the board actually IS, as a black-and-white PNG.
 
@@ -388,7 +431,7 @@ def coverage_mask(rows: Sequence[str], **kw) -> bytes:
 
 
 def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
-                _mask_only: bool = False,
+                _mask_only: bool = False, _colour_of=None,
                 square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
                 structure: Optional[set[str]] = None,
@@ -432,11 +475,20 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
         return (p.x * scale + ox, p.y * scale + oy)
 
     buf = np.full((px_h, px_w), np.inf, dtype=np.float64)
+    # RGB written alongside the depth buffer, using the same z-test, so the
+    # colour picture and the depth picture are the same room by construction.
+    rgb = np.zeros((px_h, px_w, 3), dtype=np.float64) if _colour_of else None
+    face_tint = [1.0]          # shading for the face being drawn
     struct = structure or set()
+    cur_colour = [(128, 128, 128)]
 
     def face(corners: Sequence[tuple[float, float, float]]) -> None:
         ps = [project(*c) for c in corners]
-        _quad(buf, [to_px(p) for p in ps], [p.depth for p in ps])
+        _quad(buf, [to_px(p) for p in ps], [p.depth for p in ps],
+              rgb=rgb, colour=cur_colour[0], tint=face_tint[0])
+
+    def shade(t: float) -> None:
+        face_tint[0] = t
 
     def is_open(x: int, z: int) -> bool:
         """Floor a creature could stand on — not structure, not off the board.
@@ -463,6 +515,8 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
             code = rows[z][x]
             if code == " ":
                 continue
+            if _colour_of:
+                cur_colour[0] = _colour_of(code)
             ft = height_ft(code)
             # A little life in the heights — but never where the rules quote
             # one. See height_scale.
@@ -473,7 +527,7 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 continue
             if code in struct:
                 for wx0, wx1, wz0, wz1 in wall_parts(is_open, x, z):
-                    _box(face, x + wx0, x + wx1, z + wz0, z + wz1, top)
+                    _box(face, x + wx0, x + wx1, z + wz0, z + wz1, top, shade=shade)
             elif code in ("O", "T"):
                 # Round, because the model paints the silhouette it is handed
                 # and a square column comes back as a square column.
@@ -491,10 +545,10 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 for part in parts:
                     px0, px1, pz0, pz1, py0, py1 = rotate_part(part, turns)
                     _box(face, x + px0, x + px1, z + pz0, z + pz1,
-                         top * py1, y0=top * py0)
+                         top * py1, y0=top * py0, shade=shade)
             else:
                 m = 0.1
-                _box(face, x + m, x + 1 - m, z + m, z + 1 - m, top)
+                _box(face, x + m, x + 1 - m, z + m, z + 1 - m, top, shade=shade)
 
     # Scenery last: it stands ON the floor and never occludes anything the
     # rules care about, so it needs no ordering of its own.
@@ -504,17 +558,25 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
         if not spec:
             continue
         ft, parts = spec
+        if _colour_of:
+            cur_colour[0] = _colour_of("decor:" + d.get("kind", ""))
         dx, dz = int(d["x"]), int(d["y"])
         top_d = units(ft)
         turns = yaw_of(dx, dz)
         for part in parts:
             px0, px1, pz0, pz1, py0, py1 = rotate_part(part, turns)
             _box(face, dx + px0, dx + px1, dz + pz0, dz + pz1,
-                 top_d * py1, y0=top_d * py0)
+                 top_d * py1, y0=top_d * py0, shade=shade)
 
     finite = np.isfinite(buf)
     if not finite.any():
         return b""
+    if _colour_of is not None:
+        from io import BytesIO
+        img = Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8), mode="RGB")
+        out = BytesIO()
+        img.save(out, format="PNG")
+        return out.getvalue()
     if _mask_only:
         img = Image.fromarray((finite * 255).astype(np.uint8), mode="L")
         from io import BytesIO

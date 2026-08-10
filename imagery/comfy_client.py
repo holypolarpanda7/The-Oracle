@@ -100,6 +100,7 @@ class ComfyClient:
         loras: Optional[list] = None,
         controlnet: Optional[str] = None,
         controlnet_strength: float = 0.8,
+        init_denoise: float = 1.0,
         rescale_cfg: Optional[float] = None,
         pag_scale: Optional[float] = None,
         freeu: bool = False,
@@ -122,6 +123,10 @@ class ComfyClient:
         # only a battlemap has a floorplan to obey.
         self.controlnet = controlnet
         self.controlnet_strength = float(controlnet_strength)
+        # img2img: how much of the init image is thrown away. 1.0 is a plain
+        # text-to-image render and the init is ignored entirely.
+        self.init_denoise = float(init_denoise)
+        self._init_image_name: Optional[str] = None
         # Set for the duration of one generate() call; the graph builder reads
         # it. Kept off the signature of every helper it would otherwise thread
         # through, and always cleared afterwards.
@@ -309,8 +314,45 @@ class ComfyClient:
             g["7"]["inputs"]["text"] = negative
         self._apply_model_layers(g)
         self._apply_lora_triggers(g)
+        self._apply_init_image(g)
         self._apply_controlnet(g)
         return g
+
+    def _apply_init_image(self, g: dict) -> None:
+        """Start the sampler from a picture instead of from noise.
+
+        A depth map says how far away everything is and nothing about what it is
+        MADE of, which is fine for a walled room — the walls carry the meaning —
+        and useless outdoors, where the board's character is flat: water, grass,
+        road, ice all sit at height zero and are invisible to depth. Handed that,
+        the model invents, and what it invents disagrees with the grid.
+
+        An init image carries the part depth cannot: layout, terrain TYPE, scale
+        and the board's own outline. The sampler then repaints rather than
+        composes, which is exactly the division of labour we want — the grid
+        stays the truth and the model supplies the paint.
+
+            LoadImage -> VAEEncode -> KSampler.latent_image, denoise < 1
+
+        Leaves the graph alone when there is no init image, so the ordinary
+        text-to-image path is untouched.
+        """
+        if not self._init_image_name or self.init_denoise >= 1.0:
+            return
+        ks_id = next((nid for nid, n in g.items()
+                      if n.get("class_type") == "KSampler"), None)
+        if ks_id is None:
+            return
+        ckpt = next((nid for nid, n in g.items()
+                     if n.get("class_type") == "CheckpointLoaderSimple"), None)
+        if ckpt is None:
+            return
+        g["80"] = {"class_type": "LoadImage",
+                   "inputs": {"image": self._init_image_name}}
+        g["81"] = {"class_type": "VAEEncode",
+                   "inputs": {"pixels": ["80", 0], "vae": [ckpt, 2]}}
+        g[ks_id]["inputs"]["latent_image"] = ["81", 0]
+        g[ks_id]["inputs"]["denoise"] = self.init_denoise
 
     def _apply_controlnet(self, g: dict) -> None:
         """Condition the render on a control image, when one was supplied.
@@ -415,6 +457,7 @@ class ComfyClient:
         reference_filenames: Optional[list[str]] = None,
         mature: bool = False,
         control_image: Optional[bytes] = None,
+        init_image: Optional[bytes] = None,
     ) -> bytes:
         """Queue a job and return the produced image bytes (PNG).
 
@@ -441,6 +484,11 @@ class ComfyClient:
         # that names it is queued. Uploaded per render and cleared afterwards,
         # so one conditioned battlemap can't leak its floorplan into the next
         # portrait that happens to use the same client.
+        self._init_image_name = None
+        if init_image is not None and self.init_denoise < 1.0:
+            self._init_image_name = self.upload_image(
+                init_image, f"init-{seed}.png")
+
         self._control_image_name = None
         if control_image and self.controlnet:
             self._control_image_name = self.upload_image(

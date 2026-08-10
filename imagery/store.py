@@ -245,6 +245,8 @@ class ImageStore:
                 control_image: Optional[bytes] = None,
                 controlnet: Optional[str] = None,
                 controlnet_strength: float = 0.8,
+                init_image: Optional[bytes] = None,
+                init_denoise: float = 1.0,
                 ) -> tuple[Optional[bytes], Optional[int], bool]:
         """Return (raw_bytes, seed, offline). raw_bytes is None only if offline.
 
@@ -266,6 +268,9 @@ class ImageStore:
             # and the same client serves portraits and items too.
             client.controlnet = controlnet
             client.controlnet_strength = float(controlnet_strength)
+            # Only a board that already knows what its ground is made of wants
+            # an init image; a portrait most certainly does not.
+            client.init_denoise = float(init_denoise)
             raw = client.generate(
                 prompt.positive,
                 prompt.negative,
@@ -275,6 +280,7 @@ class ImageStore:
                 seed=seed,
                 reference_filenames=reference_filenames,
                 control_image=control_image,
+                init_image=init_image,
                 mature=mature,
             )
             return raw, seed, False
@@ -307,6 +313,8 @@ class ImageStore:
         control_image: Optional[bytes] = None,
         controlnet: Optional[str] = None,
         controlnet_strength: float = 0.8,
+        init_image: Optional[bytes] = None,
+        init_denoise: float = 1.0,
     ) -> Optional[ImageResult]:
         """Return an image for (subject x context), reusing or generating as needed.
 
@@ -376,7 +384,9 @@ class ImageStore:
                                           height=height, seed=seed,
                                           control_image=control_image,
                                           controlnet=controlnet,
-                                          controlnet_strength=controlnet_strength)
+                                          controlnet_strength=controlnet_strength,
+                                          init_image=init_image,
+                                          init_denoise=init_denoise)
         if offline or raw is None:
             # Backend down: prefer any stored art for this bucket over a
             # placeholder — a slightly-repeated picture beats a blank one.

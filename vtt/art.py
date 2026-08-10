@@ -427,32 +427,71 @@ def board_look(biome: str = "", archetype: str = "") -> str:
 #: change is invisible to it — the first re-render after the switch came back
 #: from cache in one second, unchanged, and would have been mistaken for the
 #: fix not working.
-ISOBOARD_REV = 9
+#: How much of the terrain image the sampler may throw away on a FLAT board.
+#:
+#: Below ~0.6 the flat facets of the terrain image survive and the result reads
+#: as a tinted diagram; above ~0.8 the model starts inventing ground again,
+#: which is the thing the terrain image exists to stop.
+ISO_DENOISE_FLAT = 0.72
+
+#: A board at least this built-up is painted from its DEPTH MAP ALONE.
+#:
+#: Measured, and it went the opposite way to what I expected. Scaling the
+#: denoise up for walled rooms did not recover their quality: a tavern given the
+#: terrain image at 0.86 came back a bare plank floor with its hearth and
+#: benches gone, worse than the same room with no init image at all. The two
+#: signals are not interchangeable — a walled room is fully described by its
+#: depth map, and handing the model a flat-coloured plan on top only tells it
+#: the room is flat. Outdoors there is no depth to describe anything with, and
+#: the terrain image is the only thing that knows where the water is.
+#:
+#: So the init image is used where it is NEEDED rather than everywhere.
+BUILT_UP_FRACTION = 0.20
 
 
-#: How much of a board must stand UP before a depth-conditioned painting is
-#: worth making. Measured, not guessed: a dungeon room is ~25% structure and
-#: paints beautifully; a forest clearing is 3% and comes back as invention.
-MIN_STANDING_FRACTION = 0.12
+def standing_fraction(grid: Grid) -> float:
+    """How much of this board stands up off the floor."""
+    from .terrain import tile_height_ft
+
+    rows = grid.to_rows()
+    total = sum(1 for r in rows for c in r if c != " ")
+    if not total:
+        return 0.0
+    return sum(1 for r in rows for c in r
+               if c != " " and tile_height_ft(c) > 0) / total
+
+
+def iso_denoise_for(grid: Grid) -> float:
+    """Denoise for this board; 1.0 means "no init image, depth alone"."""
+    return (1.0 if standing_fraction(grid) >= BUILT_UP_FRACTION
+            else ISO_DENOISE_FLAT)
+
+
+ISOBOARD_REV = 13
+
+
+#: Retained for callers that still ask, and for the gallery's reporting. The
+#: threshold is 0 because the question it answered no longer decides anything:
+#: an OPEN board used to be refused because a depth map of flat ground carries
+#: almost nothing, and that is now the terrain image's job.
+MIN_STANDING_FRACTION = 0.0
 
 
 def worth_painting(grid: Grid) -> bool:
-    """Does this board have enough vertical structure to condition a painting?
+    """Can this board be conditioned well enough to be worth painting?
 
-    See the long note in :func:`render_iso_board` for why the answer is not
-    "always". Cheap enough to call before every render.
+    Yes, now, for every board with any ground on it — which is the point of the
+    terrain image. Depth alone could only describe a room with walls in it, so
+    forests, decks, reefs and open sky were refused and kept their geometry.
+    With layout and terrain TYPE arriving as an img2img base, a flat board is as
+    describable as a walled one.
+
+    Kept as a function rather than deleted: a board with nothing on it at all
+    still has nothing to paint.
     """
-    from .terrain import tile_height_ft
+    from .terrain import tile
 
-    total = standing = 0
-    for row in grid.to_rows():
-        for code in row:
-            if code == " ":
-                continue
-            total += 1
-            if tile_height_ft(code) > 0:
-                standing += 1
-    return bool(total) and (standing / total) >= MIN_STANDING_FRACTION
+    return any(tile(c).art for row in grid.to_rows() for c in row if c != " ")
 
 
 def isoboard_ref(grid: Grid, archetype: str, seed: int) -> str:
@@ -529,6 +568,12 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
                         standing=lambda c: tile_height_ft(c) > 0),
         square_ft=5, structure=STRUCTURE_CODES)
     depth = isocam.depth_image(**depth_kw)
+    # The half depth cannot carry: what the ground is MADE of. Outdoors that is
+    # the whole board, so without it the model invents terrain the grid does not
+    # have. See isocam.terrain_image.
+    look = board_look(biome or "", gen.archetype)
+    terrain = isocam.terrain_image(
+        colour_of=lambda c: material_colour(c, look, store), **depth_kw)
     if not depth:
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
@@ -548,6 +593,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
             seed=gen.seed & 0x7FFFFFFF, max_per_bucket=1,
             control_image=depth,
             controlnet=controlnet, controlnet_strength=controlnet_strength,
+            init_image=terrain, init_denoise=iso_denoise_for(gen.grid),
             negative_extra=", ".join(p for p in (
                 gen.grid.absent_terrain_negative(), _ISO_NEGATIVE) if p),
         )
@@ -630,18 +676,66 @@ _ISO_STYLE = (
 #: forever — the real creatures are DOM tokens drawn on top. The rest keeps the
 #: frame clean of anything that would sit over the rules.
 _ISO_NEGATIVE = (
-    # The board is a diamond inside a rectangular frame, so roughly half the
-    # canvas is corner the geometry never covers. Given that much empty margin
-    # the model paints a SECOND room out there — and at its own scale, which is
-    # five or six times the board's, so the real room reads as a doll's house
-    # sitting inside a giant one. Everything here is aimed at that.
-    "surrounding room, larger room, background room, outer walls, "
-    "floor extending beyond, ground beyond, environment, interior scene, "
-    "fireplace, hearth, furniture outside the model, wall lamp, window, "
+    # NB: no "hearth", "fireplace" or "window" here, and that is deliberate.
+    # They were, aimed at the second room the model used to invent in the
+    # corners — and a negative applies to the WHOLE image, so they also deleted
+    # the hearth that legitimately belongs in a taproom. The surround is now
+    # removed deterministically by the coverage mask, which is the right tool:
+    # it takes away what is outside the board without forbidding anything
+    # inside it.
     "people, person, figure, character, adventurer, creature, monster, "
     "miniature, text, label, caption, watermark, border, frame, user interface, "
     "grid lines, arrows, top-down, overhead, floorplan, blueprint"
 )
+
+
+#: (code, look) -> the average colour of that surface's swatch. Cached per
+#: process; the swatches never change under a running server.
+_MATERIAL_RGB: dict[tuple[str, str], tuple[int, int, int]] = {}
+
+
+def material_colour(code: str, look: str, store=None) -> tuple[int, int, int]:
+    """The average colour of a surface's catalogue swatch.
+
+    Derived from the swatch rather than written down beside it, so the terrain
+    image the painter starts from and the board the player looks at cannot
+    describe different ground. A code with no swatch falls back to a neutral,
+    which is honest: we do not know what it looks like yet.
+    """
+    from .decor import DECOR_KINDS
+
+    key = (code, look)
+    if key in _MATERIAL_RGB:
+        return _MATERIAL_RGB[key]
+    rgb = (118, 112, 102)
+    if code.startswith("decor:"):
+        # Scenery is small and its exact colour matters little; a mid brown
+        # keeps it from reading as a hole in the ground.
+        rgb = (104, 92, 74) if code[6:] in DECOR_KINDS else rgb
+        _MATERIAL_RGB[key] = rgb
+        return rgb
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        from imagery.models import ImageKind, context_key, slugify
+        if store is None:
+            from imagery import ImageStore
+            store = ImageStore()
+        bucket = material_look(code) or look
+        rows = store.list_for(ImageKind.MATERIAL, slugify(material_ref(code)),
+                              context_key(bucket))
+        if rows:
+            data = store.get_image_bytes(rows[0]["image_id"])
+            if data:
+                im = Image.open(BytesIO(data)).convert("RGB").resize((8, 8))
+                px = list(im.getdata())
+                rgb = tuple(sum(c[i] for c in px) // len(px) for i in range(3))
+    except Exception as e:
+        print(f"[vtt.art] material colour unavailable for {code!r}: {e}")
+    _MATERIAL_RGB[key] = rgb
+    return rgb
 
 
 def material_ref(code: str) -> str:

@@ -47,11 +47,9 @@ _KIND_FRAMING = {
     # drawn over this, and a painted adventurer is a second, wrong party
     # standing in the room forever.
     ImageKind.ISOBOARD: (
-        "a single isometric model of this room ALONE, floating on empty black, "
-        "hand-painted, viewed from a fixed high angle, consistent even "
-        "lighting, rich material detail, "
-        "nothing whatsoever around it, no surrounding room, no larger building, "
-        "no floor or ground extending beyond it, plain black empty background, "
+        "isometric tabletop diorama of this room, hand-painted, viewed from a "
+        "fixed high angle, consistent even lighting, rich material detail, "
+        "fully furnished and lived in, "
         "no people, no creatures, no figures, no text, no labels, no border, "
         "no user interface, nothing overlaid"
     ),
