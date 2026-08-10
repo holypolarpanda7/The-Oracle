@@ -30,7 +30,8 @@
 import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
-  CELL, OBJECT_VARIANTS, STRUCTURE_CODES, heightScale, rotatePart, tileHeightFt,
+  CELL, DECOR_KINDS, OBJECT_VARIANTS, STRUCTURE_CODES, heightScale, rotatePart,
+  tileHeightFt,
   tileStyle, variantOf, wallParts, yawOf,
   type BoardView, type PaintState, type TokenPlacement, type View,
 } from "./boardView";
@@ -164,6 +165,13 @@ function requestTexture(id: number, settled: () => void): void {
 }
 
 const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+
+/** Scenery colours. Muted on purpose: decoration that draws the eye competes
+ *  with the things a player actually has to read — cover, hazards, creatures. */
+const DECOR_TINT: Record<string, string> = {
+  rug: "#5a3238", bones: "#c9c2ac", shards: "#8a7a63",
+  roots: "#4a5a34", sack: "#7a6a4a", brazier: "#6a5b46",
+};
 
 /** How much of a square a door panel fills ACROSS its wall. Mirrors
  *  vtt/render_image.py's _PANEL_THICKNESS and the flat renderer's: a door is a
@@ -572,7 +580,34 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       }
     }
 
+    // Scenery, into its own builder so it shares the plain untextured material
+    // and never inherits a wall's swatch. It stands ON the floor and occludes
+    // nothing the rules care about, so it needs no ordering.
+    const decorMb = new MeshBuilder();
+    for (const d of scene.decor ?? []) {
+      const spec = DECOR_KINDS[d.kind];
+      if (!spec) continue;
+      const [ft, parts] = spec;
+      const dTop = base + heightUnits(scene, ft);
+      const turns = yawOf(d.x, d.y);
+      decorMb.at = d.y * scene.width + d.x;
+      const col = new THREE.Color(DECOR_TINT[d.kind] ?? "#6b6255");
+      for (const raw of parts) {
+        const [px0, px1, pz0, pz1, py0, py1] = rotatePart(raw, turns);
+        panelBlock(decorMb, d.x + px0, d.x + px1, d.y + pz0, d.y + pz1,
+                   base + (dTop - base) * py0, base + (dTop - base) * py1, col);
+      }
+    }
+
     shadeTargets = [];
+    if (!decorMb.empty) {
+      const geom = decorMb.build();
+      shadeTargets.push({ geom, owners: decorMb.owners(),
+                          base: new THREE.Color("#ffffff") });
+      terrainGroup.add(new THREE.Mesh(geom, new THREE.MeshLambertMaterial({
+        vertexColors: true, ...(backdrop ? { colorWrite: false } : {}),
+      })));
+    }
     for (const [code, mb] of byCode) {
       if (mb.empty) continue;
       const tex = textured.has(code) ? TEXTURES.get(swatches[code]) : null;

@@ -70,3 +70,18 @@ export const OBJECT_VARIANTS: Record<string, readonly (readonly (readonly [
   w: [
     [[0.18, 0.82, 0, 1, 0, 0.8], [0.1, 0.9, 0, 1, 0.8, 1]]],
 };
+
+/** Scenery: drawn by every view, honoured by none of the rules.
+ *  kind -> [heightFt, parts]. Capped below the lowest cover height
+ *  in the tile table, so nothing decorative can ever be mistaken for
+ *  something to crouch behind — see vtt/decor.py. */
+export const MAX_DECOR_HEIGHT_FT = 2;
+export const DECOR_KINDS: Record<string, readonly [number,
+  readonly (readonly [number, number, number, number, number, number])[]]> = {
+  bones: [0.5, [[0.3, 0.7, 0.42, 0.52, 0, 0.5], [0.38, 0.48, 0.3, 0.7, 0, 0.4], [0.55, 0.72, 0.55, 0.68, 0, 0.7]]],
+  brazier: [1.9, [[0.42, 0.58, 0.42, 0.58, 0, 0.62], [0.32, 0.68, 0.32, 0.68, 0.62, 1]]],
+  roots: [0.6, [[0.05, 0.95, 0.4, 0.52, 0, 0.5], [0.36, 0.48, 0.05, 0.95, 0, 0.7]]],
+  rug: [0.08, [[0.1, 0.9, 0.18, 0.82, 0, 1]]],
+  sack: [1.6, [[0.3, 0.66, 0.32, 0.68, 0, 0.78], [0.34, 0.6, 0.36, 0.62, 0.78, 1]]],
+  shards: [0.4, [[0.32, 0.52, 0.36, 0.56, 0, 1], [0.54, 0.68, 0.52, 0.66, 0, 0.6]]],
+};

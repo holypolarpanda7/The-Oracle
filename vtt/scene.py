@@ -786,6 +786,23 @@ class VttEngine:
                          iso_art_status=("ready" if art.image_id else "offline"))
         return art.image_id
 
+    def decor_for(self, map_id: int) -> list[dict]:
+        """Scenery on this board — drawn, and mechanically inert.
+
+        Derived from the layout and the seed rather than stored, the same way
+        ``objects_for`` reads the grid: the room already determines it, and a
+        second list would be a second thing to keep in step.
+        """
+        from .decor import decor_for as _decor
+        from .terrain import tile_height_ft
+
+        row = self.get_scene(map_id)
+        if row is None:
+            return []
+        rows = self.grid_of(row).to_rows()
+        return _decor(rows, seed=row.seed or 0,
+                      standing=lambda c: tile_height_ft(c) > 0)
+
     def last_move(self, map_id: int) -> Optional[dict]:
         """The most recent walk on this board: ``{id, token_id, path}``.
 
@@ -3184,6 +3201,8 @@ class VttEngine:
             "elevation": row.elevation or {},
             "debris": self.debris_for(map_id),
             "objects": self.objects_for(map_id),
+            # Scenery: drawn by every view, honoured by none of the rules.
+            "decor": self.decor_for(map_id),
             # {tile code -> swatch image id}. The isometric board builds its
             # geometry out of these; a code missing here just falls back to its
             # flat tile colour, which is plainer and equally playable.
@@ -3308,6 +3327,14 @@ class VttEngine:
                 "thrown spear is too, and misses automatically past its normal "
                 "range. YOU must still apply the one thing the code can't: "
                 "creatures fully immersed have RESISTANCE TO FIRE — halve it.")
+        from .decor import describe as _describe_decor
+        scenery = _describe_decor(self.decor_for(map_id))
+        if scenery:
+            # Said out loud so the DM can answer a player who asks about the
+            # brazier. Unnamed, it is scenery the picture has and the board
+            # denies — the exact confusion the painted-terrain rule exists for.
+            lines.append(f"  {scenery}")
+
         hurt = [o for o in self.breakables(map_id) if o["hp"] < o["hp_max"]]
         if hurt:
             lines.append("damaged: " + "; ".join(

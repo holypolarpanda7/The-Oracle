@@ -441,6 +441,9 @@ export interface VttScene {
   elevation: Record<string, number>;
   /** Discrete things standing on squares — read off the grid by the server. */
   objects?: VttObject[];
+  /** Scenery — drawn by every view, honoured by none of the rules. Never tall
+   *  enough to be mistaken for cover; see vtt/decor.py. */
+  decor?: { x: number; y: number; kind: string }[];
   /** Tile code -> the surface swatch it is built from, via /imagery/image/{id}.
    *  Shared by kind across every board in every session, so a code absent here
    *  simply falls back to its flat tile colour. Objects resolve to what they

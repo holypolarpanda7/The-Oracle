@@ -58,6 +58,7 @@ def render() -> str:
     from vtt.isocam import (
         HEIGHT_JITTER, OBJECT_VARIANTS, PILLAR_RADIUS, WALL_THICKNESS,
     )
+    from vtt.decor import DECOR_KINDS, MAX_DECOR_HEIGHT_FT
     from vtt.terrain import STAND_HEIGHT_FT, TILES
 
     lines = [_HEADER]
@@ -104,6 +105,18 @@ def render() -> str:
             vs.append(f"[{body}]")
         joined = ",\n    ".join(vs)
         lines.append(f"  {_key(code)}: [\n    {joined}],")
+    lines.append("};\n")
+
+    lines.append("/** Scenery: drawn by every view, honoured by none of the rules.\n"
+                 " *  kind -> [heightFt, parts]. Capped below the lowest cover height\n"
+                 " *  in the tile table, so nothing decorative can ever be mistaken for\n"
+                 " *  something to crouch behind — see vtt/decor.py. */\n"
+                 f"export const MAX_DECOR_HEIGHT_FT = {_num(MAX_DECOR_HEIGHT_FT)};\n"
+                 "export const DECOR_KINDS: Record<string, readonly [number,\n"
+                 "  readonly (readonly [number, number, number, number, number, number])[]]> = {")
+    for kind, (ft, parts) in sorted(DECOR_KINDS.items()):
+        body = ", ".join("[" + ", ".join(_num(v) for v in p) + "]" for p in parts)
+        lines.append(f"  {kind}: [{_num(ft)}, [{body}]],")
     lines.append("};\n")
     return "\n".join(lines)
 

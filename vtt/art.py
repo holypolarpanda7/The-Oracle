@@ -519,8 +519,13 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
         # would then disagree with itself. Refuse rather than mislead.
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
-    depth = isocam.depth_image(gen.grid.rows, height_ft=tile_height_ft,
-                               square_ft=5, structure=STRUCTURE_CODES)
+    from .decor import decor_for
+    from .terrain import cover_height_ft
+    depth = isocam.depth_image(
+        gen.grid.rows, height_ft=tile_height_ft, cover_ft=cover_height_ft,
+        decor=decor_for(gen.grid.to_rows(), seed=gen.seed,
+                        standing=lambda c: tile_height_ft(c) > 0),
+        square_ft=5, structure=STRUCTURE_CODES)
     if not depth:
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 

@@ -371,7 +371,8 @@ def _prism(face, cx: float, cz: float, r: float, y1: float,
         face([(ax, y0, az), (ax, y1, az), (bx, y1, bz), (bx, y0, bz)])
 
 
-def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, square_ft: int = 5,
+def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
+                square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
                 structure: Optional[set[str]] = None,
                 max_px: int = 1536) -> bytes:
@@ -477,6 +478,22 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, square_ft: int
             else:
                 m = 0.1
                 _box(face, x + m, x + 1 - m, z + m, z + 1 - m, top)
+
+    # Scenery last: it stands ON the floor and never occludes anything the
+    # rules care about, so it needs no ordering of its own.
+    from .decor import DECOR_KINDS
+    for d in (decor or []):
+        spec = DECOR_KINDS.get(d.get("kind", ""))
+        if not spec:
+            continue
+        ft, parts = spec
+        dx, dz = int(d["x"]), int(d["y"])
+        top_d = units(ft)
+        turns = yaw_of(dx, dz)
+        for part in parts:
+            px0, px1, pz0, pz1, py0, py1 = rotate_part(part, turns)
+            _box(face, dx + px0, dx + px1, dz + pz0, dz + pz1,
+                 top_d * py1, y0=top_d * py0)
 
     finite = np.isfinite(buf)
     if not finite.any():
