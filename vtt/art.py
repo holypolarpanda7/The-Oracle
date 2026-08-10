@@ -427,7 +427,7 @@ def board_look(biome: str = "", archetype: str = "") -> str:
 #: change is invisible to it — the first re-render after the switch came back
 #: from cache in one second, unchanged, and would have been mistaken for the
 #: fix not working.
-ISOBOARD_REV = 5
+ISOBOARD_REV = 6
 
 
 #: How much of a board must stand UP before a depth-conditioned painting is

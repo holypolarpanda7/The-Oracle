@@ -30,7 +30,7 @@
 import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
-  CELL, OBJECT_PARTS, STRUCTURE_CODES, tileHeightFt, tileStyle,
+  CELL, OBJECT_PARTS, STRUCTURE_CODES, tileHeightFt, tileStyle, wallParts,
   type BoardView, type PaintState, type TokenPlacement, type View,
 } from "./boardView";
 import {
@@ -448,6 +448,14 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       else if (t === undefined) requestTexture(id, invalidate);
     }
 
+    /** Floor a creature could stand on — not structure, not off the board.
+     *  Void counts as closed: on an upper storey it is open air, and a wall
+     *  should not grow a face onto a hole. Mirrors is_open in vtt/isocam.py. */
+    const isOpen = (x: number, z: number): boolean => {
+      const c = at(x, z);
+      return c !== null && c !== " " && !STRUCTURE_CODES.has(c);
+    };
+
     const seenAt = (x: number, z: number): Seen => {
       if (!scene.fog) return Seen.Watched;          // no fog = all visible
       if (scene.sight?.[z]?.[x] === "1") return Seen.Watched;
@@ -494,13 +502,13 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             const [z0, z1] = axis === "ew" ? [z + 0.5 - t, z + 0.5 + t] : [z, z + 1];
             panelBlock(mb, x0, x1, z0, z1, base, top, color);
           } else if (STRUCTURE_CODES.has(code)) {
-            // Structure really is box-shaped — a wall is a rectangular run —
-            // and hides the faces it shares with its neighbours, so a run comes
-            // out as one continuous mass rather than a parade of cubes.
-            block(mb, x, z, base, top, color, (dx, dz) => {
-              const n = at(x + dx, z + dz);
-              return n === null || tileHeightFt(n) < h;
-            });
+            // A thin skin where the solid region meets open floor, never a full
+            // five-foot cube. The square stays solid in the RULES — this only
+            // stops the wall's top face swallowing the room at this camera
+            // angle. See wallParts.
+            for (const [wx0, wx1, wz0, wz1] of wallParts(isOpen, x, z)) {
+              panelBlock(mb, x + wx0, x + wx1, z + wz0, z + wz1, base, top, color);
+            }
           } else {
             // Everything else is a THING standing on a square, and things are
             // not cubes. Each gets a silhouette of roughly its real footprint —

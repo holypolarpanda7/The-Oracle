@@ -117,6 +117,40 @@ export function tileHeightFt(code: string): number {
  *  which the painted layer is conditioned on and never has to change. */
 export const STRUCTURE_CODES: ReadonlySet<string> = new Set(["#", "R"]);
 
+/** How thick a wall is DRAWN, as a fraction of its square.
+ *
+ *  A wall occupies its whole square in the RULES and always will — impassable,
+ *  sight-blocking, none of that changes here. But drawn as a full five-foot
+ *  cube it presents an enormous top face, and at this camera angle that top
+ *  face IS the rim that made enclosed rooms read as trays.
+ *
+ *  The floor strip left either side is a DRAWING, not playable ground: the
+ *  grid, the movement wash and the outline all still say the square is solid.
+ *  Mirrors WALL_THICKNESS in vtt/isocam.py, which is authoritative. */
+export const WALL_THICKNESS = 0.34;
+
+/** Footprint(s) for a wall square: `[x0, x1, z0, z1]` offsets within it.
+ *
+ *  Drawn as the FACE of the solid region rather than the square's own run.
+ *  Keying on run direction was tried twice and came out crenellated both times:
+ *  mapgen walls are commonly two squares thick, so every square in the band
+ *  reads as a corner and draws a plus, and a band of pluses notches at every
+ *  seam. What you actually see of a thick wall is the skin where it meets open
+ *  floor — and a buried square draws NOTHING, which is most of a thick band.
+ *
+ *  Mirrors `wall_parts` in vtt/isocam.py. */
+export function wallParts(isOpen: (x: number, z: number) => boolean,
+                          x: number, z: number):
+    (readonly [number, number, number, number])[] {
+  const t = WALL_THICKNESS;
+  const out: (readonly [number, number, number, number])[] = [];
+  if (isOpen(x, z - 1)) out.push([0, 1, 0, t]);
+  if (isOpen(x, z + 1)) out.push([0, 1, 1 - t, 1]);
+  if (isOpen(x - 1, z)) out.push([0, t, 0, 1]);
+  if (isOpen(x + 1, z)) out.push([1 - t, 1, 0, 1]);
+  return out;
+}
+
 /** What each object is SHAPED like, as parts of its square.
  *
  *  `[x0, x1, z0, z1, yFrom, yTo]` in FRACTIONS — of the square for x/z, of the
