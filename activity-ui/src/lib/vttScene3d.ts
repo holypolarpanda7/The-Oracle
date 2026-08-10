@@ -30,7 +30,8 @@
 import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
-  CELL, OBJECT_PARTS, STRUCTURE_CODES, tileHeightFt, tileStyle, wallParts,
+  CELL, OBJECT_VARIANTS, STRUCTURE_CODES, heightScale, rotatePart, tileHeightFt,
+  tileStyle, variantOf, wallParts, yawOf,
   type BoardView, type PaintState, type TokenPlacement, type View,
 } from "./boardView";
 import {
@@ -479,7 +480,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // NB: not `base` — that is the storey height, a few lines up.
         const tint = textured.has(code) ? "#ffffff" : tileStyle(code).fill;
         const color = shade(new THREE.Color(tint), seen, lightAt(x, z));
-        const h = tileHeightFt(code);
+        // Heights get a little life, except where the rules quote one.
+        const h = tileHeightFt(code) * heightScale(code, x, z);
         const mb = builderFor(code);
 
         // Floor under everything: an object stands ON a square, and without
@@ -520,12 +522,16 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             } else if (code === "T") {
               prism(mb, cx, cz, 0.13, base, top * 0.55 + base * 0.45, 6, color);
               prism(mb, cx, cz, 0.46, base + (top - base) * 0.4, top, 8, color);
-            } else if (OBJECT_PARTS[code]) {
-              // A built silhouette — see OBJECT_PARTS. Shared with the depth
-              // map the painted layer is conditioned on, so what stands here is
-              // what gets painted here.
+            } else if (OBJECT_VARIANTS[code]) {
+              // A built silhouette, in one of several arrangements chosen by the
+              // square itself — shared with the depth map the painted layer is
+              // conditioned on, so what stands here is what gets painted here.
+              const vs = OBJECT_VARIANTS[code];
+              const parts = vs[variantOf(x, z, vs.length)];
+              const turns = yawOf(x, z);
               const h2 = top - base;
-              for (const [px0, px1, pz0, pz1, py0, py1] of OBJECT_PARTS[code]) {
+              for (const raw of parts) {
+                const [px0, px1, pz0, pz1, py0, py1] = rotatePart(raw, turns);
                 panelBlock(mb, x + px0, x + px1, z + pz0, z + pz1,
                            base + h2 * py0, base + h2 * py1, color);
               }

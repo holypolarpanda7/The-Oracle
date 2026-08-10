@@ -32,10 +32,60 @@ import type { VttScene } from "./types";
 // a drift waiting to happen, and the failure mode is invisible: the painting
 // lands on furniture the player is not looking at.
 export {
-  OBJECT_PARTS, PILLAR_RADIUS, STRUCTURE_CODES, TILE_HEIGHT_FT, WALL_THICKNESS,
+  COVER_HEIGHT_FT, HEIGHT_JITTER, OBJECT_VARIANTS, PILLAR_RADIUS,
+  STRUCTURE_CODES, TILE_HEIGHT_FT, WALL_THICKNESS,
 } from "./boardShapes.generated";
-import { STRUCTURE_CODES as _STRUCTURE, TILE_HEIGHT_FT as _HEIGHT, WALL_THICKNESS as _THICK }
-  from "./boardShapes.generated";
+import {
+  COVER_HEIGHT_FT as _COVER, HEIGHT_JITTER as _JITTER,
+  TILE_HEIGHT_FT as _HEIGHT, WALL_THICKNESS as _THICK,
+} from "./boardShapes.generated";
+
+/** A stable 32-bit hash of a square. Mirrors `_hash` in vtt/isocam.py.
+ *
+ *  Both sides must agree exactly or a square picks one arrangement in the depth
+ *  map and a different one in the geometry — so the Python side masks to 32
+ *  bits to match what JavaScript's bitwise operators do to their operands. */
+function hashOf(x: number, z: number, a: number, b: number): number {
+  return ((x * a) ^ (z * b)) >>> 0;
+}
+
+/** Which arrangement this square's object uses.
+ *
+ *  Derived from the coordinates rather than rolled, so a room draws the same
+ *  way every time — and the painter and the player pick the SAME one. */
+export function variantOf(x: number, z: number, count: number): number {
+  return count > 1 ? hashOf(x, z, 73856093, 19349663) % count : 0;
+}
+
+/** Quarter turns for this square's object. Breaks the grid-lock look. */
+export function yawOf(x: number, z: number): number {
+  return hashOf(x, z, 83492791, 29819387) & 3;
+}
+
+/** Per-instance height multiplier, in [1 - JITTER, 1].
+ *
+ *  **Never varies a height the RULES quote.** A crate screens four feet and a
+ *  low wall three, and a player deciding whether to break line of sight reads
+ *  that off the board — which is most of what fighting something stronger than
+ *  you consists of. Drawing one crate shorter than another would invent a
+ *  difference the engine will not honour, in exactly the situation where being
+ *  misled is expensive. A non-zero cover height marks those tiles. */
+export function heightScale(code: string, x: number, z: number): number {
+  if ((_COVER[code] ?? 0) > 0) return 1;
+  return 1 - _JITTER * (hashOf(x, z, 19349663, 83492791) & 255) / 255;
+}
+
+/** Turn one part's footprint a quarter at a time about its square's centre. */
+export function rotatePart(
+  part: readonly [number, number, number, number, number, number], turns: number,
+): [number, number, number, number, number, number] {
+  let [x0, x1, z0, z1] = part;
+  const [, , , , y0, y1] = part;
+  for (let i = 0; i < (turns & 3); i++) {
+    [x0, x1, z0, z1] = [1 - z1, 1 - z0, x0, x1];
+  }
+  return [x0, x1, z0, z1, y0, y1];
+}
 
 /** Zoom and screen offset. See the note above on why this suits both renderers. */
 export interface View { scale: number; ox: number; oy: number }

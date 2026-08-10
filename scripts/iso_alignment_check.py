@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 
@@ -46,14 +47,25 @@ UNPROJECTS = [(0, 0, 0), (3.5, -1.25, 0), (-7, 2, 2), (11.1, 6.6, 0.5)]
 #: (board w, board h, tallest) for the canonical framing.
 BOUNDS = [(20, 14, 2.0), (30, 24, 2.0), (8, 8, 0.0), (60, 40, 3.0)]
 
+#: Squares to run through the per-instance rules. Includes big coordinates on
+#: purpose: the hash multiplies, and the two languages only diverge once the
+#: product passes 2^32 and JavaScript's bitwise ops wrap it.
+SQUARES = [(0, 0), (1, 0), (0, 1), (3, 7), (12, 5), (59, 39), (40, 40), (7, 123)]
+
 _TS = r"""
 import { project, unproject, boundsOf, YAW_DEG, PITCH_DEG } from "./isocam.js";
-const samples = %s, unprojects = %s, bounds = %s;
+import { variantOf, yawOf, heightScale } from "./boardView.js";
+const samples = %s, unprojects = %s, bounds = %s, squares = %s;
 console.log(JSON.stringify({
   yaw: YAW_DEG, pitch: PITCH_DEG,
   project: samples.map(([x, y, z]) => { const p = project(x, y, z); return [p.x, p.y, p.depth]; }),
   unproject: unprojects.map(([sx, sy, wy]) => unproject(sx, sy, wy)),
   bounds: bounds.map(([w, h, t]) => { const b = boundsOf(w, h, t); return [b.minX, b.maxX, b.minY, b.maxY]; }),
+  variant: squares.map(([x, z]) => variantOf(x, z, 3)),
+  yaws: squares.map(([x, z]) => yawOf(x, z)),   // NB not "yaw": that key is the camera constant
+  // "A" quotes a cover height and must never jitter; "#" is free to.
+  heightA: squares.map(([x, z]) => heightScale("A", x, z)),
+  heightW: squares.map(([x, z]) => heightScale("#", x, z)),
 }));
 """
 
@@ -75,13 +87,25 @@ def _run_ts() -> dict:
     work.mkdir(parents=True)
     try:
         r = subprocess.run(
-            ["npx", "tsc", "src/lib/isocam.ts", "--outDir", ".isocam-check",
+            ["npx", "tsc", "src/lib/isocam.ts", "src/lib/boardView.ts",
+             "--outDir", ".isocam-check",
              "--module", "es2022", "--target", "es2022", "--skipLibCheck"],
             cwd=ui, capture_output=True, text=True, shell=(sys.platform == "win32"))
         if r.returncode != 0:
             raise RuntimeError(f"tsc failed:\n{r.stdout}\n{r.stderr}")
+        # tsc emits extensionless relative specifiers ("./boardShapes.generated")
+        # and Node's ESM loader insists on the extension. Nothing in the project
+        # hits this because vite resolves imports itself; only this probe runs
+        # the emitted JS directly.
+        for js in work.glob("*.js"):
+            js.write_text(
+                re.sub(r'(from\s+"\./[^"]+)"',
+                       lambda m: m.group(1) + '.js"', js.read_text(encoding="utf8")),
+                encoding="utf8")
+
         (work / "probe.mjs").write_text(
-            _TS % (json.dumps(SAMPLES), json.dumps(UNPROJECTS), json.dumps(BOUNDS)),
+            _TS % (json.dumps(SAMPLES), json.dumps(UNPROJECTS), json.dumps(BOUNDS),
+                   json.dumps(SQUARES)),
             encoding="utf8")
         r = subprocess.run(["npx", "node", ".isocam-check/probe.mjs"], cwd=ui,
                            capture_output=True, text=True,
@@ -151,6 +175,20 @@ def main(argv=None) -> int:
         for name, got, want in (("minX", b.min_x, t[0]), ("maxX", b.max_x, t[1]),
                                 ("minY", b.min_y, t[2]), ("maxY", b.max_y, t[3])):
             check(f"{w}x{h}+{tall} {name}", got, want, a.tol)
+
+    # Per-instance rules. Same square must pick the same arrangement, the same
+    # turn and the same height on both sides, or the painter conditions on one
+    # room and the player looks at another.
+    print("\nper-instance variety (variant / yaw / height)")
+    from vtt.terrain import cover_height_ft
+    for (x, z), v, y, ha, hw in zip(SQUARES, ts["variant"], ts["yaws"],
+                                    ts["heightA"], ts["heightW"]):
+        check(f"({x},{z}) variant", py.variant_of(x, z, 3), v, 0)
+        check(f"({x},{z}) yaw", py.yaw_of(x, z), y, 0)
+        check(f"({x},{z}) height A (rules-quoted)",
+              py.height_scale("A", x, z, cover_height_ft("A")), ha, 1e-12)
+        check(f"({x},{z}) height #", py.height_scale("#", x, z, cover_height_ft("#")),
+              hw, 1e-12)
 
     # Round-trip: projecting a point on the ground and unprojecting it must
     # return the same square. Catches a self-consistent but wrong pair.

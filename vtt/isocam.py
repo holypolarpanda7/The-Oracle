@@ -222,6 +222,68 @@ def wall_parts(is_open, x: int, z: int) -> tuple[tuple[float, float, float, floa
     return tuple(out)
 
 
+def _hash(x: int, z: int, a: int, b: int) -> int:
+    """A stable 32-bit hash of a square, matching the JS side exactly.
+
+    Masked to 32 bits because that is what JavaScript's bitwise operators do to
+    their operands; without the mask the two languages agree until a coordinate
+    is large enough to overflow, and then a room quietly draws itself
+    differently in the depth map and the geometry.
+    """
+    return ((x * a) ^ (z * b)) & 0xFFFFFFFF
+
+
+def variant_of(x: int, z: int, count: int) -> int:
+    """Which arrangement this square's object uses.
+
+    Derived from the coordinates rather than rolled, so a room draws the same
+    way every time it is looked at — and so the depth map the painter sees and
+    the geometry the player sees pick the SAME one.
+    """
+    return _hash(x, z, 73856093, 19349663) % max(1, count) if count > 1 else 0
+
+
+def yaw_of(x: int, z: int) -> int:
+    """Quarter turns for this square's object. Breaks the grid-lock look."""
+    return _hash(x, z, 83492791, 29819387) & 3
+
+
+#: How much a tile's DRAWN height may wander, as a fraction.
+#:
+#: Applied only where height is not a rules answer — see `height_scale`. Small
+#: on purpose: this is for a wall run that isn't machined flat, not for ruins.
+HEIGHT_JITTER = 0.12
+
+
+def height_scale(code: str, x: int, z: int, cover_height_ft: int) -> float:
+    """Per-instance height multiplier for a tile, in ``[1 - JITTER, 1]``.
+
+    **Never varies a height the RULES quote.** A crate screens four feet, a low
+    wall three, and a player deciding whether to break line of sight — which is
+    most of what a fight against a stronger enemy consists of — reads that off
+    the picture. Drawing one crate shorter than another would be inventing a
+    difference the engine will not honour, and it would mislead in exactly the
+    situation where being misled is expensive.
+
+    ``cover_height_ft > 0`` marks precisely the tiles whose height IS the
+    answer, so they are left alone and everything else gets a little life.
+    """
+    if cover_height_ft > 0:
+        return 1.0
+    return 1.0 - HEIGHT_JITTER * (_hash(x, z, 19349663, 83492791) & 255) / 255.0
+
+
+def rotate_part(part, turns: int):
+    """Turn one part's footprint a quarter at a time about its square's centre.
+
+    ``(x, z) -> (1 - z, x)`` per quarter, which keeps it inside the square.
+    """
+    x0, x1, z0, z1, y0, y1 = part
+    for _ in range(turns & 3):
+        x0, x1, z0, z1 = 1.0 - z1, 1.0 - z0, x0, x1
+    return (x0, x1, z0, z1, y0, y1)
+
+
 #: What each object is SHAPED like, as parts of its square.
 #:
 #: One box per tile is what made a crypt read as a tray of dice. The model
@@ -236,24 +298,48 @@ def wall_parts(is_open, x: int, z: int) -> tuple[tuple[float, float, float, floa
 #: activity-ui/src/lib/boardView.ts; the depth map and the geometry must be the
 #: same object or the painting is conditioned on something the player is not
 #: looking at.
-OBJECT_PARTS: dict[str, tuple[tuple[float, float, float, float, float, float], ...]] = {
-    # Sarcophagus / altar: a long chest with an overhanging tapered lid.
-    "A": ((0.10, 0.90, 0.30, 0.70, 0.00, 0.72),
-          (0.06, 0.94, 0.26, 0.74, 0.72, 1.00)),
+OBJECT_VARIANTS: dict[str, tuple[tuple[tuple[float, float, float, float, float, float], ...], ...]] = {
+    # Sarcophagus / altar: a long chest with an overhanging tapered lid, and a
+    # squatter cracked-open one.
+    "A": (
+        ((0.10, 0.90, 0.30, 0.70, 0.00, 0.72),
+         (0.06, 0.94, 0.26, 0.74, 0.72, 1.00)),
+        ((0.14, 0.86, 0.28, 0.72, 0.00, 0.62),
+         (0.10, 0.62, 0.24, 0.76, 0.62, 0.94),
+         (0.66, 0.96, 0.30, 0.70, 0.62, 0.82)),
+    ),
     # Table: a top on four legs. The legs are what stop it being a block.
-    "n": ((0.12, 0.22, 0.16, 0.26, 0.00, 0.72),
-          (0.78, 0.88, 0.16, 0.26, 0.00, 0.72),
-          (0.12, 0.22, 0.74, 0.84, 0.00, 0.72),
-          (0.78, 0.88, 0.74, 0.84, 0.00, 0.72),
-          (0.06, 0.94, 0.10, 0.90, 0.72, 1.00)),
+    "n": (
+        ((0.12, 0.22, 0.16, 0.26, 0.00, 0.72),
+         (0.78, 0.88, 0.16, 0.26, 0.00, 0.72),
+         (0.12, 0.22, 0.74, 0.84, 0.00, 0.72),
+         (0.78, 0.88, 0.74, 0.84, 0.00, 0.72),
+         (0.06, 0.94, 0.10, 0.90, 0.72, 1.00)),
+        # Overturned: the top on edge, legs in the air.
+        ((0.10, 0.24, 0.12, 0.88, 0.00, 1.00),
+         (0.24, 0.34, 0.20, 0.30, 0.62, 0.78),
+         (0.24, 0.34, 0.70, 0.80, 0.62, 0.78)),
+    ),
     # Crates: stacked and offset, never one cube filling the square.
-    "o": ((0.08, 0.58, 0.10, 0.62, 0.00, 0.62),
-          (0.46, 0.92, 0.36, 0.90, 0.00, 0.48),
-          (0.16, 0.56, 0.18, 0.58, 0.62, 1.00)),
+    "o": (
+        ((0.08, 0.58, 0.10, 0.62, 0.00, 0.62),
+         (0.46, 0.92, 0.36, 0.90, 0.00, 0.48),
+         (0.16, 0.56, 0.18, 0.58, 0.62, 1.00)),
+        ((0.12, 0.66, 0.14, 0.70, 0.00, 1.00),
+         (0.62, 0.94, 0.52, 0.92, 0.00, 0.54)),
+        ((0.10, 0.52, 0.20, 0.64, 0.00, 0.70),
+         (0.54, 0.90, 0.14, 0.56, 0.00, 0.86),
+         (0.34, 0.74, 0.60, 0.94, 0.00, 0.44)),
+    ),
     # Low wall: a coping course on a thinner base, so it reads as masonry.
-    "w": ((0.18, 0.82, 0.00, 1.00, 0.00, 0.80),
-          (0.10, 0.90, 0.00, 1.00, 0.80, 1.00)),
+    "w": (
+        ((0.18, 0.82, 0.00, 1.00, 0.00, 0.80),
+         (0.10, 0.90, 0.00, 1.00, 0.80, 1.00)),
+    ),
 }
+
+#: Variant 0 of each, for anything that only wants one answer.
+OBJECT_PARTS = {k: v[0] for k, v in OBJECT_VARIANTS.items()}
 
 
 def _box(face, x0: float, x1: float, z0: float, z1: float,
@@ -285,7 +371,7 @@ def _prism(face, cx: float, cz: float, r: float, y1: float,
         face([(ax, y0, az), (ax, y1, az), (bx, y1, bz), (bx, y0, bz)])
 
 
-def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
+def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
                 structure: Optional[set[str]] = None,
                 max_px: int = 1536) -> bytes:
@@ -299,6 +385,7 @@ def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
     import numpy as np
     from PIL import Image
 
+    cover_ft = cover_ft or (lambda _c: 0)
     h_rows = len(rows)
     w_cols = max((len(r) for r in rows), default=0)
     if not h_rows or not w_cols:
@@ -359,7 +446,9 @@ def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
             if code == " ":
                 continue
             ft = height_ft(code)
-            top = units(ft)
+            # A little life in the heights — but never where the rules quote
+            # one. See height_scale.
+            top = units(ft) * height_scale(code, x, z, cover_ft(code))
             # Floor under everything.
             face([(x, 0, z), (x, 0, z + 1), (x + 1, 0, z + 1), (x + 1, 0, z)])
             if ft <= 0:
@@ -373,12 +462,16 @@ def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
                 _prism(face, x + 0.5, z + 0.5, PILLAR_RADIUS, top)
                 if code == "T":
                     _prism(face, x + 0.5, z + 0.5, 0.46, top, y0=top * 0.4)
-            elif code in OBJECT_PARTS:
+            elif code in OBJECT_VARIANTS:
                 # A built silhouette. Drawn as one cube these came back as DICE
                 # — a crypt of thirty four-foot cubes reads as a board game
                 # however loudly the prompt says "stone coffins in ranks". The
                 # shape is the sentence the model actually listens to.
-                for px0, px1, pz0, pz1, py0, py1 in OBJECT_PARTS[code]:
+                vs = OBJECT_VARIANTS[code]
+                parts = vs[variant_of(x, z, len(vs))]
+                turns = yaw_of(x, z)
+                for part in parts:
+                    px0, px1, pz0, pz1, py0, py1 = rotate_part(part, turns)
                     _box(face, x + px0, x + px1, z + pz0, z + pz1,
                          top * py1, y0=top * py0)
             else:

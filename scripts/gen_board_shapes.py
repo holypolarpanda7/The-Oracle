@@ -55,8 +55,10 @@ def _num(v: float) -> str:
 
 def render() -> str:
     from vtt.art import STRUCTURE_CODES
-    from vtt.isocam import OBJECT_PARTS, PILLAR_RADIUS, WALL_THICKNESS
-    from vtt.terrain import STAND_HEIGHT_FT
+    from vtt.isocam import (
+        HEIGHT_JITTER, OBJECT_VARIANTS, PILLAR_RADIUS, WALL_THICKNESS,
+    )
+    from vtt.terrain import STAND_HEIGHT_FT, TILES
 
     lines = [_HEADER]
     lines.append("/** How thick a wall is DRAWN, as a fraction of its square.\n"
@@ -65,6 +67,18 @@ def render() -> str:
                  f"export const WALL_THICKNESS = {_num(WALL_THICKNESS)};\n")
     lines.append("/** Radius of a pillar or tree trunk, as a fraction of its square. */\n"
                  f"export const PILLAR_RADIUS = {_num(PILLAR_RADIUS)};\n")
+    lines.append("/** How much a tile's DRAWN height may wander, as a fraction.\n"
+                 " *  Never applied where the RULES quote a height — see heightScale. */\n"
+                 f"export const HEIGHT_JITTER = {_num(HEIGHT_JITTER)};\n")
+
+    lines.append("/** How tall each tile SCREENS a creature, in feet, per the rules.\n"
+                 " *  Non-zero means the height is an ANSWER a player reads off the\n"
+                 " *  board, so it must be drawn exactly and never jittered. */\n"
+                 "export const COVER_HEIGHT_FT: Record<string, number> = {")
+    for code, t in sorted(TILES.items()):
+        if t.cover_height_ft:
+            lines.append(f'  {_key(code)}: {int(t.cover_height_ft)},')
+    lines.append("};\n")
 
     codes = ", ".join(f'"{c}"' for c in sorted(STRUCTURE_CODES))
     lines.append("/** Codes that are the BUILDING rather than something standing in it. */\n"
@@ -76,14 +90,20 @@ def render() -> str:
         lines.append(f'  {_key(code)}: {int(ft)},')
     lines.append("};\n")
 
-    lines.append("/** What each object is SHAPED like, as parts of its square:\n"
-                 " *  [x0, x1, z0, z1, yFrom, yTo] — fractions of the square for x/z,\n"
-                 " *  of the tile's standing height for y. */\n"
-                 "export const OBJECT_PARTS: Record<string, readonly (readonly [\n"
-                 "  number, number, number, number, number, number])[]> = {")
-    for code, parts in sorted(OBJECT_PARTS.items()):
-        body = ",\n      ".join("[" + ", ".join(_num(v) for v in p) + "]" for p in parts)
-        lines.append(f"  {_key(code)}: [\n      {body}],")
+    lines.append("/** What each object is SHAPED like: one or more ARRANGEMENTS, each a\n"
+                 " *  list of parts [x0, x1, z0, z1, yFrom, yTo] — fractions of the\n"
+                 " *  square for x/z, of the tile's standing height for y. Which one a\n"
+                 " *  square uses comes from variantOf, so the same square always picks\n"
+                 " *  the same arrangement on both sides of the wire. */\n"
+                 "export const OBJECT_VARIANTS: Record<string, readonly (readonly (readonly [\n"
+                 "  number, number, number, number, number, number])[])[]> = {")
+    for code, variants in sorted(OBJECT_VARIANTS.items()):
+        vs = []
+        for parts in variants:
+            body = ", ".join("[" + ", ".join(_num(v) for v in p) + "]" for p in parts)
+            vs.append(f"[{body}]")
+        joined = ",\n    ".join(vs)
+        lines.append(f"  {_key(code)}: [\n    {joined}],")
     lines.append("};\n")
     return "\n".join(lines)
 
