@@ -62,12 +62,29 @@ def _empty() -> Built:
 
 
 def _fits(g: Grid, x0: int, y0: int, w: int, h: int,
-          on: tuple[str, ...]) -> bool:
-    """Room for a structure here, on ground of the right kind?"""
+          on: tuple[str, ...], margin: int = 0) -> bool:
+    """Room for a structure here, on ground of the right kind?
+
+    The FOOTPRINT must be wholly on the board and wholly on the right ground.
+    The margin around it is checked only where it is on the board at all —
+    the edge of the board is not something a tent can collide with, and
+    requiring clear ground out there rejected every placement against a wall,
+    a bank or a shoreline. That bug cost the bridge both its watchtowers: at
+    24x18 the only ground wide enough sits against the board edge, so every
+    candidate was refused and the boards came back bare.
+    """
     if x0 < 0 or y0 < 0 or x0 + w > g.width or y0 + h > g.height:
         return False
-    return all(g.get(x, y) in on
-               for x in range(x0, x0 + w) for y in range(y0, y0 + h))
+    for x in range(x0 - margin, x0 + w + margin):
+        for y in range(y0 - margin, y0 + h + margin):
+            inside = x0 <= x < x0 + w and y0 <= y < y0 + h
+            if not g.in_bounds(x, y):
+                if inside:
+                    return False
+                continue           # off the board: nothing to collide with
+            if g.get(x, y) not in on:
+                return False
+    return True
 
 
 def shelter(g: Grid, rng: random.Random, x0: int, y0: int, w: int, h: int, *,
@@ -96,8 +113,7 @@ def shelter(g: Grid, rng: random.Random, x0: int, y0: int, w: int, h: int, *,
     # which is how a camp came out with a tent wall missing and a trench of
     # floor running out of it. Demanding clear ground around each one costs a
     # few rejected placements and removes the failure entirely.
-    if on and not _fits(g, x0 - margin, y0 - margin,
-                        w + margin * 2, h + margin * 2, on):
+    if on and not _fits(g, x0, y0, w, h, on, margin=margin):
         return _empty()
 
     built = _empty()

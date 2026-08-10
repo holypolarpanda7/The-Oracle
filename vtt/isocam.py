@@ -306,6 +306,21 @@ def variant_of(x: int, z: int, count: int) -> int:
     return _hash(x, z, 73856093, 19349663) % max(1, count) if count > 1 else 0
 
 
+def variant_smooth(x: int, z: int, count: int) -> int:
+    """Like :func:`variant_of`, but neighbouring squares usually agree.
+
+    For anything that is a MASS rather than a set of separate objects. A rock
+    face whose every square picks its own height independently is a field of
+    cubes — that is not a guess, it is what the first mountain pass came back
+    as — because only the squares bordering open floor are drawn, so a
+    one-square-thick shell with per-square heights has nothing left to connect
+    it. Sampling the arrangement over two-square blocks turns the same
+    variation into ridges and shelves.
+    """
+    return (_hash(x // 2, z // 2, 73856093, 19349663) % max(1, count)
+            if count > 1 else 0)
+
+
 def yaw_of(x: int, z: int) -> int:
     """Quarter turns for this square's object. Breaks the grid-lock look."""
     return _hash(x, z, 83492791, 29819387) & 3
@@ -673,7 +688,8 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 # is buried, and buried rock is not drawn.
                 if code in struct and not wall_parts(is_open, x, z):
                     continue
-                parts = sk_vars[variant_of(x, z, len(sk_vars))]
+                pick = (variant_smooth if _skins.is_smooth(sk) else variant_of)
+                parts = sk_vars[pick(x, z, len(sk_vars))]
                 if _skins.is_directional(sk):
                     turns = run_axis(
                         lambda ax, az: skin_at(ax, az) == sk, x, z)

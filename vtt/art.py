@@ -286,7 +286,12 @@ LOOK_AGNOSTIC: frozenset[str] = frozenset({
 ANY_LOOK = "any"
 
 #: Codes with no surface to draw: the board renders nothing there.
-NO_MATERIAL: frozenset[str] = frozenset({" ", "^"})
+#:
+#: Every HOLE belongs here. A chasm is the absence of floor, so there is nothing
+#: to photograph — and asking anyway is not free: "a surface of yawning chasm"
+#: came back as an open MOUTH WITH TEETH, filed in the catalogue and drawn by
+#: nothing, which is the pure form of this module's category error.
+NO_MATERIAL: frozenset[str] = frozenset({" ", "^", "x"})
 
 #: Discrete objects, and what they are MADE OF.
 #:
@@ -461,8 +466,28 @@ def standing_fraction(grid: Grid) -> float:
                if c != " " and tile_height_ft(c) > 0) / total
 
 
-def iso_denoise_for(grid: Grid) -> float:
-    """Denoise for this board; 1.0 means "no init image, depth alone"."""
+def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
+    """Denoise for this board; 1.0 means "no init image, depth alone".
+
+    ``skinned`` is accepted and deliberately IGNORED, and the measurement is
+    worth keeping because the idea is an obvious one to have twice.
+
+    A skin says a board's materials are not the ones the model would guess, and
+    the terrain image is the only channel that carries a colour — so it looked
+    as though a skinned board should always get one, overriding the built-up
+    rule that hands a walled room no init image at all. Rendered across the
+    whole gallery, that made six boards worse to help one: the dungeon, the
+    crypt, the arena and the cave all lost the painted detail they had and came
+    back as flat tinted geometry, which is exactly what the built-up rule was
+    measured to prevent. Dropping the denoise to 0.60 to compensate made it
+    worse again, and for the reason ISO_DENOISE_FLAT already records.
+
+    So conveying a MATERIAL against a strong silhouette prior is not reachable
+    from here. It needs a second conditioning channel — a colour or
+    segmentation ControlNet alongside the depth one — which is separate work
+    and not a knob on this one. The parameter stays so callers keep reading
+    honestly; what it does is nothing.
+    """
     return (1.0 if standing_fraction(grid) >= BUILT_UP_FRACTION
             else ISO_DENOISE_FLAT)
 
@@ -471,7 +496,15 @@ def iso_denoise_for(grid: Grid) -> float:
 #: archetype (see vtt.skins), so a mountainside is granite drawn as rock mass
 #: rather than masonry drawn as wall panels. That changes both conditioning
 #: images for most boards.
-ISOBOARD_REV = 19
+#: Rev 20: rock and coral pick their arrangement from a COARSE hash (see
+#: isocam.variant_smooth), a skyship's DECK follows its style, and six swatches
+#: were redrawn — canvas came back as planks, which is why every camp had
+#: timber pens in it instead of tents.
+#: Rev 21: the material clauses carry CLIP emphasis — see render_iso_board.
+#: Rev 22-24: an experiment and its reversal — a skinned board was given its
+#: terrain image regardless of how built up it is, and it cost six boards their
+#: painted detail to help one. See iso_denoise_for.
+ISOBOARD_REV = 24
 
 
 #: Retained for callers that still ask, and for the gallery's reporting. The
@@ -539,10 +572,23 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
     def _skin_of(c: str, x: int, z: int) -> str:
         return _skins.skin_at(c, x, z, codes=code_skins, squares=square_skins)
 
+    # The material clauses carry CLIP emphasis, and they have to.
+    #
+    # A skyship's three styles reach the model as three genuinely different
+    # terrain images — measured: brown oak, teal brass, green chitin — and all
+    # three came back as the same wooden deck, because at 0.72 denoise the
+    # sampler keeps less than a third of the init and the depth map's
+    # silhouette says "ship" loudly enough that the model falls back on its
+    # prior for one. The same lesson as the sky, one turn further: colouring
+    # the conditioning image was necessary and is not sufficient. What a thing
+    # is MADE of is the subject of these boards, so it is weighted like one.
+    material_words = _skins.words_for(present)
     subject, look, context = build_map_prompt(
         gen, name=name, biome=biome, lighting=lighting,
-        extra=", ".join(p for p in (extra, _skins.words_for(present),
-                                    _void_reads_as(gen.grid, lighting)) if p),
+        extra=", ".join(p for p in (
+            extra,
+            f"({material_words}:1.35)" if material_words else "",
+            _void_reads_as(gen.grid, lighting)) if p),
         conditions=conditions)
     ref = isoboard_ref(gen.grid, gen.archetype, gen.seed)
 
@@ -615,7 +661,8 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
             seed=gen.seed & 0x7FFFFFFF, max_per_bucket=1,
             control_image=depth,
             controlnet=controlnet, controlnet_strength=controlnet_strength,
-            init_image=terrain, init_denoise=iso_denoise_for(gen.grid),
+            init_image=terrain,
+            init_denoise=iso_denoise_for(gen.grid, skinned=bool(present)),
             negative_extra=", ".join(p for p in (
                 gen.grid.absent_terrain_negative(), _ISO_NEGATIVE) if p),
         )

@@ -64,6 +64,19 @@ export function yawOf(x: number, z: number): number {
   return hashOf(x, z, 83492791, 29819387) & 3;
 }
 
+/** Like `variantOf`, but neighbouring squares usually agree.
+ *
+ *  For anything that is a MASS rather than a set of separate objects. A rock
+ *  face whose every square picks its own height independently is a field of
+ *  cubes — only the squares bordering open floor are drawn, so a one-square
+ *  shell with per-square heights has nothing left to connect it. Sampling over
+ *  two-square blocks turns the same variation into ridges and shelves.
+ *  Mirrors `variant_smooth` in vtt/isocam.py. */
+export function variantSmooth(x: number, z: number, count: number): number {
+  if (count <= 1) return 0;
+  return hashOf(Math.floor(x / 2), Math.floor(z / 2), 73856093, 19349663) % count;
+}
+
 /** Quarter turns that line a part up with the RUN it belongs to.
  *
  *  The companion to `yawOf`, for the things a per-square random turn gets

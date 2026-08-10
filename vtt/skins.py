@@ -89,6 +89,13 @@ class Skin:
     height_ft: float = 0.0
     #: Line up along the run rather than taking a per-square quarter-turn.
     directional: bool = False
+    #: Pick the arrangement from a COARSE hash, so neighbouring squares usually
+    #: match. For anything that is a MASS rather than a set of objects: a rock
+    #: face varying per square is a field of separate cubes (measured — the
+    #: first mountain pass came back exactly that), where the same variation
+    #: spread over two-square blocks reads as ridges and shelves. Objects want
+    #: the opposite, which is why it is a flag and not the default.
+    smooth: bool = False
 
 
 def _v(*arrangements: Sequence[Part]) -> Variants:
@@ -104,18 +111,29 @@ def _v(*arrangements: Sequence[Part]) -> Variants:
 # back as a wall however loudly the prompt says "canyon".
 # --------------------------------------------------------------------------
 
-#: Rock, drawn as MASS. Near-full-square footprints with stepped, uneven tops.
-#: The wall-face model these replace exists to stop an enclosed ROOM reading as
+#: Rock, drawn as MASS.
+#:
+#: The wall-face model this replaces exists to stop an enclosed ROOM reading as
 #: a tray, which is the right worry for masonry and the wrong one for a
 #: mountainside — a pass is a canyon cut through solid rock, and the rock should
 #: look solid.
+#:
+#: Two things learned from the first attempt, which came back as a field of
+#: white DICE. Footprints must run the FULL square: inset even slightly, each
+#: square is its own little block with a visible gap round it, and a hundred of
+#: them is a bead curtain rather than a cliff. And the variation has to be in
+#: the HEIGHT rather than in fussy stacked nubs on top — a rock face reads as
+#: rock because its skyline is broken, and neighbouring squares at 100%, 74% and
+#: 46% of the same height do that where three differently-decorated cubes of
+#: equal height do not. (`height_scale`'s jitter is only 12%, deliberately, and
+#: nowhere near enough on its own.)
 _CLIFF = _v(
-    ((0.02, 0.98, 0.02, 0.98, 0.0, 0.60), (0.12, 0.86, 0.08, 0.90, 0.60, 0.86),
-     (0.30, 0.70, 0.26, 0.66, 0.86, 1.0)),
-    ((0.00, 0.92, 0.06, 1.00, 0.0, 0.70), (0.18, 0.80, 0.20, 0.84, 0.70, 1.0)),
-    ((0.06, 1.00, 0.00, 0.94, 0.0, 0.55), (0.10, 0.70, 0.16, 0.78, 0.55, 0.92),
-     (0.50, 0.94, 0.40, 0.86, 0.55, 0.78)),
-    ((0.04, 0.96, 0.04, 0.96, 0.0, 0.80), (0.22, 0.68, 0.30, 0.74, 0.80, 1.0)),
+    ((0.0, 1.0, 0.0, 1.0, 0.0, 1.00),),
+    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.74), (0.14, 0.82, 0.20, 0.88, 0.74, 0.90)),
+    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.58), (0.28, 1.00, 0.00, 0.72, 0.58, 0.84)),
+    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.88), (0.10, 0.72, 0.24, 0.90, 0.88, 1.00)),
+    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.46),),
+    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.66), (0.00, 0.64, 0.30, 1.00, 0.66, 0.94)),
 )
 
 #: Coral heads: lower, lumpier, branching. Same idea as the cliff and a
@@ -169,11 +187,20 @@ _PALISADE = _v(
      (0.78, 1.00, 0.34, 0.66, 0.0, 0.94)),
 )
 
-#: A tent wall: canvas leaning in to a ridge. Drawn along the run so a tent
-#: reads as one tent instead of four quarter-turned fragments.
+#: A tent wall: canvas leaning steeply in to a ridge. Drawn along the run so a
+#: tent reads as one tent instead of four quarter-turned fragments.
+#:
+#: The first version was a mild lean at nine feet, and every camp came back with
+#: three timber PENS in it. A tent is not a short building — what says "tent" is
+#: the pitch of the canvas, so the slope runs from full width at the pegs to a
+#: ridge line at the top across four steps, and the whole thing is lower than a
+#: wall. The material was already canvas; the model was painting the silhouette
+#: it was handed, which is the same lesson as the pillar and the ship's hull.
 _TENT_WALL = _v(
-    ((0.00, 1.00, 0.16, 0.84, 0.0, 0.46), (0.00, 1.00, 0.26, 0.74, 0.46, 0.78),
-     (0.00, 1.00, 0.38, 0.62, 0.78, 1.00)),
+    ((0.00, 1.00, 0.02, 0.98, 0.00, 0.26),
+     (0.00, 1.00, 0.16, 0.84, 0.26, 0.56),
+     (0.00, 1.00, 0.31, 0.69, 0.56, 0.82),
+     (0.00, 1.00, 0.43, 0.57, 0.82, 1.00)),
 )
 
 #: A stone parapet: a merloned tower top, so a watchtower reads as somewhere to
@@ -208,23 +235,25 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "raw grey granite, close-up of the bare fractured rock face",
          words="the rock is a natural granite cliff face, fractured and "
                "weathered, not built masonry and not brickwork",
-         variants=_CLIFF, height_ft=14),
+         variants=_CLIFF, height_ft=14, smooth=True),
     Skin("scree", "scree",
          "close-up of loose shale and broken slate scree",
          words="the ground is loose shale and scree"),
     Skin("cave-rock", "limestone",
-         "close-up of damp limestone cave rock, flowstone and mineral streaks",
+         "a flat expanse of damp grey limestone rock, mineral streaks and "
+         "flowstone, filling the whole frame",
          words="the walls are living cave rock, damp limestone",
-         variants=_CLIFF, height_ft=13),
+         variants=_CLIFF, height_ft=13, smooth=True),
 
     # --- the sea ----------------------------------------------------------
     Skin("coral", "coral",
          "close-up of living reef coral, brain coral and branching polyps",
          words="the reef heads are living coral in ochre and violet, "
                "encrusted and irregular",
-         variants=_CORAL, height_ft=9),
+         variants=_CORAL, height_ft=9, smooth=True),
     Skin("drowned-column", "drowned-stone",
-         "close-up of ancient pale stone crusted with barnacles and weed",
+         "a flat expanse of pale ancient cut stone crusted with barnacles and "
+         "green weed, filling the whole frame",
          words="the columns are ancient, SNAPPED OFF and toppled, furred with "
                "weed and barnacle — a drowned ruin, nothing intact",
          variants=_BROKEN_COLUMN, height_ft=9),
@@ -233,7 +262,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # broken-topped stub instead of a tidy waist-high course — and the height
     # stays exactly what the rules quote.
     Skin("drowned-wall", "drowned-stone",
-         "close-up of ancient pale stone crusted with barnacles and weed",
+         "a flat expanse of pale ancient cut stone crusted with barnacles and "
+         "green weed, filling the whole frame",
          words="what walls remain are collapsed stubs of drowned masonry",
          variants=_v(
              ((0.00, 1.00, 0.18, 0.78, 0.0, 0.72),
@@ -249,8 +279,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="the brickwork is filthy — black slime to the tide line, weeping "
                "mortar, rust stains and fungal bloom"),
     Skin("sludge", "sludge",
-         "close-up of thick stagnant green-brown effluent, scum and floating "
-         "debris",
+         "thick stagnant green-brown sewage seen straight down, greasy scum "
+         "film and floating litter, no bank and no edge anywhere in frame",
          words="the channel runs with foul green-brown effluent, scummed and "
                "littered"),
     Skin("sewer-ledge", "wet-flagstone",
@@ -269,11 +299,12 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="the camp wall is a palisade of sharpened upright logs",
          variants=_PALISADE, height_ft=10, directional=True),
     Skin("canvas", "canvas",
-         "close-up of heavy weathered tent canvas, coarse weave, stained and "
-         "patched",
+         "a flat expanse of heavy woven CLOTH — coarse canvas sailcloth, "
+         "off-white and grey, individual threads visible, stained and patched, "
+         "soft fabric with no wood and no planks anywhere",
          words="the tents are heavy stained canvas over timber poles, guy ropes "
                "pegged out, flaps tied back",
-         variants=_TENT_WALL, height_ft=9, directional=True),
+         variants=_TENT_WALL, height_ft=8, directional=True),
 
     # --- ships ------------------------------------------------------------
     Skin("hull", "tarred-planking",
@@ -284,12 +315,14 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "seams",
          words="the deck is scrubbed pale oak planking, seams payed with pitch"),
     Skin("mast", "spar-timber",
-         "close-up of oiled spar timber, banded with iron",
+         "a flat expanse of oiled timber, straight close grain all running one "
+         "way, no corners and no edges",
          words="a single mast steps amidships, yard crossed and rigging set up "
                "to the rails",
          variants=_MAST, height_ft=26),
     Skin("railing", "spar-timber",
-         "close-up of oiled spar timber, banded with iron",
+         "a flat expanse of oiled timber, straight close grain all running one "
+         "way, no corners and no edges",
          words="the deck is edged with a stanchion rail you can see the water "
                "through",
          variants=_RAILING, directional=True),
@@ -299,10 +332,28 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
                "pipework, pressure gauges, vented steam",
          variants=_PLATING, height_ft=8, directional=True),
     Skin("chitin", "chitin",
-         "close-up of ridged organic chitin shell, iridescent and veined",
+         "the glossy black-green back of a giant beetle filling the whole "
+         "frame, hard armour plating with fine parallel grooves, oily "
+         "iridescent sheen",
          words="the vessel is GROWN rather than built — ridged chitin, veined "
                "and iridescent, no straight lines anywhere",
          variants=_CHITIN, height_ft=8, directional=True),
+    # A vessel's DECK, which is most of what you see of it. The first pass gave
+    # all three styles the same scrubbed oak and changed only the trim, and the
+    # three came back indistinguishable — correctly, because they WERE the same
+    # ship with different railings. What a hull is made of has to reach the
+    # floor or it reaches nothing.
+    Skin("plated-deck", "riveted-brass",
+         "a flat expanse of riveted brass and iron deck plating, verdigris and "
+         "oil stains, filling the whole frame",
+         words="the deck is riveted metal plate, oil-stained, with grilles and "
+               "pipe runs let into it"),
+    Skin("chitin-deck", "chitin",
+         "the glossy black-green back of a giant beetle filling the whole "
+         "frame, hard armour plating with fine parallel grooves, oily "
+         "iridescent sheen",
+         words="the deck is the creature's own back — ridged chitin underfoot, "
+               "warm and faintly translucent"),
     # The rail versions. Same substance, same silhouette as any other rail, and
     # emphatically the same THREE FEET — a ship's rail is half cover, and what
     # it is made of has no vote on how tall it is.
@@ -312,7 +363,9 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
                "through",
          variants=_RAILING, directional=True),
     Skin("chitin-rail", "chitin",
-         "close-up of ridged organic chitin shell, iridescent and veined",
+         "the glossy black-green back of a giant beetle filling the whole "
+         "frame, hard armour plating with fine parallel grooves, oily "
+         "iridescent sheen",
          words="the deck is edged with a grown chitin lip, ribbed and low",
          variants=_RAILING, directional=True),
 )}
@@ -338,12 +391,15 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
     "camp":          {"#": "palisade"},
     "ship":          {"b": "deck", "w": "railing", "O": "mast", "#": "hull"},
     "skyship":       {"b": "deck", "w": "railing", "O": "mast", "#": "hull"},
-    "ruins":         {"O": "drowned-column", "#": "masonry", "w": "masonry"},
-    "crypt":         {"#": "masonry"},
-    "dungeon-room":  {"#": "masonry"},
-    "dungeon-complex": {"#": "masonry"},
-    "arena":         {"#": "masonry"},
+    "ruins":         {"O": "drowned-column"},
     "sky-islands":   {"R": "cliff"},
+    # NB: no entry for dungeon-room, crypt, dungeon-complex or arena. They had
+    # one — `masonry`, dressed grey building stone — and it bought nothing: it
+    # is precisely what the model paints for a dungeon wall unprompted. A skin
+    # earns its place by saying something the model would NOT guess, and a
+    # decorative one is not free, because a board carrying skins is a board the
+    # renderer has to reason about differently. `masonry` survives for the
+    # watchtower, where it is doing real work against a camp full of canvas.
 }
 
 #: A skyship is the one board with a genuine style CHOICE rather than a
@@ -352,9 +408,10 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
 #: a table's ship stays the ship it was.
 SKYSHIP_STYLES: dict[str, dict[str, str]] = {
     "timber":    {},
-    "steampunk": {"#": "plating", "w": "plating-rail", "b": "deck",
+    "steampunk": {"#": "plating", "w": "plating-rail", "b": "plated-deck",
                   "O": "mast"},
-    "organic":   {"#": "chitin", "w": "chitin-rail", "b": "deck", "O": "mast"},
+    "organic":   {"#": "chitin", "w": "chitin-rail", "b": "chitin-deck",
+                  "O": "mast"},
 }
 
 
@@ -427,6 +484,11 @@ def height_of(name: str) -> float:
 def is_directional(name: str) -> bool:
     sk = SKINS.get(name or "")
     return bool(sk and sk.directional)
+
+
+def is_smooth(name: str) -> bool:
+    sk = SKINS.get(name or "")
+    return bool(sk and sk.smooth)
 
 
 def substances() -> dict[str, str]:

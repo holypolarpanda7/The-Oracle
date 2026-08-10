@@ -28,6 +28,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from .skins import SKYSHIP_STYLES
 from .terrain import APERTURES, FLOOR, VOID, WALL, Grid, aperture_axis
 
 Square = tuple[int, int]
@@ -226,6 +227,35 @@ def _scatter(grid: Grid, rng: random.Random, code: str, chance: float, *,
         if keep_passable and not grid.passable(x, y, mode=mode) and len(
                 _regions(grid, mode)) > 1:
             grid.set(x, y, prev)
+
+
+def _island(grid: Grid, rng: random.Random, cx: int, cy: int, radius: float,
+            code: str) -> int:
+    """A SOLID irregular patch. Returns how many squares it laid.
+
+    ``_blob`` throws random points at a neighbourhood, which is right for
+    scattering weed or rubble and wrong for ground: scaled up to island size it
+    leaves a lace of single-square holes, and on a sky board every one of those
+    holes is a lethal drop somebody has to path around. An island is a shape
+    with a wobbly edge, so it is drawn as one — a radius modulated by a couple
+    of harmonics, filled solid inside.
+    """
+    import math as _m
+
+    p1, p2 = rng.random() * _m.tau, rng.random() * _m.tau
+    laid = 0
+    for x, y in grid.squares():
+        dx, dy = x - cx, y - cy
+        d = _m.hypot(dx, dy)
+        if d > radius * 1.4:
+            continue
+        a = _m.atan2(dy, dx)
+        rr = radius * (1.0 + 0.24 * _m.sin(a * 3 + p1)
+                       + 0.13 * _m.sin(a * 5 + p2))
+        if d <= rr:
+            grid.set(x, y, code)
+            laid += 1
+    return laid
 
 
 def _blob(grid: Grid, rng: random.Random, cx: int, cy: int, size: int,
@@ -553,15 +583,23 @@ def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # worse than a bank with none.
     ground = (",", "g")
     for bank_far, anchor in ((True, gap_top), (False, gap_bot)):
-        for dx in (2, -6, 3, -7, 4):
-            size = 5
-            x0 = span_x + dx
-            y0 = anchor - size - 1 if bank_far else anchor + 2
-            b = structures.watchtower(g, rng, out, x0, y0, on=ground,
-                                      base_ft=15, name="tower top")
-            if b.interior:
-                out.skins.update(b.skins)
-                out.doors.extend(b.doors)
+        placed = False
+        for size in (5, 4):
+            # A bank is only as deep as the generator left it, so the tower is
+            # pushed hard against the outside edge and the SIZE is what gives
+            # way — never the placement, which would put it out over the gorge.
+            y0 = max(0, anchor - size - 1) if bank_far else min(
+                g.height - size, anchor + 2)
+            for dx in (2, -size - 1, 3, -size - 2, 4, -size):
+                b = structures.watchtower(g, rng, out, span_x + dx, y0,
+                                          on=ground, base_ft=15,
+                                          name="tower top")
+                if b.interior:
+                    out.skins.update(b.skins)
+                    out.doors.extend(b.doors)
+                    placed = True
+                    break
+            if placed:
                 break
 
     _scatter(g, rng, "R", 0.04, only_on=ground)
@@ -885,13 +923,20 @@ def _gen_reef(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
             for y in range(ry, ry + rh + 1):
                 if not g.in_bounds(x, y) or g.get(x, y) not in ("~", "s"):
                     continue
-                edge = x in (rx, rx + rw) or y in (ry, ry + rh)
-                corner = x in (rx, rx + rw) and y in (ry, ry + rh)
-                if corner or (edge and (x + y) % 3 == 0 and rng.random() < 0.7):
+                on_x = x in (rx, rx + rw)
+                on_y = y in (ry, ry + rh)
+                if not (on_x or on_y):
+                    continue
+                # A colonnade on a REGULAR pitch, because what makes a ruin
+                # read as architecture is that it was once regular — scattered
+                # at random it is indistinguishable from the coral heads
+                # already on the board.
+                pitched = ((y - ry) % 2 == 0) if on_x else ((x - rx) % 2 == 0)
+                if pitched:
                     g.set(x, y, "O")            # a column, snapped off
                     out.skins[f"{x},{y}"] = "drowned-column"
-                elif edge and rng.random() < 0.35:
-                    g.set(x, y, "w")            # a wall worn down to a stub
+                elif rng.random() < 0.55:
+                    g.set(x, y, "w")            # the wall worn down to a stub
                     out.skins[f"{x},{y}"] = "drowned-wall"
     _scatter(g, rng, "O", 0.015, only_on=("~",), mode="swim")
     out.mode = "swim"
@@ -924,11 +969,25 @@ def _gen_sky(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     """Aloft: floating stone islands in open air. Only a flier (or a very good
     jumper) crosses between them; the islands themselves are solid ground."""
     g.fill_rect(0, 0, g.width - 1, g.height - 1, "^")
-    islands = rng.randint(3, 6)
+    islands = rng.randint(3, 5)
+    centres: list[tuple[int, int]] = []
     for i in range(islands):
-        cx = rng.randrange(2, max(3, g.width - 2))
-        cy = rng.randrange(2, max(3, g.height - 2))
-        _blob(g, rng, cx, cy, rng.randint(8, 24), "g")
+        # Kept APART. Random centres cluster, and three islands that overlap
+        # are one continent with a ragged edge — which is a normal board with
+        # a lot of wasted margin, not a fight in open air. The whole point of
+        # the archetype is the gap between them.
+        cx = cy = 0
+        for _try in range(40):
+            cx = rng.randrange(2, max(3, g.width - 2))
+            cy = rng.randrange(2, max(3, g.height - 2))
+            if all(math.hypot(cx - ox, cy - oy) >= 9 for ox, oy in centres):
+                break
+        centres.append((cx, cy))
+        # Big enough to FIGHT on, and SOLID. The old sizes drew a scatter of
+        # two- and three-square specks, which is a board where nobody can stand
+        # next to anybody — and drawn at that size they read as pixels on a map
+        # rather than as stones hanging in the air.
+        _island(g, rng, cx, cy, rng.uniform(2.6, 4.6), "g")
         if rng.random() < 0.5:
             g.set(cx, cy, "R")                              # a spire of rock
         # Islands hang at different heights — the fight has a third axis.
@@ -955,7 +1014,10 @@ def _gen_skyship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     records it. Everything downstream (materials, silhouettes, what the painter
     is told) follows from that one word.
     """
-    out.style = rng.choice(("timber", "timber", "steampunk", "organic"))
+    # A style asked for wins; otherwise the seed decides, so a table's ship
+    # stays the ship it was.
+    if out.style not in SKYSHIP_STYLES:
+        out.style = rng.choice(("timber", "timber", "steampunk", "organic"))
     stern = _hull(g, rng, "^")
     _rail(g, rng, "^")
     _rig_ship(g, rng, out, stern,
@@ -1113,16 +1175,24 @@ def archetype_for_place(*, hint: Optional[str] = None, biome: Optional[str] = No
 
 def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
                  seed: Optional[int] = None,
-                 lighting: Optional[str] = None) -> GeneratedMap:
-    """Build a board. The same ``(archetype, width, height, seed)`` always
-    produces the identical grid — so a map can be regenerated from its row."""
+                 lighting: Optional[str] = None,
+                 style: str = "") -> GeneratedMap:
+    """Build a board. The same ``(archetype, width, height, seed, style)``
+    always produces the identical grid — so a map can be regenerated from its
+    row.
+
+    ``style`` asks for a particular flavour where the archetype offers a real
+    choice rather than a material fact (today: a skyship is timber, steampunk
+    or grown). Left empty the generator picks from the seed, which is what
+    every caller written before styles existed does.
+    """
     archetype = archetype if archetype in ARCHETYPES else archetype_for(archetype)
     width = max(8, min(60, int(width)))
     height = max(8, min(60, int(height)))
     seed = random.randint(1, 2**31 - 1) if seed is None else int(seed)
     rng = _rng(seed)
     grid = Grid.blank(width, height)
-    out = GeneratedMap(grid=grid, archetype=archetype, seed=seed)
+    out = GeneratedMap(grid=grid, archetype=archetype, seed=seed, style=style)
     ARCHETYPES[archetype](grid, rng, out)
 
     # Every board must be one connected space and have room to stand — judged in

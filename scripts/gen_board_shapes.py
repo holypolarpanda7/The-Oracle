@@ -149,6 +149,9 @@ def render() -> str:
         "  readonly heightFt: number;\n"
         "  /** Line up along the run instead of taking a quarter-turn. */\n"
         "  readonly directional: boolean;\n"
+        "  /** Pick the arrangement from a COARSE hash, so neighbours agree.\n"
+        "   *  For a MASS (rock, coral) rather than a set of objects. */\n"
+        "  readonly smooth: boolean;\n"
         "  readonly variants: readonly (readonly (readonly [\n"
         "    number, number, number, number, number, number])[])[] | null;\n"
         "}\n"
@@ -166,7 +169,8 @@ def render() -> str:
         lines.append(
             f'  {_skin_key(name)}: {{ substance: "{sk.substance}", '
             f"heightFt: {_num(sk.height_ft)}, "
-            f"directional: {'true' if sk.directional else 'false'},\n"
+            f"directional: {'true' if sk.directional else 'false'}, "
+            f"smooth: {'true' if sk.smooth else 'false'},\n"
             f"    variants: {variants} }},")
     lines.append("};\n")
     return "\n".join(lines)

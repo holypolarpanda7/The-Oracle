@@ -35,27 +35,39 @@ sys.path.insert(0, str(ROOT))
 
 OUT = ROOT / "material-probe" / "iso-gallery"
 
-#: (archetype, biome, lighting, what the room is)
-SCENES: list[tuple[str, str, str, str]] = [
-    ("dungeon-room", "damp underdark", "dim", "a ruined mill cellar"),
-    ("dungeon-complex", "old crypt stone", "dark", "a warren of burial vaults"),
-    ("cave", "wet limestone cavern", "dark", "a dripping cave mouth"),
-    ("crypt", "ancient catacomb", "dark", "a tomb of forgotten kings"),
-    ("sewer", "brick undercity", "dim", "a flooded sewer junction"),
-    ("forest", "old pine woodland", "bright", "a clearing among great pines"),
-    ("swamp", "brackish wetland", "dim", "a sunken boardwalk over black water"),
-    ("ruins", "overgrown ruins", "bright", "a toppled temple courtyard"),
-    ("street", "cobbled town", "bright", "a narrow street between tall stone houses"),
-    ("tavern", "timber interior", "dim", "the taproom of a country inn"),
-    ("camp", "open woodland", "dim", "a bandit camp among the trees"),
-    ("bridge", "river crossing", "bright", "a stone bridge over a gorge"),
-    ("mountain-pass", "frozen scree", "bright", "a snowbound pass"),
-    ("arena", "sand and stone", "bright", "a fighting pit"),
-    ("ship", "weathered deck timber", "bright", "the deck of a caravel"),
-    ("reef", "shallow coral water", "bright", "a coral shelf under clear water"),
-    ("sky-islands", "open sky", "bright", "floating stones in open air"),
-    ("skyship", "airship deck", "bright", "the deck of a flying vessel"),
+#: (archetype, biome, lighting, what the room is, style)
+#:
+#: ``style`` is only meaningful where the archetype offers a real choice — a
+#: skyship is timber, brass-and-steam or grown, and all three deserve looking at
+#: because they are three different vessels rather than three tints of one.
+SCENES: list[tuple[str, str, str, str, str]] = [
+    ("dungeon-room", "damp underdark", "dim", "a ruined mill cellar", ""),
+    ("dungeon-complex", "old crypt stone", "dark", "a warren of burial vaults", ""),
+    ("cave", "wet limestone cavern", "dark", "a dripping cave mouth", ""),
+    ("crypt", "ancient catacomb", "dark", "a tomb of forgotten kings", ""),
+    ("sewer", "brick undercity", "dim", "a flooded sewer junction", ""),
+    ("forest", "old pine woodland", "bright", "a clearing among great pines", ""),
+    ("swamp", "brackish wetland", "dim", "a sunken boardwalk over black water", ""),
+    ("ruins", "overgrown ruins", "bright", "a toppled temple courtyard", ""),
+    ("street", "cobbled town", "bright", "a narrow street between tall stone houses", ""),
+    ("tavern", "timber interior", "dim", "the taproom of a country inn", ""),
+    ("camp", "open woodland", "dim", "a bandit camp among the trees", ""),
+    ("bridge", "river crossing", "bright", "a stone bridge over a gorge", ""),
+    ("mountain-pass", "frozen scree", "bright", "a snowbound pass", ""),
+    ("arena", "sand and stone", "bright", "a fighting pit", ""),
+    ("ship", "weathered deck timber", "bright", "the deck of a caravel", ""),
+    ("reef", "shallow coral water", "bright", "a coral shelf under clear water", ""),
+    ("sky-islands", "open sky", "bright", "floating stones in open air", ""),
+    ("skyship", "airship deck", "bright", "the deck of a flying vessel",
+     "timber"),
+    ("skyship-steampunk", "airship deck", "bright",
+     "the deck of a brass-and-steam flying vessel", "steampunk"),
+    ("skyship-organic", "airship deck", "bright",
+     "the deck of a grown, living flying vessel", "organic"),
 ]
+
+#: Gallery names that are a STYLE of another archetype, not one of their own.
+STYLE_OF = {"skyship-steampunk": "skyship", "skyship-organic": "skyship"}
 
 
 def main(argv=None) -> int:
@@ -101,9 +113,11 @@ def main(argv=None) -> int:
 
     t0 = time.time()
     ok = skipped = 0
-    for i, (arch, biome, light, name) in enumerate(scenes, 1):
-        print(f"[{i}/{len(scenes)}] {arch:16} {name} ...", end="", flush=True)
-        gen = generate_map(arch, width=width, height=height, seed=a.seed)
+    for i, (label, biome, light, name, style) in enumerate(scenes, 1):
+        arch = STYLE_OF.get(label, label)
+        print(f"[{i}/{len(scenes)}] {label:20} {name} ...", end="", flush=True)
+        gen = generate_map(arch, width=width, height=height, seed=a.seed,
+                           style=style)
         if not worth_painting(gen.grid):
             # Not a failure: an open board keeps its geometry on purpose.
             print(" skipped (too flat to condition — geometry only)")
@@ -115,9 +129,9 @@ def main(argv=None) -> int:
         if not art.image_id:
             print(" FAILED")
             continue
-        (OUT / f"{arch}.png").write_bytes(store.get_image_bytes(art.image_id))
+        (OUT / f"{label}.png").write_bytes(store.get_image_bytes(art.image_id))
         if a.depth:
-            (OUT / f"{arch}-depth.png").write_bytes(isocam.depth_image(
+            (OUT / f"{label}-depth.png").write_bytes(isocam.depth_image(
                 gen.grid.rows, height_ft=tile_height_ft, square_ft=5,
                 structure=STRUCTURE_CODES))
         ok += 1

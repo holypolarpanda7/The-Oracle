@@ -31,7 +31,7 @@ import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
   CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS, SKIRT_FT,
-  STRUCTURE_CODES, materialSlot, runAxis, skinAt,
+  STRUCTURE_CODES, materialSlot, runAxis, skinAt, variantSmooth,
   heightScale,
   rotatePart,
   tileHeightFt,
@@ -600,7 +600,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             // buried rock is not drawn.
             if (!STRUCTURE_CODES.has(code) || wallParts(isOpen, x, z).length) {
               const vs = shape.variants;
-              const parts = vs[variantOf(x, z, vs.length)];
+              const pick = shape.smooth ? variantSmooth : variantOf;
+              const parts = vs[pick(x, z, vs.length)];
               const turns = shape.directional
                 ? runAxis((ax, az) => skinOf(ax, az) === skin, x, z)
                 : yawOf(x, z);

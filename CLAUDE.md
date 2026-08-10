@@ -236,7 +236,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (linked creatures: initiative dice, sight through cover, blink, rescue),
   `targeting` (what a spell targets out of OCR-damaged prose; who the board
   says may be hit and why not the rest; a template clipped by line of effect;
-  the action bar reaching the engine as an intent, and refusing when it can't)
+  the action bar reaching the engine as an intent, and refusing when it can't),
+  `skins` (what a square is MADE of versus what it DOES: a skin changes no
+  rule, may reshape a quoted height but never restate it, a tent you can walk
+  into, a watchtower top that is a real storey, a hold at -8 ft)
 - Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
   (a god born in play becomes choosable in CC; an unmade one stops being offered)
 - Activity UI harnesses (Playwright, against the offline demo — run
@@ -392,6 +395,56 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   sight reads it off the board, and against a stronger enemy that decision is
   most of the fight; a crate drawn shorter than its neighbour invents a
   difference the engine will not honour, exactly where being misled is expensive.
+- **A tile code says what a square DOES; a SKIN says what it is MADE OF.**
+  `vtt/skins.py` is the same split `placelore.py` makes between the land a
+  place stands in and the surface it presents, one level down. Before it a
+  `#` was the same dressed masonry in a sewer, on a mountainside and around a
+  tent, so the pass read as a built corridor and the reef's columns stood
+  pristine and carved on the seabed. More tile CODES is the wrong fix and the
+  project already rules it out — a cliff and a wall are not different rules,
+  they are different stuff. A skin carries a substance (one swatch shared by
+  every coral thing everywhere), a silhouette, and what to tell the painter.
+  It is invisible to every rule, and that is what makes the vocabulary safe to
+  grow. Derived from the ARCHETYPE where it is uniform, recorded per square
+  (`GeneratedMap.skins`, sparse, like elevation) where a generator built an
+  exception. **A skin's silhouette wins over everything including the
+  wall-face model** — that model exists to stop an enclosed ROOM reading as a
+  tray, which is the wrong worry for a mountainside. **It may reshape a height
+  the rules quote but never restate one**: `_check_heights` refuses at import,
+  and caught three on the first run (a ship's rail is three feet whether it is
+  timber, brass or grown chitin). A skin that only says what the model would
+  paint anyway is not free — `masonry` on the dungeon boards bought nothing
+  and was removed.
+- **A MASS picks its shape from a coarse hash; an OBJECT picks per square.**
+  `variant_smooth` samples over two-square blocks. Only the rock squares
+  bordering open floor are drawn, so a one-square shell whose every square
+  chose its own height independently has nothing left to connect it — the
+  first mountain pass came back as a field of white dice. Rock also wants
+  FULL-square footprints: inset even slightly, each square is its own block
+  with a gap round it.
+- **Things you get INSIDE are compositions of tiles that already existed.**
+  `vtt/structures.py`. A camp's tents were 2x2 blocks of impassable furniture,
+  so a creature could only ever be beside one and a token on the next square
+  read as a soldier standing on the canvas. A tent is a walkable floor, a wall
+  ring and a flap; a watchtower is that plus a real storey and a ladder, so an
+  archer on top is fifteen feet up for every distance, cover and area check.
+  Nothing new was needed — `add_level`/`add_stairs` already existed, and a
+  hold is the same machinery at `base_ft: -8` (a level's height is an OFFSET,
+  which is why the DM board signs it). **Scale is a rules question**: nothing
+  is built with an interior under 10 ft, because a 5-ft interior holds one
+  creature and is a box with a hole in it. Shelters demand clear ground around
+  them — two built back to back seal a pocket, and the connectivity net then
+  carves a corridor through somebody's tent to reach it.
+- **A depth ControlNet cannot convey a MATERIAL, and no denoise fixes that.**
+  A skyship's three styles produce three genuinely different terrain images —
+  brown oak, teal brass, green chitin, measured — and all three come back as
+  one wooden deck, because the depth map plainly shows a ship and the model's
+  prior for that silhouette wins. Both obvious levers were tried and recorded
+  in `iso_denoise_for`: giving every skinned board its terrain image (six
+  boards lost their painted detail to help one) and dropping the denoise to
+  0.60 (everything became flat tinted geometry, exactly as `ISO_DENOISE_FLAT`
+  warns). Getting material through needs a SECOND conditioning channel — a
+  colour or segmentation ControlNet beside the depth one.
 - **`vtt/decor.py` is scenery: in the room, not in the rules.** Bones, a rug, a
   brazier — drawn by the geometry and by the depth map, invisible to movement,
   cover and sight. It exists because the visual vocabulary was capped by the
