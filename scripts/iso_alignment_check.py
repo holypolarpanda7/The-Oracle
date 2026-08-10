@@ -1,0 +1,174 @@
+"""Assert the isometric camera means the same thing in Python and TypeScript.
+
+``vtt/isocam.py`` rasterizes the depth map the painted board layer is
+conditioned on; ``activity-ui/src/lib/isocam.ts`` draws the geometry the player
+actually sees. They are two implementations of one camera, and if they drift by
+a degree the painting stops sitting on the walls — every shadow lands beside
+the thing casting it, and nothing in either program is individually wrong.
+
+So this is the gate. It runs the SAME points through both and compares:
+
+    uv run python scripts/iso_alignment_check.py
+
+Runs node through npx, as the other harnesses do — plain `node` is not on the
+WSL PATH here.
+Add ``--depth`` to also write a depth map and its wireframe to ``material-probe/``
+so the rasterizer can be looked at, which the numbers cannot tell you.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+
+from pathlib import Path
+
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+#: Points chosen to exercise every axis independently, plus a few that would
+#: still agree under a sign error if you only tested the origin and a diagonal.
+SAMPLES = [
+    (0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1),
+    (5, 0, 3), (3, 0, 5), (12.5, 2.25, 7.75), (-2, 1, 4), (30, 0, 24),
+]
+
+#: (screen x, screen y, plane height) for the inverse.
+UNPROJECTS = [(0, 0, 0), (3.5, -1.25, 0), (-7, 2, 2), (11.1, 6.6, 0.5)]
+
+#: (board w, board h, tallest) for the canonical framing.
+BOUNDS = [(20, 14, 2.0), (30, 24, 2.0), (8, 8, 0.0), (60, 40, 3.0)]
+
+_TS = r"""
+import { project, unproject, boundsOf, YAW_DEG, PITCH_DEG } from "./isocam.js";
+const samples = %s, unprojects = %s, bounds = %s;
+console.log(JSON.stringify({
+  yaw: YAW_DEG, pitch: PITCH_DEG,
+  project: samples.map(([x, y, z]) => { const p = project(x, y, z); return [p.x, p.y, p.depth]; }),
+  unproject: unprojects.map(([sx, sy, wy]) => unproject(sx, sy, wy)),
+  bounds: bounds.map(([w, h, t]) => { const b = boundsOf(w, h, t); return [b.minX, b.maxX, b.minY, b.maxY]; }),
+}));
+"""
+
+
+def _run_ts() -> dict:
+    """Run the TS camera through node and hand back what it computed.
+
+    `tsc` is already a dependency, so the honest route is to compile the one
+    module and import it. Everything stays RELATIVE to activity-ui and inside
+    it: node and tsc here are Windows processes, and a WSL path like /tmp/xyz
+    means nothing to them — that is the same namespace split CLAUDE.md warns
+    about for ComfyUI, in a quieter disguise.
+    """
+    import shutil
+
+    ui = ROOT / "activity-ui"
+    work = ui / ".isocam-check"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    try:
+        r = subprocess.run(
+            ["npx", "tsc", "src/lib/isocam.ts", "--outDir", ".isocam-check",
+             "--module", "es2022", "--target", "es2022", "--skipLibCheck"],
+            cwd=ui, capture_output=True, text=True, shell=(sys.platform == "win32"))
+        if r.returncode != 0:
+            raise RuntimeError(f"tsc failed:\n{r.stdout}\n{r.stderr}")
+        (work / "probe.mjs").write_text(
+            _TS % (json.dumps(SAMPLES), json.dumps(UNPROJECTS), json.dumps(BOUNDS)),
+            encoding="utf8")
+        r = subprocess.run(["npx", "node", ".isocam-check/probe.mjs"], cwd=ui,
+                           capture_output=True, text=True,
+                           shell=(sys.platform == "win32"))
+        if r.returncode != 0:
+            raise RuntimeError(f"node failed:\n{r.stdout}\n{r.stderr}")
+        return json.loads(r.stdout.strip().splitlines()[-1])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--depth", action="store_true",
+                    help="also write a sample depth map to material-probe/")
+    ap.add_argument("--tol", type=float, default=1e-9)
+    a = ap.parse_args(argv)
+
+    from vtt import isocam as py
+
+    print("running the TypeScript camera through node ...")
+    ts = _run_ts()
+
+    bad = 0
+
+    def check(label: str, got, want, tol: float) -> None:
+        nonlocal bad
+        ok = abs(got - want) <= tol
+        if not ok:
+            bad += 1
+        print(f"  {'OK ' if ok else 'DRIFT'} {label:<34} py={got!r:<24} ts={want!r}")
+
+    print("\nconstants")
+    check("yaw", py.YAW_DEG, ts["yaw"], 0)
+    check("pitch", py.PITCH_DEG, ts["pitch"], 0)
+
+    print("\nproject(world) -> screen + depth")
+    for (x, y, z), t in zip(SAMPLES, ts["project"]):
+        p = py.project(x, y, z)
+        check(f"({x},{y},{z}).x", p.x, t[0], a.tol)
+        check(f"({x},{y},{z}).y", p.y, t[1], a.tol)
+        check(f"({x},{y},{z}).depth", p.depth, t[2], a.tol)
+
+    print("\nunproject(screen, plane) -> world")
+    for (sx, sy, wy), t in zip(UNPROJECTS, ts["unproject"]):
+        wx, wz = py.unproject(sx, sy, wy)
+        check(f"({sx},{sy}|{wy}).x", wx, t[0], a.tol)
+        check(f"({sx},{sy}|{wy}).z", wz, t[1], a.tol)
+
+    print("\nbounds_of(board) -> canonical framing")
+    for (w, h, tall), t in zip(BOUNDS, ts["bounds"]):
+        b = py.bounds_of(w, h, tall)
+        for name, got, want in (("minX", b.min_x, t[0]), ("maxX", b.max_x, t[1]),
+                                ("minY", b.min_y, t[2]), ("maxY", b.max_y, t[3])):
+            check(f"{w}x{h}+{tall} {name}", got, want, a.tol)
+
+    # Round-trip: projecting a point on the ground and unprojecting it must
+    # return the same square. Catches a self-consistent but wrong pair.
+    print("\nround trip (project -> unproject, ground plane)")
+    for x, _y, z in SAMPLES:
+        p = py.project(x, 0, z)
+        wx, wz = py.unproject(p.x, p.y, 0)
+        check(f"({x},{z}) x", wx, float(x), 1e-9)
+        check(f"({x},{z}) z", wz, float(z), 1e-9)
+
+    if a.depth:
+        from vtt.mapgen import generate_map
+        from vtt.terrain import tile_height_ft
+
+        out = ROOT / "material-probe"
+        out.mkdir(exist_ok=True)
+        gen = generate_map("dungeon-room", width=24, height=18, seed=7)
+        png = py.depth_image(gen.grid.rows, height_ft=tile_height_ft,
+                             square_ft=5, structure={"#", "R"})
+        (out / "iso-depth.png").write_bytes(png)
+        print(f"\nwrote {(out / 'iso-depth.png').relative_to(ROOT)} "
+              f"({len(png) // 1024} kB) — near is white")
+
+    print()
+    if bad:
+        print(f"{bad} value(s) DRIFTED — the painting will not line up. "
+              "vtt/isocam.py and activity-ui/src/lib/isocam.ts must agree.")
+        return 1
+    print("the two cameras agree exactly.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

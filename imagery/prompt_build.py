@@ -38,6 +38,20 @@ _KIND_FRAMING = {
         "flat lay, no perspective, no horizon, tabletop RPG battle map, "
         "even diffuse lighting, full-bleed edge to edge"
     ),
+    # The painted isometric board. Everything about its geometry — where the
+    # walls are, how tall, what stands where — arrives through the depth
+    # ControlNet, so the words are only here for MATERIAL and MOOD. Saying
+    # anything about layout would invite the model to argue with the depth map.
+    #
+    # The one instruction that matters: no figures. Creatures are DOM tokens
+    # drawn over this, and a painted adventurer is a second, wrong party
+    # standing in the room forever.
+    ImageKind.ISOBOARD: (
+        "isometric tabletop diorama of this room, hand-painted, viewed from a "
+        "fixed high angle, consistent even lighting, rich material detail, "
+        "no people, no creatures, no figures, no text, no labels, no border, "
+        "no user interface, nothing overlaid"
+    ),
     # A material is a SAMPLE, not a picture. The two ways it goes wrong are a
     # picture of a thing and a picture of a place, and both come from the model
     # reading "stone floor" as a scene brief — so the framing insists on flat,

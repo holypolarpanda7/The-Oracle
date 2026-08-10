@@ -387,6 +387,20 @@ class ImageryConfig:
     # decorate. Drop the model file in ComfyUI/models/controlnet/.
     map_controlnet: str = ""
     map_controlnet_strength: float = 0.8
+    # The ISOMETRIC board's painted layer is conditioned on a DEPTH map of the
+    # geometry the player is already looking at (vtt/isocam.py), which needs a
+    # depth model — a different file and a different job from the scribble
+    # above, so it gets its own key rather than sharing one. Pointing the map
+    # kind at a depth model would wreck the top-down battlemaps, which want the
+    # floorplan scribble.
+    #
+    # Empty = no painted layer at all, and the board stays clean geometry over
+    # catalogue materials, which is playable and offline-safe by design.
+    # Strength is lower than the scribble's on purpose: depth conditioning is
+    # very strong, and at 0.8 it flattens the model's own material invention
+    # into a plain grey massing model.
+    isoboard_controlnet: str = ""
+    isoboard_controlnet_strength: float = 0.55
     # RescaleCFG (0..1) lets you raise `cfg_scale` without the blown-out colour
     # high CFG normally causes. MEASURED WORSE for this pipeline: on the
     # goliath probe, cfg 10 + rescale 0.7 pushed the render further toward a

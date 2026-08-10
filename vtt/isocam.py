@@ -1,0 +1,266 @@
+"""The isometric camera, server side — and the depth map it rasterizes.
+
+**This file is the mirror of ``activity-ui/src/lib/isocam.ts``. Change one and
+you must change the other.**
+
+Why a camera lives on the server at all: the isometric board is drawn from
+geometry in the browser, and the painted layer over it is produced here, by
+conditioning a diffusion model on a DEPTH MAP of that same geometry. Two
+programs in two languages therefore project the same room, and if their cameras
+disagree by a degree the painting no longer sits on the walls — every shadow
+lands beside the thing casting it. So the camera is a handful of constants and
+a page of arithmetic, kept short enough to verify by eye, and
+``scripts/iso_alignment_check.py`` asserts the two agree numerically.
+
+It can be this short because the camera is ORTHOGRAPHIC and never rotates: the
+projection is a plain affine map, so it inverts in closed form, and pan and zoom
+are a translate-and-scale of the projected image. That last part is what lets a
+painting baked at one framing stay aligned at every framing the player chooses.
+
+World units are SQUARES: grid ``(x, y)`` is world ``(x, ·, y)``, X east and Z
+south, Y up. Feet convert through the board's own ``square_ft``.
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Optional, Sequence
+
+#: Rotation about the vertical axis. 45° puts the board corner-on, so both wall
+#: faces of a corner are visible and neither runs parallel to the screen edge.
+YAW_DEG = 45.0
+
+#: How far the camera tilts down. Higher shows more floor (positions are easier
+#: to read); lower shows more of the walls' faces. 40° favours the floor,
+#: because this is a board you have to be able to count squares on.
+PITCH_DEG = 40.0
+
+_YAW = math.radians(YAW_DEG)
+_PITCH = math.radians(PITCH_DEG)
+_SIN_Y, _COS_Y = math.sin(_YAW), math.cos(_YAW)
+_SIN_P, _COS_P = math.sin(_PITCH), math.cos(_PITCH)
+
+#: Camera basis, world-space. Pitch down about X, then yaw about Y — the order
+#: that keeps the horizon level (no roll).
+RIGHT = (_COS_Y, 0.0, -_SIN_Y)
+UP = (-_SIN_Y * _SIN_P, _COS_P, -_COS_Y * _SIN_P)
+FORWARD = (-_SIN_Y * _COS_P, -_SIN_P, -_COS_Y * _COS_P)
+
+
+@dataclass(frozen=True)
+class Projected:
+    x: float
+    y: float      # grows DOWNWARD, to match screen convention
+    depth: float  # grows with distance from the camera; a sort key, not a length
+
+
+def project(wx: float, wy: float, wz: float) -> Projected:
+    """Project a world point. Mirrors ``isocam.ts``'s ``project``."""
+    return Projected(
+        x=wx * _COS_Y - wz * _SIN_Y,
+        y=-(wx * UP[0] + wy * UP[1] + wz * UP[2]),
+        depth=wx * FORWARD[0] + wy * FORWARD[1] + wz * FORWARD[2],
+    )
+
+
+def unproject(sx: float, sy: float, wy: float) -> tuple[float, float]:
+    """Invert :func:`project` onto a horizontal plane at height ``wy``.
+
+    Two equations, two unknowns, by Cramer's rule — whose determinant is
+    ``sin(pitch)``. That is why a pitch of 0 is forbidden: looking along the
+    ground, every square on a line projects to one pixel.
+    """
+    rhs = sy + wy * _COS_P
+    det = _SIN_P
+    wx = (sx * _COS_Y * _SIN_P + _SIN_Y * rhs) / det
+    wz = (_COS_Y * rhs - _SIN_Y * _SIN_P * sx) / det
+    return wx, wz
+
+
+@dataclass(frozen=True)
+class Bounds:
+    min_x: float
+    max_x: float
+    min_y: float
+    max_y: float
+
+    @property
+    def width(self) -> float:
+        return self.max_x - self.min_x
+
+    @property
+    def height(self) -> float:
+        return self.max_y - self.min_y
+
+
+def bounds_of(w: int, h: int, tallest: float, base_y: float = 0.0) -> Bounds:
+    """The projected bounding box of a ``w x h`` board whose tallest structure
+    stands ``tallest`` units above its floor.
+
+    Every extreme of an axis-aligned box lands on one of its eight corners under
+    an affine map, so checking the corners is exact rather than a safe guess.
+    This rectangle is the CANONICAL FRAMING: the depth map and the painting both
+    span exactly it, which is what makes the painting independent of whatever
+    viewport or zoom a player happens to have.
+    """
+    xs: list[float] = []
+    ys: list[float] = []
+    for wx in (0.0, float(w)):
+        for wz in (0.0, float(h)):
+            for wy in (base_y, base_y + tallest):
+                p = project(wx, wy, wz)
+                xs.append(p.x)
+                ys.append(p.y)
+    return Bounds(min(xs), max(xs), min(ys), max(ys))
+
+
+# ---------------------------------------------------------------------------
+# Depth rasterizer
+# ---------------------------------------------------------------------------
+#
+# What the depth ControlNet is conditioned on. Not a picture of the room — a
+# statement of how far away every part of it is, which is the one thing a text
+# prompt can never say and the reason the painting lands on the geometry
+# instead of near it.
+#
+# Convention: NEAR IS WHITE. That is what MiDaS-style depth looks like and what
+# the SDXL depth ControlNets were trained on; handing one an inverted map gets a
+# room turned inside out.
+
+
+def _tri(buf, pts, zs) -> None:
+    """Rasterize one triangle into a float depth buffer, keeping the nearest.
+
+    Depth is interpolated with barycentric weights, which is EXACT here rather
+    than an approximation: the projection is affine and every face is planar, so
+    depth really is linear in screen space. A flat fill per tile would band a
+    floor into one step per square.
+    """
+    import numpy as np
+
+    h, w = buf.shape
+    (x0, y0), (x1, y1), (x2, y2) = pts
+    min_x = max(0, int(math.floor(min(x0, x1, x2))))
+    max_x = min(w - 1, int(math.ceil(max(x0, x1, x2))))
+    min_y = max(0, int(math.floor(min(y0, y1, y2))))
+    max_y = min(h - 1, int(math.ceil(max(y0, y1, y2))))
+    if min_x > max_x or min_y > max_y:
+        return
+    denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
+    if abs(denom) < 1e-9:
+        return
+
+    ys, xs = np.mgrid[min_y:max_y + 1, min_x:max_x + 1]
+    px = xs + 0.5
+    py = ys + 0.5
+    a = ((y1 - y2) * (px - x2) + (x2 - x1) * (py - y2)) / denom
+    b = ((y2 - y0) * (px - x2) + (x0 - x2) * (py - y2)) / denom
+    c = 1.0 - a - b
+    inside = (a >= -1e-6) & (b >= -1e-6) & (c >= -1e-6)
+    if not inside.any():
+        return
+    z = a * zs[0] + b * zs[1] + c * zs[2]
+    view = buf[min_y:max_y + 1, min_x:max_x + 1]
+    np.copyto(view, z, where=inside & (z < view))
+
+
+def _quad(buf, pts, zs) -> None:
+    _tri(buf, (pts[0], pts[1], pts[2]), (zs[0], zs[1], zs[2]))
+    _tri(buf, (pts[0], pts[2], pts[3]), (zs[0], zs[2], zs[3]))
+
+
+def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
+                px_per_square: int = 48, pad_squares: float = 0.25,
+                structure: Optional[set[str]] = None,
+                max_px: int = 1536) -> bytes:
+    """Rasterize the board's geometry to a depth map. Returns PNG bytes.
+
+    ``height_ft`` is a callable ``code -> feet`` (``vtt.terrain.tile_height_ft``
+    in practice); ``structure`` names the codes drawn as full-square blocks. The
+    shapes here must match what ``vttScene3d.ts`` builds, or the painting is
+    conditioned on a room the player is not looking at.
+    """
+    import numpy as np
+    from PIL import Image
+
+    h_rows = len(rows)
+    w_cols = max((len(r) for r in rows), default=0)
+    if not h_rows or not w_cols:
+        return b""
+
+    units = lambda ft: ft / float(square_ft or 5)          # noqa: E731
+    tallest = units(max((height_ft(c) for r in rows for c in r), default=0))
+    b = bounds_of(w_cols, h_rows, tallest)
+
+    scale = px_per_square
+    px_w = int(round((b.width + pad_squares * 2) * scale))
+    px_h = int(round((b.height + pad_squares * 2) * scale))
+    if max(px_w, px_h) > max_px:                            # keep SDXL-sized
+        k = max_px / float(max(px_w, px_h))
+        scale *= k
+        px_w = int(round((b.width + pad_squares * 2) * scale))
+        px_h = int(round((b.height + pad_squares * 2) * scale))
+    # Multiples of 8, which is what the VAE wants.
+    px_w = max(8, (px_w // 8) * 8)
+    px_h = max(8, (px_h // 8) * 8)
+
+    ox = -(b.min_x - pad_squares) * scale
+    oy = -(b.min_y - pad_squares) * scale
+
+    def to_px(p: Projected) -> tuple[float, float]:
+        return (p.x * scale + ox, p.y * scale + oy)
+
+    buf = np.full((px_h, px_w), np.inf, dtype=np.float64)
+    struct = structure or set()
+
+    def face(corners: Sequence[tuple[float, float, float]]) -> None:
+        ps = [project(*c) for c in corners]
+        _quad(buf, [to_px(p) for p in ps], [p.depth for p in ps])
+
+    # Far to near. Under this camera the view direction is (-x, -y, -z), so a
+    # tile's distance rises with x + z; the z-buffer makes the order a
+    # formality, but it keeps the traversal cache-friendly and matches how the
+    # client stacks its own geometry.
+    for total in range(w_cols + h_rows + 1):
+        for x in range(max(0, total - h_rows + 1), min(w_cols, total + 1)):
+            z = total - x
+            if z < 0 or z >= h_rows or x >= len(rows[z]):
+                continue
+            code = rows[z][x]
+            if code == " ":
+                continue
+            ft = height_ft(code)
+            top = units(ft)
+            # Floor under everything.
+            face([(x, 0, z), (x, 0, z + 1), (x + 1, 0, z + 1), (x + 1, 0, z)])
+            if ft <= 0:
+                continue
+            if code in struct:
+                x0, x1, z0, z1 = x, x + 1, z, z + 1
+            else:
+                # Discrete things stand smaller than their square — the same
+                # silhouettes vttScene3d draws. A cube here is a cube in the
+                # painting.
+                m = 0.34 if code in ("O", "T") else 0.1
+                x0, x1, z0, z1 = x + m, x + 1 - m, z + m, z + 1 - m
+            face([(x0, top, z0), (x0, top, z1), (x1, top, z1), (x1, top, z0)])
+            for cs in (
+                [(x0, 0, z0), (x0, top, z0), (x1, top, z0), (x1, 0, z0)],
+                [(x1, 0, z1), (x1, top, z1), (x0, top, z1), (x0, 0, z1)],
+                [(x0, 0, z1), (x0, top, z1), (x0, top, z0), (x0, 0, z0)],
+                [(x1, 0, z0), (x1, top, z0), (x1, top, z1), (x1, 0, z1)],
+            ):
+                face(cs)
+
+    finite = np.isfinite(buf)
+    if not finite.any():
+        return b""
+    lo, hi = buf[finite].min(), buf[finite].max()
+    span = (hi - lo) or 1.0
+    # Near is WHITE. Anything the geometry never covered is maximally far.
+    norm = np.where(finite, 1.0 - (buf - lo) / span, 0.0)
+    img = Image.fromarray((norm * 255).astype(np.uint8), mode="L").convert("RGB")
+    from io import BytesIO
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()

@@ -418,6 +418,115 @@ def board_look(biome: str = "", archetype: str = "") -> str:
     return _ARCH_LOOK.get((archetype or "").strip().lower(), "dungeon")
 
 
+#: Bump when the CAMERA or the geometry's silhouettes change — a painting is
+#: baked to one view, and a board holding art drawn to a camera that has since
+#: moved is worse than a board with no art at all.
+ISOBOARD_REV = 1
+
+
+def isoboard_ref(grid: Grid, archetype: str, seed: int) -> str:
+    """Cache slug for the painted isometric view of this exact layout."""
+    return f"iso-v{ISOBOARD_REV}-{layout_signature(grid, archetype, seed)}"
+
+
+def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
+                     biome: Optional[str] = None, lighting: Optional[str] = None,
+                     extra: str = "", conditions: str = "",
+                     controlnet: Optional[str] = None,
+                     controlnet_strength: float = 0.55,
+                     force_new: bool = False,
+                     store_width: int = 1536) -> BattlemapArt:
+    """Paint the board as an isometric diorama, conditioned on its own depth.
+
+    The Baldur's-Gate layer. Those backgrounds were pre-rendered images with a
+    depth map shipped beside them so characters could walk behind things; this
+    is the same arrangement with a diffusion model standing in for the offline
+    renderer, and the browser's own geometry standing in for the depth map —
+    which is why `isocam` has to mean the same thing on both sides.
+
+    Never raises: with no GPU or no depth model configured the board keeps its
+    geometry, which is playable and was always the point of building that first.
+    """
+    from . import isocam
+    from .terrain import tile_height_ft
+
+    subject, look, context = build_map_prompt(
+        gen, name=name, biome=biome, lighting=lighting, extra=extra,
+        conditions=conditions)
+    ref = isoboard_ref(gen.grid, gen.archetype, gen.seed)
+
+    if store is None:
+        try:
+            from imagery import ImageStore
+            store = ImageStore()
+        except Exception as e:
+            print(f"[vtt.art] imagery unavailable: {e}")
+            return BattlemapArt(image_id=None, prompt="", caption=subject,
+                                offline=True)
+
+    if not controlnet:
+        # Without depth conditioning the model paints a plausible isometric room
+        # that is not THIS room — worse than no painting, because the board
+        # would then disagree with itself. Refuse rather than mislead.
+        return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
+
+    depth = isocam.depth_image(gen.grid.rows, height_ft=tile_height_ft,
+                               square_ft=5, structure=_STRUCTURE_FOR_DEPTH)
+    if not depth:
+        return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
+
+    # The canvas has to be the depth map's own aspect, or the conditioning is
+    # stretched across a frame it was not drawn for and every wall leans.
+    from PIL import Image as _Image
+    from io import BytesIO as _BytesIO
+    dw, dh = _Image.open(_BytesIO(depth)).size
+    w_px, h_px = canvas_size(dw, dh, budget_px=1_400_000)
+
+    from imagery.models import ImageKind
+    try:
+        res = store.ensure_image(
+            ImageKind.ISOBOARD, subject, look=look, context=context,
+            ref_slug=ref, extra=_ISO_STYLE, force_new=force_new,
+            width=w_px, height=h_px, store_width=store_width,
+            seed=gen.seed & 0x7FFFFFFF, max_per_bucket=1,
+            control_image=depth,
+            controlnet=controlnet, controlnet_strength=controlnet_strength,
+            negative_extra=", ".join(p for p in (
+                gen.grid.absent_terrain_negative(), _ISO_NEGATIVE) if p),
+        )
+    except Exception as e:
+        print(f"[vtt.art] iso board render failed: {e}")
+        return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
+
+    if res is None or res.offline or not res.image_id:
+        return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
+    return BattlemapArt(image_id=res.image_id, prompt="", caption=res.caption,
+                        width=w_px, height=h_px, reused=bool(getattr(res, "reused", False)))
+
+
+#: Codes the depth rasterizer treats as full-square structure. Must match
+#: STRUCTURE_CODES in activity-ui/src/lib/boardView.ts — the depth map and the
+#: geometry are the same room or the painting sits on nothing.
+_STRUCTURE_FOR_DEPTH = {"#", "R"}
+
+
+#: Painted, not photographed, and deliberately quiet about layout — the depth
+#: map is saying all of that far more precisely than words could.
+_ISO_STYLE = (
+    "hand-painted fantasy diorama, rich painterly texture, honest materials, "
+    "warm practical light sources, muted natural palette, deep readable shadow"
+)
+
+#: A figure painted into the board is a second, wrong party standing in the room
+#: forever — the real creatures are DOM tokens drawn on top. The rest keeps the
+#: frame clean of anything that would sit over the rules.
+_ISO_NEGATIVE = (
+    "people, person, figure, character, adventurer, creature, monster, "
+    "miniature, text, label, caption, watermark, border, frame, user interface, "
+    "grid lines, arrows, top-down, overhead, floorplan, blueprint"
+)
+
+
 def material_ref(code: str) -> str:
     """The cache slug for whatever material this square is made of.
 

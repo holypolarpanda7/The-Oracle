@@ -66,7 +66,16 @@ class ImageKind:
     #                          HadesLevel@0.9 doing exactly what they are for.
     #                          No wording survives a LoRA at that strength.
 
-    ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE, MAP, WORLDMAP, MATERIAL}
+    ISOBOARD = "isoboard"  # -> a painted ISOMETRIC view of one tactical board,
+    #                          conditioned on a depth map of the very geometry
+    #                          the player is looking at (see vtt/isocam.py).
+    #                          MAP is the same room seen from straight overhead
+    #                          and conditioned on a floorplan scribble; this is
+    #                          the Baldur's-Gate layer, and the two want
+    #                          different framing and a different ControlNet.
+
+    ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE, MAP, WORLDMAP, MATERIAL,
+           ISOBOARD}
 
 
 def normalize_kind(kind: str) -> str:

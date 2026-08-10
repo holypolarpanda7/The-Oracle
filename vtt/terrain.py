@@ -157,6 +157,30 @@ def tile_rule(code: str) -> str:
     return base
 
 
+#: How tall each tile STANDS, in feet — what the isometric board extrudes and
+#: what the depth map handed to the painter is built from.
+#:
+#: Distinct from ``cover_height_ft``, which answers a rules question ("how tall
+#: does this screen a creature") and is 0 for anything whose cover is not
+#: limited by height. This answers a drawing question, so a pillar needs a
+#: figure even though the rules never care how tall it is. Where the rules DO
+#: have a number, it is used — a crate is four feet in both.
+#:
+#: Mirrored by TILE_HEIGHT_FT in activity-ui/src/lib/boardView.ts. This side is
+#: authoritative; keep them in step.
+_STAND_HEIGHT_FT: dict[str, int] = {
+    "#": 10, "R": 10,          # structure
+    "T": 12, "O": 10,          # tree, pillar
+    "+": 8, "p": 8,            # closed door, portcullis
+    "o": 4, "A": 4, "n": 3, "w": 3,   # these four carry a cover_height_ft
+}
+
+
+def tile_height_ft(code: str) -> int:
+    """How tall this tile stands, in feet. 0 is floor you walk on."""
+    return _STAND_HEIGHT_FT.get(code, 0)
+
+
 def cover_height_ft(code: str) -> int:
     """How tall the obstacle on this square stands, in feet. 0 for open ground."""
     return int(tile(code).cover_height_ft or 0)
