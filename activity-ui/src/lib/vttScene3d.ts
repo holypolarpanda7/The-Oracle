@@ -52,6 +52,27 @@ const CAMERA_DISTANCE = 500;
  *  built thing. Cheap: four quads and a smaller top face per block. */
 const BEVEL = 0.06;
 
+/** Whether the painted layer is laid over the board yet.
+ *
+ *  OFF, and deliberately. The server side works — vtt/isocam.py rasterizes the
+ *  depth map, the depth ControlNet paints a room that lands on the geometry,
+ *  and scripts/iso_gallery.py shows the results. What is not proven is this
+ *  file's half: the screen-space backdrop pass draws nothing in the browser,
+ *  and because a board WITH a painting switches its geometry to depth-only, the
+ *  failure is not "no picture" but "no board" — which is far worse than never
+ *  having wired it.
+ *
+ *  Turning it off restores the geometry board, which is good, terrain-accurate
+ *  and offline-safe. Suspects for whoever picks this up, in order: the
+ *  screen-space ortho camera (frustum is left=0/right=w/top=0/bottom=h, an
+ *  intentionally inverted Y, which is easy to get wrong), then the stencil mask
+ *  that clips the painting to the board silhouette. The stencil was ruled out
+ *  by disabling it — the painting did not appear either way — so the camera or
+ *  the quad placement is the likelier fault.
+ *
+ *  It needs a browser and a devtools frame capture, not another guess. */
+const PAINTED_BACKDROP = false;
+
 /** Depth is a sort key for `z-index`, not a distance. Scaled up so that two
  *  creatures a single square apart still land on different integers. */
 const DEPTH_STEPS = 8;
@@ -350,7 +371,13 @@ function disposeTree(obj: THREE.Object3D): void {
 }
 
 export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  // `stencil` is NOT on by default in current three.js — it was flipped to
+  // false a few releases back. Without it the mask pass below silently
+  // discards the whole painting, which looks exactly like the painting
+  // having failed to load.
+  const renderer = new THREE.WebGLRenderer({
+    canvas, antialias: true, alpha: true, stencil: true,
+  });
   renderer.setClearColor(0x000000, 0);
 
   const scene3 = new THREE.Scene();
@@ -375,8 +402,23 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   // is the only placement that keeps it on the geometry, and the same View
   // affine carries it through every pan and zoom.
   const bgScene = new THREE.Scene();
-  const bgCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
-  const bgMat = new THREE.MeshBasicMaterial({ transparent: false, depthTest: false });
+  const bgCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
+  bgCamera.position.z = 10;   // the quad sits at z=0; a camera AT it sees nothing
+  // Stencil-tested, so the painting appears ONLY where the board's geometry
+  // actually is. The board projects to a diamond and the image is its bounding
+  // rectangle, so roughly half the canvas is corner the geometry never covers —
+  // and given that much empty margin the model paints a SECOND room out there,
+  // at its own scale, five or six times the board's. The real room then reads
+  // as a doll's house inside a giant one. Words did not stop it (the framing
+  // and negatives both ask for empty black); cutting the picture to the
+  // silhouette does, because it stops being a request.
+  const bgMat = new THREE.MeshBasicMaterial({
+    transparent: false, depthTest: false,
+    stencilWrite: true, stencilRef: 1,
+    stencilFunc: THREE.EqualStencilFunc,
+    stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp,
+    stencilZPass: THREE.KeepStencilOp,
+  });
   const bgMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), bgMat);
   bgScene.add(bgMesh);
   // We paint the backdrop ourselves and must not have it wiped between passes.
@@ -400,6 +442,19 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       if (lastFrame) paintFrame(lastFrame.st, lastFrame.w, lastFrame.h);
     });
   };
+
+  /** Turn stencil writing on or off across the terrain, for the masking pass. */
+  function setStencilWrite(on: boolean): void {
+    terrainGroup.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+      if (!m || Array.isArray(m)) return;
+      m.stencilWrite = on;
+      m.stencilRef = 1;
+      m.stencilFunc = THREE.AlwaysStencilFunc;
+      m.stencilZPass = on ? THREE.ReplaceStencilOp : THREE.KeepStencilOp;
+      m.needsUpdate = true;
+    });
+  }
 
   /** A swatch's fate has been decided: rebuild, because whether a code is
    *  textured changes what its vertex colours have to mean. */
@@ -821,7 +876,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const isoId = level === 0 ? scene.iso_image_id ?? 0 : 0;
       const isoTex = isoId ? TEXTURES.get(isoId) : null;
       if (isoId && isoTex === undefined) requestTexture(isoId, invalidate);
-      backdrop = isoTex instanceof THREE.Texture;
+      backdrop = PAINTED_BACKDROP && isoTex instanceof THREE.Texture;
 
       // Fog, live sight and light are baked into the mesh (see `shade`), so
       // they belong in the key. They change on a MOVE, not on a pointer flick,
@@ -877,7 +932,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       camera.lookAt(target);
       camera.updateProjectionMatrix();
 
-      renderer.clear();
+      renderer.clear(true, true, true);
       if (backdrop && isoTex instanceof THREE.Texture) {
         // Lay the painting back over the exact rectangle it was baked to. Both
         // sides compute this from `boundsOf` + FRAME_PAD_SQUARES, so it is the
@@ -895,9 +950,26 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         bgCamera.updateProjectionMatrix();
         bgMesh.scale.set(wPx, hPx, 1);
         bgMesh.position.set(left + wPx / 2, topPx + hPx / 2, 0);
+
+        // Pass 1: the geometry writes DEPTH and STENCIL and no colour, marking
+        // exactly which pixels are the board.
+        decalGroup.visible = false;
+        setStencilWrite(true);
+        renderer.render(scene3, camera);
+        setStencilWrite(false);
+
+        // Pass 2: the painting, only where that mark is.
         renderer.render(bgScene, bgCamera);
-        renderer.clearDepth();
+
+        // Pass 3: the overlays, depth-tested against pass 1. The terrain itself
+        // is hidden — it drew no colour anyway, and the depth it left behind is
+        // still in the buffer doing its job.
+        decalGroup.visible = true;
+        terrainGroup.visible = false;
+        renderer.render(scene3, camera);
+        terrainGroup.visible = true;
+      } else {
+        renderer.render(scene3, camera);
       }
-      renderer.render(scene3, camera);
   }
 }

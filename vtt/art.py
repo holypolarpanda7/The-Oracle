@@ -427,7 +427,7 @@ def board_look(biome: str = "", archetype: str = "") -> str:
 #: change is invisible to it — the first re-render after the switch came back
 #: from cache in one second, unchanged, and would have been mistaken for the
 #: fix not working.
-ISOBOARD_REV = 7
+ISOBOARD_REV = 8
 
 
 #: How much of a board must stand UP before a depth-conditioned painting is
@@ -575,6 +575,14 @@ _ISO_STYLE = (
 #: forever — the real creatures are DOM tokens drawn on top. The rest keeps the
 #: frame clean of anything that would sit over the rules.
 _ISO_NEGATIVE = (
+    # The board is a diamond inside a rectangular frame, so roughly half the
+    # canvas is corner the geometry never covers. Given that much empty margin
+    # the model paints a SECOND room out there — and at its own scale, which is
+    # five or six times the board's, so the real room reads as a doll's house
+    # sitting inside a giant one. Everything here is aimed at that.
+    "surrounding room, larger room, background room, outer walls, "
+    "floor extending beyond, ground beyond, environment, interior scene, "
+    "fireplace, hearth, furniture outside the model, wall lamp, window, "
     "people, person, figure, character, adventurer, creature, monster, "
     "miniature, text, label, caption, watermark, border, frame, user interface, "
     "grid lines, arrows, top-down, overhead, floorplan, blueprint"
