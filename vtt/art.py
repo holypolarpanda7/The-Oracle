@@ -427,7 +427,7 @@ def board_look(biome: str = "", archetype: str = "") -> str:
 #: change is invisible to it — the first re-render after the switch came back
 #: from cache in one second, unchanged, and would have been mistaken for the
 #: fix not working.
-ISOBOARD_REV = 8
+ISOBOARD_REV = 9
 
 
 #: How much of a board must stand UP before a depth-conditioned painting is
@@ -521,11 +521,14 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
 
     from .decor import decor_for
     from .terrain import cover_height_ft
-    depth = isocam.depth_image(
-        gen.grid.rows, height_ft=tile_height_ft, cover_ft=cover_height_ft,
+    # One kwargs bundle, used for the depth map AND for the mask, so the cut
+    # cannot be taken from different geometry than the picture was conditioned on.
+    depth_kw = dict(
+        rows=gen.grid.rows, height_ft=tile_height_ft, cover_ft=cover_height_ft,
         decor=decor_for(gen.grid.to_rows(), seed=gen.seed,
                         standing=lambda c: tile_height_ft(c) > 0),
         square_ft=5, structure=STRUCTURE_CODES)
+    depth = isocam.depth_image(**depth_kw)
     if not depth:
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
@@ -554,8 +557,60 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
 
     if res is None or res.offline or not res.image_id:
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
+    _mask_to_board(store, res.image_id, depth_kw)
     return BattlemapArt(image_id=res.image_id, prompt="", caption=res.caption,
                         width=w_px, height=h_px, reused=bool(getattr(res, "reused", False)))
+
+
+def _mask_to_board(store, image_id: int, depth_kw: dict) -> None:
+    """Cut the stored painting to the board's own silhouette.
+
+    The board projects to a DIAMOND and the painting is its bounding RECTANGLE,
+    so about half the canvas is corner the geometry never covers — and the model
+    fills that margin with a SECOND room at its own scale, five or six times the
+    board's, which makes the real room read as a doll's house inside a giant
+    one. Asking for empty black in the framing and the negatives does not work;
+    it paints a hearth out there anyway.
+
+    So the corners are removed rather than requested, and it happens once here
+    rather than every frame in every client. What is stored is RGBA with the
+    surround transparent, which is also what lets a viewer lay it over its own
+    background instead of over a black rectangle.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    from . import isocam
+
+    try:
+        raw = store.get_image_bytes(image_id)
+        if not raw:
+            return
+        paint = Image.open(BytesIO(raw)).convert("RGBA")
+        mask_png = isocam.coverage_mask(**depth_kw)
+        if not mask_png:
+            return
+        mask = Image.open(BytesIO(mask_png)).convert("L").resize(
+            paint.size, Image.LANCZOS)
+        paint.putalpha(mask)
+        out = BytesIO()
+        paint.save(out, format="PNG")
+        data = out.getvalue()
+
+        from sqlmodel import Session
+
+        from imagery.models import EntityImage
+        with Session(store.engine) as sess:
+            row = sess.get(EntityImage, image_id)
+            if row is None:
+                return
+            row.image = data
+            row.byte_size = len(data)
+            sess.add(row)
+            sess.commit()
+    except Exception as e:      # a painting with corners beats no painting
+        print(f"[vtt.art] could not mask the iso board: {e}")
 
 
 #: Codes the depth rasterizer treats as full-square structure. Must match

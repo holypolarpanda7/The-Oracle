@@ -371,7 +371,24 @@ def _prism(face, cx: float, cz: float, r: float, y1: float,
         face([(ax, y0, az), (ax, y1, az), (bx, y1, bz), (bx, y0, bz)])
 
 
+def coverage_mask(rows: Sequence[str], **kw) -> bytes:
+    """Where the board actually IS, as a black-and-white PNG.
+
+    The board projects to a DIAMOND and the painting is its bounding RECTANGLE,
+    so roughly half the canvas is corner the geometry never covers. Given that
+    much empty margin the model paints a second room out there at its own scale
+    — five or six times the board's — and the real room reads as a doll's house
+    inside a giant one. Words do not stop it: the framing and the negatives both
+    ask for empty black and it paints a hearth anyway.
+
+    So the corners are cut rather than requested. This is the stencil, computed
+    where it can be looked at without a browser.
+    """
+    return depth_image(rows, _mask_only=True, **kw)
+
+
 def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
+                _mask_only: bool = False,
                 square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
                 structure: Optional[set[str]] = None,
@@ -498,6 +515,12 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
     finite = np.isfinite(buf)
     if not finite.any():
         return b""
+    if _mask_only:
+        img = Image.fromarray((finite * 255).astype(np.uint8), mode="L")
+        from io import BytesIO
+        out = BytesIO()
+        img.save(out, format="PNG")
+        return out.getvalue()
 
     # ABSOLUTE distance, near white — and the relief experiment that replaced
     # it for a while is worth recording, because it was measured worse.

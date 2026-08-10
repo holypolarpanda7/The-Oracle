@@ -377,6 +377,9 @@ export function VttOverlay(p: VttProps) {
     return () => cancelAnimationFrame(raf);
   }, [walk]);
 
+  /** Where the painted layer sits this frame, if there is one. */
+  const backdrop = view && board ? board.backdropRect(view, floor) : null;
+
   /** Where a token should be DRAWN — mid-walk if it is the one walking. */
   const drawnAt = useCallback((t: VttToken): [number, number] =>
     (walk && walkPos && walk.tokenId === t.id ? walkPos : [t.x, t.y]),
@@ -783,6 +786,20 @@ export function VttOverlay(p: VttProps) {
         onWheel={onWheel}
         onContextMenu={onContextMenu}
       >
+        {/* The painted board, BEHIND the canvas. Stored with its surround
+            already cut away, so the corners need no clipping here — and the
+            canvas is alpha, so the geometry (which stops drawing colour once a
+            painting exists) lets it through while still occluding the decals. */}
+        {backdrop && scene.iso_image_id && (
+          <img
+            className="vtt-backdrop"
+            src={`/imagery/image/${scene.iso_image_id}`}
+            alt=""
+            draggable={false}
+            style={{ left: backdrop.left, top: backdrop.top,
+                     width: backdrop.width, height: backdrop.height }}
+          />
+        )}
         <canvas key={mode} data-mode={mode} ref={setCanvasEl} />
         <div className="vtt-tokens">{tokenNodes}</div>
         {p.error && (

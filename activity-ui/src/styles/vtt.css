@@ -473,3 +473,13 @@
    during a walk it lags a frame behind and rounds off every corner, which is
    the exact thing walking the real path exists to stop. */
 .play .vtt-token.walking { transition: none; }
+
+/* The painted isometric board, laid under the canvas at the canonical framing
+   the server baked it to. Stored RGBA with the surround already removed — the
+   board projects to a diamond inside a rectangular image, and left in, the
+   corners carry a second room the model invented at its own scale. */
+.play .vtt-backdrop {
+  position: absolute;
+  pointer-events: none;
+  image-rendering: auto;
+}

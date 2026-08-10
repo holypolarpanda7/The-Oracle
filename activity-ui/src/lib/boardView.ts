@@ -264,6 +264,17 @@ export interface BoardView {
   /** Zoom about a screen point, so the square under it stays put. */
   zoomAt(view: View, px: number, py: number, factor: number): View;
 
+  /** Where the painted layer belongs on screen, in CSS pixels, or null if this
+   *  renderer has no painted layer.
+   *
+   *  The painting is baked at a CANONICAL framing — the board's projected
+   *  bounding box plus a fixed margin — so laying it back over exactly that
+   *  rectangle is the only placement that keeps it on the geometry, and the
+   *  same View affine carries it through every pan and zoom. It is stored with
+   *  the surround already cut away, so the corners need no clipping here. */
+  backdropRect(view: View, scene: VttScene):
+    { left: number; top: number; width: number; height: number } | null;
+
   /** Draw one frame. `w`/`h` are CSS pixels; device-pixel-ratio is the
    *  renderer's own business. */
   draw(st: PaintState, w: number, h: number): void;

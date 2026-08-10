@@ -46,6 +46,12 @@ export function createCanvasBoardView(canvas: HTMLCanvasElement): BoardView {
       return { scale, ox: px - (px - view.ox) * k, oy: py - (py - view.oy) * k };
     },
 
+    backdropRect(): null {
+      // The flat board draws its own art inside paint(); there is no separate
+      // layer to place.
+      return null;
+    },
+
     draw(st: PaintState, w: number, h: number): void {
       if (w === 0 || h === 0) return;
       const dpr = Math.min(2, window.devicePixelRatio || 1);
