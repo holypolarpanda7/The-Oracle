@@ -278,6 +278,24 @@ def _hash(x: int, z: int, a: int, b: int) -> int:
     return ((x * a) ^ (z * b)) & 0xFFFFFFFF
 
 
+def _cloud(x: int, z: int) -> float:
+    """Brightness for one square of open sky, around 1.0.
+
+    Open sky was painted as a single flat colour across two hundred squares,
+    and a large uniform horizontal plane seen from above is not sky — it is
+    WATER, which is exactly what the first sky-island boards came back as,
+    reflections included. What separates the two at this camera angle is cloud:
+    broken, soft, brighter in patches. So the sky is mottled rather than filled.
+
+    Two frequencies — a coarse one in three-square blocks for cloud masses and a
+    fine one for break-up. Server-side only: the browser draws no geometry on a
+    hole at all, so this needs no mirror.
+    """
+    coarse = (_hash(x // 3, z // 3, 12289, 40503) & 255) / 255.0
+    fine = (_hash(x, z, 65521, 30011) & 255) / 255.0
+    return 0.84 + 0.24 * (0.74 * coarse + 0.26 * fine)
+
+
 def variant_of(x: int, z: int, count: int) -> int:
     """Which arrangement this square's object uses.
 
@@ -316,6 +334,22 @@ def height_scale(code: str, x: int, z: int, cover_height_ft: int) -> float:
     if cover_height_ft > 0:
         return 1.0
     return 1.0 - HEIGHT_JITTER * (_hash(x, z, 19349663, 83492791) & 255) / 255.0
+
+
+def run_axis(same, x: int, z: int) -> int:
+    """Quarter turns that line a part up with the RUN it belongs to.
+
+    The companion to :func:`yaw_of`, for the things a per-square random turn
+    gets wrong. A boulder may face any way; a ship's rail, a palisade and a tent
+    wall are things that RUN, and turned individually they come out as a row of
+    quarter-turned fragments rather than one continuous rail.
+
+    Parts are authored running along x, so this returns 0 for an x-run and 1 for
+    a z-run. ``same(x, z)`` asks whether the neighbour is part of the same run.
+    """
+    along_x = int(bool(same(x - 1, z))) + int(bool(same(x + 1, z)))
+    along_z = int(bool(same(x, z - 1))) + int(bool(same(x, z + 1)))
+    return 1 if along_z > along_x else 0
 
 
 def rotate_part(part, turns: int):
@@ -444,8 +478,9 @@ def terrain_image(rows: Sequence[str], *, colour_of, **kw) -> bytes:
     as an img2img base, it hands the model layout, terrain type and scale, and
     leaves it the one job it is good at.
 
-    ``colour_of(code) -> (r, g, b)``; taking those from the material catalogue
-    keeps this picture and the geometry board describing the same room.
+    ``colour_of(code, skin) -> (r, g, b)``; taking those from the material
+    catalogue keeps this picture and the geometry board describing the same
+    room — including the skinned squares, so a reef's coral is painted coral.
     """
     return depth_image(rows, _colour_of=colour_of, **kw)
 
@@ -467,6 +502,7 @@ def coverage_mask(rows: Sequence[str], **kw) -> bytes:
 
 
 def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
+                skin_of=None,
                 _mask_only: bool = False, _colour_of=None,
                 square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
@@ -478,9 +514,16 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
     in practice); ``structure`` names the codes drawn as full-square blocks. The
     shapes here must match what ``vttScene3d.ts`` builds, or the painting is
     conditioned on a room the player is not looking at.
+
+    ``skin_of(code, x, z) -> name`` says what a square is MADE of (see
+    :mod:`vtt.skins`). A skin may hand over its own silhouette and its own
+    drawn height, which is how a mountainside stops being drawn as masonry
+    panels; it can never change what the square DOES.
     """
     import numpy as np
     from PIL import Image
+
+    from . import skins as _skins
 
     cover_ft = cover_ft or (lambda _c: 0)
     h_rows = len(rows)
@@ -488,8 +531,27 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
     if not h_rows or not w_cols:
         return b""
 
+    def skin_at(x: int, z: int) -> str:
+        if skin_of is None or z < 0 or z >= h_rows:
+            return ""
+        row = rows[z]
+        if x < 0 or x >= len(row):
+            return ""
+        return skin_of(row[x], x, z) or ""
+
+    def eff_height(code: str, x: int, z: int) -> float:
+        """How tall this square is DRAWN. A skin may raise it; the rules never
+        quote a height for anything a skin is allowed to raise."""
+        return _skins.height_of(skin_at(x, z)) or height_ft(code)
+
     units = lambda ft: ft / float(square_ft or 5)          # noqa: E731
-    tallest = units(max((height_ft(c) for r in rows for c in r), default=0))
+    # Over the squares rather than the codes, because a skin's height is a
+    # property of where the square IS — a 26-ft mast that the bounds never heard
+    # about is a mast with its top cropped off.
+    tallest = units(max(
+        (eff_height(rows[z][x], x, z)
+         for z in range(h_rows) for x in range(len(rows[z]))),
+        default=0))
     b = bounds_of(w_cols, h_rows, tallest)
 
     scale = px_per_square
@@ -565,13 +627,20 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 # the terrain image says what is out there.
                 if _mask_only or _colour_of:
                     if _colour_of:
-                        cur_colour[0] = _colour_of(code)
+                        cur_colour[0] = _colour_of(code, "")
+                        shade(_cloud(x, z) if code == "^" else 1.0)
                     face([(x, 0, z), (x, 0, z + 1),
                           (x + 1, 0, z + 1), (x + 1, 0, z)])
                 continue
+            sk = skin_at(x, z)
+            # Explicit rather than inherited: without this the floor quad below
+            # is drawn with whatever tint the PREVIOUS square left behind, which
+            # happened to be TOP_TINT for every ordinary square and would be a
+            # patch of cloud the moment one of them was sky.
+            shade(TOP_TINT)
             if _colour_of:
-                cur_colour[0] = _colour_of(code)
-            ft = height_ft(code)
+                cur_colour[0] = _colour_of(code, sk)
+            ft = _skins.height_of(sk) or height_ft(code)
             # A little life in the heights — but never where the rules quote
             # one. See height_scale.
             top = units(ft) * height_scale(code, x, z, cover_ft(code))
@@ -594,7 +663,27 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 shade(TOP_TINT)
             if ft <= 0:
                 continue
-            if code in struct:
+            sk_vars = _skins.variants_of(sk)
+            if sk_vars:
+                # A skin's silhouette wins over everything, INCLUDING the
+                # wall-face model. That is the point: a mountainside drawn as
+                # thin panels round a corridor is what made the pass read as
+                # architecture. What survives from the wall model is the part
+                # that pays for itself — a structure square with no open side
+                # is buried, and buried rock is not drawn.
+                if code in struct and not wall_parts(is_open, x, z):
+                    continue
+                parts = sk_vars[variant_of(x, z, len(sk_vars))]
+                if _skins.is_directional(sk):
+                    turns = run_axis(
+                        lambda ax, az: skin_at(ax, az) == sk, x, z)
+                else:
+                    turns = yaw_of(x, z)
+                for part in parts:
+                    px0, px1, pz0, pz1, py0, py1 = rotate_part(part, turns)
+                    _box(face, x + px0, x + px1, z + pz0, z + pz1,
+                         top * py1, y0=top * py0, shade=shade)
+            elif code in struct:
                 for wx0, wx1, wz0, wz1 in wall_parts(is_open, x, z):
                     _box(face, x + wx0, x + wx1, z + wz0, z + wz1, top, shade=shade)
             elif code in ("O", "T"):
@@ -628,7 +717,7 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
             continue
         ft, parts = spec
         if _colour_of:
-            cur_colour[0] = _colour_of("decor:" + d.get("kind", ""))
+            cur_colour[0] = _colour_of("decor:" + d.get("kind", ""), "")
         dx, dz = int(d["x"]), int(d["y"])
         top_d = units(ft)
         turns = yaw_of(dx, dz)

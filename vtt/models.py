@@ -148,6 +148,15 @@ class TacticalMap(SQLModel, table=True):
     # Object sprites in use on this board, keyed by tile NAME -> image id.
     # By kind rather than by square: eight pillars are one picture.
     object_art: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Per-square MATERIAL overrides, sparse: {"x,y": skin name}. See vtt.skins.
+    # Most of what a board is made of is derived from its archetype and stored
+    # nowhere; this holds only the exceptions a generator deliberately built —
+    # canvas tents inside a palisaded camp, a ship's cabin against its hull.
+    # Purely a look. No rule reads one, and none may.
+    skins: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # A whole-board style where the archetype genuinely offers a choice: a
+    # skyship is timber, brass-and-steam or grown, and all three are right.
+    board_style: str = Field(default="", sa_column=Column(String))
 
     # Upper floors. A gallery over a hall, a tower's storeys, a walkway above
     # a chasm: each is a level with its OWN terrain grid at its own height.

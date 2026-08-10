@@ -51,32 +51,44 @@ CONTEXTS = [
 OUT_DIR = ROOT / "material-probe"
 
 
-def _catalogue(contexts: list[str]) -> list[tuple[str, str]]:
-    """Every (tile code, look) worth having a swatch for.
+def _catalogue(contexts: list[str]) -> list[tuple[str, str, str]]:
+    """Every (tile code, skin, look) worth having a swatch for.
 
     Look-agnostic materials appear ONCE rather than once per look: lava is lava
     in a cavern and in a ruin, and rendering ten identical pools of it is ten
     renders to store one picture. That split is what keeps the catalogue near
     200 swatches instead of 270.
+
+    SKINS are the same trick one level up (see vtt/skins.py). A skin names its
+    substance outright — coral, canvas, riveted brass — so it is look-agnostic
+    by construction and costs exactly one swatch each however many tile codes
+    wear it and however many boards it turns up on.
     """
     from vtt.art import material_look, material_ref, material_subject
+    from vtt.skins import SKINS
     from vtt.terrain import TILES
 
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
+
+    def add(code: str, skin: str, look: str) -> None:
+        # Deduped by (REF, look), not by code: the nine object kinds resolve to
+        # four substances between them, so a pillar and an altar are one job and
+        # rendering both would draw the same stone twice.
+        key = (material_ref(code, skin), look)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append((code, skin, look))
+
     for code in sorted(TILES):
         if not material_subject(code):
             continue
         agnostic = material_look(code)
         for look in ([agnostic] if agnostic else contexts):
-            # Deduped by (REF, look), not by code: the nine object kinds
-            # resolve to four substances between them, so a pillar and an altar
-            # are one job and rendering both would draw the same stone twice.
-            key = (material_ref(code), look)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append((code, look))
+            add(code, "", look)
+    for name in sorted(SKINS):
+        add(".", name, material_look(".", name))
     return out
 
 
@@ -89,19 +101,21 @@ def _sheet(store, jobs) -> int:
     from imagery.models import ImageKind, context_key, slugify
     from vtt.art import material_ref
 
-    by_look: dict[str, list[tuple[str, str]]] = {}
-    for code, look, label, _t in jobs:
-        by_look.setdefault(look, []).append((code, label))
+    by_look: dict[str, list[tuple[str, str, str]]] = {}
+    for code, skin, look, label, _t in jobs:
+        by_look.setdefault(look, []).append((code, skin, label))
 
     OUT_DIR.mkdir(exist_ok=True)
     written = 0
     for look, entries in sorted(by_look.items()):
         cells = []
-        for code, label in entries:
+        for code, skin, label in entries:
             # list_for hands back METADATA dicts, not ORM rows — the bytes are a
             # second lookup on purpose, so listing a catalogue doesn't drag
             # every picture in it through memory.
-            found = store.list_for(ImageKind.MATERIAL, slugify(material_ref(code)), context_key(look))
+            found = store.list_for(ImageKind.MATERIAL,
+                                   slugify(material_ref(code, skin)),
+                                   context_key(look))
             if not found:
                 continue
             data = store.get_image_bytes(found[0]["image_id"])
@@ -157,26 +171,32 @@ def main(argv=None) -> int:
                 if a.contexts else CONTEXTS)
 
     from vtt.art import SUBSTANCE
+    from vtt.skins import SKINS
 
-    jobs = []       # (code, look, label, thunk)
-    for code, look in _catalogue(contexts):
+    jobs = []       # (code, skin, look, label, thunk)
+    for code, skin, look in _catalogue(contexts):
         # Name a shared substance by the SUBSTANCE, not by whichever tile code
         # happened to sort first — the wood swatch is not "the door swatch",
         # and labelling it that way makes the sheet unreadable.
-        label = (f"{SUBSTANCE[code]} (substance)" if code in SUBSTANCE
-                 else tile(code).name)
-        jobs.append((code, look, label,
-                     lambda c=code, x=look: render_material(
-                         c, store=store, context=x)))
+        if skin:
+            label = f"{SKINS[skin].substance} (skin)"
+        elif code in SUBSTANCE:
+            label = f"{SUBSTANCE[code]} (substance)"
+        else:
+            label = tile(code).name
+        jobs.append((code, skin, look, label,
+                     lambda c=code, k=skin, x=look: render_material(
+                         c, store=store, context=x, skin=k)))
 
-    n_codes = len({c for c, _l in _catalogue(contexts)})
+    n_codes = len({(c, k) for c, k, _l in _catalogue(contexts)})
     print(f"{n_codes} surface kinds over {len(contexts)} looks "
           f"(look-agnostic ones once) = {len(jobs)} swatches\n")
 
     missing, have = [], 0
     for job in jobs:
-        code, look = job[0], job[1]
-        if store.list_for(ImageKind.MATERIAL, slugify(material_ref(code)), context_key(look)):
+        code, skin, look = job[0], job[1], job[2]
+        if store.list_for(ImageKind.MATERIAL,
+                          slugify(material_ref(code, skin)), context_key(look)):
             have += 1
         else:
             missing.append(job)
@@ -184,7 +204,7 @@ def main(argv=None) -> int:
     if a.prune:
         from sqlmodel import Session, select
         from imagery.models import EntityImage
-        keep = {slugify(material_ref(c)) for c, _l, _lb, _t in jobs}
+        keep = {slugify(material_ref(c, k)) for c, k, _l, _lb, _t in jobs}
         with Session(store.engine) as sess:
             # Two things are stale, not one. A swatch whose slug left the
             # catalogue (a REV bump, a probe's leftovers) — and a swatch filed
@@ -206,13 +226,13 @@ def main(argv=None) -> int:
     if a.render and missing:
         todo = missing[:a.limit] if a.limit else missing
         t0 = time.time()
-        for i, (_code, look, label, thunk) in enumerate(todo, 1):
+        for i, (_code, _skin, look, label, thunk) in enumerate(todo, 1):
             print(f"[{i}/{len(todo)}] {label} in {look} ...", end="", flush=True)
             print(" ok" if thunk() else " FAILED")
         print(f"\n{len(todo)} drawn in {time.time() - t0:.0f}s "
               f"({(time.time() - t0) / max(1, len(todo)):.1f}s each)")
     elif a.audit and not a.sheet:
-        for _code, look, label, _t in missing[:40]:
+        for _code, _skin, look, label, _t in missing[:40]:
             print(f"   {label:<28} in {look}")
         if len(missing) > 40:
             print(f"   ... and {len(missing) - 40} more")

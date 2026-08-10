@@ -467,7 +467,11 @@ def iso_denoise_for(grid: Grid) -> float:
             else ISO_DENOISE_FLAT)
 
 
-ISOBOARD_REV = 18
+#: Rev 19: skins. A square's material and silhouette can now depend on the
+#: archetype (see vtt.skins), so a mountainside is granite drawn as rock mass
+#: rather than masonry drawn as wall panels. That changes both conditioning
+#: images for most boards.
+ISOBOARD_REV = 19
 
 
 #: Retained for callers that still ask, and for the gallery's reporting. The
@@ -518,11 +522,27 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
     geometry, which is playable and was always the point of building that first.
     """
     from . import isocam
+    from . import skins as _skins
     from .terrain import tile_height_ft
+
+    # What this board is MADE of. Derived from the archetype, with whatever
+    # exceptions the generator built recorded per square — and told to the
+    # painter, because a depth map can say a thing is ten feet tall and never
+    # that it is coral rather than quarried stone.
+    code_skins = _skins.skins_for(gen.archetype, style=gen.style)
+    square_skins = dict(gen.skins or {})
+    present = sorted({
+        _skins.skin_at(gen.grid.get(x, y), x, y,
+                       codes=code_skins, squares=square_skins)
+        for x, y in gen.grid.squares()} - {""})
+
+    def _skin_of(c: str, x: int, z: int) -> str:
+        return _skins.skin_at(c, x, z, codes=code_skins, squares=square_skins)
 
     subject, look, context = build_map_prompt(
         gen, name=name, biome=biome, lighting=lighting,
-        extra=", ".join(p for p in (extra, _void_reads_as(gen.grid, lighting)) if p),
+        extra=", ".join(p for p in (extra, _skins.words_for(present),
+                                    _void_reads_as(gen.grid, lighting)) if p),
         conditions=conditions)
     ref = isoboard_ref(gen.grid, gen.archetype, gen.seed)
 
@@ -567,14 +587,15 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
         rows=gen.grid.rows, height_ft=tile_height_ft, cover_ft=cover_height_ft,
         decor=decor_for(gen.grid.to_rows(), seed=gen.seed,
                         standing=lambda c: tile_height_ft(c) > 0),
-        square_ft=5, structure=STRUCTURE_CODES)
+        square_ft=5, structure=STRUCTURE_CODES, skin_of=_skin_of)
     depth = isocam.depth_image(**depth_kw)
     # The half depth cannot carry: what the ground is MADE of. Outdoors that is
     # the whole board, so without it the model invents terrain the grid does not
     # have. See isocam.terrain_image.
     look = board_look(biome or "", gen.archetype)
     terrain = isocam.terrain_image(
-        colour_of=lambda c: material_colour(c, look, store), **depth_kw)
+        colour_of=lambda c, sk: material_colour(c, look, store, skin=sk),
+        **depth_kw)
     if not depth:
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
@@ -625,10 +646,17 @@ def _void_reads_as(grid: Grid, lighting: Optional[str]) -> str:
     bits = []
     if "^" in has:
         night = (lighting or "").lower() == "dark"
+        # "Sky" alone was not enough: a flat expanse under an overhead camera
+        # reads as water, and the board came back with the islands reflected in
+        # it. Naming the cloud deck is what makes it air — the mottling in the
+        # terrain image says the same thing in pixels.
         bits.append("the empty space between the platforms is OPEN SKY seen from "
-                    + ("high above at night, stars and moonlit cloud far below"
+                    + ("high above at night — a broken deck of moonlit cloud far "
+                       "below, stars above, NOT water and nothing reflected in it"
                        if night else
-                       "high above, bright daylight sky and cloud far below"))
+                       "high above — a broken deck of soft white cloud far below "
+                       "with blue air between, NOT water, no reflections, no "
+                       "shoreline, no waves"))
     if "x" in has:
         bits.append("the gaps are a deep chasm dropping away into shadow, "
                     "its far walls lost in darkness")
@@ -721,8 +749,15 @@ _ISO_NEGATIVE = (
 #: What the board's holes are made of, for the terrain image. Not swatches —
 #: there is nothing to photograph — but they are emphatically not neutral grey
 #: either, and leaving them black is how open sky came back as a night void.
+#: Open sky is deliberately pale and near-desaturated rather than the mid blue
+#: it started as. A uniform mid blue laid flat across 200 squares is exactly
+#: what a body of WATER looks like from above — which is what the first
+#: sky-islands boards came back as, reflections and all. The colour is half the
+#: fix; the other half is that sky squares are MOTTLED rather than flat (see
+#: `isocam._cloud`), because the thing that distinguishes sky from water at this
+#: angle is cloud texture, not hue.
 HOLE_COLOURS: dict[str, tuple[int, int, int]] = {
-    "^": (150, 190, 226),   # daylight sky, seen from above the clouds
+    "^": (176, 206, 233),   # daylight sky, seen from above the cloud deck
     "x": (26, 24, 30),      # a chasm dropping into shadow
     " ": (10, 12, 18),      # off the board entirely
 }
@@ -732,7 +767,8 @@ HOLE_COLOURS: dict[str, tuple[int, int, int]] = {
 _MATERIAL_RGB: dict[tuple[str, str], tuple[int, int, int]] = {}
 
 
-def material_colour(code: str, look: str, store=None) -> tuple[int, int, int]:
+def material_colour(code: str, look: str, store=None,
+                    skin: str = "") -> tuple[int, int, int]:
     """The average colour of a surface's catalogue swatch.
 
     Derived from the swatch rather than written down beside it, so the terrain
@@ -742,7 +778,7 @@ def material_colour(code: str, look: str, store=None) -> tuple[int, int, int]:
     """
     from .decor import DECOR_KINDS
 
-    key = (code, look)
+    key = (f"{code}@{skin}" if skin else code, look)
     if key in _MATERIAL_RGB:
         return _MATERIAL_RGB[key]
     rgb = (118, 112, 102)
@@ -767,8 +803,9 @@ def material_colour(code: str, look: str, store=None) -> tuple[int, int, int]:
         if store is None:
             from imagery import ImageStore
             store = ImageStore()
-        bucket = material_look(code) or look
-        rows = store.list_for(ImageKind.MATERIAL, slugify(material_ref(code)),
+        bucket = material_look(code, skin) or look
+        rows = store.list_for(ImageKind.MATERIAL,
+                              slugify(material_ref(code, skin)),
                               context_key(bucket))
         if rows:
             data = store.get_image_bytes(rows[0]["image_id"])
@@ -782,7 +819,7 @@ def material_colour(code: str, look: str, store=None) -> tuple[int, int, int]:
     return rgb
 
 
-def material_ref(code: str) -> str:
+def material_ref(code: str, skin: str = "") -> str:
     """The cache slug for whatever material this square is made of.
 
     Keyed like `object_ref`: the slug names the material and the CONTEXT names
@@ -790,35 +827,49 @@ def material_ref(code: str) -> str:
     buckets of one slug rather than two slugs.
 
     Objects resolve to their SUBSTANCE, so every stone thing on the board —
-    pillar, altar, low wall — shares one swatch and the dedup is automatic.
+    pillar, altar, low wall — shares one swatch and the dedup is automatic. A
+    SKIN is the same trick one level up (see :mod:`vtt.skins`): every coral
+    thing on every reef shares one swatch, whatever tile code it wears.
     """
     from .terrain import tile
+    from . import skins as _skins
+    sk = _skins.skin(skin)
+    if sk is not None:
+        return f"material-v{MATERIAL_REV}-substance-{sk.substance}"
     if code in SUBSTANCE:
         return f"material-v{MATERIAL_REV}-substance-{SUBSTANCE[code]}"
     return f"material-v{MATERIAL_REV}-{tile(code).name.replace(' ', '-')}"
 
 
-def material_subject(code: str) -> str:
+def material_subject(code: str, skin: str = "") -> str:
     """What to ask the model for. Empty when this code has no surface."""
     from .terrain import tile
+    from . import skins as _skins
     if code in NO_MATERIAL:
         return ""
+    sk = _skins.skin(skin)
+    if sk is not None:
+        return sk.art
     if code in SUBSTANCE:
         return SUBSTANCE_ART[SUBSTANCE[code]]
     return MATERIAL_SUBJECT.get(code) or tile(code).art
 
 
-def material_look(code: str) -> str:
+def material_look(code: str, skin: str = "") -> str:
     """Which look bucket this material is filed under, for a given board.
 
     A substance is as look-agnostic as lava: oak is oak in a cavern and in a
     tavern, and the room it stands in is the board's lighting job, not the
-    swatch's.
+    swatch's. A skin names its substance outright, so it is filed the same way.
     """
+    from . import skins as _skins
+    if _skins.skin(skin) is not None:
+        return ANY_LOOK
     return ANY_LOOK if (code in LOOK_AGNOSTIC or code in SUBSTANCE) else ""
 
 
 def render_material(code: str, *, store=None, context: str = "",
+                    skin: str = "",
                     size_px: int = MATERIAL_RENDER_PX) -> Optional[int]:
     """A tiling surface swatch for every square made of this stuff.
 
@@ -826,7 +877,7 @@ def render_material(code: str, *, store=None, context: str = "",
     case the board falls back to the flat tile colours it already has, which is
     correct and playable, just plainer.
     """
-    subject = material_subject(code)
+    subject = material_subject(code, skin)
     if not subject:
         return None
     from imagery.models import ImageKind
@@ -837,14 +888,14 @@ def render_material(code: str, *, store=None, context: str = "",
         except Exception as e:
             print(f"[vtt.art] imagery unavailable for material: {e}")
             return None
-    ctx = material_look(code) or (context or "dungeon")
+    ctx = material_look(code, skin) or (context or "dungeon")
     try:
         res = store.ensure_image(
             # The MATERIAL kind, never "map": a kind carries LoRAs, and the map
             # kind's (SDXL-Battlemaps, HadesLevel@0.9) turn any surface into a
             # framed battlemap however the prompt is worded.
             ImageKind.MATERIAL, subject, look="", context=ctx,
-            ref_slug=material_ref(code),
+            ref_slug=material_ref(code, skin),
             extra=_MATERIAL_STYLE,
             negative_extra=MATERIAL_NEGATIVE,
             width=size_px, height=size_px, store_width=size_px,

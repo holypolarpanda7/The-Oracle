@@ -33,9 +33,10 @@ import type { VttScene } from "./types";
 // lands on furniture the player is not looking at.
 export {
   COVER_HEIGHT_FT, DECOR_KINDS, HEIGHT_JITTER, HOLE_CODES, MAX_DECOR_HEIGHT_FT,
-  OBJECT_VARIANTS, PILLAR_RADIUS, SKIRT_FT, STRUCTURE_CODES, TILE_HEIGHT_FT,
-  WALL_THICKNESS,
+  OBJECT_VARIANTS, PILLAR_RADIUS, SKINS, SKIRT_FT, STRUCTURE_CODES,
+  TILE_HEIGHT_FT, WALL_THICKNESS,
 } from "./boardShapes.generated";
+export type { SkinShape } from "./boardShapes.generated";
 import {
   COVER_HEIGHT_FT as _COVER, HEIGHT_JITTER as _JITTER,
   TILE_HEIGHT_FT as _HEIGHT, WALL_THICKNESS as _THICK,
@@ -61,6 +62,44 @@ export function variantOf(x: number, z: number, count: number): number {
 /** Quarter turns for this square's object. Breaks the grid-lock look. */
 export function yawOf(x: number, z: number): number {
   return hashOf(x, z, 83492791, 29819387) & 3;
+}
+
+/** Quarter turns that line a part up with the RUN it belongs to.
+ *
+ *  The companion to `yawOf`, for the things a per-square random turn gets
+ *  wrong. A boulder may face any way; a ship's rail, a palisade and a tent wall
+ *  are things that RUN, and turned individually they come out as a row of
+ *  quarter-turned fragments rather than one continuous rail. Parts are authored
+ *  running along x, so this returns 0 for an x-run and 1 for a z-run.
+ *  Mirrors `run_axis` in vtt/isocam.py. */
+export function runAxis(
+  same: (x: number, z: number) => boolean, x: number, z: number,
+): number {
+  const alongX = (same(x - 1, z) ? 1 : 0) + (same(x + 1, z) ? 1 : 0);
+  const alongZ = (same(x, z - 1) ? 1 : 0) + (same(x, z + 1) ? 1 : 0);
+  return alongZ > alongX ? 1 : 0;
+}
+
+/** This square's skin name, or "" for the code's own default look.
+ *
+ *  A per-square override beats the archetype default, which is the whole point
+ *  of having both: a camp is palisaded, and the tents inside it are canvas.
+ *  Mirrors `skin_at` in vtt/skins.py. */
+export function skinAt(
+  scene: { skins?: { codes?: Record<string, string>;
+                     squares?: Record<string, string> } },
+  code: string, x: number, y: number,
+): string {
+  const sk = scene.skins;
+  if (!sk) return "";
+  return sk.squares?.[`${x},${y}`] ?? sk.codes?.[code] ?? "";
+}
+
+/** The material slot a square draws from — a tile code, or `code@skin`.
+ *  Must agree with `materials_for` in vtt/scene.py, which builds the same key
+ *  server-side. */
+export function materialSlot(code: string, skin: string): string {
+  return skin ? `${code}@${skin}` : code;
 }
 
 /** Per-instance height multiplier, in [1 - JITTER, 1].

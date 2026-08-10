@@ -30,7 +30,8 @@
 import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
-  CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKIRT_FT, STRUCTURE_CODES,
+  CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS, SKIRT_FT,
+  STRUCTURE_CODES, materialSlot, runAxis, skinAt,
   heightScale,
   rotatePart,
   tileHeightFt,
@@ -461,14 +462,24 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     // One builder per TILE CODE, not one for the whole floor: each code carries
     // its own swatch, and a mesh has one material. Still a handful of draw
     // calls for a whole board — a code, not a square.
+    // Keyed by material SLOT, not tile code: a board can carry a log palisade
+    // and canvas tents, both of them '#', and merging them into one mesh would
+    // give them one swatch between them.
     const byCode = new Map<string, MeshBuilder>();
-    const builderFor = (code: string) => {
-      let b = byCode.get(code);
-      if (!b) { b = new MeshBuilder(); byCode.set(code, b); }
+    const builderFor = (slot: string) => {
+      let b = byCode.get(slot);
+      if (!b) { b = new MeshBuilder(); byCode.set(slot, b); }
       return b;
     };
     const gridPts: number[] = [];
     const swatches = scene.materials ?? {};
+
+    /** What this square is MADE of. Material and silhouette only — no rule
+     *  reads a skin. See vtt/skins.py. */
+    const skinOf = (x: number, z: number): string => {
+      const c = at(x, z);
+      return c === null ? "" : skinAt(scene, c, x, z);
+    };
 
     // Which way the wall runs through each aperture. Read off the server's own
     // objects list rather than re-derived here: `aperture_axis` already
@@ -519,11 +530,18 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // `reshade`, straight into the colour attribute, so a torch moving does
         // not throw away the geometry it is lighting.
         // NB: not `base` — that is the storey height, a few lines up.
-        const tint = textured.has(code) ? "#ffffff" : tileStyle(code).fill;
+        const skin = skinOf(x, z);
+        const shape = skin ? SKINS[skin] : undefined;
+        const slot = materialSlot(code, skin);
+        const tint = textured.has(slot) ? "#ffffff" : tileStyle(code).fill;
         const color = new THREE.Color(tint);
-        // Heights get a little life, except where the rules quote one.
-        const h = tileHeightFt(code) * heightScale(code, x, z);
-        const mb = builderFor(code);
+        // Heights get a little life, except where the rules quote one. A skin
+        // may raise the drawn height — and is refused at import from doing so
+        // on any tile whose height the rules DO quote, so this cannot smuggle
+        // a lie past heightScale.
+        const h = (shape?.heightFt || tileHeightFt(code))
+          * heightScale(code, x, z);
+        const mb = builderFor(slot);
         // Everything emitted from here belongs to this square, so `reshade` can
         // find its vertices again without rebuilding anything.
         mb.at = z * scene.width + x;
@@ -573,6 +591,26 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             const [x0, x1] = axis === "ew" ? [x, x + 1] : [x + 0.5 - t, x + 0.5 + t];
             const [z0, z1] = axis === "ew" ? [z + 0.5 - t, z + 0.5 + t] : [z, z + 1];
             panelBlock(mb, x0, x1, z0, z1, base, top, color);
+          } else if (shape?.variants) {
+            // A skin's silhouette wins over everything, INCLUDING the wall-face
+            // model. That is the point: a mountainside drawn as thin panels
+            // round a corridor is what made the pass read as architecture.
+            // What survives from the wall model is the part that pays for
+            // itself — a structure square with no open side is buried, and
+            // buried rock is not drawn.
+            if (!STRUCTURE_CODES.has(code) || wallParts(isOpen, x, z).length) {
+              const vs = shape.variants;
+              const parts = vs[variantOf(x, z, vs.length)];
+              const turns = shape.directional
+                ? runAxis((ax, az) => skinOf(ax, az) === skin, x, z)
+                : yawOf(x, z);
+              const h2 = top - base;
+              for (const raw of parts) {
+                const [px0, px1, pz0, pz1, py0, py1] = rotatePart(raw, turns);
+                panelBlock(mb, x + px0, x + px1, z + pz0, z + pz1,
+                           base + h2 * py0, base + h2 * py1, color);
+              }
+            }
           } else if (STRUCTURE_CODES.has(code)) {
             // A thin skin where the solid region meets open floor, never a full
             // five-foot cube. The square stays solid in the RULES — this only

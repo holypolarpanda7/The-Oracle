@@ -95,3 +95,93 @@ export const DECOR_KINDS: Record<string, readonly [number,
   sack: [1.6, [[0.3, 0.66, 0.32, 0.68, 0, 0.78], [0.34, 0.6, 0.36, 0.62, 0.78, 1]]],
   shards: [0.4, [[0.32, 0.52, 0.36, 0.56, 0, 1], [0.54, 0.68, 0.52, 0.66, 0, 0.6]]],
 };
+
+/** What a square is MADE OF, as opposed to what it DOES.
+ *
+ *  A tile code answers the rules — cover, movement, sight. A skin
+ *  answers the eye, and nothing else: no rule reads one. It may hand
+ *  over its own silhouette (which wins over everything, including the
+ *  wall-face model, so a mountainside is drawn as rock mass rather
+ *  than masonry panels) and its own drawn height — but never on a
+ *  tile whose height the rules quote. See vtt/skins.py. */
+export interface SkinShape {
+  readonly substance: string;
+  /** Feet. 0 means keep the tile's own standing height. */
+  readonly heightFt: number;
+  /** Line up along the run instead of taking a quarter-turn. */
+  readonly directional: boolean;
+  readonly variants: readonly (readonly (readonly [
+    number, number, number, number, number, number])[])[] | null;
+}
+export const SKINS: Record<string, SkinShape> = {
+  canvas: { substance: "canvas", heightFt: 9, directional: true,
+    variants: [
+      [[0, 1, 0.16, 0.84, 0, 0.46], [0, 1, 0.26, 0.74, 0.46, 0.78], [0, 1, 0.38, 0.62, 0.78, 1]]] },
+  "cave-rock": { substance: "limestone", heightFt: 13, directional: false,
+    variants: [
+      [[0.02, 0.98, 0.02, 0.98, 0, 0.6], [0.12, 0.86, 0.08, 0.9, 0.6, 0.86], [0.3, 0.7, 0.26, 0.66, 0.86, 1]],
+      [[0, 0.92, 0.06, 1, 0, 0.7], [0.18, 0.8, 0.2, 0.84, 0.7, 1]],
+      [[0.06, 1, 0, 0.94, 0, 0.55], [0.1, 0.7, 0.16, 0.78, 0.55, 0.92], [0.5, 0.94, 0.4, 0.86, 0.55, 0.78]],
+      [[0.04, 0.96, 0.04, 0.96, 0, 0.8], [0.22, 0.68, 0.3, 0.74, 0.8, 1]]] },
+  chitin: { substance: "chitin", heightFt: 8, directional: true,
+    variants: [
+      [[0, 1, 0.34, 0.66, 0, 0.58], [0.06, 0.94, 0.28, 0.72, 0.58, 0.86], [0.22, 0.78, 0.36, 0.64, 0.86, 1]],
+      [[0, 1, 0.3, 0.7, 0, 0.7], [0.14, 0.86, 0.36, 0.64, 0.7, 1]]] },
+  "chitin-rail": { substance: "chitin", heightFt: 0, directional: true,
+    variants: [
+      [[0.08, 0.2, 0.42, 0.58, 0, 1], [0.44, 0.56, 0.42, 0.58, 0, 1], [0.8, 0.92, 0.42, 0.58, 0, 1], [0, 1, 0.44, 0.56, 0.8, 1], [0, 1, 0.45, 0.55, 0.34, 0.46]]] },
+  cliff: { substance: "granite", heightFt: 14, directional: false,
+    variants: [
+      [[0.02, 0.98, 0.02, 0.98, 0, 0.6], [0.12, 0.86, 0.08, 0.9, 0.6, 0.86], [0.3, 0.7, 0.26, 0.66, 0.86, 1]],
+      [[0, 0.92, 0.06, 1, 0, 0.7], [0.18, 0.8, 0.2, 0.84, 0.7, 1]],
+      [[0.06, 1, 0, 0.94, 0, 0.55], [0.1, 0.7, 0.16, 0.78, 0.55, 0.92], [0.5, 0.94, 0.4, 0.86, 0.55, 0.78]],
+      [[0.04, 0.96, 0.04, 0.96, 0, 0.8], [0.22, 0.68, 0.3, 0.74, 0.8, 1]]] },
+  coral: { substance: "coral", heightFt: 9, directional: false,
+    variants: [
+      [[0.2, 0.62, 0.24, 0.66, 0, 0.72], [0.5, 0.86, 0.44, 0.8, 0, 0.5], [0.3, 0.54, 0.34, 0.58, 0.72, 1]],
+      [[0.16, 0.56, 0.3, 0.72, 0, 0.6], [0.46, 0.9, 0.18, 0.6, 0, 0.86], [0.34, 0.62, 0.5, 0.8, 0.6, 0.8]],
+      [[0.24, 0.78, 0.22, 0.76, 0, 0.42], [0.36, 0.6, 0.34, 0.58, 0.42, 1], [0.6, 0.84, 0.5, 0.74, 0.42, 0.7]],
+      [[0.1, 0.5, 0.2, 0.58, 0, 0.8], [0.44, 0.72, 0.46, 0.82, 0, 0.56], [0.2, 0.42, 0.3, 0.5, 0.8, 1]]] },
+  deck: { substance: "deck-planking", heightFt: 0, directional: false,
+    variants: null },
+  "drowned-column": { substance: "drowned-stone", heightFt: 9, directional: false,
+    variants: [
+      [[0.3, 0.7, 0.3, 0.7, 0, 0.44], [0.32, 0.68, 0.32, 0.68, 0.44, 0.52]],
+      [[0.3, 0.7, 0.3, 0.7, 0, 0.7], [0.34, 0.64, 0.3, 0.6, 0.7, 0.78]],
+      [[0.32, 0.68, 0.32, 0.68, 0, 0.28], [0.1, 0.86, 0.22, 0.48, 0, 0.14]],
+      [[0.28, 0.66, 0.34, 0.72, 0, 0.58], [0.3, 0.62, 0.36, 0.68, 0.58, 0.66], [0.6, 0.92, 0.3, 0.54, 0, 0.16]]] },
+  "drowned-wall": { substance: "drowned-stone", heightFt: 0, directional: true,
+    variants: [
+      [[0, 1, 0.18, 0.78, 0, 0.72], [0.06, 0.62, 0.22, 0.7, 0.72, 1]],
+      [[0, 1, 0.22, 0.8, 0, 0.58], [0.34, 0.94, 0.26, 0.74, 0.58, 1]]] },
+  hull: { substance: "tarred-planking", heightFt: 0, directional: false,
+    variants: null },
+  masonry: { substance: "dressed-stone", heightFt: 0, directional: false,
+    variants: null },
+  mast: { substance: "spar-timber", heightFt: 26, directional: false,
+    variants: [
+      [[0.43, 0.57, 0.43, 0.57, 0, 1], [0.06, 0.94, 0.46, 0.54, 0.6, 0.655], [0.2, 0.8, 0.47, 0.53, 0.84, 0.875], [0.34, 0.66, 0.34, 0.66, 0, 0.06]]] },
+  palisade: { substance: "log-palisade", heightFt: 10, directional: true,
+    variants: [
+      [[0, 0.24, 0.34, 0.66, 0, 0.9], [0.04, 0.2, 0.4, 0.6, 0.9, 1], [0.26, 0.5, 0.34, 0.66, 0, 0.96], [0.3, 0.46, 0.4, 0.6, 0.96, 1], [0.52, 0.76, 0.34, 0.66, 0, 0.88], [0.56, 0.72, 0.4, 0.6, 0.88, 1], [0.78, 1, 0.34, 0.66, 0, 0.94]]] },
+  parapet: { substance: "dressed-stone", heightFt: 9, directional: true,
+    variants: [
+      [[0, 1, 0.3, 0.7, 0, 0.62], [0, 0.3, 0.26, 0.74, 0.62, 1], [0.42, 0.72, 0.26, 0.74, 0.62, 1]]] },
+  plating: { substance: "riveted-brass", heightFt: 8, directional: true,
+    variants: [
+      [[0, 1, 0.32, 0.68, 0, 0.84], [0, 1, 0.26, 0.74, 0.84, 1], [0.1, 0.34, 0.2, 0.3, 0.3, 0.62], [0.62, 0.88, 0.2, 0.3, 0.3, 0.62]]] },
+  "plating-rail": { substance: "riveted-brass", heightFt: 0, directional: true,
+    variants: [
+      [[0.08, 0.2, 0.42, 0.58, 0, 1], [0.44, 0.56, 0.42, 0.58, 0, 1], [0.8, 0.92, 0.42, 0.58, 0, 1], [0, 1, 0.44, 0.56, 0.8, 1], [0, 1, 0.45, 0.55, 0.34, 0.46]]] },
+  railing: { substance: "spar-timber", heightFt: 0, directional: true,
+    variants: [
+      [[0.08, 0.2, 0.42, 0.58, 0, 1], [0.44, 0.56, 0.42, 0.58, 0, 1], [0.8, 0.92, 0.42, 0.58, 0, 1], [0, 1, 0.44, 0.56, 0.8, 1], [0, 1, 0.45, 0.55, 0.34, 0.46]]] },
+  scree: { substance: "scree", heightFt: 0, directional: false,
+    variants: null },
+  "sewer-brick": { substance: "sewer-brick", heightFt: 0, directional: false,
+    variants: null },
+  "sewer-ledge": { substance: "wet-flagstone", heightFt: 0, directional: false,
+    variants: null },
+  sludge: { substance: "sludge", heightFt: 0, directional: false,
+    variants: null },
+};

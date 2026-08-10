@@ -56,6 +56,20 @@ class GeneratedMap:
     # Suggested ambient effects the scene engine may materialise (hazards,
     # light sources): [{"kind","name","shape","x","y","radius_ft",...}]
     effects: list[dict] = field(default_factory=list)
+    # Per-square material overrides, sparse: {"x,y": skin name}. See vtt.skins.
+    # The archetype already says what most of a board is made of; this is for
+    # the exceptions a generator BUILDS — a camp is palisaded, and the tents
+    # inside it are canvas. Purely a look: no rule reads one.
+    skins: dict[str, str] = field(default_factory=dict)
+    # A whole-board style choice where the archetype genuinely has one (a
+    # skyship is timber, brass-and-steam or grown). Recorded so a table's ship
+    # stays the ship it was.
+    style: str = ""
+    # Upper storeys this layout builds, and the ladders and stairs into them:
+    # [{"name","base_ft","terrain":[rows]}] and [{"level","x","y","to_level",
+    # "to_x","to_y","name"}]. A watchtower is a real second floor, not a prop.
+    levels: list[dict] = field(default_factory=list)
+    stairs: list[dict] = field(default_factory=list)
 
     @property
     def width(self) -> int:
@@ -510,6 +524,18 @@ def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 
 def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """A crossing, and the thing that GUARDS a crossing.
+
+    A bridge with bare ground at both ends is a corridor with a hole in it: the
+    only decision it offers is whether to cross. A tower at each end is what
+    makes it a place — high ground that has to be climbed to, a room to be
+    fought out of, and an archer who can shoot down the length of the span while
+    the party is out on it with nowhere to stand. That last part is the reason
+    it is worth building rather than drawing: the tower top is a real storey, so
+    every distance, cover and area check already knows the archer is up there.
+    """
+    from . import structures
+
     chasm = "x" if rng.random() < 0.5 else "W"
     g.fill_rect(0, 0, g.width - 1, g.height - 1, "," if chasm == "x" else "g")
     gap_top = g.height // 2 - max(1, g.height // 6)
@@ -520,9 +546,30 @@ def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         g.set(span_x, y, "b")
         if g.width > 14:
             g.set(span_x + 1, y, "b")
-    _scatter(g, rng, "R", 0.04, only_on=(",", "g"))
-    out.description = ("a rope-and-plank bridge over a black chasm" if chasm == "x"
-                       else "a plank bridge over deep, cold water")
+
+    # A gatehouse at each end, offset to the side so it overlooks the mouth of
+    # the span without standing in it. Tried in a few places and skipped where
+    # the bank is too narrow, rather than forced — a tower half off the board is
+    # worse than a bank with none.
+    ground = (",", "g")
+    for bank_far, anchor in ((True, gap_top), (False, gap_bot)):
+        for dx in (2, -6, 3, -7, 4):
+            size = 5
+            x0 = span_x + dx
+            y0 = anchor - size - 1 if bank_far else anchor + 2
+            b = structures.watchtower(g, rng, out, x0, y0, on=ground,
+                                      base_ft=15, name="tower top")
+            if b.interior:
+                out.skins.update(b.skins)
+                out.doors.extend(b.doors)
+                break
+
+    _scatter(g, rng, "R", 0.04, only_on=ground)
+    out.description = (
+        "a plank bridge over a black chasm, a stone watchtower squatting at "
+        "each end of the span" if chasm == "x" else
+        "a plank bridge over deep cold water, a stone watchtower squatting at "
+        "each end of the span")
     out.effects.append({"kind": "marker", "name": "the span", "shape": "path",
                         "squares": [[span_x, y] for y in range(gap_top, gap_bot + 1)]})
 
@@ -546,47 +593,176 @@ def _gen_ruins(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 
 def _gen_camp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """Tents you can get INSIDE, in a palisaded ring around the fire.
+
+    The tents used to be 2x2 blocks of impassable furniture, which meant a
+    creature could only ever be BESIDE one — and a token on the neighbouring
+    square read as a soldier standing on the canvas. A tent is a room: walls
+    that block sight, a floor, and a flap to come in by. That turns the camp
+    from an obstacle course into somewhere with insides to clear, which is what
+    a camp assault actually is.
+    """
+    from . import structures
+
     g.fill_rect(0, 0, g.width - 1, g.height - 1, "g")
     cx, cy = g.width // 2, g.height // 2
+
+    # Tents first, while the ground is still clear: they need a clean footprint,
+    # and scatter dropped afterwards flows around them.
+    want = rng.randint(3, 5)
+    pitched = 0
+    for _ in range(60):
+        if pitched >= want:
+            break
+        tx = rng.randrange(1, max(2, g.width - 6))
+        ty = rng.randrange(1, max(2, g.height - 6))
+        if abs(tx - cx) < 4 and abs(ty - cy) < 4:
+            continue                       # leave the fire its circle
+        b = structures.tent(g, rng, tx, ty, on=("g",))
+        if b.interior:
+            out.skins.update(b.skins)
+            pitched += 1
+
     g.set(cx, cy, "f")
     out.effects.append({"kind": "light", "name": "campfire", "shape": "sphere",
                         "x": cx, "y": cy, "radius_ft": 20, "color": "#ffb347"})
-    for _ in range(rng.randint(3, 6)):
-        a = rng.random() * math.tau
-        r = min(g.width, g.height) * rng.uniform(0.2, 0.4)
-        tx, ty = int(cx + math.cos(a) * r), int(cy + math.sin(a) * r)
-        for dx in range(2):
-            for dy in range(2):
-                if g.in_bounds(tx + dx, ty + dy):
-                    g.set(tx + dx, ty + dy, "n")
+
+    # One stretch of palisade with a gate in it. A full ring would wall the
+    # board in; a run along one approach is what a camp actually throws up, and
+    # it gives the fight a front.
+    if g.width > 14 and g.height > 10:
+        top = rng.random() < 0.5
+        wy = 1 if top else g.height - 2
+        x_from = rng.randrange(1, max(2, g.width // 3))
+        x_to = min(g.width - 2, x_from + rng.randint(g.width // 3, g.width // 2))
+        gate = rng.randrange(x_from + 1, max(x_from + 2, x_to))
+        for x in range(x_from, x_to + 1):
+            if g.get(x, wy) != "g":
+                continue                   # never wall a tent up
+            g.set(x, wy, "/" if x == gate else WALL)
+            out.skins[f"{x},{wy}"] = "palisade"
+
     _scatter(g, rng, "o", 0.03, only_on=("g",))
     _scatter(g, rng, "\"", 0.05, only_on=("g",))
+    _connect_regions(g, rng)
     out.lighting = "dim"
-    out.description = "a war camp — tents in a loose ring around a guttering fire"
+    out.description = ("a war camp — canvas tents around a guttering fire, a "
+                       "log palisade thrown up across one approach")
+
+
+def _hull(g: Grid, rng: random.Random, surround: str, deck: str = "b") -> int:
+    """Carve a SHIP-shaped deck out of the board. Returns the stern's x.
+
+    The old shape was a symmetric lens — the same taper at both ends — which is
+    a leaf, not a vessel, and it is why every ship board read as a rectangle
+    with the corners knocked off. A hull is not symmetric fore and aft: it comes
+    to a point at the bow, holds its full beam through the waist, and finishes
+    in a broad flat transom. Those three facts are the whole silhouette, and the
+    silhouette is what the painter is actually conditioned on.
+    """
+    g.fill_rect(0, 0, g.width - 1, g.height - 1, surround)
+    length = max(6, g.width - 2)
+    beam = max(4, g.height - 2)
+    cy = (g.height - 1) / 2.0
+
+    def half_beam(t: float) -> float:
+        """Half-width at t along the hull; 0 is the bow, 1 the transom."""
+        if t < 0.42:                       # the bow, entering fine
+            k = 0.10 + 0.90 * (t / 0.42) ** 0.62
+        elif t < 0.78:                     # the waist, full beam
+            k = 1.0
+        else:                              # quarters easing to a flat stern
+            k = 1.0 - 0.28 * ((t - 0.78) / 0.22) ** 1.4
+        return k * (beam / 2.0)
+
+    for i in range(length):
+        x = 1 + i
+        hb = half_beam(i / float(length - 1))
+        for y in range(g.height):
+            if abs(y - cy) <= hb:
+                g.set(x, y, deck)
+    return length          # the last deck column is x = length
+
+
+def _rail(g: Grid, rng: random.Random, surround: str) -> None:
+    """A stanchion rail everywhere the deck meets nothing, bar one gangway.
+
+    Continuous on purpose. It used to be dropped at random on a fifth of the
+    squares, which reads as a rail somebody has already smashed — and on a
+    board where falling off the edge is a real outcome, a gap in the rail is a
+    mechanical statement (half cover ends here) that nobody meant to make.
+    """
+    edge = [(x, y) for x, y in g.squares()
+            if g.get(x, y) == "b"
+            and any(g.get(x + dx, y + dy) == surround
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))]
+    if not edge:
+        return
+    gangway = edge[rng.randrange(len(edge))]
+    for x, y in edge:
+        if (x, y) != gangway:
+            g.set(x, y, "w")
+
+
+def _rig_ship(g: Grid, rng: random.Random, out: GeneratedMap, stern_x: int,
+              *, cabin_skin: str = "hull") -> None:
+    """The furniture that makes a deck a ship: mast, cabin, hatch and hold."""
+    from . import structures
+    from .terrain import VOID
+
+    cy = g.height // 2
+    # The mast steps a little forward of amidships, where a mast goes.
+    mast_x = max(2, int(stern_x * 0.44))
+    for dx in (0, 1, -1, 2):
+        if g.get(mast_x + dx, cy) == "b":
+            g.set(mast_x + dx, cy, "O")
+            mast_x = mast_x + dx
+            break
+
+    # The captain's quarters, aft. Placed against the transom where the beam is
+    # still full, and skipped rather than squeezed if the board is too small.
+    built = None
+    for back in (5, 6, 4, 7):
+        for w in (5, 4):
+            x0 = stern_x - back
+            y0 = cy - 2
+            b = structures.cabin(g, rng, x0, y0, skin=cabin_skin, on=("b",))
+            if b.interior:
+                built = b
+                break
+        if built:
+            break
+    if built:
+        out.skins.update(built.skins)
+
+    # Below decks: a real storey under the weather deck, reached by one hatch.
+    # Negative base_ft is the whole trick — an upper floor and a hold are the
+    # same machinery pointed opposite ways, and every distance, cover and area
+    # check already folds a level's base height in.
+    deck_squares = [(x, y) for x, y in g.squares() if g.get(x, y) == "b"]
+    if len(deck_squares) < 12:
+        return
+    rows = [[VOID] * g.width for _ in range(g.height)]
+    for x, y in deck_squares:
+        rows[y][x] = FLOOR
+    out.levels.append({"name": "Below Decks", "base_ft": -8,
+                       "terrain": ["".join(r) for r in rows], "stairs": []})
+    level = len(out.levels)
+    hx, hy = deck_squares[rng.randrange(len(deck_squares))]
+    out.stairs.append({"level": 0, "x": hx, "y": hy, "to_level": level,
+                       "to_x": hx, "to_y": hy, "kind": "companionway"})
 
 
 def _gen_ship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
-    g.fill_rect(0, 0, g.width - 1, g.height - 1, "W")
-    # A hull: taper the bow and stern so it reads as a deck, not a raft.
-    inset = max(1, g.height // 6)
-    for y in range(g.height):
-        taper = int(abs(y - (g.height - 1) / 2) / max(1, (g.height - 1) / 2) * inset * 2)
-        for x in range(taper + 1, g.width - taper - 1):
-            g.set(x, y, "b")
-    # Railing: every deck square with open water beside it.
-    for x, y in list(g.squares()):
-        if g.get(x, y) != "b":
-            continue
-        if any(g.get(x + dx, y + dy) == "W"
-               for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
-            if rng.random() < 0.8:
-                g.set(x, y, "w")
-    mast_x = g.width // 2
-    g.set(mast_x, g.height // 2, "O")
+    stern = _hull(g, rng, "W")
+    _rail(g, rng, "W")
+    _rig_ship(g, rng, out, stern)
     _scatter(g, rng, "o", 0.05, only_on=("b",))
     _scatter(g, rng, "%", 0.02, only_on=("b",))
     _connect_regions(g, rng)
-    out.description = "the deck of a ship — rigging, crates lashed to the rail, salt spray"
+    out.description = ("the deck of a ship under sail — a single mast stepped "
+                       "amidships, a rail you can see the sea through, the "
+                       "captain's cabin aft and a hatch down into the hold")
 
 
 def _gen_arena(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -652,9 +828,14 @@ def _gen_pass(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
             if g.get(x, yy) == "R" and rng.random() < 0.05:
                 g.set(x, yy, "x")
     _connect_regions(g, rng)
+    # Boulders fallen into the track. Rock, so the archetype's own cliff skin
+    # covers them — the pass used to draw every solid thing as one grey wall,
+    # which is most of why it read as built rather than fallen.
+    _scatter(g, rng, "O", 0.035, only_on=(FLOOR, ","))
     out.elevation = {f"{x},{yy}": 10 for x, yy in g.squares()
                      if g.get(x, yy) == "," and rng.random() < 0.2}
-    out.description = "a high mountain track between rock faces, loose scree underfoot"
+    out.description = ("a high pass cut between raw granite cliffs — fractured "
+                       "rock faces, fallen boulders, loose scree underfoot")
 
 
 def _gen_sewer(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -667,8 +848,15 @@ def _gen_sewer(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         g.set(x, mid, "b")
     _scatter(g, rng, ",", 0.06, only_on=(FLOOR,))
     _scatter(g, rng, "%", 0.03, only_on=(FLOOR,))
+    # Silted-up stretches where the channel has choked. Mud, not water: it costs
+    # the same movement and it is the honest reason a sewer smells.
+    for _ in range(rng.randint(1, 3)):
+        _blob(g, rng, rng.randrange(2, max(3, g.width - 2)), mid,
+              rng.randint(2, 6), "m")
     out.lighting = "dark"
-    out.description = "a vaulted sewer tunnel, ledges either side of a slow green channel"
+    out.description = ("a vaulted sewer tunnel — slime-blackened brick to the "
+                       "tide line, weeping mortar, ledges either side of a slow "
+                       "channel of green filth")
 
 
 def _gen_reef(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -682,11 +870,35 @@ def _gen_reef(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
         _blob(g, rng, cx, cy, rng.randint(1, 4), "R")      # coral heads
     _scatter(g, rng, "s", 0.08, only_on=("~",), mode="swim")
-    _scatter(g, rng, "O", 0.02, only_on=("~",), mode="swim")
+
+    # A drowned ruin. Columns on a seabed should already have FALLEN — an intact
+    # colonnade underwater is a stranger sight than a broken one, and the board
+    # had no way to say so until skins could. The layout is a proper rectangle
+    # of stubs rather than scattered pillars, because what makes a ruin read as
+    # architecture is that it was once regular.
+    if g.width >= 14 and g.height >= 12 and rng.random() < 0.8:
+        rw = rng.randint(5, max(6, g.width // 2))
+        rh = rng.randint(4, max(5, g.height // 2))
+        rx = rng.randrange(1, max(2, g.width - rw - 1))
+        ry = rng.randrange(1, max(2, g.height - rh - 1))
+        for x in range(rx, rx + rw + 1):
+            for y in range(ry, ry + rh + 1):
+                if not g.in_bounds(x, y) or g.get(x, y) not in ("~", "s"):
+                    continue
+                edge = x in (rx, rx + rw) or y in (ry, ry + rh)
+                corner = x in (rx, rx + rw) and y in (ry, ry + rh)
+                if corner or (edge and (x + y) % 3 == 0 and rng.random() < 0.7):
+                    g.set(x, y, "O")            # a column, snapped off
+                    out.skins[f"{x},{y}"] = "drowned-column"
+                elif edge and rng.random() < 0.35:
+                    g.set(x, y, "w")            # a wall worn down to a stub
+                    out.skins[f"{x},{y}"] = "drowned-wall"
+    _scatter(g, rng, "O", 0.015, only_on=("~",), mode="swim")
     out.mode = "swim"
     out.lighting = "dim"
     out.description = ("a sunlit coral shelf under the sea — sand flats, deep "
-                       "blue channels, coral heads taller than a man")
+                       "blue channels, coral heads taller than a man, and the "
+                       "snapped columns of a drowned ruin furred with weed")
 
 
 def _gen_open_water(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -734,26 +946,34 @@ def _gen_sky(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 
 def _gen_skyship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
-    """Aloft: the deck of a flying ship, with nothing at all past the rail."""
-    g.fill_rect(0, 0, g.width - 1, g.height - 1, "^")
-    inset = max(1, g.height // 6)
-    for y in range(g.height):
-        taper = int(abs(y - (g.height - 1) / 2) / max(1, (g.height - 1) / 2) * inset * 2)
-        for x in range(taper + 1, g.width - taper - 1):
-            g.set(x, y, "b")
-    for x, y in list(g.squares()):
-        if g.get(x, y) != "b":
-            continue
-        if any(g.get(x + dx, y + dy) == "^"
-               for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
-            if rng.random() < 0.8:
-                g.set(x, y, "w")                            # the rail
-    g.set(g.width // 2, g.height // 2, "O")                 # the mast
+    """Aloft: the deck of a flying ship, with nothing at all past the rail.
+
+    A skyship is the one board whose style is a genuine CHOICE rather than a
+    material fact. A flying vessel can be a timber ship that happens to fly, a
+    riveted brass-and-steam contraption, or something grown rather than built —
+    and all three are right, so the generator picks one from the seed and
+    records it. Everything downstream (materials, silhouettes, what the painter
+    is told) follows from that one word.
+    """
+    out.style = rng.choice(("timber", "timber", "steampunk", "organic"))
+    stern = _hull(g, rng, "^")
+    _rail(g, rng, "^")
+    _rig_ship(g, rng, out, stern,
+              cabin_skin={"steampunk": "plating",
+                          "organic": "chitin"}.get(out.style, "hull"))
     _scatter(g, rng, "o", 0.05, only_on=("b",), mode="fly")
     out.mode = "fly"
     out.lighting = "bright"
-    out.description = ("the deck of a skyship under sail, rigging taut, open "
-                       "air past every rail")
+    out.description = {
+        "steampunk": ("the deck of a skyship — a riveted brass-and-iron "
+                      "contraption, boiler venting, pipework along the rails, "
+                      "open air past every side"),
+        "organic": ("the deck of a skyship that was GROWN rather than built — "
+                    "ridged chitin underfoot, veined and iridescent, open air "
+                    "past every side"),
+    }.get(out.style,
+          "the deck of a skyship under sail, rigging taut, open air past "
+          "every rail")
 
 
 def _gen_open(g: Grid, rng: random.Random, out: GeneratedMap) -> None:

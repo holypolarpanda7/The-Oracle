@@ -130,7 +130,51 @@ def render() -> str:
         body = ", ".join("[" + ", ".join(_num(v) for v in p) + "]" for p in parts)
         lines.append(f"  {kind}: [{_num(ft)}, [{body}]],")
     lines.append("};\n")
+
+    # --- skins ------------------------------------------------------------
+    from vtt.skins import SKINS
+
+    lines.append(
+        "/** What a square is MADE OF, as opposed to what it DOES.\n"
+        " *\n"
+        " *  A tile code answers the rules — cover, movement, sight. A skin\n"
+        " *  answers the eye, and nothing else: no rule reads one. It may hand\n"
+        " *  over its own silhouette (which wins over everything, including the\n"
+        " *  wall-face model, so a mountainside is drawn as rock mass rather\n"
+        " *  than masonry panels) and its own drawn height — but never on a\n"
+        " *  tile whose height the rules quote. See vtt/skins.py. */\n"
+        "export interface SkinShape {\n"
+        "  readonly substance: string;\n"
+        "  /** Feet. 0 means keep the tile's own standing height. */\n"
+        "  readonly heightFt: number;\n"
+        "  /** Line up along the run instead of taking a quarter-turn. */\n"
+        "  readonly directional: boolean;\n"
+        "  readonly variants: readonly (readonly (readonly [\n"
+        "    number, number, number, number, number, number])[])[] | null;\n"
+        "}\n"
+        "export const SKINS: Record<string, SkinShape> = {")
+    for name, sk in sorted(SKINS.items()):
+        if sk.variants:
+            vs = []
+            for parts in sk.variants:
+                body = ", ".join(
+                    "[" + ", ".join(_num(v) for v in p) + "]" for p in parts)
+                vs.append(f"[{body}]")
+            variants = "[\n      " + ",\n      ".join(vs) + "]"
+        else:
+            variants = "null"
+        lines.append(
+            f'  {_skin_key(name)}: {{ substance: "{sk.substance}", '
+            f"heightFt: {_num(sk.height_ft)}, "
+            f"directional: {'true' if sk.directional else 'false'},\n"
+            f"    variants: {variants} }},")
+    lines.append("};\n")
     return "\n".join(lines)
+
+
+def _skin_key(name: str) -> str:
+    """Skin names are kebab-case, so most of them need quoting as JS keys."""
+    return name if name.isidentifier() else f'"{name}"'
 
 
 def _key(code: str) -> str:

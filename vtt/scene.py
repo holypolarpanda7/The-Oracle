@@ -58,6 +58,22 @@ from .terrain import (APERTURES, FLOOR, VOID, Grid, aperture_axis,
 Square = tuple[int, int]
 
 
+def _ft_offset(ft) -> str:
+    """A storey's height relative to the ground floor, signed.
+
+    A level's ``base_ft`` was assumed to be a height ABOVE, and the DM board
+    hard-coded the plus sign to match. It is really an offset, and a ship's hold
+    proved it: eight feet BELOW the weather deck is a perfectly ordinary storey
+    built out of the same machinery, and it printed as "+-8 ft".
+    """
+    n = int(ft or 0)
+    if n > 0:
+        return f"+{n} ft"
+    if n < 0:
+        return f"{n} ft"
+    return "ground level"
+
+
 def _default_engine(database_url: Optional[str] = None) -> Engine:
     if database_url is None:
         database_url = os.getenv("DATABASE_URL")
@@ -127,6 +143,8 @@ class VttEngine:
     _LATE_COLUMNS: tuple[tuple[str, str], ...] = (
         ("iso_image_id", "INTEGER"),
         ("iso_art_status", "VARCHAR"),
+        ("skins", "JSON"),
+        ("board_style", "VARCHAR"),
     )
 
     def _add_missing_columns(self) -> None:
@@ -199,6 +217,8 @@ class VttEngine:
             width=gen.width, height=gen.height, square_ft=5,
             terrain=gen.grid.to_rows(), elevation=gen.elevation or None,
             doors=gen.doors or None, lighting=gen.lighting,
+            skins=gen.skins or None, board_style=gen.style or "",
+            levels=[dict(l) for l in gen.levels] or None,
             fog=self._blank_fog(gen.width, gen.height) if fog else None,
             seed=seed, active=True, revision=1,
             notes={"description": gen.description,
@@ -223,6 +243,21 @@ class VttEngine:
         self._log(map_id, session_id, "open", summary=f"{row.name} ({arch})",
                   payload={"archetype": arch, "seed": seed,
                            "size": [gen.width, gen.height], "kind": kind})
+
+        # Ways up that the LAYOUT built — a watchtower's ladder, a ship's
+        # companionway. Through `add_stairs` rather than written straight onto
+        # the row, so a generated connector is checked and recorded exactly like
+        # one a DM hangs by hand, and `take_stairs` is still the only way across.
+        for st in gen.stairs:
+            try:
+                self.add_stairs(
+                    map_id, int(st.get("level", 0)),
+                    int(st["x"]), int(st["y"]),
+                    to_level=int(st.get("to_level", 1)),
+                    to_x=int(st["to_x"]), to_y=int(st["to_y"]),
+                    kind=str(st.get("kind") or "stairs"))
+            except Exception as e:
+                print(f"[vtt] generated stair skipped: {e}")
 
         # Ambient features the generator suggested (campfire light, hazards).
         for eff in gen.effects:
@@ -309,6 +344,14 @@ class VttEngine:
                            seed=row.seed, lighting=row.lighting)
         # The stored terrain wins — a DM may have edited it after generation.
         gen.grid = self.grid_of(row)
+        # ...and so do the stored skins. Regenerating from the seed produces
+        # them again identically, but a board whose materials were chosen at
+        # open time and then edited must be REPAINTED as it stands, not as the
+        # generator would build it today.
+        if row.skins:
+            gen.skins = dict(row.skins)
+        if row.board_style:
+            gen.style = row.board_style
         return gen
 
     def active_scene(self, session_id: str) -> Optional[TacticalMap]:
@@ -830,6 +873,24 @@ class VttEngine:
         return {"id": row.id, "token_id": row.payload.get("token_id"),
                 "path": [[int(p[0]), int(p[1])] for p in path]}
 
+    def skins_for(self, map_id: int) -> dict:
+        """What this board is MADE of: ``{"codes": {...}, "squares": {...}}``.
+
+        ``codes`` is derived from the archetype — a reef's rock is coral, every
+        square of it, and nothing has to write that down three hundred times.
+        ``squares`` holds only the exceptions the generator built. Both are pure
+        looks: no rule reads a skin, and the renderers use them for material and
+        silhouette alone. See :mod:`vtt.skins`.
+        """
+        from . import skins as _skins
+
+        row = self.get_scene(map_id)
+        if row is None:
+            return {"codes": {}, "squares": {}}
+        return {"codes": _skins.skins_for(row.archetype or "",
+                                          style=row.board_style or ""),
+                "squares": dict(row.skins or {})}
+
     def materials_for(self, map_id: int) -> dict[str, int]:
         """The surface swatch for every tile code on this board, {code: id}.
 
@@ -850,26 +911,41 @@ class VttEngine:
 
         from .art import NO_MATERIAL, board_look, material_look, material_ref
 
+        from . import skins as _skins
+
         look = board_look(row.biome or "", row.archetype or "")
+        sk = self.skins_for(map_id)
+        code_skins, square_skins = sk["codes"], sk["squares"]
         out: dict[str, int] = {}
         for lvl in range(len(self.levels_of(row))):
             g = self.grid_of(row, lvl)
-            for code in {g.get(x, y) for x, y in g.squares()}:
-                if code in NO_MATERIAL or code in out:
+            # Keyed by (code, skin) rather than code alone: a board can carry a
+            # palisade AND canvas tents, both of them '#', and one swatch
+            # between them would make the tents log walls. The client builds the
+            # same key from the skins it is shipped.
+            for x, y in g.squares():
+                code = g.get(x, y)
+                if code in NO_MATERIAL:
+                    continue
+                skin = _skins.skin_at(code, x, y, codes=code_skins,
+                                      squares=square_skins) if lvl == 0 else \
+                    str(code_skins.get(code) or "")
+                slot = f"{code}@{skin}" if skin else code
+                if slot in out:
                     continue
                 # A look-agnostic surface is filed once, under "any" — lava is
                 # lava wherever it is, and asking for a dungeon's lava would
                 # miss a bucket that already holds the answer.
-                bucket = material_look(code) or look
-                key = (code, bucket)
+                bucket = material_look(code, skin) or look
+                key = (slot, bucket)
                 if key not in _MATERIAL_IDS:
                     found = self.image_store.list_for(
-                        ImageKind.MATERIAL, slugify(material_ref(code)),
+                        ImageKind.MATERIAL, slugify(material_ref(code, skin)),
                         context_key(bucket))
                     _MATERIAL_IDS[key] = found[0]["image_id"] if found else None
                 got = _MATERIAL_IDS[key]
                 if got:
-                    out[code] = got
+                    out[slot] = got
         return out
 
     def render_objects(self, map_id: int, *, conditions: str = "") -> int:
@@ -3203,10 +3279,14 @@ class VttEngine:
             "objects": self.objects_for(map_id),
             # Scenery: drawn by every view, honoured by none of the rules.
             "decor": self.decor_for(map_id),
-            # {tile code -> swatch image id}. The isometric board builds its
-            # geometry out of these; a code missing here just falls back to its
-            # flat tile colour, which is plainer and equally playable.
+            # {tile code (or "code@skin") -> swatch image id}. The isometric
+            # board builds its geometry out of these; a slot missing here just
+            # falls back to its flat tile colour, which is plainer and equally
+            # playable.
             "materials": self.materials_for(map_id),
+            # What the board is MADE of, as opposed to what it does. Material
+            # and silhouette only — no rule reads a skin. See vtt/skins.py.
+            "skins": self.skins_for(map_id),
             # The route the last walk actually took, so a viewer can animate a
             # creature AROUND the wall rather than through it.
             "last_move": self.last_move(map_id),
@@ -3259,7 +3339,7 @@ class VttEngine:
         storeys = ("" if len(floors) < 2 else
                    f", {len(floors)} floors: "
                    + "; ".join(f"{i} {f.get('name')} "
-                               f"(+{int(f.get('base_ft') or 0)} ft)"
+                               f"({_ft_offset(f.get('base_ft'))})"
                                for i, f in enumerate(floors)))
         lines = [f"# Board: {row.name} — {row.width}x{row.height} squares "
                  f"({row.square_ft} ft each), {light}{medium}{storeys}"]
@@ -3274,7 +3354,7 @@ class VttEngine:
                 stairs = self.stairs_on(row, fi)
                 lines.append(
                     f"-- level {fi}: {floor.get('name')} "
-                    f"(+{int(floor.get('base_ft') or 0)} ft)"
+                    f"({_ft_offset(floor.get('base_ft'))})"
                     + (" — " + ", ".join(
                         f"{s.get('kind', 'stairs')} at {s['x']},{s['y']} "
                         f"-> level {s['to']}" for s in stairs[:4])
@@ -3394,7 +3474,7 @@ class VttEngine:
                 extras.append("ACTING NOW")
             if int(t.level or 0):
                 extras.append(f"on level {t.level} "
-                              f"(+{self.level_base_ft(row, int(t.level))} ft)")
+                              f"({_ft_offset(self.level_base_ft(row, int(t.level)))})")
             if t.mounted_on:
                 extras.append(f"riding {t.mounted_on} — move {t.mounted_on}")
             if t.squeezing:

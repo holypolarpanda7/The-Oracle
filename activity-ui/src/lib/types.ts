@@ -444,11 +444,22 @@ export interface VttScene {
   /** Scenery — drawn by every view, honoured by none of the rules. Never tall
    *  enough to be mistaken for cover; see vtt/decor.py. */
   decor?: { x: number; y: number; kind: string }[];
-  /** Tile code -> the surface swatch it is built from, via /imagery/image/{id}.
-   *  Shared by kind across every board in every session, so a code absent here
+  /** Material slot -> the surface swatch it is built from, via
+   *  /imagery/image/{id}. The slot is a tile code, or `code@skin` where the
+   *  square is skinned — a board can carry a log palisade AND canvas tents,
+   *  both of them '#', and one swatch between them would make the tents logs.
+   *  Shared by slot across every board in every session, so a slot absent here
    *  simply falls back to its flat tile colour. Objects resolve to what they
    *  are MADE of, so a pillar and an altar arrive pointing at one stone. */
   materials?: Record<string, number>;
+  /** What the board is MADE OF, as opposed to what it does. `codes` is the
+   *  archetype's default per tile code; `squares` holds the exceptions a
+   *  generator built, keyed "x,y". Material and silhouette only — no rule
+   *  reads a skin, and none may. See vtt/skins.py. */
+  skins?: {
+    codes?: Record<string, string>;
+    squares?: Record<string, string>;
+  };
   /** What broke, and what it left. */
   debris?: VttDebris[];
   background_image_id?: number | null;
