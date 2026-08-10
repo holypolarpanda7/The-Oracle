@@ -66,6 +66,8 @@ def main(argv=None) -> int:
                     help="override the depth ControlNet strength")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--size", default="24x18", help="board size, WxH squares")
+    ap.add_argument("--sheet", action="store_true",
+                    help="composite everything drawn into one contact sheet")
     ap.add_argument("--depth", action="store_true",
                     help="also write each board's depth map beside it")
     a = ap.parse_args(argv)
@@ -124,7 +126,47 @@ def main(argv=None) -> int:
     dt = time.time() - t0
     print(f"\n{ok} painted, {skipped} left as geometry, in {dt:.0f}s "
           f"({dt / max(1, ok):.0f}s each) -> {OUT.relative_to(ROOT)}")
+    if a.sheet:
+        _sheet()
     return 0
+
+
+def _sheet() -> None:
+    """One image of every environment, so the range can be judged together.
+
+    Composited over a dark ground on purpose: the paintings are stored with
+    their surround cut away, and on white the transparent corners would read as
+    part of the picture.
+    """
+    from PIL import Image, ImageDraw
+
+    shots = sorted(f for f in OUT.glob("*.png")
+                   if not f.name.endswith("-depth.png") and f.name != "gallery.png")
+    if not shots:
+        print("nothing to composite")
+        return
+    cols = 3
+    cell_w, cap = 460, 20
+    rows_n = (len(shots) + cols - 1) // cols
+    thumbs = []
+    for f in shots:
+        im = Image.open(f).convert("RGBA")
+        h = max(1, round(cell_w * im.height / im.width))
+        thumbs.append((f.stem, im.resize((cell_w, h), Image.LANCZOS)))
+    cell_h = max(t.height for _n, t in thumbs)
+    pad = 10
+    sheet = Image.new("RGB",
+                      (cols * (cell_w + pad) + pad,
+                       rows_n * (cell_h + pad + cap) + pad), (12, 16, 26))
+    d = ImageDraw.Draw(sheet)
+    for i, (name, im) in enumerate(thumbs):
+        x = pad + (i % cols) * (cell_w + pad)
+        y = pad + (i // cols) * (cell_h + pad + cap)
+        sheet.paste(im, (x, y), im)
+        d.text((x + 2, y + cell_h + 4), name, fill=(198, 208, 232))
+    path = OUT / "gallery.png"
+    sheet.save(path)
+    print(f"contact sheet -> {path.relative_to(ROOT)} ({len(thumbs)} environments)")
 
 
 if __name__ == "__main__":

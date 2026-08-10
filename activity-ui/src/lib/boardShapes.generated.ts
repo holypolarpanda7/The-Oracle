@@ -33,6 +33,16 @@ export const COVER_HEIGHT_FT: Record<string, number> = {
   w: 3,
 };
 
+/** How thick a platform is, in feet, where its floor meets a hole.
+ *  Without it an island is a paper cut-out hanging in nothing. */
+export const SKIRT_FT = 8;
+
+/** Codes that are a HOLE, not ground — nothing is drawn on them.
+ *  Open sky is air and a chasm is the absence of floor; drawing
+ *  either as a surface invents ground the rules say you fall
+ *  through. */
+export const HOLE_CODES: ReadonlySet<string> = new Set([" ", "^", "x"]);
+
 /** Codes that are the BUILDING rather than something standing in it. */
 export const STRUCTURE_CODES: ReadonlySet<string> = new Set(["#", "R"]);
 

@@ -32,8 +32,8 @@ import type { VttScene } from "./types";
 // a drift waiting to happen, and the failure mode is invisible: the painting
 // lands on furniture the player is not looking at.
 export {
-  COVER_HEIGHT_FT, DECOR_KINDS, HEIGHT_JITTER, MAX_DECOR_HEIGHT_FT,
-  OBJECT_VARIANTS, PILLAR_RADIUS, STRUCTURE_CODES, TILE_HEIGHT_FT,
+  COVER_HEIGHT_FT, DECOR_KINDS, HEIGHT_JITTER, HOLE_CODES, MAX_DECOR_HEIGHT_FT,
+  OBJECT_VARIANTS, PILLAR_RADIUS, SKIRT_FT, STRUCTURE_CODES, TILE_HEIGHT_FT,
   WALL_THICKNESS,
 } from "./boardShapes.generated";
 import {

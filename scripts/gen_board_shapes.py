@@ -56,7 +56,8 @@ def _num(v: float) -> str:
 def render() -> str:
     from vtt.art import STRUCTURE_CODES
     from vtt.isocam import (
-        HEIGHT_JITTER, OBJECT_VARIANTS, PILLAR_RADIUS, WALL_THICKNESS,
+        HEIGHT_JITTER, HOLE_CODES, OBJECT_VARIANTS, PILLAR_RADIUS, SKIRT_FT,
+        WALL_THICKNESS,
     )
     from vtt.decor import DECOR_KINDS, MAX_DECOR_HEIGHT_FT
     from vtt.terrain import STAND_HEIGHT_FT, TILES
@@ -80,6 +81,17 @@ def render() -> str:
         if t.cover_height_ft:
             lines.append(f'  {_key(code)}: {int(t.cover_height_ft)},')
     lines.append("};\n")
+
+    lines.append("/** How thick a platform is, in feet, where its floor meets a hole.\n"
+                 " *  Without it an island is a paper cut-out hanging in nothing. */\n"
+                 f"export const SKIRT_FT = {_num(SKIRT_FT)};\n")
+
+    holes = ", ".join(f'"{c}"' for c in sorted(HOLE_CODES))
+    lines.append("/** Codes that are a HOLE, not ground — nothing is drawn on them.\n"
+                 " *  Open sky is air and a chasm is the absence of floor; drawing\n"
+                 " *  either as a surface invents ground the rules say you fall\n"
+                 " *  through. */\n"
+                 f"export const HOLE_CODES: ReadonlySet<string> = new Set([{holes}]);\n")
 
     codes = ", ".join(f'"{c}"' for c in sorted(STRUCTURE_CODES))
     lines.append("/** Codes that are the BUILDING rather than something standing in it. */\n"

@@ -98,6 +98,9 @@ def decor_for(rows: Sequence[str], *, seed: int = 0,
         for x, code in enumerate(row):
             if code == " " or stands(code):
                 continue
+            from .isocam import HOLE_CODES
+            if code in HOLE_CODES:
+                continue
             t = tile(code)
             # Only ordinary standable ground. Not water, not lava, not a chasm:
             # a rug floating on deep water is exactly the kind of invented

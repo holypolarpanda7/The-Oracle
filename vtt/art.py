@@ -467,7 +467,7 @@ def iso_denoise_for(grid: Grid) -> float:
             else ISO_DENOISE_FLAT)
 
 
-ISOBOARD_REV = 13
+ISOBOARD_REV = 18
 
 
 #: Retained for callers that still ask, and for the gallery's reporting. The
@@ -521,7 +521,8 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
     from .terrain import tile_height_ft
 
     subject, look, context = build_map_prompt(
-        gen, name=name, biome=biome, lighting=lighting, extra=extra,
+        gen, name=name, biome=biome, lighting=lighting,
+        extra=", ".join(p for p in (extra, _void_reads_as(gen.grid, lighting)) if p),
         conditions=conditions)
     ref = isoboard_ref(gen.grid, gen.archetype, gen.seed)
 
@@ -608,6 +609,34 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
                         width=w_px, height=h_px, reused=bool(getattr(res, "reused", False)))
 
 
+def _void_reads_as(grid: Grid, lighting: Optional[str]) -> str:
+    """What the empty parts of the board are, in words.
+
+    The depth map can only say a square is FAR. On a board with open sky or a
+    chasm in it that is most of the picture, and "far" alone came back as flat
+    black — the model followed the depth into darkness. Depth says how far;
+    only the words can say what is out there.
+
+    Said only when the board actually HAS such squares, so an ordinary room is
+    not told about a sky it does not have.
+    """
+    rows = grid.to_rows()
+    has = {c for row in rows for c in row}
+    bits = []
+    if "^" in has:
+        night = (lighting or "").lower() == "dark"
+        bits.append("the empty space between the platforms is OPEN SKY seen from "
+                    + ("high above at night, stars and moonlit cloud far below"
+                       if night else
+                       "high above, bright daylight sky and cloud far below"))
+    if "x" in has:
+        bits.append("the gaps are a deep chasm dropping away into shadow, "
+                    "its far walls lost in darkness")
+    if "W" in has:
+        bits.append("the open water is deep and dark, its surface catching the light")
+    return ", ".join(bits)
+
+
 def _mask_to_board(store, image_id: int, depth_kw: dict) -> None:
     """Cut the stored painting to the board's own silhouette.
 
@@ -689,6 +718,15 @@ _ISO_NEGATIVE = (
 )
 
 
+#: What the board's holes are made of, for the terrain image. Not swatches —
+#: there is nothing to photograph — but they are emphatically not neutral grey
+#: either, and leaving them black is how open sky came back as a night void.
+HOLE_COLOURS: dict[str, tuple[int, int, int]] = {
+    "^": (150, 190, 226),   # daylight sky, seen from above the clouds
+    "x": (26, 24, 30),      # a chasm dropping into shadow
+    " ": (10, 12, 18),      # off the board entirely
+}
+
 #: (code, look) -> the average colour of that surface's swatch. Cached per
 #: process; the swatches never change under a running server.
 _MATERIAL_RGB: dict[tuple[str, str], tuple[int, int, int]] = {}
@@ -708,6 +746,12 @@ def material_colour(code: str, look: str, store=None) -> tuple[int, int, int]:
     if key in _MATERIAL_RGB:
         return _MATERIAL_RGB[key]
     rgb = (118, 112, 102)
+    # A hole has no swatch and is not neutral grey. Open sky is sky; a chasm is
+    # the dark it drops into. Without these the terrain image leaves them black
+    # and the painting follows it there.
+    if code in HOLE_COLOURS:
+        _MATERIAL_RGB[key] = HOLE_COLOURS[code]
+        return HOLE_COLOURS[key[0]]
     if code.startswith("decor:"):
         # Scenery is small and its exact colour matters little; a mid brown
         # keeps it from reading as a hole in the ground.

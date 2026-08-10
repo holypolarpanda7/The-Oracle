@@ -30,7 +30,9 @@
 import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
-  CELL, DECOR_KINDS, OBJECT_VARIANTS, STRUCTURE_CODES, heightScale, rotatePart,
+  CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKIRT_FT, STRUCTURE_CODES,
+  heightScale,
+  rotatePart,
   tileHeightFt,
   tileStyle, variantOf, wallParts, yawOf,
   type BoardView, type PaintState, type TokenPlacement, type View,
@@ -492,7 +494,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
      *  should not grow a face onto a hole. Mirrors is_open in vtt/isocam.py. */
     const isOpen = (x: number, z: number): boolean => {
       const c = at(x, z);
-      return c !== null && c !== " " && !STRUCTURE_CODES.has(c);
+      return c !== null && !HOLE_CODES.has(c) && !STRUCTURE_CODES.has(c);
     };
 
     const seenAt = (x: number, z: number): Seen => {
@@ -506,10 +508,12 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     for (let z = 0; z < rows.length; z++) {
       for (let x = 0; x < rows[z].length; x++) {
         const code = rows[z][x];
-        // A void square is a hole, not dark ground: on an upper storey it is
-        // open air you can see and fall through, and drawing a floor there
-        // would hide the hall below.
-        if (code === " ") continue;
+        // A HOLE, not dark ground. Void is open air on an upper storey; open
+        // sky IS air; a chasm is the absence of floor. Drawing any of them as a
+        // surface is the geometry inventing ground the rules say you fall
+        // through — a sky-islands board is mostly open sky, and paved over it
+        // came back a flat plane instead of stones floating in nothing.
+        if (HOLE_CODES.has(code)) continue;
 
         // The UNTINTED colour. Fog, sight and light are applied afterwards by
         // `reshade`, straight into the colour attribute, so a torch moving does
@@ -528,6 +532,32 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // this a pillar's base is a hole in the ground.
         mb.quad(v3(x, base, z), v3(x, base, z + 1),
                 v3(x + 1, base, z + 1), v3(x + 1, base, z), color, tileUVs(x, z));
+        // A skirt wherever the floor ends at a hole, so a platform has
+        // substance rather than being a sheet of paper hanging in nothing.
+        // The same "draw the FACE where two things meet" rule as the walls,
+        // pointed downward.
+        const drop = base - heightUnits(scene, SKIRT_FT);
+        const holeAt = (hx: number, hz: number) => {
+          const c = at(hx, hz);
+          return c === null || HOLE_CODES.has(c);
+        };
+        if (holeAt(x, z + 1)) {
+          mb.quad(v3(x + 1, drop, z + 1), v3(x + 1, base, z + 1),
+                  v3(x, base, z + 1), v3(x, drop, z + 1), color);
+        }
+        if (holeAt(x + 1, z)) {
+          mb.quad(v3(x + 1, drop, z), v3(x + 1, base, z),
+                  v3(x + 1, base, z + 1), v3(x + 1, drop, z + 1), color);
+        }
+        if (holeAt(x, z - 1)) {
+          mb.quad(v3(x, drop, z), v3(x, base, z),
+                  v3(x + 1, base, z), v3(x + 1, drop, z), color);
+        }
+        if (holeAt(x - 1, z)) {
+          mb.quad(v3(x, drop, z + 1), v3(x, base, z + 1),
+                  v3(x, base, z), v3(x, drop, z), color);
+        }
+
         if (showGrid && seenAt(x, z) !== Seen.Never) {
           gridPts.push(x, base, z, x + 1, base, z);
           gridPts.push(x, base, z, x, base, z + 1);

@@ -231,6 +231,42 @@ def wall_parts(is_open, x: int, z: int) -> tuple[tuple[float, float, float, floa
     return tuple(out)
 
 
+#: Codes that are a HOLE, not ground: nothing is drawn on them at all.
+#:
+#: Open sky IS air, and a chasm is the absence of floor — drawing either as a
+#: surface is the geometry inventing ground the rules say you fall through, and
+#: it shows: a sky-islands board is 235 open-sky tiles, so drawn as floor it
+#: came back a flat plane with a few blocks on it instead of stones floating in
+#: nothing, and a bridge's 90 chasm squares paved over the gorge it crosses.
+#:
+#: Void is here for the older reason: on an upper storey it is open air you can
+#: see and fall through, and a floor there would hide the hall below.
+HOLE_CODES = frozenset({" ", "^", "x"})
+
+#: How thick a platform is, in feet, where its floor meets a hole.
+#:
+#: A floor quad has no thickness, so an island came out a paper cut-out hanging
+#: in nothing and a bridge a ribbon over a gorge. Anywhere ground meets a hole
+#: it gets a skirt, which is the same "draw the FACE where two things meet" rule
+#: the walls already use, pointed downward.
+#:
+#: Eight feet rather than four: at four the edge was present in the geometry and
+#: lost in the painting, a dark line against bright sky rather than a platform
+#: with substance. This is a DRAWING depth and touches no rule — nothing stands
+#: on the underside of a board.
+SKIRT_FT = 8.0
+
+
+def _is_hole(rows, x: int, z: int) -> bool:
+    """Is this square a hole — or off the board, which is the same to a skirt?"""
+    if z < 0 or z >= len(rows):
+        return True
+    row = rows[z]
+    if x < 0 or x >= len(row):
+        return True
+    return row[x] in HOLE_CODES
+
+
 def _hash(x: int, z: int, a: int, b: int) -> int:
     """A stable 32-bit hash of a square, matching the JS side exactly.
 
@@ -515,6 +551,24 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
             code = rows[z][x]
             if code == " ":
                 continue
+            if code in HOLE_CODES:
+                # A hole carries no geometry — but it is still part of the board
+                # the painter is asked to fill. Left out of the coverage mask,
+                # a sky board's sky would be CUT AWAY, and open sky is exactly
+                # the thing that should be painted as sky. The depth map leaves
+                # it at maximum distance, which is what tells the model it is
+                # looking at air rather than ground.
+                # ...and it is made of SOMETHING, which the colour pass has to
+                # say. Left out of it too, open sky came back flat black: the
+                # depth map says "maximally far", the model renders far as dark,
+                # and the words alone did not outvote it. Depth says how far;
+                # the terrain image says what is out there.
+                if _mask_only or _colour_of:
+                    if _colour_of:
+                        cur_colour[0] = _colour_of(code)
+                    face([(x, 0, z), (x, 0, z + 1),
+                          (x + 1, 0, z + 1), (x + 1, 0, z)])
+                continue
             if _colour_of:
                 cur_colour[0] = _colour_of(code)
             ft = height_ft(code)
@@ -523,6 +577,21 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
             top = units(ft) * height_scale(code, x, z, cover_ft(code))
             # Floor under everything.
             face([(x, 0, z), (x, 0, z + 1), (x + 1, 0, z + 1), (x + 1, 0, z)])
+            # ...and a skirt wherever that floor ends at a hole, so a platform
+            # has substance instead of being a sheet of paper.
+            drop = -units(SKIRT_FT)
+            if shade:
+                shade(SIDE_A_TINT)
+            if _is_hole(rows, x, z + 1):
+                face([(x + 1, drop, z + 1), (x + 1, 0, z + 1),
+                      (x, 0, z + 1), (x, drop, z + 1)])
+            if shade:
+                shade(SIDE_B_TINT)
+            if _is_hole(rows, x + 1, z):
+                face([(x + 1, drop, z), (x + 1, 0, z),
+                      (x + 1, 0, z + 1), (x + 1, drop, z + 1)])
+            if shade:
+                shade(TOP_TINT)
             if ft <= 0:
                 continue
             if code in struct:
