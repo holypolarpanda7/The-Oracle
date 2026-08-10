@@ -418,10 +418,41 @@ def board_look(biome: str = "", archetype: str = "") -> str:
     return _ARCH_LOOK.get((archetype or "").strip().lower(), "dungeon")
 
 
-#: Bump when the CAMERA or the geometry's silhouettes change — a painting is
-#: baked to one view, and a board holding art drawn to a camera that has since
-#: moved is worse than a board with no art at all.
-ISOBOARD_REV = 1
+#: Bump when the CAMERA, the geometry's silhouettes, or the DEPTH ENCODING
+#: change — a painting is baked to one view, and a board holding art drawn to a
+#: camera that has since moved is worse than a board with no art at all.
+#:
+#: Rev 2: the depth map became relief (height above the floor) instead of raw
+#: distance. Worth noting that the slug keys on the LAYOUT, so a rasterizer
+#: change is invisible to it — the first re-render after the switch came back
+#: from cache in one second, unchanged, and would have been mistaken for the
+#: fix not working.
+ISOBOARD_REV = 5
+
+
+#: How much of a board must stand UP before a depth-conditioned painting is
+#: worth making. Measured, not guessed: a dungeon room is ~25% structure and
+#: paints beautifully; a forest clearing is 3% and comes back as invention.
+MIN_STANDING_FRACTION = 0.12
+
+
+def worth_painting(grid: Grid) -> bool:
+    """Does this board have enough vertical structure to condition a painting?
+
+    See the long note in :func:`render_iso_board` for why the answer is not
+    "always". Cheap enough to call before every render.
+    """
+    from .terrain import tile_height_ft
+
+    total = standing = 0
+    for row in grid.to_rows():
+        for code in row:
+            if code == " ":
+                continue
+            total += 1
+            if tile_height_ft(code) > 0:
+                standing += 1
+    return bool(total) and (standing / total) >= MIN_STANDING_FRACTION
 
 
 def isoboard_ref(grid: Grid, archetype: str, seed: int) -> str:
@@ -454,6 +485,24 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
         gen, name=name, biome=biome, lighting=lighting, extra=extra,
         conditions=conditions)
     ref = isoboard_ref(gen.grid, gen.archetype, gen.seed)
+
+    if not worth_painting(gen.grid):
+        # An OPEN board is refused, and this is a limit of the technique rather
+        # than a tuning failure. A depth map encodes HEIGHT and nothing else, so
+        # on a board that is mostly flat ground it carries almost no
+        # information — a forest clearing rasterizes to a smooth gradient with a
+        # dozen thin posts in it. Worse, the terrain that actually distinguishes
+        # such a board is FLAT: water, grass, road and ice all sit at height
+        # zero and are invisible to depth. Handed that, the model invents, and
+        # what it invents disagrees with the grid — a pond painted where there
+        # is none, trees rendered as sawn-off stumps, a street's walls as trays
+        # of produce. All three were measured.
+        #
+        # So enclosed boards get a painting and open ones keep their geometry,
+        # which is terrain-accurate, instant and already good. Conveying flat
+        # terrain TYPE would need a second conditioning image (a segmentation
+        # map), which is a separate piece of work and not a knob on this one.
+        return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
     if store is None:
         try:

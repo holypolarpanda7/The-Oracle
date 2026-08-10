@@ -84,7 +84,6 @@ def unproject(sx: float, sy: float, wy: float) -> tuple[float, float]:
 #: plausible.
 FRAME_PAD_SQUARES = 0.25
 
-
 @dataclass(frozen=True)
 class Bounds:
     min_x: float
@@ -177,6 +176,35 @@ def _quad(buf, pts, zs) -> None:
     _tri(buf, (pts[0], pts[2], pts[3]), (zs[0], zs[2], zs[3]))
 
 
+def _box(face, x0: float, x1: float, z0: float, z1: float,
+         y1: float, y0: float = 0.0) -> None:
+    """A box: top face plus the two sides this camera can see."""
+    face([(x0, y1, z0), (x0, y1, z1), (x1, y1, z1), (x1, y1, z0)])
+    # Only +x and +z face the camera at yaw 45; the other two are never visible
+    # and rasterizing them is work the z-buffer throws away.
+    face([(x1, y0, z1), (x1, y1, z1), (x0, y1, z1), (x0, y0, z1)])
+    face([(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)])
+
+
+def _prism(face, cx: float, cz: float, r: float, y1: float,
+           y0: float = 0.0, sides: int = 8) -> None:
+    """An upright n-sided prism — a pillar, or a tree's trunk and crown.
+
+    Mirrors the shapes ``vttScene3d.ts`` builds, and that correspondence is the
+    point rather than a nicety: the model paints the silhouette it is handed, so
+    a square column in the depth map comes back as a square column in the
+    picture however round the geometry beside it happens to be.
+    """
+    pts = []
+    for i in range(sides + 1):
+        a = (i / sides) * 2 * math.pi + math.pi / sides
+        pts.append((cx + math.cos(a) * r, cz + math.sin(a) * r))
+    for i in range(sides):
+        (ax, az), (bx, bz) = pts[i], pts[i + 1]
+        face([(cx, y1, cz), (ax, y1, az), (bx, y1, bz), (cx, y1, cz)])
+        face([(ax, y0, az), (ax, y1, az), (bx, y1, bz), (bx, y0, bz)])
+
+
 def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
                 structure: Optional[set[str]] = None,
@@ -244,28 +272,46 @@ def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
             if ft <= 0:
                 continue
             if code in struct:
-                x0, x1, z0, z1 = x, x + 1, z, z + 1
+                _box(face, x, x + 1, z, z + 1, top)
+            elif code in ("O", "T"):
+                # Round, because the model paints the silhouette it is handed
+                # and a square column comes back as a square column.
+                _prism(face, x + 0.5, z + 0.5, 0.32, top)
+                if code == "T":
+                    _prism(face, x + 0.5, z + 0.5, 0.46, top, y0=top * 0.4)
+            elif code == "A":
+                # A stepped plinth. Drawn as a plain cube this came back as a
+                # DIE — a crypt of thirty four-foot cubes reads as a board game,
+                # however loudly the prompt says "stone coffins in ranks". The
+                # shape is the sentence the model actually listens to.
+                _box(face, x + 0.14, x + 0.86, z + 0.2, z + 0.8, top * 0.7)
+                _box(face, x + 0.06, x + 0.94, z + 0.12, z + 0.88, top,
+                     y0=top * 0.7)
             else:
-                # Discrete things stand smaller than their square — the same
-                # silhouettes vttScene3d draws. A cube here is a cube in the
-                # painting.
-                m = 0.34 if code in ("O", "T") else 0.1
-                x0, x1, z0, z1 = x + m, x + 1 - m, z + m, z + 1 - m
-            face([(x0, top, z0), (x0, top, z1), (x1, top, z1), (x1, top, z0)])
-            for cs in (
-                [(x0, 0, z0), (x0, top, z0), (x1, top, z0), (x1, 0, z0)],
-                [(x1, 0, z1), (x1, top, z1), (x0, top, z1), (x0, 0, z1)],
-                [(x0, 0, z1), (x0, top, z1), (x0, top, z0), (x0, 0, z0)],
-                [(x1, 0, z0), (x1, top, z0), (x1, top, z1), (x1, 0, z1)],
-            ):
-                face(cs)
+                m = 0.1
+                _box(face, x + m, x + 1 - m, z + m, z + 1 - m, top)
 
     finite = np.isfinite(buf)
     if not finite.any():
         return b""
+
+    # ABSOLUTE distance, near white — and the relief experiment that replaced
+    # it for a while is worth recording, because it was measured worse.
+    #
+    # The complaint relief was meant to fix is real: normalized across a whole
+    # board, recession dominates, a ten-foot wall is a couple of percent of the
+    # range, and an open board's few trees came back as sawn-off stumps.
+    # Subtracting the ground plane fixes exactly that and breaks everything
+    # else — with no recession left, an enclosed room stops reading as a room
+    # and starts reading as a shallow TRAY. A crypt came back as a stone dish
+    # of dice, a tavern as an empty picture frame. Recession is what tells the
+    # model it is looking into a space rather than down at an object.
+    #
+    # The stump problem was only ever an OPEN-board problem, and open boards no
+    # longer come here at all (see `worth_painting`). So the honest answer is
+    # the simple one.
     lo, hi = buf[finite].min(), buf[finite].max()
-    span = (hi - lo) or 1.0
-    # Near is WHITE. Anything the geometry never covered is maximally far.
+    span = float(hi - lo) or 1.0
     norm = np.where(finite, 1.0 - (buf - lo) / span, 0.0)
     img = Image.fromarray((norm * 255).astype(np.uint8), mode="L").convert("RGB")
     from io import BytesIO

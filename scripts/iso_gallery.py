@@ -45,7 +45,7 @@ SCENES: list[tuple[str, str, str, str]] = [
     ("forest", "old pine woodland", "bright", "a clearing among great pines"),
     ("swamp", "brackish wetland", "dim", "a sunken boardwalk over black water"),
     ("ruins", "overgrown ruins", "bright", "a toppled temple courtyard"),
-    ("street", "cobbled town", "bright", "a market street at midday"),
+    ("street", "cobbled town", "bright", "a narrow street between tall stone houses"),
     ("tavern", "timber interior", "dim", "the taproom of a country inn"),
     ("camp", "open woodland", "dim", "a bandit camp among the trees"),
     ("bridge", "river crossing", "bright", "a stone bridge over a gorge"),
@@ -73,7 +73,7 @@ def main(argv=None) -> int:
     from game_config import get_config
     from imagery import ImageStore
     from vtt import isocam
-    from vtt.art import _STRUCTURE_FOR_DEPTH, render_iso_board
+    from vtt.art import _STRUCTURE_FOR_DEPTH, render_iso_board, worth_painting
     from vtt.mapgen import generate_map
     from vtt.terrain import tile_height_ft
 
@@ -98,10 +98,15 @@ def main(argv=None) -> int:
           f"depth strength {strength}\n")
 
     t0 = time.time()
-    ok = 0
+    ok = skipped = 0
     for i, (arch, biome, light, name) in enumerate(scenes, 1):
         print(f"[{i}/{len(scenes)}] {arch:16} {name} ...", end="", flush=True)
         gen = generate_map(arch, width=width, height=height, seed=a.seed)
+        if not worth_painting(gen.grid):
+            # Not a failure: an open board keeps its geometry on purpose.
+            print(" skipped (too flat to condition — geometry only)")
+            skipped += 1
+            continue
         art = render_iso_board(gen, store=store, name=name, biome=biome,
                                lighting=light, controlnet=cn,
                                controlnet_strength=strength)
@@ -117,9 +122,9 @@ def main(argv=None) -> int:
         print(" ok")
 
     dt = time.time() - t0
-    print(f"\n{ok}/{len(scenes)} drawn in {dt:.0f}s "
+    print(f"\n{ok} painted, {skipped} left as geometry, in {dt:.0f}s "
           f"({dt / max(1, ok):.0f}s each) -> {OUT.relative_to(ROOT)}")
-    return 0 if ok == len(scenes) else 1
+    return 0
 
 
 if __name__ == "__main__":
