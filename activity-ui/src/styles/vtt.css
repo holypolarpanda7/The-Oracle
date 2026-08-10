@@ -466,3 +466,10 @@
   .play .abar-act { font-size: 0.82rem; padding: 6px 10px; }
   .play .abar-tab { padding: 7px 10px; }
 }
+
+/* A walking creature drives its own position every frame from the server's own
+   route (see VttOverlay's walk animation). The CSS transition is for the
+   ordinary case — a token that simply appears somewhere new — and left on
+   during a walk it lags a frame behind and rounds off every corner, which is
+   the exact thing walking the real path exists to stop. */
+.play .vtt-token.walking { transition: none; }

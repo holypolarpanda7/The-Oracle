@@ -786,6 +786,33 @@ class VttEngine:
                          iso_art_status=("ready" if art.image_id else "offline"))
         return art.image_id
 
+    def last_move(self, map_id: int) -> Optional[dict]:
+        """The most recent walk on this board: ``{id, token_id, path}``.
+
+        For the CLIENT to animate along, and it has to come from here because
+        the route is a rules answer: ``move_token`` paths around walls, through
+        the door rather than the corner, and charges for the ground it crosses.
+        A viewer interpolating a straight line between two squares draws a
+        creature strolling through masonry — which was tolerable when walls were
+        flat shading and is not, now that they stand up.
+
+        Read off the append-only event log, which already records exactly this
+        for every move including monsters', so nothing new has to be stored.
+        """
+        with Session(self.engine) as s:
+            row = s.exec(
+                select(MapEvent)
+                .where(MapEvent.map_id == map_id, MapEvent.kind == "move")
+                .order_by(MapEvent.id.desc())  # type: ignore[attr-defined]
+            ).first()
+        if row is None or not isinstance(row.payload, dict):
+            return None
+        path = row.payload.get("path") or []
+        if len(path) < 2:
+            return None
+        return {"id": row.id, "token_id": row.payload.get("token_id"),
+                "path": [[int(p[0]), int(p[1])] for p in path]}
+
     def materials_for(self, map_id: int) -> dict[str, int]:
         """The surface swatch for every tile code on this board, {code: id}.
 
@@ -3161,6 +3188,9 @@ class VttEngine:
             # geometry out of these; a code missing here just falls back to its
             # flat tile colour, which is plainer and equally playable.
             "materials": self.materials_for(map_id),
+            # The route the last walk actually took, so a viewer can animate a
+            # creature AROUND the wall rather than through it.
+            "last_move": self.last_move(map_id),
             "background_image_id": row.background_image_id,
             "art_status": row.art_status,
             # The painted isometric layer, and the canonical framing it was

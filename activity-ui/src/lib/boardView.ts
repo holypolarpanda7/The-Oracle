@@ -161,6 +161,9 @@ export interface PaintState {
   levels?: { name: string; base_ft: number }[];
   /** Which floor is being drawn — decides whether a connector reads up or down. */
   level?: number;
+  /** The creature currently mid-walk and where it has got to, so its base on
+   *  the floor travels with it instead of waiting at the destination. */
+  walking?: { tokenId: number; x: number; y: number } | null;
   /** Matted sprites by stored image id (see lib/boardSprites). */
   sprites?: ReadonlyMap<number, HTMLImageElement>;
   now?: number;

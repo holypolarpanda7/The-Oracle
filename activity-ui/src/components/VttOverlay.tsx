@@ -328,6 +328,60 @@ export function VttOverlay(p: VttProps) {
     loadSprites(ids, bumpSprites);
   }, [scene.objects, scene.debris]);
 
+  // ---- walking ------------------------------------------------------------
+  // A creature is drawn moving along the route the SERVER walked, not along the
+  // straight line between where it was and where it ended up. The two differ
+  // exactly where it matters — going through a door instead of across the
+  // corner — and a straight lerp puts a creature inside a wall for half a
+  // second. Harmless when walls were flat shading; obvious now they stand up.
+  //
+  // Keyed on the move event's id rather than on the token's position, so a
+  // creature that walks back to where it started still animates, and a board
+  // re-render never replays a walk that already happened.
+  const [walk, setWalk] = useState<{
+    id: number; tokenId: number; path: [number, number][]; at: number } | null>(null);
+  const [walkPos, setWalkPos] = useState<[number, number] | null>(null);
+  const lastWalkId = useRef<number>(0);
+
+  useEffect(() => {
+    const m = scene.last_move;
+    if (!m || m.id === lastWalkId.current) return;
+    lastWalkId.current = m.id;
+    // Don't animate the first frame after a board opens — there is no "before"
+    // to walk from, and a creature would slide in from a square it never
+    // occupied.
+    if (walkPos === null && !walk && scene.revision <= 1) return;
+    setWalk({ id: m.id, tokenId: m.token_id, path: m.path, at: Date.now() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scene.last_move?.id]);
+
+  useEffect(() => {
+    if (!walk) return;
+    const steps = walk.path.length - 1;
+    // ~110ms a square reads as walking rather than teleporting, capped so a
+    // dash across a big board doesn't hold up the turn.
+    const dur = Math.min(700, Math.max(160, steps * 110));
+    let raf = 0;
+    const tick = () => {
+      const t = Math.min(1, (Date.now() - walk.at) / dur);
+      const f = t * steps;
+      const i = Math.min(steps - 1, Math.floor(f));
+      const k = f - i;
+      const [ax, ay] = walk.path[i];
+      const [bx, by] = walk.path[i + 1];
+      setWalkPos([ax + (bx - ax) * k, ay + (by - ay) * k]);
+      if (t < 1) raf = requestAnimationFrame(tick);
+      else { setWalk(null); setWalkPos(null); }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [walk]);
+
+  /** Where a token should be DRAWN — mid-walk if it is the one walking. */
+  const drawnAt = useCallback((t: VttToken): [number, number] =>
+    (walk && walkPos && walk.tokenId === t.id ? walkPos : [t.x, t.y]),
+    [walk, walkPos]);
+
   // ---- incoming pings -----------------------------------------------------
   useEffect(() => {
     if (p.ping) setPings((ps) => [...ps.filter((q) => Date.now() - q.at < 2500), p.ping!]);
@@ -407,10 +461,13 @@ export function VttOverlay(p: VttProps) {
       area: level === myLevel ? areaSquares : null,
       areaLegal: p.area?.ok !== false,
       hover, measure, show, pings, sprites: SPRITES, now: Date.now(),
+      walking: walk && walkPos
+        ? { tokenId: walk.tokenId, x: walkPos[0], y: walkPos[1] } : null,
     }, size[0], size[1]);
   }, [board, floor, onThisFloor, stairsHere, floors, level, myLevel, view, size, reach,
       threatened, aiming, areaSquares, p.area?.ok,
-      path, pathCost, hover, measure, show, pings, provokes.length, spriteTick]);
+      path, pathCost, hover, measure, show, pings, provokes.length, spriteTick,
+      walk, walkPos]);
 
   useEffect(() => {
     draw();
@@ -545,7 +602,8 @@ export function VttOverlay(p: VttProps) {
     // component's. That indirection is the whole of what makes a token work on
     // an isometric board: a DOM element over a canvas already faces the camera,
     // so "billboarded character" needs no billboard — only a projection.
-    const at = board.screenOf(view, floor, t.x, t.y, t.squares, level, t.elevation_ft);
+    const [dx, dy] = drawnAt(t);
+    const at = board.screenOf(view, floor, dx, dy, t.squares, level, t.elevation_ft);
     const active = scene.current_token_id === t.id;
     const vit = t.combatant_id != null ? vitals.get(t.combatant_id) : undefined;
     const hpPct = vit ? Math.max(0, Math.min(100, (100 * vit.hp) / vit.max)) : null;

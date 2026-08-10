@@ -612,8 +612,13 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     const bases: [number, number][] = [];
     for (const t of scene.tokens) {
       if ((t.level ?? 0) !== level || t.defeated) continue;
+      // Mid-walk the base follows the creature; left at t.x/t.y it would sit
+      // at the destination while the figure was still crossing the room.
+      const wk = st.walking && st.walking.tokenId === t.id ? st.walking : null;
+      const bx = wk ? wk.x : t.x;
+      const bz = wk ? wk.y : t.y;
       for (let dx = 0; dx < t.squares; dx++) {
-        for (let dz = 0; dz < t.squares; dz++) bases.push([t.x + dx, t.y + dz]);
+        for (let dz = 0; dz < t.squares; dz++) bases.push([bx + dx, bz + dz]);
       }
     }
     add(decal(bases, y + 0.01, "#0a0d16", 0.35));

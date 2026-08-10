@@ -454,6 +454,10 @@ export interface VttScene {
    *  geometry, which is a supported state rather than a degraded one. */
   iso_image_id?: number | null;
   iso_art_status?: string;   // none | pending | ready | offline
+  /** The route the most recent walk actually took — the server's own A*, which
+   *  goes through the door rather than across the corner. Animated along, so a
+   *  creature is never drawn strolling through masonry. */
+  last_move?: { id: number; token_id: number; path: [number, number][] } | null;
   art_status: string;      // none | pending | ready | offline
   description?: string;
   tokens: VttToken[];

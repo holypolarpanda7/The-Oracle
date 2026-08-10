@@ -1,6 +1,10 @@
 import { chromium } from "playwright";
 import { mkdirSync } from "node:fs";
-const BASE = process.env.BASE || "http://localhost:4173/";
+// argv first: env vars do not reliably cross from WSL into Windows node,
+// so a harness relying on $BASE can silently fall back to a STALE preview
+// server on the default port and screenshot the wrong build.
+const BASE = process.argv[2] || process.env.BASE || "http://localhost:4173/";
+console.log("base:", BASE);
 const OUT = process.env.OUT || "./vtt-shots";
 mkdirSync(OUT, { recursive: true });
 
