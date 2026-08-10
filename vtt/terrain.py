@@ -168,7 +168,7 @@ def tile_rule(code: str) -> str:
 #:
 #: Mirrored by TILE_HEIGHT_FT in activity-ui/src/lib/boardView.ts. This side is
 #: authoritative; keep them in step.
-_STAND_HEIGHT_FT: dict[str, int] = {
+STAND_HEIGHT_FT: dict[str, int] = {
     "#": 10, "R": 10,          # structure
     "T": 12, "O": 10,          # tree, pillar
     "+": 8, "p": 8,            # closed door, portcullis
@@ -178,7 +178,7 @@ _STAND_HEIGHT_FT: dict[str, int] = {
 
 def tile_height_ft(code: str) -> int:
     """How tall this tile stands, in feet. 0 is floor you walk on."""
-    return _STAND_HEIGHT_FT.get(code, 0)
+    return STAND_HEIGHT_FT.get(code, 0)
 
 
 def cover_height_ft(code: str) -> int:

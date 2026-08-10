@@ -26,6 +26,16 @@
  *  three numbers stop being enough — and a baked painting stops lining up with
  *  the geometry it was conditioned on.) */
 import type { VttScene } from "./types";
+// The board's SHAPES are owned by Python (vtt/isocam.py, vtt/terrain.py) and
+// generated into that file, because the depth map the painted layer is
+// conditioned on is rasterized from the same numbers. Hand-mirroring them was
+// a drift waiting to happen, and the failure mode is invisible: the painting
+// lands on furniture the player is not looking at.
+export {
+  OBJECT_PARTS, PILLAR_RADIUS, STRUCTURE_CODES, TILE_HEIGHT_FT, WALL_THICKNESS,
+} from "./boardShapes.generated";
+import { STRUCTURE_CODES as _STRUCTURE, TILE_HEIGHT_FT as _HEIGHT, WALL_THICKNESS as _THICK }
+  from "./boardShapes.generated";
 
 /** Zoom and screen offset. See the note above on why this suits both renderers. */
 export interface View { scale: number; ox: number; oy: number }
@@ -80,54 +90,17 @@ export function tileStyle(code: string): TileStyle {
   return TILE_STYLES[code] ?? TILE_STYLES["."];
 }
 
-/** How tall each tile stands, in feet. 0 is floor you walk on.
+/** How tall this tile stands, in feet. 0 is floor you walk on.
  *
- *  Mirrors vtt/terrain.py, and takes its numbers from two different places
- *  there. Anything with a `cover_height_ft` uses that value, because the rules
- *  already decided how tall a crate is when they decided you can lie down
- *  behind one. Everything else is full-height structure, where the exact figure
- *  is the picture's business and not the rules': cover from a pillar does not
- *  depend on how tall the pillar is, only on it being taller than you.
- *
- *  Flat boards ignore this entirely. It exists because an isometric board has
- *  to put something in the third dimension, and guessing per-render would let
- *  two frames disagree about the same room. */
-export const TILE_HEIGHT_FT: Record<string, number> = {
-  "#": 10,   // wall
-  R: 10,     // rock face
-  T: 12,     // tree — the canopy, not the trunk
-  O: 10,     // pillar
-  "+": 8,    // closed door, filling its opening
-  p: 8,      // portcullis
-  o: 4,      // crate        \
-  A: 4,      // altar         | these four carry a cover_height_ft in the
-  n: 3,      // furniture     | rules, and this is that number
-  w: 3,      // low wall     /
-};
-
+ *  A DRAWING height, distinct from the rules' `cover_height_ft` — a pillar
+ *  needs a figure even though the rules only care that it is narrow. */
 export function tileHeightFt(code: string): number {
-  return TILE_HEIGHT_FT[code] ?? 0;
+  return _HEIGHT[code] ?? 0;
 }
 
-/** Codes that are the BUILDING rather than something standing in it.
- *
- *  The same split vtt/terrain.py makes with `OBJECT_SPRITES`: everything in
- *  that table is a discrete thing which can be attacked and broken, so it has
- *  to be able to change and is drawn per-square; what is left is structure,
- *  which the painted layer is conditioned on and never has to change. */
-export const STRUCTURE_CODES: ReadonlySet<string> = new Set(["#", "R"]);
 
-/** How thick a wall is DRAWN, as a fraction of its square.
- *
- *  A wall occupies its whole square in the RULES and always will — impassable,
- *  sight-blocking, none of that changes here. But drawn as a full five-foot
- *  cube it presents an enormous top face, and at this camera angle that top
- *  face IS the rim that made enclosed rooms read as trays.
- *
- *  The floor strip left either side is a DRAWING, not playable ground: the
- *  grid, the movement wash and the outline all still say the square is solid.
- *  Mirrors WALL_THICKNESS in vtt/isocam.py, which is authoritative. */
-export const WALL_THICKNESS = 0.34;
+
+
 
 /** Footprint(s) for a wall square: `[x0, x1, z0, z1]` offsets within it.
  *
@@ -142,7 +115,7 @@ export const WALL_THICKNESS = 0.34;
 export function wallParts(isOpen: (x: number, z: number) => boolean,
                           x: number, z: number):
     (readonly [number, number, number, number])[] {
-  const t = WALL_THICKNESS;
+  const t = _THICK;
   const out: (readonly [number, number, number, number])[] = [];
   if (isOpen(x, z - 1)) out.push([0, 1, 0, t]);
   if (isOpen(x, z + 1)) out.push([0, 1, 1 - t, 1]);
@@ -151,35 +124,7 @@ export function wallParts(isOpen: (x: number, z: number) => boolean,
   return out;
 }
 
-/** What each object is SHAPED like, as parts of its square.
- *
- *  `[x0, x1, z0, z1, yFrom, yTo]` in FRACTIONS — of the square for x/z, of the
- *  tile's standing height for y.
- *
- *  One box per tile is what made a crypt read as a tray of dice. The model that
- *  paints the board is conditioned on a depth map of this very geometry, so it
- *  paints the silhouette it is handed — which is why these are deliberate
- *  outlines (a tapered lid, four legs) rather than a finer voxel grid, since
- *  subdividing a cube only gets you a stair-stepped cube.
- *
- *  **Mirrors OBJECT_PARTS in vtt/isocam.py, which is authoritative.** If the
- *  two disagree the painting is conditioned on furniture the player is not
- *  looking at. */
-export const OBJECT_PARTS: Record<string, readonly (readonly [
-  number, number, number, number, number, number])[]> = {
-  A: [[0.10, 0.90, 0.30, 0.70, 0.00, 0.72],
-      [0.06, 0.94, 0.26, 0.74, 0.72, 1.00]],
-  n: [[0.12, 0.22, 0.16, 0.26, 0.00, 0.72],
-      [0.78, 0.88, 0.16, 0.26, 0.00, 0.72],
-      [0.12, 0.22, 0.74, 0.84, 0.00, 0.72],
-      [0.78, 0.88, 0.74, 0.84, 0.00, 0.72],
-      [0.06, 0.94, 0.10, 0.90, 0.72, 1.00]],
-  o: [[0.08, 0.58, 0.10, 0.62, 0.00, 0.62],
-      [0.46, 0.92, 0.36, 0.90, 0.00, 0.48],
-      [0.16, 0.56, 0.18, 0.58, 0.62, 1.00]],
-  w: [[0.18, 0.82, 0.00, 1.00, 0.00, 0.80],
-      [0.10, 0.90, 0.00, 1.00, 0.80, 1.00]],
-};
+
 
 /** Everything a renderer needs to draw one frame. */
 export interface PaintState {

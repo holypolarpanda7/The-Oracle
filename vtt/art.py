@@ -520,7 +520,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
     depth = isocam.depth_image(gen.grid.rows, height_ft=tile_height_ft,
-                               square_ft=5, structure=_STRUCTURE_FOR_DEPTH)
+                               square_ft=5, structure=STRUCTURE_CODES)
     if not depth:
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
@@ -556,7 +556,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
 #: Codes the depth rasterizer treats as full-square structure. Must match
 #: STRUCTURE_CODES in activity-ui/src/lib/boardView.ts — the depth map and the
 #: geometry are the same room or the painting sits on nothing.
-_STRUCTURE_FOR_DEPTH = {"#", "R"}
+STRUCTURE_CODES = {"#", "R"}
 
 
 #: Painted, not photographed, and deliberately quiet about layout — the depth

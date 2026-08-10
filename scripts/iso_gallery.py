@@ -73,7 +73,7 @@ def main(argv=None) -> int:
     from game_config import get_config
     from imagery import ImageStore
     from vtt import isocam
-    from vtt.art import _STRUCTURE_FOR_DEPTH, render_iso_board, worth_painting
+    from vtt.art import STRUCTURE_CODES, render_iso_board, worth_painting
     from vtt.mapgen import generate_map
     from vtt.terrain import tile_height_ft
 
@@ -117,7 +117,7 @@ def main(argv=None) -> int:
         if a.depth:
             (OUT / f"{arch}-depth.png").write_bytes(isocam.depth_image(
                 gen.grid.rows, height_ft=tile_height_ft, square_ft=5,
-                structure=_STRUCTURE_FOR_DEPTH))
+                structure=STRUCTURE_CODES))
         ok += 1
         print(" ok")
 

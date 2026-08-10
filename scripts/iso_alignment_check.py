@@ -115,6 +115,19 @@ def main(argv=None) -> int:
             bad += 1
         print(f"  {'OK ' if ok else 'DRIFT'} {label:<34} py={got!r:<24} ts={want!r}")
 
+    # The camera is only half of what the two sides have to agree about. Once
+    # objects stopped being plain boxes, their SHAPES became just as
+    # load-bearing: the depth map is rasterized from them and the geometry is
+    # built from them, and a mismatch paints furniture the player is not
+    # looking at. Python owns them and the TypeScript is generated, so the
+    # check is simply whether the generated file is current.
+    print("shapes")
+    from scripts.gen_board_shapes import main as gen_shapes
+    if gen_shapes(["--check"]) != 0:
+        bad += 1
+    else:
+        print("  OK  generated shape tables match the Python source")
+
     print("\nconstants")
     check("yaw", py.YAW_DEG, ts["yaw"], 0)
     check("pitch", py.PITCH_DEG, ts["pitch"], 0)

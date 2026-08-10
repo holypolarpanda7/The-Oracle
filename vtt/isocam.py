@@ -190,6 +190,10 @@ def _quad(buf, pts, zs) -> None:
 #: Mirrored by WALL_THICKNESS in activity-ui/src/lib/boardView.ts.
 WALL_THICKNESS = 0.34
 
+#: Radius of a pillar or a tree trunk, as a fraction of its square. Round
+#: rather than square because the model paints the silhouette it is handed.
+PILLAR_RADIUS = 0.32
+
 
 def wall_parts(is_open, x: int, z: int) -> tuple[tuple[float, float, float, float], ...]:
     """Footprint(s) for a wall square, as ``(x0, x1, z0, z1)`` offsets.
@@ -366,7 +370,7 @@ def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
             elif code in ("O", "T"):
                 # Round, because the model paints the silhouette it is handed
                 # and a square column comes back as a square column.
-                _prism(face, x + 0.5, z + 0.5, 0.32, top)
+                _prism(face, x + 0.5, z + 0.5, PILLAR_RADIUS, top)
                 if code == "T":
                     _prism(face, x + 0.5, z + 0.5, 0.46, top, y0=top * 0.4)
             elif code in OBJECT_PARTS:
