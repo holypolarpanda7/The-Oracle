@@ -83,6 +83,11 @@ class MeshBuilder {
   private norm: number[] = [];
   private col: number[] = [];
   private uv: number[] = [];
+  /** Which SQUARE each vertex belongs to, so shading can be rewritten in place
+   *  without rebuilding the mesh. See `reshade`. */
+  private owner: number[] = [];
+  /** The square subsequent geometry belongs to. */
+  at = 0;
 
   get empty(): boolean { return this.pos.length === 0; }
 
@@ -101,6 +106,7 @@ class MeshBuilder {
         this.norm.push(nx / len, ny / len, nz / len);
         this.col.push(color.r, color.g, color.b);
         this.uv.push(uvs[idx][0], uvs[idx][1]);
+        this.owner.push(this.at);
       }
     }
   }
@@ -113,6 +119,8 @@ class MeshBuilder {
     g.setAttribute("uv", new THREE.Float32BufferAttribute(this.uv, 2));
     return g;
   }
+
+  owners(): Uint32Array { return Uint32Array.from(this.owner); }
 }
 
 /** Catalogue swatches by stored image id.
@@ -405,6 +413,18 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   /** Is a painting being drawn behind the geometry this frame? */
   let backdrop = false;
 
+  /** Per code-mesh: which square each vertex belongs to, and the untinted
+   *  colour that shading multiplies. Kept so fog, sight and light can be
+   *  rewritten straight into the colour attribute.
+   *
+   *  Rebuilding the whole terrain for a shading change was the old behaviour
+   *  and it happened on every step anyone took — geometry, normals and UVs all
+   *  thrown away and remade because a torch moved. The positions did not
+   *  change; only the tint did. */
+  let shadeTargets: { geom: THREE.BufferGeometry; owners: Uint32Array;
+                      base: THREE.Color }[] = [];
+  let shadeKey = "";
+
   function buildTerrain(scene: VttScene, level: number, showGrid: boolean): void {
     disposeTree(terrainGroup);
     terrainGroup.clear();
@@ -473,22 +493,24 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // would hide the hall below.
         if (code === " ") continue;
 
-        // Vertex colour is the tile's colour dimmed for fog and light — or,
-        // where a swatch is going to be drawn over it, a pure multiplier, so
-        // the picture keeps its own colours and still darkens with the room.
-        const seen = seenAt(x, z);
+        // The UNTINTED colour. Fog, sight and light are applied afterwards by
+        // `reshade`, straight into the colour attribute, so a torch moving does
+        // not throw away the geometry it is lighting.
         // NB: not `base` — that is the storey height, a few lines up.
         const tint = textured.has(code) ? "#ffffff" : tileStyle(code).fill;
-        const color = shade(new THREE.Color(tint), seen, lightAt(x, z));
+        const color = new THREE.Color(tint);
         // Heights get a little life, except where the rules quote one.
         const h = tileHeightFt(code) * heightScale(code, x, z);
         const mb = builderFor(code);
+        // Everything emitted from here belongs to this square, so `reshade` can
+        // find its vertices again without rebuilding anything.
+        mb.at = z * scene.width + x;
 
         // Floor under everything: an object stands ON a square, and without
         // this a pillar's base is a hole in the ground.
         mb.quad(v3(x, base, z), v3(x, base, z + 1),
                 v3(x + 1, base, z + 1), v3(x + 1, base, z), color, tileUVs(x, z));
-        if (showGrid && seen !== Seen.Never) {
+        if (showGrid && seenAt(x, z) !== Seen.Never) {
           gridPts.push(x, base, z, x + 1, base, z);
           gridPts.push(x, base, z, x, base, z + 1);
         }
@@ -550,10 +572,16 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       }
     }
 
+    shadeTargets = [];
     for (const [code, mb] of byCode) {
       if (mb.empty) continue;
       const tex = textured.has(code) ? TEXTURES.get(swatches[code]) : null;
-      terrainGroup.add(new THREE.Mesh(mb.build(), new THREE.MeshLambertMaterial({
+      const geom = mb.build();
+      shadeTargets.push({
+        geom, owners: mb.owners(),
+        base: new THREE.Color(textured.has(code) ? "#ffffff" : tileStyle(code).fill),
+      });
+      terrainGroup.add(new THREE.Mesh(geom, new THREE.MeshLambertMaterial({
         vertexColors: true,
         ...(tex instanceof THREE.Texture ? { map: tex } : {}),
         // With a painting behind it the geometry stops drawing and becomes a
@@ -564,6 +592,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         ...(backdrop ? { colorWrite: false } : {}),
       })));
     }
+    shadeKey = "";      // force a tint pass over the new geometry
     if (gridPts.length) {
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.Float32BufferAttribute(gridPts, 3));
@@ -571,6 +600,47 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         color: 0x8fa2d8, transparent: true, opacity: 0.16,
         polygonOffset: true, polygonOffsetFactor: -1,
       })));
+    }
+  }
+
+  /** Rewrite fog, sight and light into the colour attribute, in place.
+   *
+   *  Cheap for a reason worth stating: shading only ever takes nine values —
+   *  three visibility tiers by three light levels — so the colours are computed
+   *  nine times per mesh and the per-vertex loop is a table lookup and three
+   *  writes. No allocation, no geometry, nothing for the collector.
+   */
+  function reshade(scene: VttScene, level: number, showFog: boolean): void {
+    const fog = showFog ? scene.fog : null;
+    const sight = showFog ? scene.sight : null;
+    const light = scene.light;
+    const w = scene.width;
+
+    for (const { geom, owners, base } of shadeTargets) {
+      const attr = geom.getAttribute("color") as THREE.BufferAttribute;
+      const arr = attr.array as Float32Array;
+      // Memoised by (tier, light) — nine possibilities, whatever the board size.
+      const cache = new Map<number, THREE.Color>();
+      let lastTile = -1, r = 0, g = 0, b = 0;
+      for (let v = 0; v < owners.length; v++) {
+        const tile = owners[v];
+        if (tile !== lastTile) {
+          const z = (tile / w) | 0;
+          const x = tile - z * w;
+          const seen: Seen = !fog ? Seen.Watched
+            : sight?.[z]?.[x] === "1" ? Seen.Watched
+            : fog[z]?.[x] === "1" ? Seen.Remembered : Seen.Never;
+          const lv = light?.[z]?.[x] ?? "b";
+          const key = seen * 4 + (lv === "x" ? 2 : lv === "d" ? 1 : 0);
+          let c = cache.get(key);
+          if (!c) { c = shade(base, seen, lv); cache.set(key, c); }
+          r = c.r; g = c.g; b = c.b;
+          lastTile = tile;
+        }
+        const i = v * 3;
+        arr[i] = r; arr[i + 1] = g; arr[i + 2] = b;
+      }
+      attr.needsUpdate = true;
     }
   }
 
@@ -721,16 +791,26 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       // Fog, live sight and light are baked into the mesh (see `shade`), so
       // they belong in the key. They change on a MOVE, not on a pointer flick,
       // so this rebuilds when someone walks and stays cached while they aim.
+      // Geometry depends on the ROOM. Shading does not, and used to be baked
+      // into the same key — so every step anyone took rebuilt the whole mesh
+      // because the fog had moved. They are two keys now: the room is rare, the
+      // tint is every frame that matters.
       const key = [
-        scene.id, level, st.show.grid, st.show.fog, st.show.terrain, backdrop,
+        scene.id, level, st.show.grid, st.show.terrain, backdrop,
         (scene.terrain ?? []).join(""),
-        (scene.fog ?? []).join(""), (scene.sight ?? []).join(""),
-        (scene.light ?? []).join(""),
         (scene.debris ?? []).map((d) => `${d.x},${d.y}`).join(";"),
       ].join("|");
       if (key !== terrainKey) {
         buildTerrain(scene, level, st.show.grid);
         terrainKey = key;
+      }
+      const tint = [
+        st.show.fog, (scene.fog ?? []).join(""), (scene.sight ?? []).join(""),
+        (scene.light ?? []).join(""),
+      ].join("|");
+      if (tint !== shadeKey) {
+        reshade(scene, level, st.show.fog);
+        shadeKey = tint;
       }
       buildDecals(st, level);
 
