@@ -117,6 +117,36 @@ export function tileHeightFt(code: string): number {
  *  which the painted layer is conditioned on and never has to change. */
 export const STRUCTURE_CODES: ReadonlySet<string> = new Set(["#", "R"]);
 
+/** What each object is SHAPED like, as parts of its square.
+ *
+ *  `[x0, x1, z0, z1, yFrom, yTo]` in FRACTIONS — of the square for x/z, of the
+ *  tile's standing height for y.
+ *
+ *  One box per tile is what made a crypt read as a tray of dice. The model that
+ *  paints the board is conditioned on a depth map of this very geometry, so it
+ *  paints the silhouette it is handed — which is why these are deliberate
+ *  outlines (a tapered lid, four legs) rather than a finer voxel grid, since
+ *  subdividing a cube only gets you a stair-stepped cube.
+ *
+ *  **Mirrors OBJECT_PARTS in vtt/isocam.py, which is authoritative.** If the
+ *  two disagree the painting is conditioned on furniture the player is not
+ *  looking at. */
+export const OBJECT_PARTS: Record<string, readonly (readonly [
+  number, number, number, number, number, number])[]> = {
+  A: [[0.10, 0.90, 0.30, 0.70, 0.00, 0.72],
+      [0.06, 0.94, 0.26, 0.74, 0.72, 1.00]],
+  n: [[0.12, 0.22, 0.16, 0.26, 0.00, 0.72],
+      [0.78, 0.88, 0.16, 0.26, 0.00, 0.72],
+      [0.12, 0.22, 0.74, 0.84, 0.00, 0.72],
+      [0.78, 0.88, 0.74, 0.84, 0.00, 0.72],
+      [0.06, 0.94, 0.10, 0.90, 0.72, 1.00]],
+  o: [[0.08, 0.58, 0.10, 0.62, 0.00, 0.62],
+      [0.46, 0.92, 0.36, 0.90, 0.00, 0.48],
+      [0.16, 0.56, 0.18, 0.58, 0.62, 1.00]],
+  w: [[0.18, 0.82, 0.00, 1.00, 0.00, 0.80],
+      [0.10, 0.90, 0.00, 1.00, 0.80, 1.00]],
+};
+
 /** Everything a renderer needs to draw one frame. */
 export interface PaintState {
   scene: VttScene;

@@ -30,7 +30,7 @@
 import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
-  CELL, STRUCTURE_CODES, tileHeightFt, tileStyle,
+  CELL, OBJECT_PARTS, STRUCTURE_CODES, tileHeightFt, tileStyle,
   type BoardView, type PaintState, type TokenPlacement, type View,
 } from "./boardView";
 import {
@@ -512,17 +512,15 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             } else if (code === "T") {
               prism(mb, cx, cz, 0.13, base, top * 0.55 + base * 0.45, 6, color);
               prism(mb, cx, cz, 0.46, base + (top - base) * 0.4, top, 8, color);
-            } else if (code === "A") {
-              // A stepped plinth: base course, then the slab.
-              panelBlock(mb, x + 0.14, x + 0.86, z + 0.2, z + 0.8,
-                         base, base + (top - base) * 0.7, color);
-              panelBlock(mb, x + 0.06, x + 0.94, z + 0.12, z + 0.88,
-                         base + (top - base) * 0.7, top, color);
-            } else if (code === "o" || code === "n") {
-              // Crates and upended furniture: smaller than their square, and
-              // turned a little off-axis so a row of them is not a wall.
-              const m = code === "o" ? 0.1 : 0.06;
-              panelBlock(mb, x + m, x + 1 - m, z + m, z + 1 - m, base, top, color);
+            } else if (OBJECT_PARTS[code]) {
+              // A built silhouette — see OBJECT_PARTS. Shared with the depth
+              // map the painted layer is conditioned on, so what stands here is
+              // what gets painted here.
+              const h2 = top - base;
+              for (const [px0, px1, pz0, pz1, py0, py1] of OBJECT_PARTS[code]) {
+                panelBlock(mb, x + px0, x + px1, z + pz0, z + pz1,
+                           base + h2 * py0, base + h2 * py1, color);
+              }
             } else {
               block(mb, x, z, base, top, color, () => true);
             }

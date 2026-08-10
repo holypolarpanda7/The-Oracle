@@ -176,6 +176,40 @@ def _quad(buf, pts, zs) -> None:
     _tri(buf, (pts[0], pts[2], pts[3]), (zs[0], zs[2], zs[3]))
 
 
+#: What each object is SHAPED like, as parts of its square.
+#:
+#: One box per tile is what made a crypt read as a tray of dice. The model
+#: paints the silhouette it is handed — proved when a pillar went from a cube to
+#: a prism and came back as a column — so the way to be understood is to hand it
+#: a recognisable outline. Deliberately not a finer voxel grid: subdividing a
+#: cube gets you a stair-stepped cube, whereas a tapered lid and four legs are a
+#: sarcophagus and a table at almost no cost.
+#:
+#: Each part is ``(x0, x1, z0, z1, y_from, y_to)`` in FRACTIONS — of the square
+#: for x/z, of the tile's standing height for y. Mirrored by OBJECT_PARTS in
+#: activity-ui/src/lib/boardView.ts; the depth map and the geometry must be the
+#: same object or the painting is conditioned on something the player is not
+#: looking at.
+OBJECT_PARTS: dict[str, tuple[tuple[float, float, float, float, float, float], ...]] = {
+    # Sarcophagus / altar: a long chest with an overhanging tapered lid.
+    "A": ((0.10, 0.90, 0.30, 0.70, 0.00, 0.72),
+          (0.06, 0.94, 0.26, 0.74, 0.72, 1.00)),
+    # Table: a top on four legs. The legs are what stop it being a block.
+    "n": ((0.12, 0.22, 0.16, 0.26, 0.00, 0.72),
+          (0.78, 0.88, 0.16, 0.26, 0.00, 0.72),
+          (0.12, 0.22, 0.74, 0.84, 0.00, 0.72),
+          (0.78, 0.88, 0.74, 0.84, 0.00, 0.72),
+          (0.06, 0.94, 0.10, 0.90, 0.72, 1.00)),
+    # Crates: stacked and offset, never one cube filling the square.
+    "o": ((0.08, 0.58, 0.10, 0.62, 0.00, 0.62),
+          (0.46, 0.92, 0.36, 0.90, 0.00, 0.48),
+          (0.16, 0.56, 0.18, 0.58, 0.62, 1.00)),
+    # Low wall: a coping course on a thinner base, so it reads as masonry.
+    "w": ((0.18, 0.82, 0.00, 1.00, 0.00, 0.80),
+          (0.10, 0.90, 0.00, 1.00, 0.80, 1.00)),
+}
+
+
 def _box(face, x0: float, x1: float, z0: float, z1: float,
          y1: float, y0: float = 0.0) -> None:
     """A box: top face plus the two sides this camera can see."""
@@ -279,14 +313,14 @@ def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
                 _prism(face, x + 0.5, z + 0.5, 0.32, top)
                 if code == "T":
                     _prism(face, x + 0.5, z + 0.5, 0.46, top, y0=top * 0.4)
-            elif code == "A":
-                # A stepped plinth. Drawn as a plain cube this came back as a
-                # DIE — a crypt of thirty four-foot cubes reads as a board game,
+            elif code in OBJECT_PARTS:
+                # A built silhouette. Drawn as one cube these came back as DICE
+                # — a crypt of thirty four-foot cubes reads as a board game
                 # however loudly the prompt says "stone coffins in ranks". The
                 # shape is the sentence the model actually listens to.
-                _box(face, x + 0.14, x + 0.86, z + 0.2, z + 0.8, top * 0.7)
-                _box(face, x + 0.06, x + 0.94, z + 0.12, z + 0.88, top,
-                     y0=top * 0.7)
+                for px0, px1, pz0, pz1, py0, py1 in OBJECT_PARTS[code]:
+                    _box(face, x + px0, x + px1, z + pz0, z + pz1,
+                         top * py1, y0=top * py0)
             else:
                 m = 0.1
                 _box(face, x + m, x + 1 - m, z + m, z + 1 - m, top)
