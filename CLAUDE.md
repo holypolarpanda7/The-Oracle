@@ -364,6 +364,55 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `vttPaint.ts` and `canvasBoardView.ts` are a deliberate fallback for a
   webview with no usable WebGL, and retire together once the isometric board
   reaches parity.
+- **Python owns the board's SHAPES; the TypeScript is generated.** Once objects
+  stopped being plain boxes, their shapes became as load-bearing as the camera:
+  `vtt/isocam.py` rasterizes them into the depth map the painted layer is
+  conditioned on, and `vttScene3d.ts` builds them as the geometry the player
+  looks at. A hand-mirrored table drifts, and the failure is INVISIBLE — the
+  painting simply lands on furniture nobody is looking at.
+  `scripts/gen_board_shapes.py` writes `boardShapes.generated.ts`, and
+  `iso_alignment_check.py` runs it in `--check` mode, so a change to one side
+  that never reached the other fails at the gate. The per-instance rules
+  (variant, quarter-turn, height jitter) are functions rather than tables, so
+  the gate runs the same squares through BOTH languages — with big coordinates
+  on purpose, since the hash multiplies and the two only diverge once the
+  product passes 2^32 and JavaScript's bitwise operators wrap it.
+- **A wall is a thin skin where solid meets open floor, not a five-foot cube.**
+  Drawn as a full cube it presents an enormous top face; a ring of them is a
+  rim, and a rim around a floor is a TRAY, which is what every enclosed room
+  read as. The square is still fully solid in the rules — the floor strip beside
+  the slab is a drawing. Keying the slab on which way the wall RUNS fails: mapgen
+  walls are commonly two squares thick, so every square reads as a corner and a
+  band of pluses notches at every seam. Draw the FACE, and let buried squares
+  draw nothing.
+- **Never vary a height the RULES quote.** Per-instance jitter gives walls,
+  pillars and trees a little life, but `cover_height_ft > 0` marks the tiles
+  whose height IS the answer — a crate screens four feet, a low wall three — and
+  those are drawn exactly. A player deciding whether they can break line of
+  sight reads it off the board, and against a stronger enemy that decision is
+  most of the fight; a crate drawn shorter than its neighbour invents a
+  difference the engine will not honour, exactly where being misled is expensive.
+- **`vtt/decor.py` is scenery: in the room, not in the rules.** Bones, a rug, a
+  brazier — drawn by the geometry and by the depth map, invisible to movement,
+  cover and sight. It exists because the visual vocabulary was capped by the
+  tile taxonomy, and every new code costs rules meaning that a rug should not
+  have to pay. **Nothing decorative may reach cover height**; the cap is
+  asserted at import, and anything that deserves to be cover is a TILE. Placement
+  is DERIVED from layout + seed (the `objects_for` precedent), the server ships
+  it in `state()`, and the DM board names it as having no mechanical effect —
+  unnamed, it is scenery the picture has and the board denies.
+- **Fog, sight and light are re-tinted in place, never rebuilt.** They used to
+  sit in the terrain cache key, so every step anyone took threw away the whole
+  mesh because a torch had moved. Each vertex records its SQUARE and `reshade`
+  writes colours straight into the attribute; shading only ever takes nine
+  values (three visibility tiers by three light levels), so it is a table lookup
+  per vertex. Instancing was considered and rejected — meshes are already merged
+  per tile code, so a board is ~10 draw calls and rebuild FREQUENCY was the cost.
+- **A creature walks the route the server walked.** `move_token` paths around
+  walls and records the route in the event log for monsters as well as players;
+  `state()["last_move"]` carries the newest one and the client animates along
+  it. A straight lerp between two squares draws a creature strolling through
+  masonry, which was tolerable when walls were flat shading and is not now.
 - **The isometric camera is ORTHOGRAPHIC and never rotates, and that buys
   three things.** The projection is a plain affine map, so it inverts in closed
   form and picking is arithmetic; pan and zoom are a translate-and-scale, so
