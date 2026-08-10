@@ -77,6 +77,14 @@ def unproject(sx: float, sy: float, wy: float) -> tuple[float, float]:
     return wx, wz
 
 
+#: Breathing room around the board in the CANONICAL framing, in squares.
+#: Mirrored by FRAME_PAD_SQUARES in activity-ui/src/lib/isocam.ts — a
+#: disagreement slides the whole painting off the geometry by a constant, which
+#: is the most convincing kind of wrong because everything still looks
+#: plausible.
+FRAME_PAD_SQUARES = 0.25
+
+
 @dataclass(frozen=True)
 class Bounds:
     min_x: float
@@ -170,7 +178,7 @@ def _quad(buf, pts, zs) -> None:
 
 
 def depth_image(rows: Sequence[str], *, height_ft, square_ft: int = 5,
-                px_per_square: int = 48, pad_squares: float = 0.25,
+                px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
                 structure: Optional[set[str]] = None,
                 max_px: int = 1536) -> bytes:
     """Rasterize the board's geometry to a depth map. Returns PNG bytes.

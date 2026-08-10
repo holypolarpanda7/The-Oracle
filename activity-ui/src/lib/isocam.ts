@@ -57,6 +57,15 @@ export const RIGHT: readonly [number, number, number] = [COS_Y, 0, -SIN_Y];
 export const UP: readonly [number, number, number] = [-SIN_Y * SIN_P, COS_P, -COS_Y * SIN_P];
 export const FORWARD: readonly [number, number, number] = [-SIN_Y * COS_P, -SIN_P, -COS_Y * COS_P];
 
+/** Breathing room around the board in the CANONICAL framing, in squares.
+ *
+ *  The painted layer is baked to the projected bounding box plus this margin,
+ *  and the client lays it back over exactly that rectangle. Mirrored by
+ *  `FRAME_PAD_SQUARES` in vtt/isocam.py — a disagreement here slides the whole
+ *  painting off the geometry by a constant, which is the most convincing kind
+ *  of wrong because everything still looks plausible. */
+export const FRAME_PAD_SQUARES = 0.25;
+
 /** A point on the projection plane, in world units, before zoom or pan.
  *  `y` grows DOWNWARD to match screen convention. */
 export interface Projected { x: number; y: number; depth: number }

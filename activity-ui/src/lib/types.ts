@@ -449,6 +449,11 @@ export interface VttScene {
   /** What broke, and what it left. */
   debris?: VttDebris[];
   background_image_id?: number | null;
+  /** The painted ISOMETRIC view of this board, conditioned on a depth map of
+   *  the geometry the Activity draws. Absent means the board shows clean
+   *  geometry, which is a supported state rather than a degraded one. */
+  iso_image_id?: number | null;
+  iso_art_status?: string;   // none | pending | ready | offline
   art_status: string;      // none | pending | ready | offline
   description?: string;
   tokens: VttToken[];

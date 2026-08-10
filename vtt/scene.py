@@ -115,6 +115,33 @@ class VttEngine:
 
     def create_tables(self) -> None:
         SQLModel.metadata.create_all(self.engine)
+        self._add_missing_columns()
+
+    #: Columns added to ``vtt_map`` after boards already existed in the wild.
+    #:
+    #: ``create_all`` creates missing TABLES and nothing else, so a new field on
+    #: an existing database is a column that is simply not there — and every
+    #: query naming it fails, which on a live board means the tactical layer
+    #: stops working rather than degrading. Same ad-hoc migration the world
+    #: graph and the rules ingest already use.
+    _LATE_COLUMNS: tuple[tuple[str, str], ...] = (
+        ("iso_image_id", "INTEGER"),
+        ("iso_art_status", "VARCHAR"),
+    )
+
+    def _add_missing_columns(self) -> None:
+        try:
+            with self.engine.begin() as conn:
+                have = {r[1] for r in conn.exec_driver_sql(
+                    'PRAGMA table_info("vtt_map")')}
+                if not have:
+                    return                      # fresh table; create_all did it
+                for col, ddl in self._LATE_COLUMNS:
+                    if col not in have:
+                        conn.exec_driver_sql(
+                            f'ALTER TABLE "vtt_map" ADD COLUMN {col} {ddl}')
+        except Exception as e:                  # never block a board on this
+            print(f"[vtt] column migration skipped: {e}")
 
     # ================================================================ scenes
 
@@ -720,6 +747,44 @@ class VttEngine:
                                  if code in APERTURES else ""),
                         "image_id": sprites.get(tile(code).name)})
         return out
+
+    def render_iso_art(self, map_id: int, gen: Optional[GeneratedMap] = None,
+                       *, extra: str = "", conditions: str = "") -> Optional[int]:
+        """Paint the isometric view of this board (blocking; run it in a task).
+
+        The counterpart to :meth:`render_art`, and deliberately separate: that
+        one is the top-down picture a Discord table looks at, this one is the
+        painted layer the Activity lays over its geometry. A board can have
+        either, both or neither, and neither is required for play.
+        """
+        from .art import render_iso_board
+
+        row = self.get_scene(map_id)
+        if row is None:
+            return None
+        if gen is None:
+            gen = self.regenerate(row)
+        cn, strength = "", 0.55
+        try:
+            from game_config import get_config
+            _img = get_config().imagery
+            cn = getattr(_img, "isoboard_controlnet", "") or ""
+            strength = float(getattr(_img, "isoboard_controlnet_strength", 0.55))
+        except Exception as e:
+            print(f"[vtt] isoboard controlnet config unavailable: {e}")
+        if not cn:
+            # No depth model, no painting. Refused rather than faked — see
+            # render_iso_board.
+            self._set_fields(map_id, iso_art_status="offline")
+            return None
+        self._set_fields(map_id, iso_art_status="pending")
+        art = render_iso_board(
+            gen, store=self.image_store, name=row.name, biome=row.biome,
+            lighting=row.lighting, extra=extra, conditions=conditions,
+            controlnet=cn, controlnet_strength=strength)
+        self._set_fields(map_id, iso_image_id=art.image_id,
+                         iso_art_status=("ready" if art.image_id else "offline"))
+        return art.image_id
 
     def materials_for(self, map_id: int) -> dict[str, int]:
         """The surface swatch for every tile code on this board, {code: id}.
@@ -3098,6 +3163,12 @@ class VttEngine:
             "materials": self.materials_for(map_id),
             "background_image_id": row.background_image_id,
             "art_status": row.art_status,
+            # The painted isometric layer, and the canonical framing it was
+            # baked at. The client needs both: the picture, and where on its own
+            # projection to lay it. Sent as squares (not pixels) because zoom is
+            # the viewer's business and the framing is not.
+            "iso_image_id": row.iso_image_id,
+            "iso_art_status": row.iso_art_status,
             "description": (row.notes or {}).get("description", ""),
             "tokens": [_token_dict(t, row) for t in toks
                        if self._visible_to_team(t, toks, viewer_team)],

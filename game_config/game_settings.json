@@ -93,7 +93,9 @@
         }
       ],
       "map_controlnet": "controlnet-scribble-sdxl.safetensors",
-      "map_controlnet_strength": 0.8
+      "map_controlnet_strength": 0.8,
+      "isoboard_controlnet": "controlnet-depth-sdxl.safetensors",
+      "isoboard_controlnet_strength": 0.55
     }
   }
 }

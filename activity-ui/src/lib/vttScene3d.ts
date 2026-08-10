@@ -33,7 +33,9 @@ import {
   CELL, STRUCTURE_CODES, tileHeightFt, tileStyle,
   type BoardView, type PaintState, type TokenPlacement, type View,
 } from "./boardView";
-import { FORWARD, RIGHT, UP, boundsOf, project, unproject } from "./isocam";
+import {
+  FORWARD, FRAME_PAD_SQUARES, RIGHT, UP, boundsOf, project, unproject,
+} from "./isocam";
 
 /** How far back the camera sits. Orthographic, so this changes nothing about
  *  the image — it only has to clear the tallest thing on the board. */
@@ -348,6 +350,21 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   const decalGroup = new THREE.Group();
   scene3.add(terrainGroup, decalGroup);
 
+  // The painted layer, drawn as a screen-space backdrop under everything.
+  //
+  // A separate pass in pixel space rather than a quad in the world, because the
+  // painting is not a surface in the room — it is a PROJECTION of the room,
+  // baked at the canonical framing. Laying it back over exactly that rectangle
+  // is the only placement that keeps it on the geometry, and the same View
+  // affine carries it through every pan and zoom.
+  const bgScene = new THREE.Scene();
+  const bgCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+  const bgMat = new THREE.MeshBasicMaterial({ transparent: false, depthTest: false });
+  const bgMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), bgMat);
+  bgScene.add(bgMesh);
+  // We paint the backdrop ourselves and must not have it wiped between passes.
+  renderer.autoClear = false;
+
   /** The terrain mesh is expensive and the board redraws on every pointer move,
    *  so it is rebuilt only when the ROOM changes. Keying on `scene.revision`
    *  would rebuild on every step anyone takes; keying on the tile rows means a
@@ -383,6 +400,9 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     }
     return heightUnits(scene, ft);
   }
+
+  /** Is a painting being drawn behind the geometry this frame? */
+  let backdrop = false;
 
   function buildTerrain(scene: VttScene, level: number, showGrid: boolean): void {
     disposeTree(terrainGroup);
@@ -524,6 +544,12 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       terrainGroup.add(new THREE.Mesh(mb.build(), new THREE.MeshLambertMaterial({
         vertexColors: true,
         ...(tex instanceof THREE.Texture ? { map: tex } : {}),
+        // With a painting behind it the geometry stops drawing and becomes a
+        // depth-only proxy — invisible, but still occluding the decals and
+        // answering "is a wall in front of this creature". That is precisely
+        // what Baldur's Gate shipped beside each of its backgrounds, and it is
+        // why the geometry is not thrown away once the picture arrives.
+        ...(backdrop ? { colorWrite: false } : {}),
       })));
     }
     if (gridPts.length) {
@@ -667,11 +693,19 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
 
+      // The painted layer. Only the ground floor has one — an upper storey is
+      // its own room and would need its own painting, so peeking upstairs falls
+      // back to geometry rather than showing the hall's picture on a gallery.
+      const isoId = level === 0 ? scene.iso_image_id ?? 0 : 0;
+      const isoTex = isoId ? TEXTURES.get(isoId) : null;
+      if (isoId && isoTex === undefined) requestTexture(isoId, invalidate);
+      backdrop = isoTex instanceof THREE.Texture;
+
       // Fog, live sight and light are baked into the mesh (see `shade`), so
       // they belong in the key. They change on a MOVE, not on a pointer flick,
       // so this rebuilds when someone walks and stays cached while they aim.
       const key = [
-        scene.id, level, st.show.grid, st.show.fog, st.show.terrain,
+        scene.id, level, st.show.grid, st.show.fog, st.show.terrain, backdrop,
         (scene.terrain ?? []).join(""),
         (scene.fog ?? []).join(""), (scene.sight ?? []).join(""),
         (scene.light ?? []).join(""),
@@ -711,6 +745,27 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       camera.lookAt(target);
       camera.updateProjectionMatrix();
 
+      renderer.clear();
+      if (backdrop && isoTex instanceof THREE.Texture) {
+        // Lay the painting back over the exact rectangle it was baked to. Both
+        // sides compute this from `boundsOf` + FRAME_PAD_SQUARES, so it is the
+        // same rectangle by construction rather than by agreement.
+        const b = boundsOf(scene.width, scene.height, tallestUnits(scene));
+        const p = FRAME_PAD_SQUARES;
+        const left = view.ox + k * (b.minX - p);
+        const topPx = view.oy + k * (b.minY - p);
+        const wPx = k * (b.maxX - b.minX + p * 2);
+        const hPx = k * (b.maxY - b.minY + p * 2);
+        bgMat.map = isoTex;
+        bgMat.needsUpdate = true;
+        bgCamera.left = 0; bgCamera.right = w;
+        bgCamera.top = 0; bgCamera.bottom = h;   // y down, to match screen space
+        bgCamera.updateProjectionMatrix();
+        bgMesh.scale.set(wPx, hPx, 1);
+        bgMesh.position.set(left + wPx / 2, topPx + hPx / 2, 0);
+        renderer.render(bgScene, bgCamera);
+        renderer.clearDepth();
+      }
       renderer.render(scene3, camera);
   }
 }
