@@ -469,24 +469,28 @@ def standing_fraction(grid: Grid) -> float:
 def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
     """Denoise for this board; 1.0 means "no init image, depth alone".
 
-    ``skinned`` is accepted and deliberately IGNORED, and the measurement is
-    worth keeping because the idea is an obvious one to have twice.
+    ``skinned`` is accepted and deliberately IGNORED. Two findings, and the
+    second corrects the first.
 
-    A skin says a board's materials are not the ones the model would guess, and
-    the terrain image is the only channel that carries a colour — so it looked
-    as though a skinned board should always get one, overriding the built-up
-    rule that hands a walled room no init image at all. Rendered across the
-    whole gallery, that made six boards worse to help one: the dungeon, the
-    crypt, the arena and the cave all lost the painted detail they had and came
-    back as flat tinted geometry, which is exactly what the built-up rule was
-    measured to prevent. Dropping the denoise to 0.60 to compensate made it
-    worse again, and for the reason ISO_DENOISE_FLAT already records.
+    A skin says a board's materials are not the ones the model would guess, so
+    it looked as though a skinned board should always get its terrain image,
+    overriding the built-up rule that hands a walled room no init image at all.
+    Rendered across the whole gallery that made six boards worse to help one:
+    the dungeon, the crypt, the arena and the cave all lost their painted
+    detail and came back as flat tinted geometry, which is exactly what the
+    built-up rule was measured to prevent. Dropping the denoise to 0.60 to
+    compensate made it worse again, for the reason ISO_DENOISE_FLAT records.
+    Both reverted. THAT much holds.
 
-    So conveying a MATERIAL against a strong silhouette prior is not reachable
-    from here. It needs a second conditioning channel — a colour or
-    segmentation ControlNet alongside the depth one — which is separate work
-    and not a knob on this one. The parameter stays so callers keep reading
-    honestly; what it does is nothing.
+    What was ALSO concluded from the same session — that a depth ControlNet
+    simply cannot convey a material against a strong silhouette prior — was
+    WRONG, and the evidence for it was poisoned. A skyship's three styles
+    change materials and not one tile, and `isoboard_ref` hashed only the
+    tiles, so all three shared a cache slug and the first render was served to
+    the other two. They looked identical because they were one picture. With
+    the skins in the key they come back as three plainly different vessels at
+    this very denoise: a tarred caravel, a verdigris brass contraption, a green
+    chitin hull. The technique was fine; the cache was lying.
     """
     return (1.0 if standing_fraction(grid) >= BUILT_UP_FRACTION
             else ISO_DENOISE_FLAT)
@@ -504,7 +508,10 @@ def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
 #: Rev 22-24: an experiment and its reversal — a skinned board was given its
 #: terrain image regardless of how built up it is, and it cost six boards their
 #: painted detail to help one. See iso_denoise_for.
-ISOBOARD_REV = 24
+#: Rev 25: towers stopped being solid boxes with their doorways bricked up,
+#: skirts slope and a vessel carries its own hull, and a sea ship no longer
+#: shares a deck skin with a skyship.
+ISOBOARD_REV = 26
 
 
 #: Retained for callers that still ask, and for the gallery's reporting. The
@@ -531,9 +538,26 @@ def worth_painting(grid: Grid) -> bool:
     return any(tile(c).art for row in grid.to_rows() for c in row if c != " ")
 
 
-def isoboard_ref(grid: Grid, archetype: str, seed: int) -> str:
-    """Cache slug for the painted isometric view of this exact layout."""
-    return f"iso-v{ISOBOARD_REV}-{layout_signature(grid, archetype, seed)}"
+def isoboard_ref(grid: Grid, archetype: str, seed: int,
+                 skins: str = "") -> str:
+    """Cache slug for the painted isometric view of this exact layout.
+
+    ``skins`` is what the board is MADE of, and leaving it out was a real bug
+    rather than an omission: a skyship's three styles change materials and not
+    one tile, so all three hashed identically and the first one rendered was
+    served to the other two. They came back looking the same because they WERE
+    the same picture — which sat underneath a genuine limit of the technique
+    and made it look worse than it is.
+
+    Same lesson as ``layout_signature`` following the CURRENT grid: the cache
+    key has to name everything the picture depends on, or it quietly serves the
+    wrong one.
+    """
+    base = layout_signature(grid, archetype, seed)
+    if not skins:
+        return f"iso-v{ISOBOARD_REV}-{base}"
+    tag = hashlib.sha256(skins.encode("utf-8")).hexdigest()[:8]
+    return f"iso-v{ISOBOARD_REV}-{base}-{tag}"
 
 
 def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
@@ -590,7 +614,13 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
             f"({material_words}:1.35)" if material_words else "",
             _void_reads_as(gen.grid, lighting)) if p),
         conditions=conditions)
-    ref = isoboard_ref(gen.grid, gen.archetype, gen.seed)
+    # The skins go into the cache key. Two boards with identical tiles and
+    # different materials are two pictures, and hashing only the tiles served
+    # one of them to both.
+    ref = isoboard_ref(
+        gen.grid, gen.archetype, gen.seed,
+        skins="|".join(f"{k}={v}" for k, v in sorted(code_skins.items()))
+        + "#" + "|".join(f"{k}={v}" for k, v in sorted(square_skins.items())))
 
     if not worth_painting(gen.grid):
         # An OPEN board is refused, and this is a limit of the technique rather

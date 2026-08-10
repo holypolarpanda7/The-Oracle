@@ -117,7 +117,7 @@ def main(argv=None) -> int:
         arch = STYLE_OF.get(label, label)
         print(f"[{i}/{len(scenes)}] {label:20} {name} ...", end="", flush=True)
         gen = generate_map(arch, width=width, height=height, seed=a.seed,
-                           style=style)
+                           style=style, biome=biome)
         if not worth_painting(gen.grid):
             # Not a failure: an open board keeps its geometry on purpose.
             print(" skipped (too flat to condition — geometry only)")

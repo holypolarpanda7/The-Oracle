@@ -88,7 +88,33 @@ def main() -> int:
     check(raised, "and the import-time guard refuses one that tries",
           "a 14-ft cliff skin on a 3-ft low wall")
 
-    head(3, "a rail is a rail whatever it is made of")
+    head(3, "a skin may never wall up a square you can walk through")
+    # The bug this exists for: a watchtower's whole wall ring was skinned in
+    # one pass, INCLUDING its open doorway, so a square the rules let you walk
+    # through was drawn as a solid nine-foot merloned block. The tower read as
+    # four walls you would have to fly into, and the way in simply was not
+    # there. A picture contradicting the grid is the one thing the board must
+    # never do, and it is worst in this direction.
+    check(S.occludes_floor("tower-stone"), "a tower WALL does occlude — correctly")
+    check(not S.occludes_floor("doorway-stone"),
+          "a DOORWAY does not: jambs and a lintel over an open passage")
+    blocked = []
+    for arch in sorted(ARCHETYPES):
+        for seed in (1, 7, 42):
+            gen = generate_map(arch, width=26, height=20, seed=seed)
+            codes = S.skins_for(arch, style=gen.style)
+            for x, y in gen.grid.squares():
+                code = gen.grid.get(x, y)
+                if not tile(code).move_cost_ft:
+                    continue                      # not walkable anyway
+                name = S.skin_at(code, x, y, codes=codes, squares=gen.skins)
+                if name and S.occludes_floor(name):
+                    blocked.append((arch, seed, x, y, code, name))
+    check(not blocked,
+          "and no walkable square on any board carries one that does",
+          str(blocked[:2]) if blocked else "21 archetypes x3 seeds")
+
+    head(4, "a rail is a rail whatever it is made of")
     tim = S.skins_for("skyship", style="timber")
     steam = S.skins_for("skyship", style="steampunk")
     org = S.skins_for("skyship", style="organic")
@@ -100,7 +126,7 @@ def main() -> int:
           "the DECK follows the style too, which is most of what you see",
           f'{tim["b"]} / {steam["b"]} / {org["b"]}')
 
-    head(4, "a tent is somewhere you can BE, not something you stand on")
+    head(5, "a tent is somewhere you can BE, not something you stand on")
     import random
     g = Grid.blank(14, 12)
     g.fill_rect(0, 0, 13, 11, "g")
@@ -126,7 +152,7 @@ def main() -> int:
     tiny = structures.shelter(g, rng, 1, 1, 3, 3, skin="canvas", on=("g",))
     check(not tiny.interior, "a shelter too small to stand in is refused")
 
-    head(5, "a watchtower's top is a real storey, reached by a ladder")
+    head(6, "a watchtower's top is a real storey, reached by a ladder")
     gen = generate_map("bridge", width=26, height=20, seed=5)
     check(bool(gen.levels), "the bridge built an upper floor",
           ", ".join(f"{l['name']} @{l['base_ft']}ft" for l in gen.levels))
@@ -137,7 +163,7 @@ def main() -> int:
               f"the {st['kind']} arrives on real floor, not open air",
               f"level {st['to_level']} at {st['to_x']},{st['to_y']}")
 
-    head(6, "a hold is the same machinery pointed downward")
+    head(7, "a hold is the same machinery pointed downward")
     gen = generate_map("ship", width=28, height=20, seed=5)
     below = [l for l in gen.levels if int(l["base_ft"]) < 0]
     check(bool(below), "the ship has a deck below the weather deck",
@@ -147,7 +173,7 @@ def main() -> int:
           "and the DM board signs the height instead of printing '+-8 ft'",
           f"{_ft_offset(-8)} / {_ft_offset(15)} / {_ft_offset(0)}")
 
-    head(7, "it survives the round trip through the database")
+    head(8, "it survives the round trip through the database")
     with tempfile.TemporaryDirectory() as tmp:
         from vtt.scene import VttEngine
         eng = VttEngine(database_url=f"sqlite:///{Path(tmp) / 'smoke.db'}")
@@ -168,7 +194,7 @@ def main() -> int:
         stairs = [s for lv in st2["levels"] for s in lv.get("stairs", [])]
         check(bool(stairs), "and so did the ladders", f"{len(stairs)} entries")
 
-    head(8, "every board still generates, and every skin resolves")
+    head(9, "every board still generates, and every skin resolves")
     bad = []
     for arch in sorted(ARCHETYPES):
         for seed in (1, 7, 42):

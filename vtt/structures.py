@@ -91,6 +91,7 @@ def shelter(g: Grid, rng: random.Random, x0: int, y0: int, w: int, h: int, *,
             skin: str, wall: str = WALL, floor: str = FLOOR,
             door: str = "/", on: tuple[str, ...] = (),
             interior_floor: Optional[str] = None,
+            door_skin: str = "",
             margin: int = 1) -> Built:
     """A walled enclosure with a floor inside and one way in. The base shape.
 
@@ -122,8 +123,15 @@ def shelter(g: Grid, rng: random.Random, x0: int, y0: int, w: int, h: int, *,
         for y in range(y0, y0 + h):
             edge = x in (x0, x0 + w - 1) or y in (y0, y0 + h - 1)
             g.set(x, y, wall if edge else inner)
-            built.skins[f"{x},{y}"] = skin
-            if not edge:
+            if edge:
+                # Only the WALLS wear the wall's material. Skinning the whole
+                # footprint gave the interior floor the wall's own silhouette
+                # too, so a tower was solid right through and the room inside
+                # it existed only in the rules. The floor keeps whatever the
+                # board is made of, which is what a beaten earth floor or a
+                # deck should look like anyway.
+                built.skins[f"{x},{y}"] = skin
+            else:
                 built.interior.append((x, y))
 
     # The way in goes on a side, never a corner — a corner opening leaves the
@@ -136,8 +144,15 @@ def shelter(g: Grid, rng: random.Random, x0: int, y0: int, w: int, h: int, *,
         dy = rng.randrange(y0 + 1, y0 + h - 1)
         dx = x0 if side == "w" else x0 + w - 1
     g.set(dx, dy, door)
-    built.skins[f"{dx},{dy}"] = skin
     built.door_at = (dx, dy)
+    # The doorway is NOT the wall, and giving it the wall's skin is the bug
+    # this parameter exists to prevent: the square stays walkable in the rules
+    # and gets DRAWN as a solid block, so the way in is not there. An empty
+    # door_skin leaves it looking like the floor, which is honest; a real one
+    # (jambs and a lintel, a flap tied back) is better, and both leave the
+    # passage clear — see skins.occludes_floor.
+    if door_skin:
+        built.skins[f"{dx},{dy}"] = door_skin
     return built
 
 
@@ -152,12 +167,13 @@ def tent(g: Grid, rng: random.Random, x0: int, y0: int, *,
     """
     w = rng.choice((4, 4, 5))
     h = rng.choice((4, 4, 5))
-    return shelter(g, rng, x0, y0, w, h, skin="canvas", on=on,
-                   interior_floor=FLOOR)
+    return shelter(g, rng, x0, y0, w, h, skin="canvas", door_skin="flap",
+                   on=on, interior_floor=FLOOR)
 
 
 def watchtower(g: Grid, rng: random.Random, out, x0: int, y0: int, *,
                on: tuple[str, ...] = (), base_ft: int = 15,
+               material: str = "stone",
                name: str = "watchtower") -> Built:
     """A stone tower with a room at the bottom and a fighting top, joined by a
     ladder.
@@ -175,7 +191,9 @@ def watchtower(g: Grid, rng: random.Random, out, x0: int, y0: int, *,
     from .terrain import VOID
 
     size = rng.choice((4, 4, 5))
-    built = shelter(g, rng, x0, y0, size, size, skin="masonry", on=on)
+    wall_skin = f"tower-{material}"
+    built = shelter(g, rng, x0, y0, size, size, skin=wall_skin,
+                    door_skin=f"doorway-{material}", on=on)
     if not built.interior:
         return built
 
@@ -202,10 +220,12 @@ def watchtower(g: Grid, rng: random.Random, out, x0: int, y0: int, *,
     lx, ly = built.interior[len(built.interior) // 2]
     out.stairs.append({"level": 0, "x": lx, "y": ly, "to_level": level,
                        "to_x": lx, "to_y": ly, "kind": "ladder"})
-    for x in range(x0, x0 + size):
-        for y in range(y0, y0 + size):
-            edge = x in (x0, x0 + size - 1) or y in (y0, y0 + size - 1)
-            built.skins[f"{x},{y}"] = "parapet" if edge else "masonry"
+    # NB: the ground storey keeps the skins `shelter` gave it. An earlier pass
+    # re-skinned this whole footprint as `parapet` — a nine-foot merloned edge,
+    # which is the thing you crouch behind ON the roof, not the storey holding
+    # it up. Applied down here it made every tower a low crenellated box with
+    # its doorway bricked over. The parapet belongs to the level above, where
+    # it is an ordinary low wall and needs no skin at all.
     return built
 
 

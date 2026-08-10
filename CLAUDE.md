@@ -435,16 +435,23 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   creature and is a box with a hole in it. Shelters demand clear ground around
   them — two built back to back seal a pocket, and the connectivity net then
   carves a corridor through somebody's tent to reach it.
-- **A depth ControlNet cannot convey a MATERIAL, and no denoise fixes that.**
-  A skyship's three styles produce three genuinely different terrain images —
-  brown oak, teal brass, green chitin, measured — and all three come back as
-  one wooden deck, because the depth map plainly shows a ship and the model's
-  prior for that silhouette wins. Both obvious levers were tried and recorded
-  in `iso_denoise_for`: giving every skinned board its terrain image (six
-  boards lost their painted detail to help one) and dropping the denoise to
-  0.60 (everything became flat tinted geometry, exactly as `ISO_DENOISE_FLAT`
-  warns). Getting material through needs a SECOND conditioning channel — a
-  colour or segmentation ControlNet beside the depth one.
+- **The cache key must name everything the picture depends on.** `isoboard_ref`
+  hashed the tile grid, and a skin changes materials without changing one
+  tile — so a skyship's timber, steampunk and organic styles shared a slug and
+  the first render was served to all three. They came back identical because
+  they *were* one picture. Worse than the wasted work: it looked like evidence
+  for a limit that does not exist, and "a depth ControlNet cannot convey a
+  material" got written down as measured when it was a cache bug. With the
+  skins in the key the same denoise gives three plainly different vessels. Same
+  lesson as `layout_signature` following the CURRENT grid — **when two renders
+  should differ and don't, suspect the key before the technique.**
+- **The built-up rule survived being second-guessed.** A skinned board was
+  given its terrain image regardless of how built up it is, on the theory that
+  a skin is the board saying "not the default material". Measured across the
+  gallery it cost six boards their painted detail to help one, and dropping the
+  denoise to 0.60 to compensate turned everything into flat tinted geometry —
+  exactly what `ISO_DENOISE_FLAT` already warns about. Both reverted; the
+  reasoning is kept in `iso_denoise_for` so it isn't re-derived.
 - **`vtt/decor.py` is scenery: in the room, not in the rules.** Bones, a rug, a
   brazier — drawn by the geometry and by the depth map, invisible to movement,
   cover and sight. It exists because the visual vocabulary was capped by the

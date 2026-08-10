@@ -28,6 +28,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from . import skins as _skins
 from .skins import SKYSHIP_STYLES
 from .terrain import APERTURES, FLOOR, VOID, WALL, Grid, aperture_axis
 
@@ -62,6 +63,11 @@ class GeneratedMap:
     # the exceptions a generator BUILDS — a camp is palisaded, and the tents
     # inside it are canvas. Purely a look: no rule reads one.
     skins: dict[str, str] = field(default_factory=dict)
+    # The DM's own words for where this is. Not used by any rule — generators
+    # read it to decide what a STRUCTURE is built of (see skins.building_material),
+    # because the DM has already said whether this is deep forest or a
+    # mountain road and should not be asked twice.
+    biome: str = ""
     # A whole-board style choice where the archetype genuinely has one (a
     # skyship is timber, brass-and-steam or grown). Recorded so a table's ship
     # stays the ship it was.
@@ -582,6 +588,10 @@ def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # the bank is too narrow, rather than forced — a tower half off the board is
     # worse than a bank with none.
     ground = (",", "g")
+    # What the towers are built of is the DM's call, and they have already made
+    # it: the biome they typed is on the board row. A forest crossing gets a
+    # timber stockade, a mountain road drystone.
+    material = _skins.building_material(out.biome)
     for bank_far, anchor in ((True, gap_top), (False, gap_bot)):
         placed = False
         for size in (5, 4):
@@ -593,6 +603,7 @@ def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
             for dx in (2, -size - 1, 3, -size - 2, 4, -size):
                 b = structures.watchtower(g, rng, out, span_x + dx, y0,
                                           on=ground, base_ft=15,
+                                          material=material,
                                           name="tower top")
                 if b.interior:
                     out.skins.update(b.skins)
@@ -602,7 +613,21 @@ def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
             if placed:
                 break
 
-    _scatter(g, rng, "R", 0.04, only_on=ground)
+    # Boulders, and NOWHERE near the crossing. Scattered at 4% across the whole
+    # bank these were the loose blocks that made no sense — a rock face is a
+    # full-height sight blocker, so one dropped at the mouth of the span reads
+    # as the bridge being walled off, and a couple did land there. A crossing's
+    # approach is the one place on this board that has to stay clear.
+    approach = {(span_x + dx, y)
+                for dx in (-2, -1, 0, 1, 2, 3)
+                for y in list(range(gap_top - 3, gap_top))
+                + list(range(gap_bot + 1, gap_bot + 4))}
+    for x, y in list(g.squares()):
+        if (x, y) in approach or g.get(x, y) not in ground:
+            continue
+        if rng.random() < 0.025:
+            g.set(x, y, "R")
+    _connect_regions(g, rng)
     out.description = (
         "a plank bridge over a black chasm, a stone watchtower squatting at "
         "each end of the span" if chasm == "x" else
@@ -1176,7 +1201,7 @@ def archetype_for_place(*, hint: Optional[str] = None, biome: Optional[str] = No
 def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
                  seed: Optional[int] = None,
                  lighting: Optional[str] = None,
-                 style: str = "") -> GeneratedMap:
+                 style: str = "", biome: str = "") -> GeneratedMap:
     """Build a board. The same ``(archetype, width, height, seed, style)``
     always produces the identical grid — so a map can be regenerated from its
     row.
@@ -1192,7 +1217,8 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
     seed = random.randint(1, 2**31 - 1) if seed is None else int(seed)
     rng = _rng(seed)
     grid = Grid.blank(width, height)
-    out = GeneratedMap(grid=grid, archetype=archetype, seed=seed, style=style)
+    out = GeneratedMap(grid=grid, archetype=archetype, seed=seed, style=style,
+                       biome=biome)
     ARCHETYPES[archetype](grid, rng, out)
 
     # Every board must be one connected space and have room to stand — judged in
@@ -1203,8 +1229,25 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
         # A generator collapsed (rare corner of the CA); fall back to open ground
         # rather than handing the table an unplayable board.
         grid = Grid.blank(width, height)
-        out = GeneratedMap(grid=grid, archetype=archetype, seed=seed)
+        out = GeneratedMap(grid=grid, archetype=archetype, seed=seed,
+                           biome=biome)
         _gen_open(grid, rng, out)
+
+    # A skin recorded by a generator can outlive the square it described: the
+    # connectivity net runs afterwards and will carve a corridor straight
+    # through a tent wall if it has to, leaving a canvas WALL skin sitting on
+    # what is now open floor — drawn solid, over a square the rules let you
+    # walk across. The board must never show a way through that is not there,
+    # nor block one that is, so the last thing that touches the grid drops any
+    # skin the grid has outgrown. A safety net for every future generator, in
+    # the same spirit as _connect_regions itself.
+    if out.skins:
+        from .terrain import tile as _tile
+        out.skins = {
+            key: name for key, name in out.skins.items()
+            if not (_tile(grid.get(*(int(v) for v in key.split(",")))
+                          ).move_cost_ft and _skins.occludes_floor(name))
+        }
 
     party, foes = _opposed_zones(grid, rng, out.mode)
     out.spawn_party, out.spawn_foes = party, foes

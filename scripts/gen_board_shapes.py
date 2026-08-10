@@ -57,7 +57,7 @@ def render() -> str:
     from vtt.art import STRUCTURE_CODES
     from vtt.isocam import (
         HEIGHT_JITTER, HOLE_CODES, OBJECT_VARIANTS, PILLAR_RADIUS, SKIRT_FT,
-        WALL_THICKNESS,
+        SKIRT_INSET, WALL_THICKNESS,
     )
     from vtt.decor import DECOR_KINDS, MAX_DECOR_HEIGHT_FT
     from vtt.terrain import STAND_HEIGHT_FT, TILES
@@ -85,6 +85,10 @@ def render() -> str:
     lines.append("/** How thick a platform is, in feet, where its floor meets a hole.\n"
                  " *  Without it an island is a paper cut-out hanging in nothing. */\n"
                  f"export const SKIRT_FT = {_num(SKIRT_FT)};\n")
+    lines.append("/** How far the BOTTOM of a skirt pulls in toward its square.\n"
+                 " *  A vertical drop is a slab and a ring of slabs is a box; pulled\n"
+                 " *  in, each side is a trapezoid instead. */\n"
+                 f"export const SKIRT_INSET = {_num(SKIRT_INSET)};\n")
 
     holes = ", ".join(f'"{c}"' for c in sorted(HOLE_CODES))
     lines.append("/** Codes that are a HOLE, not ground — nothing is drawn on them.\n"
@@ -152,6 +156,12 @@ def render() -> str:
         "  /** Pick the arrangement from a COARSE hash, so neighbours agree.\n"
         "   *  For a MASS (rock, coral) rather than a set of objects. */\n"
         "  readonly smooth: boolean;\n"
+        "  /** Feet. Non-zero means this FLOOR carries its own side wherever\n"
+        "   *  it meets something that is not the same skin — how a ship gets\n"
+        "   *  a hull, since deep water is not a hole. 0 = the board rule. */\n"
+        "  readonly skirtFt: number;\n"
+        "  /** How far that side's bottom pulls in, as a fraction. */\n"
+        "  readonly skirtInset: number;\n"
         "  readonly variants: readonly (readonly (readonly [\n"
         "    number, number, number, number, number, number])[])[] | null;\n"
         "}\n"
@@ -171,6 +181,8 @@ def render() -> str:
             f"heightFt: {_num(sk.height_ft)}, "
             f"directional: {'true' if sk.directional else 'false'}, "
             f"smooth: {'true' if sk.smooth else 'false'},\n"
+            f"    skirtFt: {_num(sk.skirt_ft)}, "
+            f"skirtInset: {_num(sk.skirt_inset)},\n"
             f"    variants: {variants} }},")
     lines.append("};\n")
     return "\n".join(lines)

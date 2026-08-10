@@ -256,6 +256,20 @@ HOLE_CODES = frozenset({" ", "^", "x"})
 #: on the underside of a board.
 SKIRT_FT = 8.0
 
+#: How far the BOTTOM of a skirt pulls in toward its square, as a fraction.
+#:
+#: ZERO by default, and that is measured. Pulling the bottom edge in turns each
+#: side into a trapezoid, which is exactly what a hull wants — but a skirt is
+#: drawn per SQUARE, so once the bottoms move, neighbouring faces stop meeting
+#: and leave a V-notch at every seam. Rendered, every board in the gallery
+#: picked up what looked like a picket fence running round its base: the model
+#: painted the notches as planking, on dungeons and caves and streets alike.
+#: Flush, the faces are coplanar and merge into one continuous edge.
+#:
+#: A vessel asks for the taper anyway through its own skin (Skin.skirt_inset),
+#: where the seams read as strakes and are an improvement rather than a fence.
+SKIRT_INSET = 0.0
+
 
 def _is_hole(rows, x: int, z: int) -> bool:
     """Is this square a hole — or off the board, which is the same to a skirt?"""
@@ -661,19 +675,44 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
             top = units(ft) * height_scale(code, x, z, cover_ft(code))
             # Floor under everything.
             face([(x, 0, z), (x, 0, z + 1), (x + 1, 0, z + 1), (x + 1, 0, z)])
-            # ...and a skirt wherever that floor ends at a hole, so a platform
-            # has substance instead of being a sheet of paper.
-            drop = -units(SKIRT_FT)
+            # ...and a skirt wherever that floor ENDS, so a platform has
+            # substance instead of being a sheet of paper.
+            #
+            # Two ways a floor can end. Against a HOLE, which is the board-wide
+            # rule and gives an island its underside. Or against anything that
+            # is not the same SKIN, which is how a vessel gets a hull: deep
+            # water is not a hole, so a sea ship used to have no sides at all —
+            # a deck lying flat on the water like a raft.
+            #
+            # The bottom edge pulls inward, which is what turns each side from
+            # a slab into a trapezoid. Cheap, and it is most of what stops a
+            # ship reading as a box with the corners knocked off.
+            sk_ft, sk_in = _skins.skirt_of(sk)
+            if sk_ft:
+                drop, inset = -units(sk_ft), sk_in
+                def ends(ax: int, az: int) -> bool:
+                    return skin_at(ax, az) != sk
+            else:
+                drop, inset = -units(SKIRT_FT), SKIRT_INSET
+                def ends(ax: int, az: int) -> bool:
+                    return _is_hole(rows, ax, az)
+            i = inset
             if shade:
                 shade(SIDE_A_TINT)
-            if _is_hole(rows, x, z + 1):
-                face([(x + 1, drop, z + 1), (x + 1, 0, z + 1),
-                      (x, 0, z + 1), (x, drop, z + 1)])
+            if ends(x, z + 1):
+                face([(x + 1 - i, drop, z + 1 - i), (x + 1, 0, z + 1),
+                      (x, 0, z + 1), (x + i, drop, z + 1 - i)])
+            if ends(x, z - 1):
+                face([(x + i, drop, z + i), (x, 0, z),
+                      (x + 1, 0, z), (x + 1 - i, drop, z + i)])
             if shade:
                 shade(SIDE_B_TINT)
-            if _is_hole(rows, x + 1, z):
-                face([(x + 1, drop, z), (x + 1, 0, z),
-                      (x + 1, 0, z + 1), (x + 1, drop, z + 1)])
+            if ends(x + 1, z):
+                face([(x + 1 - i, drop, z + i), (x + 1, 0, z),
+                      (x + 1, 0, z + 1), (x + 1 - i, drop, z + 1 - i)])
+            if ends(x - 1, z):
+                face([(x + i, drop, z + 1 - i), (x, 0, z + 1),
+                      (x, 0, z), (x + i, drop, z + i)])
             if shade:
                 shade(TOP_TINT)
             if ft <= 0:
@@ -691,8 +730,20 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 pick = (variant_smooth if _skins.is_smooth(sk) else variant_of)
                 parts = sk_vars[pick(x, z, len(sk_vars))]
                 if _skins.is_directional(sk):
-                    turns = run_axis(
-                        lambda ax, az: skin_at(ax, az) == sk, x, z)
+                    # "Part of the same run" means the same skin OR a solid
+                    # neighbour. The second half is what lets a DOORWAY find
+                    # its wall: its neighbours are the tower's own masonry,
+                    # which is a different skin, so matching on skin alone left
+                    # every door facing an arbitrary way — jambs across the
+                    # opening and the lintel over nothing.
+                    def _same(ax: int, az: int, _s=sk) -> bool:
+                        if skin_at(ax, az) == _s:
+                            return True
+                        if az < 0 or az >= h_rows:
+                            return False
+                        row = rows[az]
+                        return 0 <= ax < len(row) and row[ax] in struct
+                    turns = run_axis(_same, x, z)
                 else:
                     turns = yaw_of(x, z)
                 for part in parts:

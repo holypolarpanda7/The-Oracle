@@ -205,7 +205,8 @@ class VttEngine:
         seed = int(seed if seed is not None else (
             prior.seed if prior else random.randint(1, 2**31 - 1)))
 
-        gen = generate_map(arch, width=w, height=h, seed=seed, lighting=lighting)
+        gen = generate_map(arch, width=w, height=h, seed=seed,
+                           lighting=lighting, biome=biome or place_hint or "")
 
         self.close_scene(session_id=session_id)
 
@@ -341,7 +342,8 @@ class VttEngine:
     def regenerate(self, row: TacticalMap) -> GeneratedMap:
         """Rebuild the generator output for a stored map (same seed = same board)."""
         gen = generate_map(row.archetype, width=row.width, height=row.height,
-                           seed=row.seed, lighting=row.lighting)
+                           seed=row.seed, lighting=row.lighting,
+                           biome=row.biome or "")
         # The stored terrain wins — a DM may have edited it after generation.
         gen.grid = self.grid_of(row)
         # ...and so do the stored skins. Regenerating from the seed produces

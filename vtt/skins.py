@@ -96,6 +96,17 @@ class Skin:
     #: spread over two-square blocks reads as ridges and shelves. Objects want
     #: the opposite, which is why it is a flag and not the default.
     smooth: bool = False
+    #: How deep this floor's own SIDE is, in feet. Non-zero means the square
+    #: carries its own edge wherever it meets something that is not the same
+    #: skin — which is how a ship gets a hull. The default skirt only fires
+    #: against a HOLE, and deep water is not a hole, so a sea ship had no sides
+    #: at all: a deck lying flat on the water like a raft.
+    skirt_ft: float = 0.0
+    #: How far the BOTTOM of that side pulls in toward the square's centre, as
+    #: a fraction. A vertical drop is a slab; pulled in, the same two triangles
+    #: become a trapezoid, and a hull with tumblehome stops reading as a box.
+    #: The tile grid is untouched — this is a drawing, like WALL_THICKNESS.
+    skirt_inset: float = 0.0
 
 
 def _v(*arrangements: Sequence[Part]) -> Variants:
@@ -203,8 +214,47 @@ _TENT_WALL = _v(
      (0.00, 1.00, 0.43, 0.57, 0.82, 1.00)),
 )
 
-#: A stone parapet: a merloned tower top, so a watchtower reads as somewhere to
-#: shoot from rather than a box.
+#: A tower wall: a tall solid mass with merlons crowning it.
+#:
+#: This replaces putting a nine-foot PARAPET on the ground storey, which is
+#: what a watchtower's walls were built from and is why they came back as four
+#: low crenellated boxes instead of towers. A parapet is the thing you crouch
+#: behind on the roof; the storey below it is a wall, and it has to be tall
+#: enough that the platform on top reads as raised.
+#:
+#: Two arrangements with the merlons in different places, quarter-turned per
+#: square, so a ring of them crenellates unevenly instead of marching.
+_TOWER = _v(
+    ((0.00, 1.00, 0.00, 1.00, 0.0, 0.86),
+     (0.02, 0.40, 0.02, 0.40, 0.86, 1.00),
+     (0.60, 0.98, 0.02, 0.40, 0.86, 1.00)),
+    ((0.00, 1.00, 0.00, 1.00, 0.0, 0.86),
+     (0.30, 0.70, 0.02, 0.40, 0.86, 1.00),
+     (0.02, 0.34, 0.60, 0.98, 0.86, 1.00)),
+)
+
+#: A doorway: two jambs and a lintel over an OPEN passage.
+#:
+#: Needed because an open doorway is a walkable square with no height, so in a
+#: sixteen-foot tower wall it drew as a gap running from the ground to the sky —
+#: which reads as a missing wall, not a way in. The passage is left clear below
+#: the lintel; the square stays exactly as walkable as it always was.
+_DOORWAY = _v(
+    ((0.00, 0.15, 0.28, 0.72, 0.00, 1.00),
+     (0.85, 1.00, 0.28, 0.72, 0.00, 1.00),
+     (0.00, 1.00, 0.28, 0.72, 0.58, 1.00)),
+)
+
+#: A tent flap: the canvas rolled back at the jambs, a valance across the top.
+#: The same job as _DOORWAY and the same rule — the passage stays clear, because
+#: the square is one the rules let you walk through.
+_FLAP = _v(
+    ((0.00, 0.14, 0.28, 0.72, 0.00, 0.92),
+     (0.86, 1.00, 0.28, 0.72, 0.00, 0.92),
+     (0.00, 1.00, 0.34, 0.66, 0.72, 1.00)),
+)
+
+#: A stone parapet: a merloned roof edge, for the platform ON TOP of a tower.
 _PARAPET = _v(
     ((0.00, 1.00, 0.30, 0.70, 0.0, 0.62),
      (0.00, 0.30, 0.26, 0.74, 0.62, 1.00),
@@ -290,6 +340,33 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # --- built things -----------------------------------------------------
     Skin("masonry", "dressed-stone",
          "close-up of dressed and coursed grey building stone"),
+    # What a watchtower is BUILT of, and the DM's narration decides which — a
+    # crossing in deep forest gets a timber tower and a mountain road a stone
+    # one. See building_material: the board reads it off the biome the DM
+    # already typed, so nothing new has to be asked for.
+    Skin("tower-stone", "dressed-stone",
+         "close-up of dressed and coursed grey building stone",
+         words="the watchtowers are squat drystone towers, merloned at the top",
+         variants=_TOWER, height_ft=16),
+    Skin("tower-timber", "log-palisade",
+         "close-up of a wall of upright split logs, bark and axe marks",
+         words="the watchtowers are stockades of upright logs, hoarding at the "
+               "top",
+         variants=_TOWER, height_ft=14),
+    Skin("flap", "canvas",
+         "a flat expanse of heavy woven CLOTH — coarse canvas sailcloth, "
+         "off-white and grey, individual threads visible, stained and patched, "
+         "soft fabric with no wood and no planks anywhere",
+         words="the tent flaps are tied back at the poles",
+         variants=_FLAP, height_ft=8, directional=True),
+    Skin("doorway-stone", "dressed-stone",
+         "close-up of dressed and coursed grey building stone",
+         words="a low arched doorway is cut through at ground level",
+         variants=_DOORWAY, height_ft=16, directional=True),
+    Skin("doorway-timber", "log-palisade",
+         "close-up of a wall of upright split logs, bark and axe marks",
+         words="a plank-framed doorway is cut through at ground level",
+         variants=_DOORWAY, height_ft=14, directional=True),
     Skin("parapet", "dressed-stone",
          "close-up of dressed and coursed grey building stone",
          words="the tower tops are merloned stone parapets",
@@ -313,7 +390,14 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     Skin("deck", "deck-planking",
          "close-up of holystoned ship deck planking, pale scrubbed oak, pitched "
          "seams",
-         words="the deck is scrubbed pale oak planking, seams payed with pitch"),
+         words="the deck is scrubbed pale oak planking, seams payed with pitch",
+         skirt_ft=7, skirt_inset=0.5),
+    Skin("sea-deck", "deck-planking",
+         "close-up of holystoned ship deck planking, pale scrubbed oak, pitched "
+         "seams",
+         words="a working sea deck — planking dark with spray, salt-bleached "
+               "in patches, the hull tarred black where it meets the water",
+         skirt_ft=9, skirt_inset=0.62),
     Skin("mast", "spar-timber",
          "a flat expanse of oiled timber, straight close grain all running one "
          "way, no corners and no edges",
@@ -347,13 +431,15 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "a flat expanse of riveted brass and iron deck plating, verdigris and "
          "oil stains, filling the whole frame",
          words="the deck is riveted metal plate, oil-stained, with grilles and "
-               "pipe runs let into it"),
+               "pipe runs let into it",
+         skirt_ft=7, skirt_inset=0.5),
     Skin("chitin-deck", "chitin",
          "the glossy black-green back of a giant beetle filling the whole "
          "frame, hard armour plating with fine parallel grooves, oily "
          "iridescent sheen",
          words="the deck is the creature's own back — ridged chitin underfoot, "
-               "warm and faintly translucent"),
+               "warm and faintly translucent",
+         skirt_ft=7, skirt_inset=0.62),
     # The rail versions. Same substance, same silhouette as any other rail, and
     # emphatically the same THREE FEET — a ship's rail is half cover, and what
     # it is made of has no vote on how tall it is.
@@ -389,7 +475,12 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
     "sewer":         {"#": "sewer-brick", "~": "sludge", ".": "sewer-ledge",
                       "W": "sludge", ",": "sewer-ledge"},
     "camp":          {"#": "palisade"},
-    "ship":          {"b": "deck", "w": "railing", "O": "mast", "#": "hull"},
+    # A sea ship and a skyship are not the same vessel, and sharing one deck
+    # skin was most of why they came back looking identical. A caravel's deck
+    # is wet, tarred and salt-bleached and its hull sits IN the water; a
+    # skyship's is dry and hangs in air, and you see its underside.
+    "ship":          {"b": "sea-deck", "w": "railing", "O": "mast",
+                      "#": "hull"},
     "skyship":       {"b": "deck", "w": "railing", "O": "mast", "#": "hull"},
     "ruins":         {"O": "drowned-column"},
     "sky-islands":   {"R": "cliff"},
@@ -489,6 +580,67 @@ def is_directional(name: str) -> bool:
 def is_smooth(name: str) -> bool:
     sk = SKINS.get(name or "")
     return bool(sk and sk.smooth)
+
+
+def skirt_of(name: str) -> tuple[float, float]:
+    """``(depth in feet, bottom inset)`` for a floor that carries its own side.
+
+    ``(0, 0)`` means this square has no side of its own and falls back to the
+    board-wide rule, which only draws one against a HOLE.
+    """
+    sk = SKINS.get(name or "")
+    if sk is None or not sk.skirt_ft:
+        return (0.0, 0.0)
+    return (sk.skirt_ft, sk.skirt_inset)
+
+
+def occludes_floor(name: str) -> bool:
+    """Would this skin's shape stand in the way on a square you can walk on?
+
+    The guard for a bug that already happened: a watchtower's whole wall ring
+    was skinned in one pass, including its OPEN DOORWAY, so a square the rules
+    let you walk through was drawn as a solid nine-foot merloned block. A
+    picture contradicting the grid is the one thing the board must never do,
+    and it is worse in this direction than in any other — the way in simply is
+    not there.
+
+    Judged by footprint at standing height: anything reaching the ground and
+    covering most of the square is in the way. A lintel over a passage starts
+    high and is fine; a canopy is fine; a wall is not.
+    """
+    sk = SKINS.get(name or "")
+    if sk is None or not sk.variants:
+        return False
+    for parts in sk.variants:
+        covered = sum((x1 - x0) * (z1 - z0)
+                      for x0, x1, z0, z1, y0, _y1 in parts if y0 <= 0.01)
+        if covered > 0.40:
+            return True
+    return False
+
+
+#: Words in a DM's own biome text -> what things are BUILT of there.
+#:
+#: A watchtower on a forest crossing should be a timber stockade and one on a
+#: mountain road drystone, and the DM has already said which without being
+#: asked: the biome string they typed is sitting on the board row. Same
+#: mechanism as `board_look` mapping free text onto a closed set, and the same
+#: reason — the alternative is one material everywhere.
+_BUILT_OF: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("forest", "wood", "jungle", "grove", "thicket", "timber", "pine",
+      "frontier", "wild"), "timber"),
+    (("stone", "mountain", "granite", "keep", "castle", "city", "town",
+      "quarry", "cliff", "snow", "alpine"), "stone"),
+)
+
+
+def building_material(biome: str = "", default: str = "stone") -> str:
+    """"stone" or "timber" — what a structure on this board is made of."""
+    b = (biome or "").strip().lower()
+    for words, mat in _BUILT_OF:
+        if any(w in b for w in words):
+            return mat
+    return default
 
 
 def substances() -> dict[str, str]:

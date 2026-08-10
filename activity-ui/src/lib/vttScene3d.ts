@@ -30,7 +30,7 @@
 import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
-  CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS, SKIRT_FT,
+  CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS, SKIRT_FT, SKIRT_INSET,
   STRUCTURE_CODES, materialSlot, runAxis, skinAt, variantSmooth,
   heightScale,
   rotatePart,
@@ -554,26 +554,35 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // substance rather than being a sheet of paper hanging in nothing.
         // The same "draw the FACE where two things meet" rule as the walls,
         // pointed downward.
-        const drop = base - heightUnits(scene, SKIRT_FT);
-        const holeAt = (hx: number, hz: number) => {
-          const c = at(hx, hz);
-          return c === null || HOLE_CODES.has(c);
-        };
-        if (holeAt(x, z + 1)) {
-          mb.quad(v3(x + 1, drop, z + 1), v3(x + 1, base, z + 1),
-                  v3(x, base, z + 1), v3(x, drop, z + 1), color);
+        // Two ways a floor can END. Against a HOLE, which is the board rule
+        // and gives an island its underside. Or against anything that is not
+        // the same SKIN, which is how a vessel gets a hull: deep water is not
+        // a hole, so a sea ship used to have no sides at all. The bottom edge
+        // pulls inward, so each side is a trapezoid rather than a slab.
+        const skirtFt = shape?.skirtFt || SKIRT_FT;
+        const i = shape?.skirtFt ? shape.skirtInset : SKIRT_INSET;
+        const drop = base - heightUnits(scene, skirtFt);
+        const ends = shape?.skirtFt
+          ? (hx: number, hz: number) => skinOf(hx, hz) !== skin
+          : (hx: number, hz: number) => {
+              const c = at(hx, hz);
+              return c === null || HOLE_CODES.has(c);
+            };
+        if (ends(x, z + 1)) {
+          mb.quad(v3(x + 1 - i, drop, z + 1 - i), v3(x + 1, base, z + 1),
+                  v3(x, base, z + 1), v3(x + i, drop, z + 1 - i), color);
         }
-        if (holeAt(x + 1, z)) {
-          mb.quad(v3(x + 1, drop, z), v3(x + 1, base, z),
-                  v3(x + 1, base, z + 1), v3(x + 1, drop, z + 1), color);
+        if (ends(x + 1, z)) {
+          mb.quad(v3(x + 1 - i, drop, z + i), v3(x + 1, base, z),
+                  v3(x + 1, base, z + 1), v3(x + 1 - i, drop, z + 1 - i), color);
         }
-        if (holeAt(x, z - 1)) {
-          mb.quad(v3(x, drop, z), v3(x, base, z),
-                  v3(x + 1, base, z), v3(x + 1, drop, z), color);
+        if (ends(x, z - 1)) {
+          mb.quad(v3(x + i, drop, z + i), v3(x, base, z),
+                  v3(x + 1, base, z), v3(x + 1 - i, drop, z + i), color);
         }
-        if (holeAt(x - 1, z)) {
-          mb.quad(v3(x, drop, z + 1), v3(x, base, z + 1),
-                  v3(x, base, z), v3(x, drop, z), color);
+        if (ends(x - 1, z)) {
+          mb.quad(v3(x + i, drop, z + 1 - i), v3(x, base, z + 1),
+                  v3(x, base, z), v3(x + i, drop, z + i), color);
         }
 
         if (showGrid && seenAt(x, z) !== Seen.Never) {
@@ -602,8 +611,16 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
               const vs = shape.variants;
               const pick = shape.smooth ? variantSmooth : variantOf;
               const parts = vs[pick(x, z, vs.length)];
+              // "Same run" means the same skin OR a solid neighbour. The
+              // second half is what lets a DOORWAY find its wall: its
+              // neighbours are the tower's own masonry, a different skin, so
+              // matching on skin alone left every door facing an arbitrary way.
               const turns = shape.directional
-                ? runAxis((ax, az) => skinOf(ax, az) === skin, x, z)
+                ? runAxis((ax, az) => {
+                    if (skinOf(ax, az) === skin) return true;
+                    const c = at(ax, az);
+                    return c !== null && STRUCTURE_CODES.has(c);
+                  }, x, z)
                 : yawOf(x, z);
               const h2 = top - base;
               for (const raw of parts) {
