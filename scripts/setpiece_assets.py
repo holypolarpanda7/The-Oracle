@@ -363,6 +363,48 @@ def cmd_fetch(force: bool) -> int:
     return 0
 
 
+def cmd_adopt(where: str, force: bool) -> int:
+    """Take in a pack that was downloaded by hand, matching it to its slug.
+
+    The counterpart to ``--fetch`` for the sources it cannot reach. Quaternius
+    hands you ``Medieval Village MegaKit[Standard].zip`` in a browser, and the
+    step after that — work out which registered pack it is, unzip it under the
+    right slug — is the step that gets done by hand once and misremembered
+    later. Matching is by the pack's NAME with the separators taken out, the
+    same normalisation the mesh resolver uses, so a download keeps whatever the
+    host chose to call it.
+    """
+    src = Path(where).expanduser()
+    zips = ([src] if src.is_file()
+            else sorted(p for p in src.glob("*.zip")) if src.is_dir() else [])
+    if not zips:
+        print(f"no .zip found at {src}")
+        return 1
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    took = 0
+    for z in zips:
+        stem = _norm(z.stem)
+        hit = next((p for p in sp.PACKS.values() if _norm(p.name) in stem), None)
+        if hit is None:
+            print(f"  skip  {z.name}  (matches no registered pack)")
+            continue
+        dest = WORKSPACE / hit.slug
+        if dest.is_dir() and any(dest.rglob("*")) and not force:
+            print(f"  have  {hit.slug}")
+            continue
+        try:
+            with zipfile.ZipFile(z) as zf:
+                _safe_extract(zf, dest)
+        except zipfile.BadZipFile:
+            print(f"  bad   {z.name} is not a zip")
+            continue
+        took += 1
+        print(f"  took  {hit.slug:<22} <- {z.name}  "
+              f"({len(candidates(dest))} mesh files)")
+    print(f"\n{took} pack(s) adopted into {WORKSPACE}")
+    return 0
+
+
 def _get(url: str, timeout: int = 180) -> bytes:
     # Kenney's CDN serves a 403 to the stdlib's default agent.
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -443,6 +485,8 @@ def main() -> int:
                     help="what is on disk and what each entry resolves to")
     ap.add_argument("--fetch", action="store_true",
                     help="download and unzip the packs whose page links one")
+    ap.add_argument("--adopt", metavar="PATH",
+                    help="take in a hand-downloaded zip (or a folder of them)")
     ap.add_argument("--collect", action="store_true",
                     help="copy resolved meshes into the committed asset dir")
     ap.add_argument("--attribution", action="store_true",
@@ -459,6 +503,8 @@ def main() -> int:
         return cmd_attribution()
     if args.fetch:
         return cmd_fetch(args.force)
+    if args.adopt:
+        return cmd_adopt(args.adopt, args.force)
     if args.collect:
         return cmd_collect(args.force)
     return cmd_audit(args.square_ft)

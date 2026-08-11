@@ -363,28 +363,35 @@ def _flat(w: int, d: int, code: str) -> tuple[str, ...]:
     return tuple(code * w for _ in range(d))
 
 
-def _canopy(size: int, trunk: str = "T",
+def _island(size: int, inner: int, code: str,
             ground: str = ".") -> tuple[tuple[str, ...], dict[str, int]]:
-    """A single tile of rules under a mesh many squares across.
+    """A block of ``inner`` squares centred in a ``size`` mesh footprint.
 
-    The jungle giant is the case: scaled to the sixty feet its entry claims, a
-    palm's crown is nine squares wide, and every one of those squares is open
-    ground a creature walks through — the canopy is far over their head, so it
-    screens nothing and blocks nothing. Only the trunk is a tile.
+    The shape a set piece takes whenever its MESH is wider than the part of it
+    a creature cannot walk through, which — now that height is authoritative
+    and the footprint gives way — is most of them. The jungle giant is the
+    extreme: scaled to the sixty feet its entry claims, a palm's crown is nine
+    squares across and every one of those squares is open ground, because the
+    canopy is far over a creature's head and screens nothing. Only the trunk is
+    a tile. A fountain is the same shape one step in: a basin you cannot cross,
+    and paving round it that you can.
 
     Written as a function because the alternative is eighty hand-typed
-    elevation entries, and the import guard that demands one per passable
-    square is exactly the guard a hand-typed block gets wrong.
+    elevation entries, and the guard demanding one per passable square is
+    exactly what a hand-typed block gets wrong.
     """
-    mid = size // 2
-    rows = tuple("".join(trunk if (x == mid and y == mid) else ground
+    lo = (size - inner) // 2
+    hi = lo + inner
+    solid = lambda x, y: lo <= x < hi and lo <= y < hi        # noqa: E731
+    rows = tuple("".join(code if solid(x, y) else ground
                          for x in range(size)) for y in range(size))
     elev = {f"{x},{y}": 0 for y in range(size) for x in range(size)
-            if not (x == mid and y == mid)}
+            if not solid(x, y)}
     return rows, elev
 
 
-_CANOPY_TILES, _CANOPY_ELEV = _canopy(9)
+_CANOPY_TILES, _CANOPY_ELEV = _island(9, 1, "T")
+_FOUNTAIN_TILES, _FOUNTAIN_ELEV = _island(5, 3, "O")
 
 
 # --------------------------------------------------------------------------
@@ -503,10 +510,22 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
         words="a squat stone gate tower",
     ),
     SetPiece(
-        "village-well", "well",
-        Source("quat-village", ("well",)),
-        ("O",), height_ft=6.0,
-        words="a round stone well with a shingled roof over it",
+        "village-fountain", "village fountain",
+        # This was a WELL, and no open kit has one at a well's proportions.
+        # The Medieval Village MegaKit is 304 models of modular architecture —
+        # walls, floors, doors, roofs — with no free-standing prop in it at
+        # all, which is the Castle Kit's lesson twice over: a kit sold for
+        # assembling buildings is :mod:`vtt.structures` territory. The Fantasy
+        # Town Kit does have water, but a fountain is a WIDE SHALLOW BASIN, so
+        # scaled to a well's six feet of height it came out forty-three feet
+        # across. Rather than force a mesh to be a thing it is not, the entry
+        # became the thing the mesh IS — a plaza fountain is a better landmark
+        # than a well anyway, being something a fight happens around.
+        Source("kenney-fantasy-town", ("fountain-round-detail", "fountain-round",
+                                       "fountain")),
+        _FOUNTAIN_TILES, height_ft=6.0, elevation=_FOUNTAIN_ELEV,
+        body="fountain",
+        words="a broad stone fountain, its basin brimming",
     ),
     # A market stall was written here and REMOVED by the rule above: a stall is
     # about as tall as the overturned table the tile table already quotes three

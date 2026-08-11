@@ -17,12 +17,12 @@ uv run python scripts/setpiece_assets.py --attribution
 
 | Pack | Author | Models | Licence | Source |
 |------|--------|--------|---------|--------|
+| Fantasy Town Kit | Kenney | 160 | CC0-1.0 | <https://kenney.nl/assets/fantasy-town-kit> |
 | Graveyard Kit | Kenney | 90 | CC0-1.0 | <https://kenney.nl/assets/graveyard-kit> |
 | Nature Kit | Kenney | 330 | CC0-1.0 | <https://kenney.nl/assets/nature-kit> |
 | Pirate Kit | Kenney | 70 | CC0-1.0 | <https://kenney.nl/assets/pirate-kit> |
 | Ultimate Nature Pack | Quaternius | 150 | CC0-1.0 | <https://quaternius.com/packs/ultimatenature.html> |
 | Ultimate Modular Ruins Pack | Quaternius | 90 | CC0-1.0 | <https://quaternius.com/packs/ultimatemodularruins.html> |
-| Medieval Village MegaKit | Quaternius | 304 | CC0-1.0 | <https://quaternius.com/packs/medievalvillagemegakit.html> |
 
 CC0 1.0 waives attribution entirely — <https://creativecommons.org/publicdomain/zero/1.0/>.
 The register is kept regardless, so that a binary in the tree can always be
@@ -32,6 +32,7 @@ traced to where it came from and the terms it came under.
 
 | Set piece | Squares | Height | Pack |
 |-----------|---------|--------|------|
+| `village-fountain` | 5x5 | 6 ft | Fantasy Town Kit |
 | `mausoleum` | 3x5 | 14 ft | Graveyard Kit |
 | `boulder-heap` | 3x3 | 14 ft | Nature Kit |
 | `cave-pillar` | 1x1 | 16 ft | Nature Kit |
@@ -43,7 +44,6 @@ traced to where it came from and the terms it came under.
 | `great-statue` *(nearest match — no model of this thing exists open)* | 3x2 | 22 ft | Ultimate Modular Ruins Pack |
 | `ruined-arch` | 3x1 | 18 ft | Ultimate Modular Ruins Pack |
 | `ruined-wall` | 3x1 | 12 ft | Ultimate Modular Ruins Pack |
-| `village-well` | 1x1 | 6 ft | Medieval Village MegaKit |
 
 ## What a mesh is, and is not
 
