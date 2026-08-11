@@ -126,7 +126,70 @@ def main() -> int:
           "the DECK follows the style too, which is most of what you see",
           f'{tim["b"]} / {steam["b"]} / {org["b"]}')
 
-    head(5, "a tent is somewhere you can BE, not something you stand on")
+    head(5, "a shape may be a POLYGON, not only a box")
+    from vtt.isocam import footprint, rotate_part
+    solids = [n for n, sk in S.SKINS.items() if sk.variants
+              and any(S.is_solid(p) for parts in sk.variants for p in parts)]
+    check(bool(solids), "skins are authored with prismatoid parts",
+          ", ".join(sorted(solids)))
+    # A slope is not a stack of boxes. The tent's canvas was four terraces
+    # before this, and no wording fixed it — the model paints the silhouette it
+    # is handed.
+    canvas = S.SKINS["canvas"].variants[0][0]
+    check(S.is_solid(canvas), "a tent wall is ONE pitched face")
+    bottom, top, _y0, _y1 = canvas
+    check(S._poly_area(top) < S._poly_area(bottom) / 3,
+          "drawn in to a ridge — the top is a fraction of the footprint",
+          f"{S._poly_area(bottom):.2f} -> {S._poly_area(top):.2f} of a square")
+    # A lean is an OFFSET top, which is the whole of "slightly off vertical".
+    leg = S.SKINS["tower-post"].variants[0][0]
+    lb, lt, _a, _b = leg
+    off = max(abs(a[0] - b[0]) + abs(a[1] - b[1]) for a, b in zip(lb, lt))
+    check(S.is_solid(leg) and off > 0.05,
+          "a watchtower's legs are RAKED, not plumb",
+          f"the head is {off:.2f} of a square off its foot")
+    # ...and it survives a quarter turn with every vertex intact.
+    turned = rotate_part(leg, 1)
+    check(len(turned[0]) == len(lb) and len(turned[1]) == len(lt),
+          "and a quarter turn takes every vertex with it")
+
+    head(6, "a hull's outline is joined, not a staircase")
+    # A deck is carved out of squares, so its edge steps. Cutting the outer
+    # corner of each step is what makes the steps one line: the cut runs
+    # exactly corner to corner, so a square's diagonal meets its neighbour's.
+    pts, ends, low = footprint(False, True, True, False, 1.0)
+    check(len(pts) == 3, "a step's outer corner is cut clean away",
+          f"{len(pts)} vertices instead of 4")
+    diag = [i for i, e in enumerate(ends) if e]
+    check(len(diag) == 1, "leaving ONE closed edge — the diagonal itself")
+    a, b = pts[diag[0]], pts[(diag[0] + 1) % len(pts)]
+    check(abs(abs(a[0] - b[0]) - 1.0) < 1e-9 and abs(abs(a[1] - b[1]) - 1.0) < 1e-9,
+          "which runs corner to corner, so it meets the next square's exactly",
+          f"{a} -> {b}")
+    plain, plain_ends, _plain_low = footprint(False, False, False, False, 1.0)
+    check(len(plain) == 4 and not any(plain_ends),
+          "a square in open floor is untouched — this changed no other board")
+    # The bottom of a side is MITRED at every vertex. Offsetting each side along
+    # its own normal keeps a straight run coplanar and opens a wedge wherever
+    # the outline turns, which on a hull is every corner of the bow.
+    _p, _e, mitred = footprint(True, False, True, False, 1.0, 0.4)
+    corner = [i for i, (a, b) in enumerate(zip(_p, mitred)) if a != b]
+    check(len(corner) >= 2, "and its side's bottom is pulled in, mitred at the turns",
+          f"{len(corner)} of {len(_p)} vertices moved")
+    shared = [i for i in range(len(_p))
+              if _e[i] and _e[i - 1]]
+    check(all(abs(mitred[i][0] - _p[i][0]) > 1e-9
+              or abs(mitred[i][1] - _p[i][1]) > 1e-9 for i in shared),
+          "so two sides meeting at a vertex share ONE bottom point")
+    # Every vessel skin is one BODY, so no side is drawn inside the ship.
+    ship = [n for n in ("sea-deck", "sky-deck", "railing", "sky-rail", "mast",
+                        "hull", "plated-deck", "chitin-rail")]
+    check(all(S.same_body(ship[0], n) for n in ship),
+          "a deck, its rail, its mast and its cabin are ONE hull",
+          "so the deck grows no side against its own mast")
+    check(not S.same_body("sea-deck", ""), "and the water beside it is not")
+
+    head(7, "a tent is somewhere you can BE, not something you stand on")
     import random
     g = Grid.blank(14, 12)
     g.fill_rect(0, 0, 13, 11, "g")
@@ -151,8 +214,17 @@ def main() -> int:
     # Refused rather than shrunk.
     tiny = structures.shelter(g, rng, 1, 1, 3, 3, skin="canvas", on=("g",))
     check(not tiny.interior, "a shelter too small to stand in is refused")
+    # A wall ring round a walkable floor is, from above, a roofless box —
+    # which is what "the tents look like pens" meant. The covering is its own
+    # skin because the inside is its own squares.
+    roofed = [(x, y) for x, y in built.interior
+              if built.skins.get(f"{x},{y}") == "tent-canopy"]
+    check(len(roofed) == len(built.interior), "and a ROOF over every square of it",
+          f"{len(roofed)} squares of canvas overhead")
+    check(not S.occludes_floor("tent-canopy"),
+          "which starts well clear of the floor, so it closes nothing")
 
-    head(6, "a watchtower's top is a real storey, reached by a ladder")
+    head(8, "a watchtower's top is a real storey, reached by a ladder")
     gen = generate_map("bridge", width=26, height=20, seed=5)
     check(bool(gen.levels), "the bridge built an upper floor",
           ", ".join(f"{l['name']} @{l['base_ft']}ft" for l in gen.levels))
@@ -162,8 +234,30 @@ def main() -> int:
         check(lv["terrain"][st["to_y"]][st["to_x"]] != " ",
               f"the {st['kind']} arrives on real floor, not open air",
               f"level {st['to_level']} at {st['to_x']},{st['to_y']}")
+    # What the country builds in decides WHICH tower, and they are two
+    # different structures rather than one in two materials: stone is a
+    # building with a room in it, timber is four legs and a platform.
+    wood = generate_map("bridge", width=26, height=20, seed=5,
+                        biome="deep forest")
+    legs = [k for k, v in wood.skins.items() if v == "tower-post"]
+    check(len(legs) == 8, "a forest crossing gets FOUR legs per tower, not walls",
+          f"{len(legs)} posts across two towers")
+    check(all(wood.grid.get(*map(int, k.split(","))) == "O" for k in legs),
+          "and a leg is a pillar to the rules — narrow cover, nothing new")
+    under = [(x, y) for x in range(wood.width) for y in range(wood.height)
+             if wood.skins.get(f"{x},{y}") in ("tower-top", "tower-ladder")]
+    check(all(tile(wood.grid.get(x, y)).move_cost_ft for x, y in under),
+          "you can walk UNDER it — the platform is drawn, not built on the ground")
+    check(any(v == "tower-ladder" for v in wood.skins.values())
+          and any(s["kind"] == "ladder" for s in wood.stairs),
+          "and the ladder you can see is the connector you may climb")
+    stone = generate_map("bridge", width=26, height=20, seed=5,
+                         biome="mountain road")
+    check(any(v == "tower-stone" for v in stone.skins.values()) and
+          not any(v == "tower-post" for v in stone.skins.values()),
+          "a mountain road gets the walled drystone one instead")
 
-    head(7, "a hold is the same machinery pointed downward")
+    head(9, "a hold is the same machinery pointed downward")
     gen = generate_map("ship", width=28, height=20, seed=5)
     below = [l for l in gen.levels if int(l["base_ft"]) < 0]
     check(bool(below), "the ship has a deck below the weather deck",
@@ -173,7 +267,7 @@ def main() -> int:
           "and the DM board signs the height instead of printing '+-8 ft'",
           f"{_ft_offset(-8)} / {_ft_offset(15)} / {_ft_offset(0)}")
 
-    head(8, "it survives the round trip through the database")
+    head(10, "it survives the round trip through the database")
     with tempfile.TemporaryDirectory() as tmp:
         from vtt.scene import VttEngine
         eng = VttEngine(database_url=f"sqlite:///{Path(tmp) / 'smoke.db'}")
@@ -194,7 +288,7 @@ def main() -> int:
         stairs = [s for lv in st2["levels"] for s in lv.get("stairs", [])]
         check(bool(stairs), "and so did the ladders", f"{len(stairs)} entries")
 
-    head(9, "every board still generates, and every skin resolves")
+    head(11, "every board still generates, and every skin resolves")
     bad = []
     for arch in sorted(ARCHETYPES):
         for seed in (1, 7, 42):

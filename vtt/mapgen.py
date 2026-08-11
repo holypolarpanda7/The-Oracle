@@ -592,9 +592,13 @@ def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # it: the biome they typed is on the board row. A forest crossing gets a
     # timber stockade, a mountain road drystone.
     material = _skins.building_material(out.biome)
+    # A post tower is always five squares across (see structures.POST_TOWER_SIZE
+    # for why it must be odd); a stone one may shrink to four to fit a shallow
+    # bank.
+    sizes = ((structures.POST_TOWER_SIZE,) if material == "timber" else (5, 4))
     for bank_far, anchor in ((True, gap_top), (False, gap_bot)):
         placed = False
-        for size in (5, 4):
+        for size in sizes:
             # A bank is only as deep as the generator left it, so the tower is
             # pushed hard against the outside edge and the SIZE is what gives
             # way — never the placement, which would put it out over the gorge.
@@ -628,11 +632,12 @@ def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         if rng.random() < 0.025:
             g.set(x, y, "R")
     _connect_regions(g, rng)
-    out.description = (
-        "a plank bridge over a black chasm, a stone watchtower squatting at "
-        "each end of the span" if chasm == "x" else
-        "a plank bridge over deep cold water, a stone watchtower squatting at "
-        "each end of the span")
+    crossing = ("a plank bridge over a black chasm" if chasm == "x"
+                else "a plank bridge over deep cold water")
+    guard = ("a timber watchtower on four raked legs standing over"
+             if material == "timber"
+             else "a squat drystone watchtower at")
+    out.description = f"{crossing}, {guard} each end of the span"
     out.effects.append({"kind": "marker", "name": "the span", "shape": "path",
                         "squares": [[span_x, y] for y in range(gap_top, gap_bot + 1)]})
 
@@ -713,15 +718,27 @@ def _gen_camp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                        "log palisade thrown up across one approach")
 
 
-def _hull(g: Grid, rng: random.Random, surround: str, deck: str = "b") -> int:
+def _hull(g: Grid, rng: random.Random, surround: str, deck: str = "b",
+          plan: str = "sea") -> int:
     """Carve a SHIP-shaped deck out of the board. Returns the stern's x.
 
-    The old shape was a symmetric lens — the same taper at both ends — which is
-    a leaf, not a vessel, and it is why every ship board read as a rectangle
-    with the corners knocked off. A hull is not symmetric fore and aft: it comes
-    to a point at the bow, holds its full beam through the waist, and finishes
-    in a broad flat transom. Those three facts are the whole silhouette, and the
-    silhouette is what the painter is actually conditioned on.
+    The first shape was a symmetric lens — the same taper at both ends — which
+    is a leaf, not a vessel, and it is why every ship board read as a rectangle
+    with the corners knocked off.
+
+    There are TWO plans now, and the reason is that one was not enough: a
+    skyship and a caravel wearing the same outline and near enough the same
+    skins came back as the same boat, which is a fair complaint about a flying
+    ship. A **sea** hull comes to a point at the bow, holds its full beam
+    through the waist and finishes in a broad flat transom, because it is a
+    box that has to float and be steered from the back. A **sky** hull is
+    slender and fine at BOTH ends — nothing about air rewards a transom — and
+    fullest amidships where the lift is. Those silhouettes are what the painter
+    is conditioned on, so they are most of the difference between the two.
+
+    Either way the outline is a staircase, because it is carved out of squares.
+    What stops it LOOKING like one is `isocam.footprint`, which cuts every
+    outer corner so a one-square step is drawn as the diagonal it means.
     """
     g.fill_rect(0, 0, g.width - 1, g.height - 1, surround)
     length = max(6, g.width - 2)
@@ -729,7 +746,13 @@ def _hull(g: Grid, rng: random.Random, surround: str, deck: str = "b") -> int:
     cy = (g.height - 1) / 2.0
 
     def half_beam(t: float) -> float:
-        """Half-width at t along the hull; 0 is the bow, 1 the transom."""
+        """Half-width at t along the hull; 0 is the bow, 1 the stern."""
+        if plan == "sky":
+            # Fine at both ends, fullest a little aft of amidships. The floor
+            # keeps a spine of deck at the very tips, so the bow is a point you
+            # can stand on rather than a gap.
+            k = max(0.16, math.sin(math.pi * min(1.0, t * 0.92 + 0.04)) ** 0.62)
+            return k * 0.88 * (beam / 2.0)
         if t < 0.42:                       # the bow, entering fine
             k = 0.10 + 0.90 * (t / 0.42) ** 0.62
         elif t < 0.78:                     # the waist, full beam
@@ -816,6 +839,19 @@ def _rig_ship(g: Grid, rng: random.Random, out: GeneratedMap, stern_x: int,
                        "to_x": hx, "to_y": hy, "kind": "companionway"})
 
 
+#: A sea ship's FREEBOARD: how far her weather deck stands above the water.
+#:
+#: A real fact, not a drawing. Without it the deck and the sea were the same
+#: height, so a caravel's whole hull was underwater and the board showed a rail
+#: lying flat on the ocean — the one archetype where the geometry said nothing
+#: at all. It is stored as ordinary elevation, which every distance, reach,
+#: cover and area check already folds in, so hauling somebody up out of the
+#: water is six feet of climb in the rules exactly as it is in the picture.
+#: A skyship needs none: what it hangs over is a hole, and a hole already
+#: gives a floor its whole side.
+SHIP_FREEBOARD_FT = 6
+
+
 def _gen_ship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     stern = _hull(g, rng, "W")
     _rail(g, rng, "W")
@@ -823,6 +859,9 @@ def _gen_ship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _scatter(g, rng, "o", 0.05, only_on=("b",))
     _scatter(g, rng, "%", 0.02, only_on=("b",))
     _connect_regions(g, rng)
+    for x, y in g.squares():
+        if g.get(x, y) not in ("W", "~"):
+            out.elevation[f"{x},{y}"] = SHIP_FREEBOARD_FT
     out.description = ("the deck of a ship under sail — a single mast stepped "
                        "amidships, a rail you can see the sea through, the "
                        "captain's cabin aft and a hatch down into the hold")
@@ -880,20 +919,37 @@ def _gen_pass(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     g.fill_rect(0, 0, g.width - 1, g.height - 1, "R")
     # A winding walkable pass with a drop on one side.
     y = g.height // 2
+    track: list[int] = []
     for x in range(g.width):
         width = rng.randint(2, max(3, g.height // 3))
         for dy in range(-width // 2, width // 2 + 1):
             if g.in_bounds(x, y + dy):
                 g.set(x, y + dy, "," if rng.random() < 0.3 else FLOOR)
         y = max(2, min(g.height - 3, y + rng.choice((-1, 0, 0, 1))))
+        track.append(y)
+
+    # THE DROP: one ravine running alongside the track, not speckle.
+    #
+    # This used to punch five percent of the rock out at random, which is not
+    # what a mountain does and — worse — is not what a rock MASS can survive.
+    # Only the rock bordering something open is drawn, so a few hundred holes
+    # scattered through it left every remaining square bordering one: the whole
+    # face shattered into separate full-square blocks and the board came back a
+    # field of white dice. A gorge is one continuous absence with two edges, so
+    # the rock either side of it stays a face.
+    below = rng.random() < 0.5
+    edge = 0
     for x in range(g.width):
-        for yy in range(g.height):
-            if g.get(x, yy) == "R" and rng.random() < 0.05:
+        edge = max(2, min(6, edge + rng.choice((-1, 0, 0, 1))))
+        depth = rng.randint(1, 3)
+        for d in range(depth):
+            yy = track[x] + edge + d if below else track[x] - edge - d
+            if g.in_bounds(x, yy) and g.get(x, yy) == "R":
                 g.set(x, yy, "x")
     _connect_regions(g, rng)
-    # Boulders fallen into the track. Rock, so the archetype's own cliff skin
-    # covers them — the pass used to draw every solid thing as one grey wall,
-    # which is most of why it read as built rather than fallen.
+    # Boulders fallen into the track. They wear the BOULDER skin and not the
+    # cliff's: both are the same granite, and a mass wants to fill its square
+    # so its neighbours merge while a stone lying alone wants a silhouette.
     _scatter(g, rng, "O", 0.035, only_on=(FLOOR, ","))
     out.elevation = {f"{x},{yy}": 10 for x, yy in g.squares()
                      if g.get(x, yy) == "," and rng.random() < 0.2}
@@ -1043,7 +1099,7 @@ def _gen_skyship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # stays the ship it was.
     if out.style not in SKYSHIP_STYLES:
         out.style = rng.choice(("timber", "timber", "steampunk", "organic"))
-    stern = _hull(g, rng, "^")
+    stern = _hull(g, rng, "^", plan="sky")
     _rail(g, rng, "^")
     _rig_ship(g, rng, out, stern,
               cabin_skin={"steampunk": "plating",

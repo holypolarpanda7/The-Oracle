@@ -91,7 +91,7 @@ def shelter(g: Grid, rng: random.Random, x0: int, y0: int, w: int, h: int, *,
             skin: str, wall: str = WALL, floor: str = FLOOR,
             door: str = "/", on: tuple[str, ...] = (),
             interior_floor: Optional[str] = None,
-            door_skin: str = "",
+            door_skin: str = "", interior_skin: str = "",
             margin: int = 1) -> Built:
     """A walled enclosure with a floor inside and one way in. The base shape.
 
@@ -133,6 +133,16 @@ def shelter(g: Grid, rng: random.Random, x0: int, y0: int, w: int, h: int, *,
                 built.skins[f"{x},{y}"] = skin
             else:
                 built.interior.append((x, y))
+                # A ROOF, where the structure has one. Seen from above, a wall
+                # ring with a walkable floor in it is a roofless box, which is
+                # what every camp came back as: three timber pens round a fire.
+                # The covering has to be its own skin because the inside is its
+                # own squares, and it is safe to be one because it starts well
+                # clear of the floor — see skins.occludes_floor, which is the
+                # guard that stops a picture closing a square the rules leave
+                # open.
+                if interior_skin:
+                    built.skins[f"{x},{y}"] = interior_skin
 
     # The way in goes on a side, never a corner — a corner opening leaves the
     # two walls meeting nowhere and reads as a collapse.
@@ -168,15 +178,103 @@ def tent(g: Grid, rng: random.Random, x0: int, y0: int, *,
     w = rng.choice((4, 4, 5))
     h = rng.choice((4, 4, 5))
     return shelter(g, rng, x0, y0, w, h, skin="canvas", door_skin="flap",
-                   on=on, interior_floor=FLOOR)
+                   interior_skin="tent-canopy", on=on, interior_floor=FLOOR)
+
+
+def _upper_level(out, g: Grid, base_ft: int, name: str) -> int:
+    """The 1-based index of this structure's own storey, made if it is new.
+
+    A new level starts as ALL VOID, because a gallery — or a tower top — is the
+    strip you build and everywhere else is open to whatever is below.
+    """
+    from .terrain import VOID
+
+    for i, lv in enumerate(out.levels):
+        if lv.get("name") == name.title() and lv.get("base_ft") == base_ft:
+            return i + 1
+    out.levels.append({"name": name.title(), "base_ft": int(base_ft),
+                       "terrain": [VOID * g.width for _ in range(g.height)],
+                       "stairs": []})
+    return len(out.levels)
+
+
+def _floor_out(out, level: int, x0: int, y0: int, size: int,
+               edge: str, inner: str) -> None:
+    """Lay a square of floor on an upper storey, with its own edging."""
+    rows = [list(r) for r in out.levels[level - 1]["terrain"]]
+    for x in range(x0, x0 + size):
+        for y in range(y0, y0 + size):
+            on_edge = x in (x0, x0 + size - 1) or y in (y0, y0 + size - 1)
+            rows[y][x] = edge if on_edge else inner
+    out.levels[level - 1]["terrain"] = ["".join(r) for r in rows]
+
+
+#: How many squares a post tower stands on. ODD on purpose: the platform and
+#: the roof are drawn from the MIDDLE square and reach out over the rest, and
+#: only an odd footprint has a middle square whose own centre is the whole
+#: structure's centre — which is what keeps the roof where it belongs when the
+#: square takes its quarter turn.
+POST_TOWER_SIZE = 5
+
+
+def _post_tower(g: Grid, rng: random.Random, out, x0: int, y0: int, *,
+                on: tuple[str, ...], base_ft: int, name: str) -> Built:
+    """Four raked legs holding a platform up, open underneath.
+
+    A timber tower is not a small building, and drawing it as one — a walled
+    shelter in log cladding — got a squat wooden box with a door in it. What
+    says "watchtower" is the LEGS and the daylight between them: you walk under
+    it, and the only way up is the ladder.
+
+    Rules-wise this is cheaper than the walled version rather than dearer. The
+    legs are ``O`` pillars, which is what a post IS to the engine — impassable,
+    three-quarters cover, narrow — and the ground between them stays the ground
+    it was. Nothing new was needed for any of it.
+    """
+    size = POST_TOWER_SIZE
+    if on and not _fits(g, x0, y0, size, size, on, margin=1):
+        return _empty()
+
+    built = _empty()
+    corners = {(x0, y0), (x0 + size - 1, y0),
+               (x0, y0 + size - 1), (x0 + size - 1, y0 + size - 1)}
+    for px, py in corners:
+        g.set(px, py, "O")
+        built.skins[f"{px},{py}"] = "tower-post"
+    built.interior = [(x, y) for x in range(x0, x0 + size)
+                      for y in range(y0, y0 + size) if (x, y) not in corners]
+
+    level = _upper_level(out, g, base_ft, name)
+    # The platform's own edge is a real low wall: half cover, three feet, the
+    # height the rules quote for anyone shooting from up there.
+    _floor_out(out, level, x0, y0, size, "w", FLOOR)
+
+    mid = size // 2
+    # The platform and the roof are DRAWN from the middle square and reach out
+    # over the whole footprint, because only one storey is ever drawn at a time
+    # — so from the ground the platform is something you look at rather than
+    # something you are on. Without it the tower was four poles and a roof with
+    # a gap where the floor should be.
+    built.skins[f"{x0 + mid},{y0 + mid}"] = "tower-top"
+
+    lx, ly = x0 + mid, y0 + mid + 1
+    built.skins[f"{lx},{ly}"] = "tower-ladder"
+    out.stairs.append({"level": 0, "x": lx, "y": ly, "to_level": level,
+                       "to_x": lx, "to_y": ly, "kind": "ladder"})
+    return built
 
 
 def watchtower(g: Grid, rng: random.Random, out, x0: int, y0: int, *,
                on: tuple[str, ...] = (), base_ft: int = 15,
                material: str = "stone",
                name: str = "watchtower") -> Built:
-    """A stone tower with a room at the bottom and a fighting top, joined by a
-    ladder.
+    """A tower with a fighting top, of whatever the country builds in.
+
+    Two quite different structures, because they really are two different
+    things and pretending otherwise is what made the timber one wrong. In
+    STONE it is a building: a room at the bottom, a doorway, a merloned top.
+    In TIMBER it is a frame — see :func:`_post_tower` — four legs and a
+    platform with nothing between them but air.
 
     The upper storey is a REAL floor — its own terrain grid at its own height,
     reached only by the connector, exactly like any other level. So an archer up
@@ -188,33 +286,18 @@ def watchtower(g: Grid, rng: random.Random, out, x0: int, y0: int, *,
     and the parapet is a low wall — half cover, three feet, the height the rules
     quote — rather than something invented for the look.
     """
-    from .terrain import VOID
+    if material == "timber":
+        return _post_tower(g, rng, out, x0, y0, on=on, base_ft=base_ft,
+                           name=name)
 
     size = rng.choice((4, 4, 5))
-    wall_skin = f"tower-{material}"
-    built = shelter(g, rng, x0, y0, size, size, skin=wall_skin,
-                    door_skin=f"doorway-{material}", on=on)
+    built = shelter(g, rng, x0, y0, size, size, skin="tower-stone",
+                    door_skin="doorway-stone", on=on)
     if not built.interior:
         return built
 
-    # The upper floor: void everywhere except this tower's own footprint.
-    level = None
-    for i, lv in enumerate(out.levels):
-        if lv.get("name") == name.title() and lv.get("base_ft") == base_ft:
-            level = i + 1
-            break
-    if level is None:
-        rows = [VOID * g.width for _ in range(g.height)]
-        out.levels.append({"name": name.title(), "base_ft": int(base_ft),
-                           "terrain": rows, "stairs": []})
-        level = len(out.levels)
-
-    rows = [list(r) for r in out.levels[level - 1]["terrain"]]
-    for x in range(x0, x0 + size):
-        for y in range(y0, y0 + size):
-            edge = x in (x0, x0 + size - 1) or y in (y0, y0 + size - 1)
-            rows[y][x] = "w" if edge else FLOOR
-    out.levels[level - 1]["terrain"] = ["".join(r) for r in rows]
+    level = _upper_level(out, g, base_ft, name)
+    _floor_out(out, level, x0, y0, size, "w", FLOOR)
 
     # The ladder: an interior square below, the matching square above.
     lx, ly = built.interior[len(built.interior) // 2]

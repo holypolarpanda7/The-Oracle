@@ -415,13 +415,86 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   timber, brass or grown chitin). A skin that only says what the model would
   paint anyway is not free — `masonry` on the dungeon boards bought nothing
   and was removed.
-- **A MASS picks its shape from a coarse hash; an OBJECT picks per square.**
-  `variant_smooth` samples over two-square blocks. Only the rock squares
-  bordering open floor are drawn, so a one-square shell whose every square
-  chose its own height independently has nothing left to connect it — the
-  first mountain pass came back as a field of white dice. Rock also wants
-  FULL-square footprints: inset even slightly, each square is its own block
-  with a gap round it.
+- **A part may be a PRISMATOID, and that is what stops everything being a
+  cube.** A part was six numbers — an axis-aligned box — so every silhouette
+  was built by stacking boxes, and a slope came out as a flight of terraces.
+  The second form is `(bottom polygon, top polygon, y0, y1)`, told apart in
+  both languages by whether the first element is a number. It subsumes the box,
+  so gaining it rewrote nothing, and it buys exactly three things: a narrower
+  top is a **taper** (a tent's canvas drawn in to a ridge, a hipped roof, a
+  hull with tumblehome), an OFFSET top is a **lean** (the raked legs of a
+  timber watchtower, a ladder, a guy rope), and more than four vertices is a
+  **cut corner**. **Winding is normalized in `skins.solid()`, never trusted** —
+  a ring written the wrong way round points its normals into the solid, so the
+  renderer culls every face you should see; the first watchtower roof simply
+  did not appear and nothing in either program looked broken.
+- **There are three orientation rules, and a tent needed the third.** `yaw_of`
+  turns a boulder any way at all; `run_axis` lines a rail up with its run; and
+  `out_axis` points a part at the OUTDOORS. Without the last, a tent's canvas
+  could only lean the same amount toward both faces of its wall — which against
+  a five-foot square and a seven-foot tent is not leaning at all, and is why
+  three rewrites of the tent still came back as pens. A doorway counts as part
+  of the wall it interrupts (the project's existing rule about doors), or a
+  tent takes its own flap for the weather and pitches the roof at the way in.
+- **A MASS picks its shape from a coarse hash; an OBJECT picks per square —
+  and a boulder is an OBJECT.** `variant_smooth` samples over two-square
+  blocks. Only rock bordering open floor is drawn, so a one-square shell whose
+  every square chose its own height has nothing left to connect it. Three more
+  things the mountain pass needed, all measured: the shell must be judged on
+  all EIGHT neighbours (`isocam.exposed`), because a wandering track steps
+  diagonally as often as squarely and a square whose only open neighbour was a
+  diagonal was drawn as buried, notching the face into separate towers; the
+  blocks must overhang their squares by about a tenth, because two diagonal
+  neighbours otherwise meet at a single point; and the pass must not sprinkle
+  its chasm through the rock at random, because a few hundred holes leave every
+  remaining square bordering one and the whole face shatters. **A cliff and a
+  boulder are not one skin.** Both are granite and they want opposite
+  silhouettes — a cliff fills its square so neighbours merge into a face, a
+  boulder stands alone and needs an outline — so sharing one drew every fallen
+  stone as a full-square fourteen-foot block.
+- **A vessel's outline is a STAIRCASE, and its corners are cut.** A deck is
+  carved out of squares, so a hull given a vertical side is a sawtooth.
+  `isocam.footprint` cuts every corner where two adjacent sides both meet the
+  outside — that is precisely the outer corner of a stair step — at full depth,
+  so a one-square step is drawn as the diagonal it means and meets its
+  neighbour's exactly. Only where a skin declares its own side, so no board
+  that did not ask for it changed. **The taper is nearly nothing (`HULL_TAPER`,
+  a tenth of a square) and that is measured.** `footprint` mitres the bottom at
+  each vertex so a square whose outline turns still closes, but it cannot mitre
+  ACROSS squares — at a step the diagonal belongs to one square and the run
+  beside it to the next, each mitres correctly alone, and their bottoms part
+  company. At 0.42 every step of the bow opened a three-foot wedge of sky and a
+  skyship read as three hull plates hung under one deck. Same lesson as
+  `SKIRT_INSET` board-wide: flush faces meet.
+- **A skyship is not a boat that happens to be up.** They shared a hull plan
+  and a deck skin and came back the same vessel. A sea hull is fine at the bow,
+  full through the waist and flat at the transom, and sits IN the water; an
+  airship is slender and fine at BOTH ends — nothing about air rewards a
+  transom — and you see its whole keel, so it gets a side half again as deep.
+  `_hull(plan=)` and two deck skins.
+- **A timber watchtower is not a stone one in wood.** Drawn as a walled shelter
+  in log cladding it came back a squat box with a door in it. It is four raked
+  legs holding a platform up, open underneath — `structures._post_tower` — and
+  it needed no new rules primitive either: the legs are `O` pillars, which is
+  what a post IS to the engine, and the ground between them stays the ground it
+  was. Its footprint is ODD (five squares) because the platform and roof are
+  drawn from the MIDDLE square and reach out over the rest, and only an odd
+  footprint has a middle whose own centre is the structure's centre — which is
+  what keeps the roof where it belongs when the square takes its quarter turn.
+  Drawing them from one square is not laziness: only one storey is ever drawn
+  at a time, so from the ground the platform is something you look at.
+- **`elevation` is DRAWN now, and was not for a long time.** It is stored per
+  square, shipped in `state()`, and folded into every distance, reach, cover
+  and spell-area check since the board went 3D — and neither renderer read it.
+  A mountain-pass ledge stood ten feet up in the rules and flat in the picture.
+  Three consequences once it is drawn: a floor ends against a LOWER square as
+  well as against a hole, so a ledge gets a face; a creature rides its square's
+  elevation on top of its own (a wyvern over a ledge is above both); and every
+  wash, path and marker rides it too, or the movement range on a ship's deck is
+  a stain on the sea beside it. `SHIP_FREEBOARD_FT` is the first deliberate
+  use — a caravel's deck is six real feet above the water, so her hull is
+  visible and hauling somebody out of the sea is six feet of climb in the rules
+  exactly as it is in the picture.
 - **Things you get INSIDE are compositions of tiles that already existed.**
   `vtt/structures.py`. A camp's tents were 2x2 blocks of impassable furniture,
   so a creature could only ever be beside one and a token on the next square

@@ -511,7 +511,12 @@ def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
 #: Rev 25: towers stopped being solid boxes with their doorways bricked up,
 #: skirts slope and a vessel carries its own hull, and a sea ship no longer
 #: shares a deck skin with a skyship.
-ISOBOARD_REV = 26
+#: Rev 27: shapes stopped being boxes. Parts may now be PRISMATOIDS, so a
+#: tent's canvas is one pitched face rather than four terraces, a timber
+#: watchtower is four raked legs under a platform, and a hull's stair-stepped
+#: outline is cut into a continuous diagonal. Every board's silhouette changed,
+#: so every painting conditioned on the old one is stale.
+ISOBOARD_REV = 27
 
 
 #: Retained for callers that still ask, and for the gallery's reporting. The
@@ -663,7 +668,8 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
         rows=gen.grid.rows, height_ft=tile_height_ft, cover_ft=cover_height_ft,
         decor=decor_for(gen.grid.to_rows(), seed=gen.seed,
                         standing=lambda c: tile_height_ft(c) > 0),
-        square_ft=5, structure=STRUCTURE_CODES, skin_of=_skin_of)
+        square_ft=5, structure=STRUCTURE_CODES, skin_of=_skin_of,
+        elevation=gen.elevation)
     depth = isocam.depth_image(**depth_kw)
     # The half depth cannot carry: what the ground is MADE of. Outdoors that is
     # the whole board, so without it the model invents terrain the grid does not
