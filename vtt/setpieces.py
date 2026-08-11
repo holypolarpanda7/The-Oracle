@@ -363,6 +363,30 @@ def _flat(w: int, d: int, code: str) -> tuple[str, ...]:
     return tuple(code * w for _ in range(d))
 
 
+def _canopy(size: int, trunk: str = "T",
+            ground: str = ".") -> tuple[tuple[str, ...], dict[str, int]]:
+    """A single tile of rules under a mesh many squares across.
+
+    The jungle giant is the case: scaled to the sixty feet its entry claims, a
+    palm's crown is nine squares wide, and every one of those squares is open
+    ground a creature walks through — the canopy is far over their head, so it
+    screens nothing and blocks nothing. Only the trunk is a tile.
+
+    Written as a function because the alternative is eighty hand-typed
+    elevation entries, and the import guard that demands one per passable
+    square is exactly the guard a hand-typed block gets wrong.
+    """
+    mid = size // 2
+    rows = tuple("".join(trunk if (x == mid and y == mid) else ground
+                         for x in range(size)) for y in range(size))
+    elev = {f"{x},{y}": 0 for y in range(size) for x in range(size)
+            if not (x == mid and y == mid)}
+    return rows, elev
+
+
+_CANOPY_TILES, _CANOPY_ELEV = _canopy(9)
+
+
 # --------------------------------------------------------------------------
 # The catalogue
 #
@@ -425,13 +449,17 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
     SetPiece(
         "jungle-giant", "jungle giant",
         Source("kenney-nature", ("tree_palmDetailedTall", "tree_tall", "tree_default")),
-        # Three by three of MESH and one square of rules: the canopy is far
-        # over a creature's head, so it screens nothing and blocks nothing, and
-        # only the trunk is a tile. A canopy that stamped tiles would be cover
+        # Nine by nine of MESH and one square of rules: the canopy is far over
+        # a creature's head, so it screens nothing and blocks nothing, and only
+        # the trunk is a tile. A canopy that stamped tiles would be cover
         # nobody could reach.
-        ("...", ".T.", "..."), height_ft=60.0, fills=("   ", " X ", "   "),
-        elevation={"0,0": 0, "1,0": 0, "2,0": 0, "0,1": 0, "2,1": 0,
-                   "0,2": 0, "1,2": 0, "2,2": 0},
+        #
+        # It was 3x3 and the audit caught it: a palm scaled to the sixty feet
+        # this entry claims has a crown nine squares across, and a footprint
+        # narrower than the mesh is a picture overhanging squares the board
+        # never reserved for it.
+        _CANOPY_TILES, height_ft=60.0, elevation=_CANOPY_ELEV,
+        fills=tuple("    X    " if y == 4 else " " * 9 for y in range(9)),
         words="an enormous buttressed jungle tree, its canopy far overhead",
         on=("g", "\""),
     ),
@@ -443,9 +471,13 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
     ),
     SetPiece(
         "boulder-heap", "fallen boulders",
-        Source("kenney-nature", ("rock_largeA", "rock_large", "rock")),
-        ("RR", "R."), height_ft=14.0, body="boulders",
-        elevation={"1,1": 0},
+        # ``rock_largeA`` came first and is a PEBBLE — a foot and a half tall
+        # in its own units, so scaled to the fourteen feet this entry claims it
+        # covered nine squares by eleven. The cliff blocks are the pack's
+        # actual masses, and one of them at 14 ft is three squares square.
+        Source("kenney-nature", ("cliff_block_rock", "cliff_block", "rock_large")),
+        ("RRR", "RRR", "RR."), height_ft=14.0, body="boulders",
+        elevation={"2,2": 0},
         words="a tumble of house-sized boulders",
         on=("g", "\"", ",", "s", "."),
     ),
@@ -454,14 +486,20 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
     SetPiece(
         "mausoleum", "mausoleum",
         Source("kenney-graveyard", ("crypt", "tomb", "mausoleum", "grave_large")),
-        ("###", "###"), height_ft=14.0, body="crypt",
+        ("###", "###", "###", "###", "###"), height_ft=14.0, body="crypt",
         words="a sealed stone mausoleum, its door long since barred",
         turns=(0, 90),
     ),
     SetPiece(
         "gatehouse-tower", "gate tower",
-        Source("kenney-castle", ("towerSquareTop", "towerSquare", "tower")),
-        ("##", "##"), height_ft=40.0, body="tower",
+        # The Castle Kit is MODULAR — it ships a base, a mid and a top, and no
+        # whole tower — so the old fragments could only ever match a segment.
+        # They matched the crenellated cap, which is nine inches tall in its
+        # own units and wanted twenty-seven squares to reach forty feet. A
+        # single-mesh set piece needs a pack that sells the tower assembled.
+        Source("kenney-pirate", ("tower-complete-large", "tower-complete",
+                                 "tower-watch")),
+        ("###", "###", "###"), height_ft=40.0, body="tower",
         words="a squat stone gate tower",
     ),
     SetPiece(
@@ -478,14 +516,26 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
     SetPiece(
         "shipwreck", "beached wreck",
         Source("kenney-pirate", ("ship_wreck", "shipWreck", "ship_dark")),
-        ("###", "##."), height_ft=20.0, body="wreck",
-        elevation={"2,1": 0},
+        # A hull is LONG and narrow, and the footprint was square-ish: two
+        # squares abeam and five from stem to stern is what the mesh actually
+        # measures at twenty feet.
+        ("##", "##", "##", "##", "#."), height_ft=20.0, body="wreck",
+        elevation={"1,4": 0},
         words="the broken-backed hull of a wrecked ship",
         on=("s", "~", "g", "."),
     ),
     SetPiece(
         "cave-pillar", "cave column",
-        Source("kenney-cave", ("stalagmite", "column", "rock_column")),
+        # NOT from the Modular Cave Kit, which turns out to be corridor and
+        # room segments and carries no free-standing anything.
+        #
+        # ``statue_column`` over the nature kit's ``rock_tall`` spires despite
+        # being the wrong fiction, because PROPORTION is the thing a mesh
+        # actually contributes here and the rocks have the wrong one: a rock
+        # tall enough to reach the ceiling is four squares wide, and a cave
+        # column is by definition slender. What is carved on it is repainted —
+        # ``words`` is what tells the painter this is dripstone.
+        Source("kenney-nature", ("statue_column", "rock_tall", "stone_tall")),
         ("O",), height_ft=16.0,
         words="a joined stalactite and stalagmite, floor to ceiling",
     ),

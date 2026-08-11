@@ -12,9 +12,22 @@ debris pre-renderers already use:
 
 ``--audit``
     What is on disk, what each catalogue entry resolved to, and what did not
-    resolve at all. Reports the mesh's own bounding box against the height the
-    entry declares, because a model scaled to fit its footprint and coming out
-    twice as tall as the rules say is a landmark that lies about cover.
+    resolve at all. Reports how many squares the mesh NEEDS once it is scaled to
+    the height the entry declares, against how many the entry declares.
+
+    **Height is authoritative and the footprint gives way**, which is a reversal
+    worth writing down because the first version had it the other way round. It
+    fitted the mesh's width to the declared footprint and reported the height
+    that fell out, and against real packs that made every tall thing a dwarf:
+    a 60-ft jungle giant came out at 21 ft and a 40-ft gate tower at 3 ft. The
+    height is the fiction — the DM says a colossus stands here — and it is what
+    the depth map's frame is sized from, so shrinking it to suit a footprint
+    silently rewrites the scene. The footprint is a floor-level RULES statement
+    about which squares are stamped, and there is no reason it cannot be wider;
+    a landmark that needs nine squares gets nine, and the board grows to hold
+    it (see ``vtt.triggers.board_size_for``). Scaling stays UNIFORM either way:
+    stretching one axis to satisfy both numbers distorts the model, which reads
+    as a bug on anything organic.
 
 ``--collect``
     Copy each resolved mesh (and its material/texture, if any) out of the
@@ -26,16 +39,32 @@ debris pre-renderers already use:
     Regenerate ATTRIBUTION.md from the register in code, so the file beside the
     binaries and the code that names their licences cannot drift.
 
-Getting the packs is a manual step and stays one: every source here puts its
-download behind a page rather than a stable URL, and a scraper that guesses is
-a scraper that silently fetches the wrong thing. Run ``--audit`` for the list
-of what to fetch and where to unzip it.
+``--fetch``
+    Download and extract the packs that CAN be fetched. This RESOLVES rather
+    than guesses, which is the distinction that makes it safe: it reads the
+    pack's own registered page and takes the ``.zip`` that page links to, the
+    same discipline :attr:`Source.match` uses to find a mesh inside a pack. No
+    URL is constructed or predicted, so a pack that re-releases under a new
+    hash is still found and a pack that stops publishing a zip fails loudly
+    instead of fetching something else.
+
+    Not every source can be fetched, and the ones that cannot are REPORTED with
+    their page rather than worked around. Quaternius puts its packs behind a
+    JavaScript-rendered Google Drive folder with no server-side listing; there
+    is nothing on that page to resolve, so those stay a manual download. That
+    is a statement about the host, not a limitation to route around with a
+    headless browser — see ``--audit``, which tells you exactly where to unzip.
 """
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -86,6 +115,36 @@ def obj_bounds(path: Path) -> tuple[tuple[float, float, float],
 # Resolution
 # --------------------------------------------------------------------------
 
+def mesh_footprint(path: Path, piece: sp.SetPiece,
+                   square_ft: float) -> tuple[int, int] | None:
+    """How many squares this mesh covers once scaled to its declared height.
+
+    The one place the set-piece scale is computed, and it is DERIVED rather
+    than authored: a pack's units are arbitrary and a per-pack magic multiplier
+    is a number nobody can check. Both renderers have to arrive at this same
+    scale from the same two facts — the mesh's own bounding box and the height
+    the catalogue declares — or the painting is conditioned on a landmark a
+    different size from the one the player is looking at.
+
+    Returns ``None`` for a format this script cannot measure; only OBJ is read
+    here, which is also the format the depth rasterizer will parse server-side.
+    """
+    if path.suffix.lower() != ".obj":
+        return None
+    bounds = obj_bounds(path)
+    if bounds is None:
+        return None
+    (x0, y0, z0), (x1, y1, z1) = bounds
+    tall = (y1 - y0) if piece.up == "y" else (z1 - z0)
+    if tall <= 0:
+        return None
+    scale = piece.height_ft / tall
+    wide = (x1 - x0) * scale
+    deep = ((z1 - z0) if piece.up == "y" else (y1 - y0)) * scale
+    ceil = lambda ft: max(1, int(-(-ft // square_ft)))          # noqa: E731
+    return ceil(wide), ceil(deep)
+
+
 def pack_dir(slug: str) -> Path | None:
     """Where a pack was unzipped. Tolerant of how the archive named itself."""
     direct = WORKSPACE / slug
@@ -109,6 +168,20 @@ def candidates(root: Path) -> list[Path]:
     return out
 
 
+def _norm(name: str) -> str:
+    """A model name with its word separators taken out, for matching.
+
+    Kits are re-released with their naming convention changed and nothing else:
+    Kenney's nature kit is ``tree_palmDetailedTall`` and the castle and pirate
+    kits it ships beside are now ``tower-square-top``. Matching on the literal
+    string makes a catalogue entry correct against one release of a pack and
+    silently wrong against the next — which is the failure this whole
+    fragment-matching scheme exists to avoid, so the separator has to go the
+    same way the case does.
+    """
+    return re.sub(r"[-_\s]+", "", name).lower()
+
+
 def resolve(piece: sp.SetPiece) -> tuple[Path | None, str]:
     """Best file for this entry, and why — exact fragment order wins.
 
@@ -127,8 +200,8 @@ def resolve(piece: sp.SetPiece) -> tuple[Path | None, str]:
     if not files:
         return None, "no mesh files under the pack directory"
     for frag in piece.source.match:
-        f = frag.lower()
-        hits = [p for p in files if f in p.stem.lower()]
+        f = _norm(frag)
+        hits = [p for p in files if f in _norm(p.stem)]
         if not hits:
             continue
         # Prefer the format the catalogue prefers, then the shortest name —
@@ -190,6 +263,7 @@ def cmd_audit(square_ft: float) -> int:
     print()
 
     unresolved = 0
+    unresolved_fit: list[tuple[sp.SetPiece, int, int]] = []
     for piece in sorted(sp.CATALOGUE.values(), key=lambda p: p.slug):
         path, why = resolve(piece)
         committed = MESHES / f"{piece.slug}.obj"
@@ -204,19 +278,18 @@ def cmd_audit(square_ft: float) -> int:
             print(f"  --  {mark} {piece.slug:<16} {why}{extra}")
             continue
         line = f"  ok  {mark} {piece.slug:<16} {path.relative_to(WORKSPACE)}"
-        bounds = obj_bounds(path) if path.suffix.lower() == ".obj" else None
-        if bounds:
-            (x0, y0, z0), (x1, y1, z1) = bounds
-            span = max(x1 - x0, z1 - z0) or 1.0
-            # Scale is DERIVED from the declared footprint, never authored: a
-            # pack's units are arbitrary, and a magic per-pack multiplier is a
-            # number nobody can check. Fit the model to the squares it is said
-            # to cover, then see what its height became.
-            scale = (piece.width * square_ft) / span
-            got = (y1 - y0) * scale
-            off = abs(got - piece.height_ft) / max(piece.height_ft, 1.0)
-            flag = "" if off <= 0.35 else f"   <- {off * 100:.0f}% off"
-            line += f"   fits to {got:.0f} ft vs {piece.height_ft:g} declared{flag}"
+        need = mesh_footprint(path, piece, square_ft)
+        if need is not None:
+            nw, nd = need
+            line += f"   needs {nw}x{nd} at {piece.height_ft:g} ft"
+            if nw > piece.width or nd > piece.depth:
+                unresolved_fit.append((piece, nw, nd))
+                line += f"   <- declares {piece.width}x{piece.depth}; WIDEN IT"
+            elif nw < piece.width or nd < piece.depth:
+                # Not an error. A footprint may be larger than the mesh on
+                # purpose — the jungle giant's canopy squares are there to keep
+                # the scatter out from under it, and cost nothing but room.
+                line += f"   (declares {piece.width}x{piece.depth}, room to spare)"
         print(line)
 
     print()
@@ -225,10 +298,109 @@ def cmd_audit(square_ft: float) -> int:
         for pack in missing_packs:
             print(f"  {WORKSPACE / pack.slug}   <- {pack.url}")
         print()
+    if unresolved_fit:
+        print("These declare a footprint smaller than the mesh needs at the "
+              "height they claim. Widen the footprint (the board grows to "
+              "hold it) or lower the height — never scale one axis alone:")
+        for piece, nw, nd in unresolved_fit:
+            print(f"  {piece.slug:<16} declares {piece.width}x{piece.depth}, "
+                  f"needs {nw}x{nd} at {piece.height_ft:g} ft")
+        print()
     meshed = sum(1 for p in sp.CATALOGUE.values() if p.source)
     print(f"{meshed - unresolved}/{meshed} set pieces needing a mesh resolve; "
           f"{len(sp.CATALOGUE) - meshed} need none.")
     return 0
+
+
+def cmd_fetch(force: bool) -> int:
+    """Download and unzip every pack whose page actually links to an archive."""
+    WORKSPACE.mkdir(parents=True, exist_ok=True)
+    manual: list[tuple[sp.Pack, str]] = []
+    got = 0
+    for pack in sp.packs_in_use():
+        dest = WORKSPACE / pack.slug
+        if dest.is_dir() and any(dest.rglob("*")) and not force:
+            print(f"  have    {pack.slug}")
+            continue
+        try:
+            page = _get(pack.url)
+        except urllib.error.URLError as exc:
+            manual.append((pack, f"page unreachable: {exc}"))
+            continue
+        url = _zip_link(page, pack.url)
+        if url is None:
+            manual.append((pack, "the page links no archive — see the docstring"))
+            continue
+        print(f"  fetch   {pack.slug:<22} {url}")
+        try:
+            blob = _get(url)
+        except urllib.error.URLError as exc:
+            manual.append((pack, f"download failed: {exc}"))
+            continue
+        tmp = WORKSPACE / f"{pack.slug}.zip"
+        tmp.write_bytes(blob)
+        try:
+            with zipfile.ZipFile(tmp) as z:
+                _safe_extract(z, dest)
+        except zipfile.BadZipFile:
+            manual.append((pack, "downloaded file is not a zip"))
+            tmp.unlink(missing_ok=True)
+            continue
+        tmp.unlink(missing_ok=True)
+        n = len(candidates(dest))
+        got += 1
+        note = "" if n else "   <- extracted but no mesh files; check FORMATS"
+        print(f"  ok      {pack.slug:<22} {n} mesh files{note}")
+
+    if manual:
+        print("\nThese have to be downloaded by hand — unzip each into the "
+              "directory shown:")
+        for pack, why in manual:
+            print(f"  {pack.name}  ({why})")
+            print(f"      from {pack.url}")
+            print(f"      into {WORKSPACE / pack.slug}")
+    print(f"\n{got} pack(s) fetched; {len(manual)} need a manual download.")
+    return 0
+
+
+def _get(url: str, timeout: int = 180) -> bytes:
+    # Kenney's CDN serves a 403 to the stdlib's default agent.
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as fh:
+        return fh.read()
+
+
+def _zip_link(page: bytes, base: str) -> str | None:
+    """The archive this page offers, or None if it offers none.
+
+    Deliberately takes the FIRST ``.zip`` on the page rather than scoring
+    candidates: a pack page offers its own pack, and a page that offers several
+    archives is a page this script has misunderstood and should not guess at.
+    """
+    text = page.decode("utf-8", errors="ignore")
+    m = re.search(r'https?://[^\s"\'<>]+\.zip', text)
+    if m:
+        return m.group(0)
+    m = re.search(r'''["']((?:/|\.\.?/)[^\s"'<>]+\.zip)["']''', text)
+    if m:
+        return urllib.parse.urljoin(base, m.group(1))
+    return None
+
+
+def _safe_extract(z: zipfile.ZipFile, dest: Path) -> None:
+    """Extract, refusing any member that would land outside ``dest``.
+
+    A zip is an untrusted archive off the internet, and ``extractall`` will
+    happily honour ``../`` in a member name. The packs here are reputable; the
+    check costs four lines and does not depend on them staying so.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    root = dest.resolve()
+    for member in z.namelist():
+        target = (root / member).resolve()
+        if not str(target).startswith(str(root)):
+            raise ValueError(f"zip member escapes the workspace: {member!r}")
+    z.extractall(root)
 
 
 def cmd_collect(force: bool) -> int:
@@ -269,6 +441,8 @@ def main() -> int:
                     help="the catalogue and the packs it draws on")
     ap.add_argument("--audit", action="store_true",
                     help="what is on disk and what each entry resolves to")
+    ap.add_argument("--fetch", action="store_true",
+                    help="download and unzip the packs whose page links one")
     ap.add_argument("--collect", action="store_true",
                     help="copy resolved meshes into the committed asset dir")
     ap.add_argument("--attribution", action="store_true",
@@ -283,6 +457,8 @@ def main() -> int:
         return cmd_list()
     if args.attribution:
         return cmd_attribution()
+    if args.fetch:
+        return cmd_fetch(args.force)
     if args.collect:
         return cmd_collect(args.force)
     return cmd_audit(args.square_ft)

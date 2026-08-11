@@ -17,8 +17,6 @@ uv run python scripts/setpiece_assets.py --attribution
 
 | Pack | Author | Models | Licence | Source |
 |------|--------|--------|---------|--------|
-| Castle Kit | Kenney | 75 | CC0-1.0 | <https://kenney.nl/assets/castle-kit> |
-| Modular Cave Kit | Kenney | 40 | CC0-1.0 | <https://kenney.nl/assets/modular-cave-kit> |
 | Graveyard Kit | Kenney | 90 | CC0-1.0 | <https://kenney.nl/assets/graveyard-kit> |
 | Nature Kit | Kenney | 330 | CC0-1.0 | <https://kenney.nl/assets/nature-kit> |
 | Pirate Kit | Kenney | 70 | CC0-1.0 | <https://kenney.nl/assets/pirate-kit> |
@@ -34,12 +32,12 @@ traced to where it came from and the terms it came under.
 
 | Set piece | Squares | Height | Pack |
 |-----------|---------|--------|------|
-| `gatehouse-tower` | 2x2 | 40 ft | Castle Kit |
-| `cave-pillar` | 1x1 | 16 ft | Modular Cave Kit |
-| `mausoleum` | 3x2 | 14 ft | Graveyard Kit |
-| `boulder-heap` | 2x2 | 14 ft | Nature Kit |
-| `jungle-giant` | 3x3 | 60 ft | Nature Kit |
-| `shipwreck` | 3x2 | 20 ft | Pirate Kit |
+| `mausoleum` | 3x5 | 14 ft | Graveyard Kit |
+| `boulder-heap` | 3x3 | 14 ft | Nature Kit |
+| `cave-pillar` | 1x1 | 16 ft | Nature Kit |
+| `jungle-giant` | 9x9 | 60 ft | Nature Kit |
+| `gatehouse-tower` | 3x3 | 40 ft | Pirate Kit |
+| `shipwreck` | 2x5 | 20 ft | Pirate Kit |
 | `standing-stone` | 1x1 | 11 ft | Ultimate Nature Pack |
 | `broken-pillar` | 1x1 | 12 ft | Ultimate Modular Ruins Pack |
 | `great-statue` *(nearest match — no model of this thing exists open)* | 3x2 | 22 ft | Ultimate Modular Ruins Pack |
