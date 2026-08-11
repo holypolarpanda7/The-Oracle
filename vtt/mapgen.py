@@ -1282,7 +1282,12 @@ _SETPIECES: dict[str, tuple[str, ...]] = {
     "camp": ("standing-stone", "boulder-heap"),
     "arena": ("great-statue", "temple-plinth"),
     "bridge": ("gatehouse-tower",),
-    "open": ("standing-stone", "boulder-heap"),
+    # "open" is deliberately ABSENT. It is the fallback archetype — what a
+    # board is when nothing is known about it, including when a generator
+    # collapsed — so giving it landmarks makes the default board grow to hold
+    # scenery nobody asked for. The selftest caught exactly that. A featureless
+    # plain is what "open" means; "clearing" is the outdoor board with things
+    # on it.
     "reef": ("shipwreck",),
     "open-water": ("shipwreck",),
 }
@@ -1295,6 +1300,26 @@ _SETPIECES: dict[str, tuple[str, ...]] = {
 #: a set piece is something a fight happens AROUND, and a board that is mostly
 #: scenery has nowhere left to fight.
 SETPIECE_BUDGET = 0.14
+
+
+def setpiece_area_for(archetype: str) -> int:
+    """Squares this archetype's landmarks would like, before a board exists.
+
+    Read by :func:`vtt.triggers.board_size_for`, which has to size the board
+    BEFORE anything is generated on it. Only the biggest is counted rather than
+    the whole pool: ``_place_setpieces`` spends against a budget and stops, so
+    summing the pool would size every forest for a tree AND a boulder field
+    when it will only ever get one of each on a small board — and the largest
+    piece is the one that actually cannot be fitted otherwise.
+    """
+    from . import setpieces as _sp
+
+    best = 0
+    for slug in _SETPIECES.get((archetype or "").strip().lower()) or ():
+        piece = _sp.CATALOGUE.get(slug)
+        if piece is not None:
+            best = max(best, piece.width * piece.depth)
+    return best
 
 
 def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap) -> None:

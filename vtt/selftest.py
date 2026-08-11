@@ -1121,12 +1121,77 @@ def test_hiding() -> None:
     v.close_scene(sc.id)
 
 
+def test_setpieces() -> None:
+    section("set pieces: a mesh with no rules of its own")
+    from . import setpieces as sp
+    from . import skins as _sk
+    from .terrain import Grid, tile
+
+    # --- the mesh turns the way the tiles turn ---------------------------
+    # The whole point of the pair. If they part company the picture rotates
+    # and the cover does not, and a creature takes three-quarters cover from
+    # a face of the statue that is now behind it.
+    piece = sp.CATALOGUE["shipwreck"]
+    t0, _e0, _f0 = sp._turned(piece, 0)
+    t90, _e90, _f90 = sp._turned(piece, 90)
+    where = lambda t: [(x, y) for y, r in enumerate(t)      # noqa: E731
+                       for x, c in enumerate(r) if c == sp.KEEP]
+    (ox, oy), = where(t0)
+    (nx, ny), = where(t90)
+    # Centred coordinates, so the turn is about the middle rather than a corner.
+    u, v = ox - (len(t0[0]) - 1) / 2, oy - (len(t0) - 1) / 2
+    u2, v2 = nx - (len(t90[0]) - 1) / 2, ny - (len(t90) - 1) / 2
+    eq("a quarter turn sends a footprint square to (-v, u)", (u2, v2), (-v, u))
+    rx, rz = sp.rotate_xz(u, v, 90)
+    check("…and the mesh's own rotation agrees",
+          abs(rx - u2) < 1e-9 and abs(rz - v2) < 1e-9,
+          f"mesh ({rx:.3f},{rz:.3f}) vs tiles ({u2},{v2})")
+
+    # --- stamping, and what it deliberately does NOT stamp ---------------
+    g = Grid.blank(20, 16, "g")
+    placed, = sp.setpieces_for(g, ["jungle-giant"], seed=5)
+    p = sp.CATALOGUE["jungle-giant"]
+    trunk = [(x, y) for (x, y) in placed.occupied if g.get(x, y) == "T"]
+    eq("a jungle giant is nine squares of mesh…", (p.width, p.depth), (9, 9))
+    eq("…and exactly one square of rules", len(trunk), 1)
+    check("the canopy leaves the meadow a meadow",
+          all(g.get(x, y) == "g" for (x, y) in placed.occupied
+              if (x, y) not in trunk),
+          "a reserved square must keep the terrain it already had")
+    check("…while still being reserved, so nothing is scattered under it",
+          len(placed.occupied) == 81, str(len(placed.occupied)))
+    check("only stamped squares are skinned",
+          set(placed.skins) == {f"{x},{y}" for x, y in trunk},
+          f"{len(placed.skins)} skins for {len(trunk)} stamped squares")
+    check("and the skin says a MESH draws this square",
+          all(_sk.is_setpiece(n) for n in placed.skins.values()))
+
+    # --- the mesh owns no mechanics --------------------------------------
+    tx, ty = trunk[0]
+    check("the trunk blocks movement because its TILE does, not its model",
+          tile(g.get(tx, ty)).move_cost_ft is None)
+    check("a canopy square costs a creature nothing",
+          tile(g.get(tx + 3, ty)).move_cost_ft == 5)
+
+    # --- an uncollected mesh degrades, it does not raise ------------------
+    inst = sp.Placed(slug="step-pyramid", x=0, y=0, yaw=0).instance()
+    eq("a piece with no mesh reports none", inst["mesh"], None)
+    check("…and the board draws it from the tiles it stamped",
+          sp.CATALOGUE["step-pyramid"].tiles != ())
+
+    # --- fits() keeps landmarks out of the walls --------------------------
+    walled = Grid.blank(20, 16, "#")
+    eq("nothing stands in solid rock",
+       sp.setpieces_for(walled, ["boulder-heap"], seed=1), [])
+
+
 def main() -> int:
     print("\033[1mThe Oracle — tactical board self-test\033[0m")
     for fn in (test_distance, test_sight_and_cover, test_templates, test_movement,
                test_opportunity, test_mapgen, test_engine, test_bridge,
                test_light_and_vision, test_hiding, test_underwater,
-               test_mounts_and_squeezing, test_board_size, test_levels):
+               test_mounts_and_squeezing, test_board_size, test_levels,
+               test_setpieces):
         try:
             fn()
         except Exception:

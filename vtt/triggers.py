@@ -92,7 +92,7 @@ def board_size_for(base: tuple[int, int], *, archetype: str = "open",
     known, and the floor for everything below. ``creatures`` is a list of
     ``(size_squares, speed_ft)``, usually the encounter's roster.
 
-    Three things can make a board bigger, and the largest wins:
+    Four things can make a board bigger, and the largest wins:
 
     * **room to stand** — a dozen combatants in a 24x18 room is a scrum, so the
       board grows with the footprint actually on it;
@@ -100,7 +100,20 @@ def board_size_for(base: tuple[int, int], *, archetype: str = "open",
       so the width tracks the FASTEST creature present. This is the one that
       makes mounted combat playable at all;
     * **room to shoot** — a bow whose normal range exceeds the board can never
-      be at long range, which silently disables a rule the engine enforces.
+      be at long range, which silently disables a rule the engine enforces;
+    * **room for the SCENERY** — an archetype that stands landmarks needs the
+      squares they occupy on top of the squares the fight needs, or the two
+      compete and the fight loses.
+
+    The last is a correction. :mod:`vtt.setpieces` used to argue the opposite —
+    that a board is sized for the fight and never for the scenery, so a
+    landmark which only fits on a board sized for it is one that mostly does
+    not appear. That was right when a footprint was a mesh's width in squares
+    and wrong once height became authoritative: a sixty-foot tree reserves nine
+    squares by nine, which is a fifth of a default combat board, and the
+    landmark did not stop being worth drawing merely because it got measured
+    honestly. Growing the board is the cheaper of the two ways out; the other
+    is shrinking the landmark, and its height is a fact the rules read.
 
     A named ``scale`` overrides all of it, because a DM describing a cavalry
     charge knows something the roster doesn't yet.
@@ -118,6 +131,24 @@ def board_size_for(base: tuple[int, int], *, archetype: str = "open",
         occupied = sum(max(1, int(sq)) ** 2 for sq, _sp in mob)
         want_area = occupied * 8
         while w * h < want_area and (w < MAX_SIDE or h < MAX_SIDE):
+            if w / max(1, h) < 4 / 3:
+                w += 2
+            else:
+                h += 2
+            if w >= MAX_SIDE and h >= MAX_SIDE:
+                break
+
+    # Room for the scenery. The landmarks this archetype may stand are known
+    # before the board is generated, so their footprint is added to the area
+    # the fight already asked for rather than taken out of it. `_place_setpieces`
+    # keeps to a fraction of the board, so this cannot run away: a bigger board
+    # raises the budget, but the budget was never the thing being solved for.
+    from .mapgen import SETPIECE_BUDGET, setpiece_area_for
+
+    scenery = setpiece_area_for(archetype)
+    if scenery:
+        want = int((w * h + scenery) / max(0.01, 1.0 - SETPIECE_BUDGET))
+        while w * h < want and (w < MAX_SIDE or h < MAX_SIDE):
             if w / max(1, h) < 4 / 3:
                 w += 2
             else:

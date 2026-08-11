@@ -391,10 +391,16 @@ def _stepped(size: int, tiers: int, rise_ft: int,
 
 
 #: Two terraces of ten feet. A third would want a 13-square footprint to keep
-#: a summit worth standing on, which is wider than the default combat board —
-#: and ``triggers.board_size_for`` grows a board for the FIGHT, not for the
-#: scenery, so a landmark that only fits on a board sized for it is a landmark
-#: that mostly does not appear.
+#: a summit worth standing on, which is wider than the default combat board.
+#:
+#: That used to be the end of the argument — a board is sized for the FIGHT and
+#: never for the scenery, so a landmark which only fits on a board sized for it
+#: is one that mostly does not appear. It stopped being true when height became
+#: authoritative and footprints grew to match: a jungle giant reserves nine
+#: squares by nine, and a rule that rejects everything that large would reject
+#: most of the catalogue. ``triggers.board_size_for`` now adds the scenery's
+#: own squares to the ones the fight asked for. Two terraces stays the choice
+#: here anyway, because a third buys a wider summit and no new rule.
 _PYRAMID_TILES, _PYRAMID_ELEV = _stepped(9, tiers=2, rise_ft=10)
 _PLINTH_TILES, _PLINTH_ELEV = _stepped(5, tiers=1, rise_ft=10)
 
