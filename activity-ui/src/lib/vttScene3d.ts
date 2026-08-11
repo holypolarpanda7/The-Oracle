@@ -30,13 +30,15 @@
 import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
-  CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS, SKIRT_FT, SKIRT_INSET,
-  STRUCTURE_CODES, materialSlot, runAxis, skinAt, variantSmooth,
-  heightScale,
+  CELL, CORNER_CHAMFER, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS,
+  SKIRT_FT, SKIRT_INSET,
+  STRUCTURE_CODES, exposedRock, hullFootprint, isSolid, materialSlot, outAxis, runAxis,
+  sameBody,
+  skinAt, skinHeightScale, variantSmooth,
   rotatePart,
   tileHeightFt,
   tileStyle, variantOf, wallParts, yawOf,
-  type BoardView, type PaintState, type TokenPlacement, type View,
+  type BoardView, type Part, type PaintState, type TokenPlacement, type View,
 } from "./boardView";
 import {
   FORWARD, FRAME_PAD_SQUARES, RIGHT, UP, boundsOf, project, unproject,
@@ -296,6 +298,68 @@ function prism(mb: MeshBuilder, cx: number, cz: number, r: number,
   }
 }
 
+/** A PRISMATOID: two polygons at two heights, joined edge by edge.
+ *
+ *  The primitive that stops everything being a cube. A box is the special case
+ *  where both polygons are the same rectangle, so nothing had to be rewritten
+ *  to gain tapers, leans and cut corners — a tent's canvas drawn in to a ridge,
+ *  the raked legs of a timber watchtower, a hull tumbling home under the
+ *  waterline. See `Part` in boardShapes.generated.ts.
+ *
+ *  Not chamfered, unlike `boxFaces`: the bevel exists to give a mathematically
+ *  perfect edge a highlight to catch, and a shape whose faces already meet at
+ *  arbitrary angles has plenty of those. */
+function solidFaces(mb: MeshBuilder, ox: number, oz: number,
+                    bottom: readonly (readonly [number, number])[],
+                    top: readonly (readonly [number, number])[],
+                    y0: number, y1: number, color: THREE.Color): void {
+  const n = bottom.length;
+  if (n < 3) return;
+  // Top cap, as a fan of quads from its first vertex (one triangle of each is
+  // degenerate — cheaper than a separate triangle path in MeshBuilder).
+  const [tx0, tz0] = top[0];
+  for (let i = 1; i < n - 1; i++) {
+    const [ax, az] = top[i];
+    const [bx, bz] = top[i + 1];
+    mb.quad(v3(ox + tx0, y1, oz + tz0), v3(ox + ax, y1, oz + az),
+            v3(ox + bx, y1, oz + bz), v3(ox + tx0, y1, oz + tz0), color);
+  }
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const [ax, az] = bottom[i];
+    const [bx, bz] = bottom[j];
+    const [cx, cz] = top[i];
+    const [dx, dz] = top[j];
+    // Winding matters here for the same reason it does in boxFaces: `quad`
+    // derives the normal from the vertex order, and a reversed face gets a
+    // normal pointing into the solid, where the light finds nothing to catch.
+    mb.quad(v3(ox + cx, y1, oz + cz), v3(ox + ax, y0, oz + az),
+            v3(ox + bx, y0, oz + bz), v3(ox + dx, y1, oz + dz), color);
+  }
+}
+
+/** Draw one arrangement's parts, in whichever of the two forms each is.
+ *
+ *  The one place the part vocabulary is interpreted in the browser; mirrors
+ *  `draw_parts` in vtt/isocam.py, so a new form has exactly two places to
+ *  reach. */
+function drawParts(mb: MeshBuilder, parts: readonly Part[], turns: number,
+                   ox: number, oz: number, base: number, height: number,
+                   color: THREE.Color): void {
+  for (const raw of parts) {
+    const part = rotatePart(raw, turns);
+    if (isSolid(part)) {
+      const [bottom, top, py0, py1] = part;
+      solidFaces(mb, ox, oz, bottom, top,
+                 base + height * py0, base + height * py1, color);
+    } else {
+      const [px0, px1, pz0, pz1, py0, py1] = part;
+      panelBlock(mb, ox + px0, ox + px1, oz + pz0, oz + pz1,
+                 base + height * py0, base + height * py1, color);
+    }
+  }
+}
+
 function boxFaces(mb: MeshBuilder, x0: number, x1: number, z0: number, z1: number,
                   y0: number, y1: number, color: THREE.Color,
                   exposed: (dx: number, dz: number) => boolean): void {
@@ -346,11 +410,17 @@ function boxFaces(mb: MeshBuilder, x0: number, x1: number, z0: number, z1: numbe
 
 /** Squares -> flat quads just above the floor. Used for every wash and marker. */
 function decal(squares: Iterable<[number, number]>, y: number,
-               color: string, opacity: number): THREE.Mesh | null {
+               color: string, opacity: number,
+               lift: (x: number, z: number) => number = () => 0):
+    THREE.Mesh | null {
   const pos: number[] = [];
   for (const [x, z] of squares) {
-    pos.push(x, y, z, x, y, z + 1, x + 1, y, z + 1,
-             x, y, z, x + 1, y, z + 1, x + 1, y, z);
+    // Every wash rides the floor it is painted on. Flat at the storey's height
+    // it would sink under a ledge, so the movement range on a ship's deck read
+    // as a stain on the sea beside it.
+    const h = y + lift(x, z);
+    pos.push(x, h, z, x, h, z + 1, x + 1, h, z + 1,
+             x, h, z, x + 1, h, z + 1, x + 1, h, z);
   }
   if (!pos.length) return null;
   const g = new THREE.BufferGeometry();
@@ -422,11 +492,29 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   const baseUnits = (scene: VttScene, level: number) =>
     heightUnits(scene, scene.levels?.[level]?.base_ft ?? 0);
 
+  /** A square's own elevation above its storey, in feet.
+   *
+   *  Stored on the board, shipped in `state()` and folded into every distance,
+   *  reach, cover and area check since the board went 3D — and drawn by
+   *  nobody, so a mountain-pass ledge stood ten feet up in the rules and flat
+   *  in the picture. A creature standing on it rides it too, or the figure
+   *  sinks into the ledge it is supposed to be on. */
+  const elevFt = (scene: VttScene, x: number, y: number) =>
+    scene.elevation?.[`${x},${y}`] ?? 0;
+
   /** Tallest thing on the board, for framing and for the camera's far plane. */
   function tallestUnits(scene: VttScene): number {
     let ft = 0;
-    for (const row of scene.terrain ?? []) {
-      for (const ch of row) ft = Math.max(ft, tileHeightFt(ch));
+    const rows = scene.terrain ?? [];
+    for (let z = 0; z < rows.length; z++) {
+      for (let x = 0; x < rows[z].length; x++) {
+        const skin = skinAt(scene, rows[z][x], x, z);
+        // A skin may raise the drawn height and elevation raises the ground it
+        // stands on. Both count, or a mast the framing never heard about comes
+        // back with its top cropped off. Mirrors `tallest` in vtt/isocam.py.
+        ft = Math.max(ft, (SKINS[skin]?.heightFt || tileHeightFt(rows[z][x]))
+                          + elevFt(scene, x, z));
+      }
     }
     return heightUnits(scene, ft);
   }
@@ -479,6 +567,16 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     const skinOf = (x: number, z: number): string => {
       const c = at(x, z);
       return c === null ? "" : skinAt(scene, c, x, z);
+    };
+
+    /** How high this square's FLOOR is drawn, or null if it is not there.
+     *  Null means a hole or off the board — nothing to stand on, and the square
+     *  beside it needs a side all the way down rather than a step. Mirrors
+     *  `floor_y` in vtt/isocam.py. */
+    const floorY = (x: number, z: number): number | null => {
+      const c = at(x, z);
+      if (c === null || HOLE_CODES.has(c)) return null;
+      return base + heightUnits(scene, elevFt(scene, x, z));
     };
 
     // Which way the wall runs through each aperture. Read off the server's own
@@ -540,58 +638,86 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // on any tile whose height the rules DO quote, so this cannot smuggle
         // a lie past heightScale.
         const h = (shape?.heightFt || tileHeightFt(code))
-          * heightScale(code, x, z);
+          * skinHeightScale(skin, code, x, z);
         const mb = builderFor(slot);
         // Everything emitted from here belongs to this square, so `reshade` can
         // find its vertices again without rebuilding anything.
         mb.at = z * scene.width + x;
 
-        // Floor under everything: an object stands ON a square, and without
-        // this a pillar's base is a hole in the ground.
-        mb.quad(v3(x, base, z), v3(x, base, z + 1),
-                v3(x + 1, base, z + 1), v3(x + 1, base, z), color, tileUVs(x, z));
-        // A skirt wherever the floor ends at a hole, so a platform has
-        // substance rather than being a sheet of paper hanging in nothing.
-        // The same "draw the FACE where two things meet" rule as the walls,
-        // pointed downward.
-        // Two ways a floor can END. Against a HOLE, which is the board rule
-        // and gives an island its underside. Or against anything that is not
-        // the same SKIN, which is how a vessel gets a hull: deep water is not
-        // a hole, so a sea ship used to have no sides at all. The bottom edge
-        // pulls inward, so each side is a trapezoid rather than a slab.
+        // Three ways a floor can END, and it needs a side or it is a sheet of
+        // paper hanging in nothing. Against a HOLE, which gives an island its
+        // underside. Against a LOWER square, which is a ledge or a quay or a
+        // ship's freeboard. Or against anything that is not the same BODY,
+        // which is how a vessel gets a hull: deep water is not a hole, so a
+        // sea ship used to have no sides at all.
+        const here = floorY(x, z) ?? 0;
         const skirtFt = shape?.skirtFt || SKIRT_FT;
-        const i = shape?.skirtFt ? shape.skirtInset : SKIRT_INSET;
-        const drop = base - heightUnits(scene, skirtFt);
-        const ends = shape?.skirtFt
-          ? (hx: number, hz: number) => skinOf(hx, hz) !== skin
-          : (hx: number, hz: number) => {
-              const c = at(hx, hz);
-              return c === null || HOLE_CODES.has(c);
-            };
-        if (ends(x, z + 1)) {
-          mb.quad(v3(x + 1 - i, drop, z + 1 - i), v3(x + 1, base, z + 1),
-                  v3(x, base, z + 1), v3(x + i, drop, z + 1 - i), color);
+        const inset = shape?.skirtFt ? shape.skirtInset : SKIRT_INSET;
+        // Sides are indexed the way `hullFootprint` winds them: W, S, E, N.
+        const nbrs: [number, number][] =
+          [[x - 1, z], [x, z + 1], [x + 1, z], [x, z - 1]];
+        const sideEnds: boolean[] = [];
+        const sideDrop: number[] = [];
+        for (const [nx2, nz2] of nbrs) {
+          if (shape?.skirtFt) {
+            sideEnds.push(!sameBody(skinOf(nx2, nz2), skin));
+            sideDrop.push(here - heightUnits(scene, skirtFt));
+            continue;
+          }
+          const below = floorY(nx2, nz2);
+          if (below === null) {
+            sideEnds.push(true);
+            sideDrop.push(here - heightUnits(scene, SKIRT_FT));
+          } else if (below < here - 1e-9) {
+            sideEnds.push(true);
+            sideDrop.push(below);
+          } else {
+            sideEnds.push(false);
+            sideDrop.push(here);
+          }
         }
-        if (ends(x + 1, z)) {
-          mb.quad(v3(x + 1 - i, drop, z + i), v3(x + 1, base, z),
-                  v3(x + 1, base, z + 1), v3(x + 1 - i, drop, z + 1 - i), color);
+        const { pts, ends: edgeEnds, low } = hullFootprint(
+          sideEnds[0], sideEnds[2], sideEnds[3], sideEnds[1],
+          shape?.skirtFt ? CORNER_CHAMFER : 0, inset);
+
+        // Floor under everything: an object stands ON a square, and without
+        // this a pillar's base is a hole in the ground. Cut to the outline, so
+        // a hull that steps a square at a time is drawn as the diagonal it
+        // means rather than as a staircase.
+        const uv = tileUVs(x, z);
+        for (let k = 1; k < pts.length - 1; k++) {
+          mb.quad(v3(x + pts[0][0], here, z + pts[0][1]),
+                  v3(x + pts[k][0], here, z + pts[k][1]),
+                  v3(x + pts[k + 1][0], here, z + pts[k + 1][1]),
+                  v3(x + pts[0][0], here, z + pts[0][1]), color, uv);
         }
-        if (ends(x, z - 1)) {
-          mb.quad(v3(x + i, drop, z + i), v3(x, base, z),
-                  v3(x + 1, base, z), v3(x + 1 - i, drop, z + i), color);
-        }
-        if (ends(x - 1, z)) {
-          mb.quad(v3(x + i, drop, z + 1 - i), v3(x, base, z + 1),
-                  v3(x, base, z), v3(x + i, drop, z + i), color);
+        for (let k = 0; k < pts.length; k++) {
+          if (!edgeEnds[k]) continue;
+          const m = (k + 1) % pts.length;
+          const [ax, az] = pts[k];
+          const [bx, bz] = pts[m];
+          if (Math.hypot(bx - ax, bz - az) < 1e-9) continue;
+          // A chamfered outline has cut the sides about, so its edges no longer
+          // match up one-for-one with the four compass drops; a vessel has one
+          // depth all round, which is why the chamfer is only offered where a
+          // skin declares its own side.
+          const drop = shape?.skirtFt ? sideDrop[0] : sideDrop[k];
+          // The bottom comes from `hullFootprint`, which MITRES it at every
+          // vertex — offsetting each side along its own normal keeps a straight
+          // run coplanar and opens a wedge of daylight wherever the outline
+          // turns, which on a hull is every corner of the bow.
+          mb.quad(v3(x + ax, here, z + az), v3(x + low[k][0], drop, z + low[k][1]),
+                  v3(x + low[m][0], drop, z + low[m][1]), v3(x + bx, here, z + bz),
+                  color);
         }
 
         if (showGrid && seenAt(x, z) !== Seen.Never) {
-          gridPts.push(x, base, z, x + 1, base, z);
-          gridPts.push(x, base, z, x, base, z + 1);
+          gridPts.push(x, here, z, x + 1, here, z);
+          gridPts.push(x, here, z, x, here, z + 1);
         }
 
         if (h > 0) {
-          const top = base + heightUnits(scene, h);
+          const top = here + heightUnits(scene, h);
           const axis = axes.get(`${x},${z}`);
           if (APERTURES.has(code) && axis) {
             // A door belongs to the wall it interrupts: a thin panel lying
@@ -599,7 +725,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             const t = PANEL_THICKNESS / 2;
             const [x0, x1] = axis === "ew" ? [x, x + 1] : [x + 0.5 - t, x + 0.5 + t];
             const [z0, z1] = axis === "ew" ? [z + 0.5 - t, z + 0.5 + t] : [z, z + 1];
-            panelBlock(mb, x0, x1, z0, z1, base, top, color);
+            panelBlock(mb, x0, x1, z0, z1, here, top, color);
           } else if (shape?.variants) {
             // A skin's silhouette wins over everything, INCLUDING the wall-face
             // model. That is the point: a mountainside drawn as thin panels
@@ -607,27 +733,26 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             // What survives from the wall model is the part that pays for
             // itself — a structure square with no open side is buried, and
             // buried rock is not drawn.
-            if (!STRUCTURE_CODES.has(code) || wallParts(isOpen, x, z).length) {
+            if (!STRUCTURE_CODES.has(code) || exposedRock(isOpen, x, z)) {
               const vs = shape.variants;
               const pick = shape.smooth ? variantSmooth : variantOf;
               const parts = vs[pick(x, z, vs.length)];
-              // "Same run" means the same skin OR a solid neighbour. The
-              // second half is what lets a DOORWAY find its wall: its
-              // neighbours are the tower's own masonry, a different skin, so
-              // matching on skin alone left every door facing an arbitrary way.
-              const turns = shape.directional
-                ? runAxis((ax, az) => {
-                    if (skinOf(ax, az) === skin) return true;
-                    const c = at(ax, az);
-                    return c !== null && STRUCTURE_CODES.has(c);
-                  }, x, z)
+              // "Part of the same structure" means the same BODY, a solid
+              // neighbour, or an aperture. The second lets a DOORWAY find its
+              // wall — its neighbours are the tower's own masonry, a different
+              // skin, so matching on skin alone left every door facing an
+              // arbitrary way. The third is the same rule pointed the other
+              // way: a doorway belongs to the wall it interrupts, so a tent
+              // must not take its own flap for the outdoors.
+              const same = (ax: number, az: number) => {
+                if (sameBody(skinOf(ax, az), skin)) return true;
+                const c = at(ax, az);
+                return c !== null && (STRUCTURE_CODES.has(c) || APERTURES.has(c));
+              };
+              const turns = shape.outward ? outAxis(same, x, z)
+                : shape.directional ? runAxis(same, x, z)
                 : yawOf(x, z);
-              const h2 = top - base;
-              for (const raw of parts) {
-                const [px0, px1, pz0, pz1, py0, py1] = rotatePart(raw, turns);
-                panelBlock(mb, x + px0, x + px1, z + pz0, z + pz1,
-                           base + h2 * py0, base + h2 * py1, color);
-              }
+              drawParts(mb, parts, turns, x, z, here, top - here, color);
             }
           } else if (STRUCTURE_CODES.has(code)) {
             // A thin skin where the solid region meets open floor, never a full
@@ -635,7 +760,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             // stops the wall's top face swallowing the room at this camera
             // angle. See wallParts.
             for (const [wx0, wx1, wz0, wz1] of wallParts(isOpen, x, z)) {
-              panelBlock(mb, x + wx0, x + wx1, z + wz0, z + wz1, base, top, color);
+              panelBlock(mb, x + wx0, x + wx1, z + wz0, z + wz1, here, top, color);
             }
           } else {
             // Everything else is a THING standing on a square, and things are
@@ -644,25 +769,19 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             // single loudest voxel tell on the board.
             const cx = x + 0.5, cz = z + 0.5;
             if (code === "O") {
-              prism(mb, cx, cz, 0.32, base, top, 8, color);
+              prism(mb, cx, cz, 0.32, here, top, 8, color);
             } else if (code === "T") {
-              prism(mb, cx, cz, 0.13, base, top * 0.55 + base * 0.45, 6, color);
-              prism(mb, cx, cz, 0.46, base + (top - base) * 0.4, top, 8, color);
+              prism(mb, cx, cz, 0.13, here, top * 0.55 + here * 0.45, 6, color);
+              prism(mb, cx, cz, 0.46, here + (top - here) * 0.4, top, 8, color);
             } else if (OBJECT_VARIANTS[code]) {
               // A built silhouette, in one of several arrangements chosen by the
               // square itself — shared with the depth map the painted layer is
               // conditioned on, so what stands here is what gets painted here.
               const vs = OBJECT_VARIANTS[code];
               const parts = vs[variantOf(x, z, vs.length)];
-              const turns = yawOf(x, z);
-              const h2 = top - base;
-              for (const raw of parts) {
-                const [px0, px1, pz0, pz1, py0, py1] = rotatePart(raw, turns);
-                panelBlock(mb, x + px0, x + px1, z + pz0, z + pz1,
-                           base + h2 * py0, base + h2 * py1, color);
-              }
+              drawParts(mb, parts, yawOf(x, z), x, z, here, top - here, color);
             } else {
-              block(mb, x, z, base, top, color, () => true);
+              block(mb, x, z, here, top, color, () => true);
             }
           }
         } else if (wrecked.has(`${x},${z}`)) {
@@ -671,7 +790,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           // is only a change of colour appears from nowhere. A low heap says a
           // thing came down here.
           panelBlock(mb, x + 0.12, x + 0.88, z + 0.12, z + 0.88,
-                     base, base + 0.22, color);
+                     here, here + 0.22, color);
         }
       }
     }
@@ -684,15 +803,9 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const spec = DECOR_KINDS[d.kind];
       if (!spec) continue;
       const [ft, parts] = spec;
-      const dTop = base + heightUnits(scene, ft);
-      const turns = yawOf(d.x, d.y);
       decorMb.at = d.y * scene.width + d.x;
-      const col = new THREE.Color(DECOR_TINT[d.kind] ?? "#6b6255");
-      for (const raw of parts) {
-        const [px0, px1, pz0, pz1, py0, py1] = rotatePart(raw, turns);
-        panelBlock(decorMb, d.x + px0, d.x + px1, d.y + pz0, d.y + pz1,
-                   base + (dTop - base) * py0, base + (dTop - base) * py1, col);
-      }
+      drawParts(decorMb, parts, yawOf(d.x, d.y), d.x, d.y, floorY(d.x, d.y) ?? base,
+                heightUnits(scene, ft), new THREE.Color(DECOR_TINT[d.kind] ?? "#6b6255"));
     }
 
     shadeTargets = [];
@@ -780,6 +893,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     decalGroup.clear();
     const { scene } = st;
     const y = baseUnits(scene, level) + 0.012;
+    const lift = (x: number, z: number) => heightUnits(scene, elevFt(scene, x, z));
     const keys = (m: Iterable<string>) =>
       [...m].map((k) => k.split(",").map(Number) as [number, number]);
 
@@ -793,7 +907,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       for (const e of scene.effects ?? []) {
         if ((e.level ?? 0) !== level || !e.squares?.length) continue;
         add(decal(e.squares, y + 0.001, e.color || "#a86bff",
-                  Math.min(0.7, Math.max(0.12, e.opacity || 0.3))));
+                  Math.min(0.7, Math.max(0.12, e.opacity || 0.3)), lift));
       }
     }
 
@@ -801,18 +915,18 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     // a stair they cannot see. The destination's NAME is a DOM label; this is
     // the mark on the board underneath it.
     for (const s of st.stairs ?? []) {
-      add(decal([[s.x, s.y]], y + 0.009, "#e6bc64", 0.42));
+      add(decal([[s.x, s.y]], y + 0.009, "#e6bc64", 0.42, lift));
     }
 
     // Threatened ground goes UNDER the movement wash, so a player sees the
     // danger while choosing rather than after the pointer has settled.
-    if (st.threatened) add(decal(keys(st.threatened), y, "#ff6b57", 0.2));
-    if (st.reach) add(decal(keys(st.reach.keys()), y + 0.002, "#5aa9e6", 0.22));
+    if (st.threatened) add(decal(keys(st.threatened), y, "#ff6b57", 0.2, lift));
+    if (st.reach) add(decal(keys(st.reach.keys()), y + 0.002, "#5aa9e6", 0.22, lift));
     if (st.area) {
-      add(decal(st.area, y + 0.006, st.areaLegal === false ? "#ff6b57" : "#c07bff", 0.34));
+      add(decal(st.area, y + 0.006, st.areaLegal === false ? "#ff6b57" : "#c07bff", 0.34, lift));
     }
-    if (st.path) add(decal(st.path, y + 0.004, st.pathProvokes ? "#ffb347" : "#8fd6ff", 0.4));
-    if (st.hover) add(decal([st.hover], y + 0.008, "#e6bc64", 0.3));
+    if (st.path) add(decal(st.path, y + 0.004, st.pathProvokes ? "#ffb347" : "#8fd6ff", 0.4, lift));
+    if (st.hover) add(decal([st.hover], y + 0.008, "#e6bc64", 0.3, lift));
 
     // A base under each creature. Without it a standee floats: the disc is
     // drawn at head height and nothing says which square it belongs to.
@@ -828,7 +942,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         for (let dz = 0; dz < t.squares; dz++) bases.push([bx + dx, bz + dz]);
       }
     }
-    add(decal(bases, y + 0.01, "#0a0d16", 0.35));
+    add(decal(bases, y + 0.01, "#0a0d16", 0.35, lift));
   }
 
   return {
@@ -867,7 +981,10 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     screenOf(view: View, scene: VttScene, x: number, y: number, squares: number,
              level: number, elevationFt: number): TokenPlacement {
       const k = CELL * view.scale;
-      const wy = baseUnits(scene, level) + heightUnits(scene, elevationFt);
+      // The square's own elevation PLUS whatever the creature is doing on top
+      // of it: a wyvern hovering over a ledge is above both.
+      const wy = baseUnits(scene, level)
+        + heightUnits(scene, elevFt(scene, x, y) + elevationFt);
       const p = project(x + squares / 2, wy, y + squares / 2);
       const size = k * squares;
       return {

@@ -32,16 +32,19 @@ import type { VttScene } from "./types";
 // a drift waiting to happen, and the failure mode is invisible: the painting
 // lands on furniture the player is not looking at.
 export {
-  COVER_HEIGHT_FT, DECOR_KINDS, HEIGHT_JITTER, HOLE_CODES, MAX_DECOR_HEIGHT_FT,
-  OBJECT_VARIANTS, PILLAR_RADIUS, SKINS, SKIRT_FT, SKIRT_INSET,
-  STRUCTURE_CODES,
-  TILE_HEIGHT_FT, WALL_THICKNESS,
+  CORNER_CHAMFER, COVER_HEIGHT_FT, DECOR_KINDS, HEIGHT_JITTER, HOLE_CODES,
+  MAX_DECOR_HEIGHT_FT, OBJECT_VARIANTS, PILLAR_RADIUS, SKINS, SKIRT_FT,
+  SKIRT_INSET, STRUCTURE_CODES,
+  TILE_HEIGHT_FT, WALL_THICKNESS, isSolid,
 } from "./boardShapes.generated";
-export type { SkinShape } from "./boardShapes.generated";
+export type {
+  BoxPart, Part, PolyPart, SkinShape, SolidPart,
+} from "./boardShapes.generated";
 import {
-  COVER_HEIGHT_FT as _COVER, HEIGHT_JITTER as _JITTER,
-  TILE_HEIGHT_FT as _HEIGHT, WALL_THICKNESS as _THICK,
+  COVER_HEIGHT_FT as _COVER, HEIGHT_JITTER as _JITTER, SKINS as _SKINS,
+  TILE_HEIGHT_FT as _HEIGHT, WALL_THICKNESS as _THICK, isSolid as _isSolid,
 } from "./boardShapes.generated";
+import type { Part } from "./boardShapes.generated";
 
 /** A stable 32-bit hash of a square. Mirrors `_hash` in vtt/isocam.py.
  *
@@ -94,6 +97,30 @@ export function runAxis(
   return alongZ > alongX ? 1 : 0;
 }
 
+/** Which way a quarter turn sends a part authored facing +z (south).
+ *  `(x, z) -> (1 - z, x)` per quarter, so south goes to west, then north, then
+ *  east. Mirrors OUT_DIRS in vtt/isocam.py. */
+const OUT_DIRS: readonly (readonly [number, number])[] =
+  [[0, 1], [-1, 0], [0, -1], [1, 0]];
+
+/** Quarter turns that point a part at the OUTDOORS.
+ *
+ *  The third orientation rule, and the one a tent needed. `yawOf` turns a
+ *  boulder any way at all and `runAxis` lines a rail up with its run — but
+ *  neither can answer "which side of this wall is the weather on", and without
+ *  that a tent's canvas can only lean by the same amount in both directions,
+ *  which is to say not at all. Directions are tried in a fixed order so a
+ *  corner — which has two outsides — picks the same one in both languages.
+ *  Mirrors `out_axis` in vtt/isocam.py. */
+export function outAxis(
+  inside: (x: number, z: number) => boolean, x: number, z: number,
+): number {
+  for (let t = 0; t < 4; t++) {
+    if (!inside(x + OUT_DIRS[t][0], z + OUT_DIRS[t][1])) return t;
+  }
+  return 0;
+}
+
 /** This square's skin name, or "" for the code's own default look.
  *
  *  A per-square override beats the archetype default, which is the whole point
@@ -129,16 +156,180 @@ export function heightScale(code: string, x: number, z: number): number {
   return 1 - _JITTER * (hashOf(x, z, 19349663, 83492791) & 255) / 255;
 }
 
-/** Turn one part's footprint a quarter at a time about its square's centre. */
-export function rotatePart(
-  part: readonly [number, number, number, number, number, number], turns: number,
-): [number, number, number, number, number, number] {
+/** Turn one part's footprint a quarter at a time about its square's centre.
+ *
+ *  `(x, z) -> (1 - z, x)` per quarter, which keeps it inside the square — and
+ *  keeps a shape that is symmetric about the centre exactly where it was, which
+ *  is what lets a watchtower's roof reach out over the whole footprint from one
+ *  square without a random turn moving it. Both part forms rotate by the same
+ *  map. Mirrors `rotate_part` in vtt/isocam.py. */
+export function rotatePart(part: Part, turns: number): Part {
+  const t = turns & 3;
+  if (_isSolid(part)) {
+    let [bottom, top] = part;
+    const [, , y0, y1] = part;
+    for (let i = 0; i < t; i++) {
+      bottom = bottom.map(([x, z]) => [1 - z, x] as const);
+      top = top.map(([x, z]) => [1 - z, x] as const);
+    }
+    return [bottom, top, y0, y1];
+  }
   let [x0, x1, z0, z1] = part;
   const [, , , , y0, y1] = part;
-  for (let i = 0; i < (turns & 3); i++) {
+  for (let i = 0; i < t; i++) {
     [x0, x1, z0, z1] = [1 - z1, 1 - z0, x0, x1];
   }
   return [x0, x1, z0, z1, y0, y1];
+}
+
+/** Are these two squares part of one THING?
+ *
+ *  A ship is a deck, a rail round it, a mast through it and a cabin on it —
+ *  four skins and one hull, so no side is drawn between any of them. Mirrors
+ *  `same_body` in vtt/skins.py. */
+export function sameBody(a: string, b: string): boolean {
+  if (a === b) return true;
+  const ba = _SKINS[a]?.body ?? "";
+  return !!ba && ba === (_SKINS[b]?.body ?? "");
+}
+
+/** The square's four corners, in the order the floor's top face is wound —
+ *  counter-clockwise seen from above, so the face's normal points up. */
+const CORNERS: readonly (readonly [number, number])[] =
+  [[0, 0], [0, 1], [1, 1], [1, 0]];
+
+/** Where each outline vertex sits at the BOTTOM of the side below it.
+ *
+ *  A MITRE, not a per-edge offset. Pulling each side's bottom straight back
+ *  along its own normal keeps two collinear sides coplanar — but where the
+ *  outline turns, the two sides' bottoms part company and leave a notch, which
+ *  on a hull is a wedge of daylight at every corner of the bow. Offsetting the
+ *  VERTEX along the bisector gives both sides the same bottom point, so the
+ *  shell closes. Mirrors `_outline_bottoms` in vtt/isocam.py. */
+function outlineBottoms(pts: [number, number][], ends: boolean[],
+                        inset: number): [number, number][] {
+  const n = pts.length;
+  if (inset <= 0 || n < 3) return pts.map(([x, z]) => [x, z] as [number, number]);
+  const normal = (i: number): [number, number] | null => {
+    const [ax, az] = pts[i];
+    const [bx, bz] = pts[(i + 1) % n];
+    const ex = bx - ax;
+    const ez = bz - az;
+    const run = Math.hypot(ex, ez);
+    if (run < 1e-9) return null;
+    return [-ez / run, ex / run];       // outward, for a ring wound CCW above
+  };
+  const out: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const a = ends[(i + n - 1) % n] ? normal((i + n - 1) % n) : null;
+    const b = ends[i] ? normal(i) : null;
+    let dx = 0;
+    let dz = 0;
+    if (a && b) {
+      let bx = a[0] + b[0];
+      let bz = a[1] + b[1];
+      const mag = Math.hypot(bx, bz);
+      if (mag < 1e-9) {                 // a spike doubling back on itself
+        dx = a[0] * inset;
+        dz = a[1] * inset;
+      } else {
+        bx /= mag;
+        bz /= mag;
+        // 1/cos(half angle), clamped so a very sharp corner does not throw its
+        // bottom vertex across the board.
+        const k = inset / Math.max(0.3, bx * a[0] + bz * a[1]);
+        dx = bx * k;
+        dz = bz * k;
+      }
+    } else if (a || b) {
+      const m = (a || b) as [number, number];
+      dx = m[0] * inset;
+      dz = m[1] * inset;
+    }
+    out.push([pts[i][0] - dx, pts[i][1] - dz]);
+  }
+  return out;
+}
+
+/** This square's floor outline, which edges face the outside, and where the
+ *  bottom of each side sits.
+ *
+ *  With no chamfer and nothing ending it is exactly the unit square the floor
+ *  has always been. Corner `i` is cut when both of the sides meeting at it end
+ *  — precisely the outer corner of a stair step, and cutting it is what joins
+ *  a carved-out hull's steps into one line. Mirrors `footprint` in
+ *  vtt/isocam.py; the two must agree or the painting is conditioned on a
+ *  different vessel from the one on screen. */
+export function hullFootprint(
+  eW: boolean, eE: boolean, eN: boolean, eS: boolean, chamfer = 0, inset = 0,
+): { pts: [number, number][]; ends: boolean[]; low: [number, number][] } {
+  const sideEnds = [eW, eS, eE, eN];        // edge i runs corner i -> corner i+1
+  if (chamfer <= 0 || !(eW || eE || eN || eS)) {
+    const square = CORNERS.map(([x, z]) => [x, z] as [number, number]);
+    return { pts: square, ends: sideEnds,
+             low: outlineBottoms(square, sideEnds, inset) };
+  }
+  const cornerEnds = [eW && eN, eW && eS, eE && eS, eE && eN];
+  const cuts = cornerEnds.map((c) => (c ? chamfer : 0));
+  // Two cut corners on one edge can between them eat more than the edge is
+  // long. Computed as a factor per corner and applied afterwards, so the answer
+  // does not depend on which edge was looked at first.
+  const scale = [1, 1, 1, 1];
+  for (let j = 0; j < 4; j++) {
+    const k = j;
+    const m = (j + 1) % 4;
+    const total = cuts[k] + cuts[m];
+    if (total > 1) {
+      const f = 1 / total;
+      scale[k] = Math.min(scale[k], f);
+      scale[m] = Math.min(scale[m], f);
+    }
+  }
+  for (let i = 0; i < 4; i++) cuts[i] *= scale[i];
+
+  const pts: [number, number][] = [];
+  const ends: boolean[] = [];
+  const push = (p: [number, number], e: boolean) => {
+    // A full-depth cut lands exactly on a neighbouring corner. Merging the
+    // duplicate keeps the outline free of zero-length edges — the flag of the
+    // LATER point wins, because that is the edge leaving the merged vertex.
+    const last = pts[pts.length - 1];
+    if (last && Math.abs(last[0] - p[0]) < 1e-9 && Math.abs(last[1] - p[1]) < 1e-9) {
+      ends[ends.length - 1] = e;
+      return;
+    }
+    pts.push(p);
+    ends.push(e);
+  };
+  for (let i = 0; i < 4; i++) {
+    const prev = CORNERS[(i + 3) % 4];
+    const cur = CORNERS[i];
+    const nxt = CORNERS[(i + 1) % 4];
+    const t = cuts[i];
+    if (t > 0) {
+      push([cur[0] + (prev[0] - cur[0]) * t, cur[1] + (prev[1] - cur[1]) * t], true);
+      push([cur[0] + (nxt[0] - cur[0]) * t, cur[1] + (nxt[1] - cur[1]) * t],
+           sideEnds[i]);
+    } else {
+      push([cur[0], cur[1]], sideEnds[i]);
+    }
+  }
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  if (pts.length > 2 && Math.abs(first[0] - last[0]) < 1e-9
+      && Math.abs(first[1] - last[1]) < 1e-9) {
+    pts.pop();
+    ends.pop();
+  }
+  return { pts, ends, low: outlineBottoms(pts, ends, inset) };
+}
+
+/** Draw at exactly the stated height, or with a little per-instance life?
+ *  Anything BUILT is exact: a jittered post is a platform standing clear of
+ *  its own legs. Mirrors `is_exact` in vtt/skins.py. */
+export function skinHeightScale(skin: string, code: string,
+                                x: number, z: number): number {
+  return _SKINS[skin]?.exact ? 1 : heightScale(code, x, z);
 }
 
 /** Zoom and screen offset. See the note above on why this suits both renderers. */
@@ -229,6 +420,21 @@ export function wallParts(isOpen: (x: number, z: number) => boolean,
 }
 
 
+
+/** Is any of this solid square's EIGHT neighbours open floor?
+ *
+ *  `wallParts` asks the orthogonal question, because a wall's faces are
+ *  orthogonal. A rock MASS needs the diagonal one too: a pass's track wanders,
+ *  so the rock shell beside it steps diagonally as often as not, and a square
+ *  whose only open neighbour is a diagonal was drawn as buried — which left a
+ *  notch at every step and turned the face into a row of separate towers.
+ *  Mirrors `exposed` in vtt/isocam.py. */
+export function exposedRock(isOpen: (x: number, z: number) => boolean,
+                            x: number, z: number): boolean {
+  if (wallParts(isOpen, x, z).length) return true;
+  return isOpen(x - 1, z - 1) || isOpen(x + 1, z - 1)
+      || isOpen(x - 1, z + 1) || isOpen(x + 1, z + 1);
+}
 
 /** Everything a renderer needs to draw one frame. */
 export interface PaintState {

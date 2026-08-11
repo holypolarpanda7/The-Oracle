@@ -52,10 +52,30 @@ BOUNDS = [(20, 14, 2.0), (30, 24, 2.0), (8, 8, 0.0), (60, 40, 3.0)]
 #: product passes 2^32 and JavaScript's bitwise ops wrap it.
 SQUARES = [(0, 0), (1, 0), (0, 1), (3, 7), (12, 5), (59, 39), (40, 40), (7, 123)]
 
+#: Every way a square's floor can meet the outside — all sixteen, because the
+#: outline is worked out from four booleans and there is no reason to sample.
+#: This is the function that turns a vessel's stair-stepped deck into one
+#: continuous diagonal, and it is hand-written twice.
+ENDS = [(bool(m & 1), bool(m & 2), bool(m & 4), bool(m & 8)) for m in range(16)]
+
+#: A solid part put through every quarter turn. Rotation used to be four
+#: numbers; a prismatoid rotates every vertex of two polygons, and getting the
+#: map wrong in one language turns a leaning post the other way.
+SOLID = [[[0.1, 0.2], [0.8, 0.25], [0.7, 0.9], [0.15, 0.85]],
+         [[0.3, 0.4], [0.6, 0.4], [0.6, 0.6], [0.3, 0.6]], 0.0, 1.0]
+
+#: An awkward taper for the mitre: not a round number, and big enough that a
+#: per-edge offset and a mitred one are visibly different at a cut corner.
+SKIRT_INSET_PROBE = 0.37
+
 _TS = r"""
 import { project, unproject, boundsOf, YAW_DEG, PITCH_DEG } from "./isocam.js";
-import { variantOf, yawOf, heightScale } from "./boardView.js";
+import {
+  variantOf, yawOf, heightScale, hullFootprint, outAxis, rotatePart, sameBody,
+  CORNER_CHAMFER,
+} from "./boardView.js";
 const samples = %s, unprojects = %s, bounds = %s, squares = %s;
+const ends = %s, solid = %s, inset = %s;
 console.log(JSON.stringify({
   yaw: YAW_DEG, pitch: PITCH_DEG,
   project: samples.map(([x, y, z]) => { const p = project(x, y, z); return [p.x, p.y, p.depth]; }),
@@ -66,6 +86,24 @@ console.log(JSON.stringify({
   // "A" quotes a cover height and must never jitter; "#" is free to.
   heightA: squares.map(([x, z]) => heightScale("A", x, z)),
   heightW: squares.map(([x, z]) => heightScale("#", x, z)),
+  chamfer: CORNER_CHAMFER,
+  foot: ends.map(([w, e, n, s]) => {
+    const f = hullFootprint(w, e, n, s, CORNER_CHAMFER, inset);
+    return [f.pts, f.ends, f.low];
+  }),
+  // Which way is the outdoors, for every way a square can be enclosed.
+  outward: ends.map(([w, e, n, s]) => outAxis((ax, az) => {
+    if (ax === -1 && az === 0) return !w;
+    if (ax === 1 && az === 0) return !e;
+    if (ax === 0 && az === -1) return !n;
+    if (ax === 0 && az === 1) return !s;
+    return true;
+  }, 0, 0)),
+  turned: [0, 1, 2, 3].map((t) => rotatePart(solid, t)),
+  // A deck, the rail round it and the mast through it are one hull; the water
+  // beside them is not.
+  bodies: [sameBody("sea-deck", "railing"), sameBody("sea-deck", "mast"),
+           sameBody("sea-deck", ""), sameBody("cliff", "coral")],
 }));
 """
 
@@ -105,7 +143,8 @@ def _run_ts() -> dict:
 
         (work / "probe.mjs").write_text(
             _TS % (json.dumps(SAMPLES), json.dumps(UNPROJECTS), json.dumps(BOUNDS),
-                   json.dumps(SQUARES)),
+                   json.dumps(SQUARES), json.dumps(ENDS), json.dumps(SOLID),
+                   json.dumps(SKIRT_INSET_PROBE)),
             encoding="utf8")
         r = subprocess.run(["npx", "node", ".isocam-check/probe.mjs"], cwd=ui,
                            capture_output=True, text=True,
@@ -189,6 +228,54 @@ def main(argv=None) -> int:
               py.height_scale("A", x, z, cover_height_ft("A")), ha, 1e-12)
         check(f"({x},{z}) height #", py.height_scale("#", x, z, cover_height_ft("#")),
               hw, 1e-12)
+
+    # The floor's OUTLINE. This is the one that cuts a vessel's stair-stepped
+    # deck into a continuous diagonal, and unlike the shape tables it is a
+    # function rather than data — so it cannot be generated and is written
+    # twice. All sixteen ways a square can meet the outside, because there are
+    # only sixteen.
+    print("\nfootprint (the cut corners that join a hull's steps)")
+    check("corner chamfer", py.CORNER_CHAMFER, ts["chamfer"], 0)
+    for (e_w, e_e, e_n, e_s), t, turns in zip(ENDS, ts["foot"], ts["outward"]):
+        pts, ends, low = py.footprint(e_w, e_e, e_n, e_s, py.CORNER_CHAMFER,
+                                      SKIRT_INSET_PROBE)
+        tag = "".join(c for c, on in zip("WENS", (e_w, e_e, e_n, e_s)) if on) or "-"
+        check(f"[{tag}] vertices", len(pts), len(t[0]), 0)
+        for i, ((px, pz), tp) in enumerate(zip(pts, t[0])):
+            check(f"[{tag}] p{i}.x", px, tp[0], a.tol)
+            check(f"[{tag}] p{i}.z", pz, tp[1], a.tol)
+        for i, (e, te) in enumerate(zip(ends, t[1])):
+            check(f"[{tag}] edge{i} closed", int(e), int(te), 0)
+        # The mitre. A per-edge offset and a mitred one agree along a straight
+        # run and differ at every turn, which is exactly where a hull opens up.
+        for i, ((px, pz), tp) in enumerate(zip(low, t[2])):
+            check(f"[{tag}] bottom{i}.x", px, tp[0], a.tol)
+            check(f"[{tag}] bottom{i}.z", pz, tp[1], a.tol)
+        # ...and which way this square calls the outdoors.
+        def inside(ax: int, az: int, _f=(e_w, e_e, e_n, e_s)) -> bool:
+            w, e, n, s = _f
+            return {(-1, 0): not w, (1, 0): not e,
+                    (0, -1): not n, (0, 1): not s}.get((ax, az), True)
+        check(f"[{tag}] outward turns", py.out_axis(inside, 0, 0), turns, 0)
+
+    print("\nrotate_part on a SOLID (every vertex, every quarter turn)")
+    for turns, t in enumerate(ts["turned"]):
+        bottom, top, y0, y1 = py.rotate_part(
+            (tuple(map(tuple, SOLID[0])), tuple(map(tuple, SOLID[1])),
+             SOLID[2], SOLID[3]), turns)
+        for label, got, want in (("bottom", bottom, t[0]), ("top", top, t[1])):
+            for i, ((gx, gz), w) in enumerate(zip(got, want)):
+                check(f"turn {turns} {label}[{i}].x", gx, w[0], a.tol)
+                check(f"turn {turns} {label}[{i}].z", gz, w[1], a.tol)
+        check(f"turn {turns} y0", y0, t[2], a.tol)
+        check(f"turn {turns} y1", y1, t[3], a.tol)
+
+    print("\nsame body (which squares are one THING, so grow no side between)")
+    from vtt.skins import same_body
+    for (lhs, rhs), t in zip((("sea-deck", "railing"), ("sea-deck", "mast"),
+                              ("sea-deck", ""), ("cliff", "coral")),
+                             ts["bodies"]):
+        check(f"{lhs} / {rhs or '(none)'}", int(same_body(lhs, rhs)), int(t), 0)
 
     # Round-trip: projecting a point on the ground and unprojecting it must
     # return the same square. Catches a self-consistent but wrong pair.

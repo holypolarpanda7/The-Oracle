@@ -53,16 +53,65 @@ def _num(v: float) -> str:
     return s or "0"
 
 
+def _poly(pts) -> str:
+    return "[" + ", ".join(f"[{_num(x)}, {_num(z)}]" for x, z in pts) + "]"
+
+
+def _part(p) -> str:
+    """One part, in whichever of the two forms it is.
+
+    A box is six numbers; a solid is two polygons and two heights. They are
+    told apart in the browser exactly as they are here — by whether the first
+    element is a number — so there is no tag to keep in step.
+    """
+    if isinstance(p[0], (int, float)):
+        return "[" + ", ".join(_num(v) for v in p) + "]"
+    bottom, top, y0, y1 = p
+    return f"[{_poly(bottom)}, {_poly(top)}, {_num(y0)}, {_num(y1)}]"
+
+
+def _arrangements(variants) -> str:
+    return ",\n      ".join(
+        "[" + ", ".join(_part(p) for p in parts) + "]" for parts in variants)
+
+
+_PART_TYPE = """/** What things on the board are SHAPED like.
+ *
+ *  Two forms, told apart by whether the first element is a number — the same
+ *  discriminator the Python side uses, so no tag has to be kept in step.
+ *
+ *  A **box** is `[x0, x1, z0, z1, yFrom, yTo]`: fractions of the square for
+ *  x/z, of the thing's standing height for y. Axis-aligned and cheap.
+ *
+ *  A **solid** is `[bottomPolygon, topPolygon, yFrom, yTo]` — a prismatoid,
+ *  two polygons of equal vertex count joined by a quad per edge. It subsumes
+ *  the box, which is why gaining it rewrote nothing, and it is what stops
+ *  everything reading as a cube: a narrower top is a TAPER (a tent's canvas
+ *  drawn in to a ridge, a hull with tumblehome, a hipped roof), an offset top
+ *  is a LEAN (the raked legs of a timber watchtower, a ladder), and more than
+ *  four vertices is a CUT CORNER, which is what turns a stair-stepped hull
+ *  outline into one continuous diagonal. */
+export type BoxPart = readonly [number, number, number, number, number, number];
+export type PolyPart = readonly (readonly [number, number])[];
+export type SolidPart = readonly [PolyPart, PolyPart, number, number];
+export type Part = BoxPart | SolidPart;
+
+export function isSolid(part: Part): part is SolidPart {
+  return typeof part[0] !== "number";
+}
+"""
+
+
 def render() -> str:
     from vtt.art import STRUCTURE_CODES
     from vtt.isocam import (
-        HEIGHT_JITTER, HOLE_CODES, OBJECT_VARIANTS, PILLAR_RADIUS, SKIRT_FT,
-        SKIRT_INSET, WALL_THICKNESS,
+        CORNER_CHAMFER, HEIGHT_JITTER, HOLE_CODES, OBJECT_VARIANTS,
+        PILLAR_RADIUS, SKIRT_FT, SKIRT_INSET, WALL_THICKNESS,
     )
     from vtt.decor import DECOR_KINDS, MAX_DECOR_HEIGHT_FT
     from vtt.terrain import STAND_HEIGHT_FT, TILES
 
-    lines = [_HEADER]
+    lines = [_HEADER, _PART_TYPE]
     lines.append("/** How thick a wall is DRAWN, as a fraction of its square.\n"
                  " *  The square stays fully solid in the RULES; this only stops the\n"
                  " *  wall's top face swallowing the room at this camera angle. */\n"
@@ -85,10 +134,17 @@ def render() -> str:
     lines.append("/** How thick a platform is, in feet, where its floor meets a hole.\n"
                  " *  Without it an island is a paper cut-out hanging in nothing. */\n"
                  f"export const SKIRT_FT = {_num(SKIRT_FT)};\n")
-    lines.append("/** How far the BOTTOM of a skirt pulls in toward its square.\n"
+    lines.append("/** How far the BOTTOM of a skirt pulls in from its own edge.\n"
                  " *  A vertical drop is a slab and a ring of slabs is a box; pulled\n"
-                 " *  in, each side is a trapezoid instead. */\n"
+                 " *  in, each side is a trapezoid instead. Perpendicular to the\n"
+                 " *  edge, never toward the square's centre, so two squares along\n"
+                 " *  one straight run stay coplanar. */\n"
                  f"export const SKIRT_INSET = {_num(SKIRT_INSET)};\n")
+    lines.append("/** How deep a corner is cut where a floor's outline turns away\n"
+                 " *  on both sides. A vessel's deck is carved out of squares, so\n"
+                 " *  its outline is a STAIRCASE; at 1.0 each step is drawn as the\n"
+                 " *  diagonal it means and the whole bow reads as one line. */\n"
+                 f"export const CORNER_CHAMFER = {_num(CORNER_CHAMFER)};\n")
 
     holes = ", ".join(f'"{c}"' for c in sorted(HOLE_CODES))
     lines.append("/** Codes that are a HOLE, not ground — nothing is drawn on them.\n"
@@ -108,19 +164,13 @@ def render() -> str:
     lines.append("};\n")
 
     lines.append("/** What each object is SHAPED like: one or more ARRANGEMENTS, each a\n"
-                 " *  list of parts [x0, x1, z0, z1, yFrom, yTo] — fractions of the\n"
-                 " *  square for x/z, of the tile's standing height for y. Which one a\n"
-                 " *  square uses comes from variantOf, so the same square always picks\n"
-                 " *  the same arrangement on both sides of the wire. */\n"
-                 "export const OBJECT_VARIANTS: Record<string, readonly (readonly (readonly [\n"
-                 "  number, number, number, number, number, number])[])[]> = {")
+                 " *  list of parts (see Part). Which one a square uses comes from\n"
+                 " *  variantOf, so the same square always picks the same arrangement\n"
+                 " *  on both sides of the wire. */\n"
+                 "export const OBJECT_VARIANTS: "
+                 "Record<string, readonly (readonly Part[])[]> = {")
     for code, variants in sorted(OBJECT_VARIANTS.items()):
-        vs = []
-        for parts in variants:
-            body = ", ".join("[" + ", ".join(_num(v) for v in p) + "]" for p in parts)
-            vs.append(f"[{body}]")
-        joined = ",\n    ".join(vs)
-        lines.append(f"  {_key(code)}: [\n    {joined}],")
+        lines.append(f"  {_key(code)}: [\n      {_arrangements(variants)}],")
     lines.append("};\n")
 
     lines.append("/** Scenery: drawn by every view, honoured by none of the rules.\n"
@@ -128,10 +178,10 @@ def render() -> str:
                  " *  in the tile table, so nothing decorative can ever be mistaken for\n"
                  " *  something to crouch behind — see vtt/decor.py. */\n"
                  f"export const MAX_DECOR_HEIGHT_FT = {_num(MAX_DECOR_HEIGHT_FT)};\n"
-                 "export const DECOR_KINDS: Record<string, readonly [number,\n"
-                 "  readonly (readonly [number, number, number, number, number, number])[]]> = {")
+                 "export const DECOR_KINDS: "
+                 "Record<string, readonly [number, readonly Part[]]> = {")
     for kind, (ft, parts) in sorted(DECOR_KINDS.items()):
-        body = ", ".join("[" + ", ".join(_num(v) for v in p) + "]" for p in parts)
+        body = ", ".join(_part(p) for p in parts)
         lines.append(f"  {kind}: [{_num(ft)}, [{body}]],")
     lines.append("};\n")
 
@@ -153,36 +203,44 @@ def render() -> str:
         "  readonly heightFt: number;\n"
         "  /** Line up along the run instead of taking a quarter-turn. */\n"
         "  readonly directional: boolean;\n"
+        "  /** Turn so the part's authored +z side faces whichever way this\n"
+        "   *  square is NOT enclosed. Beats `directional` where both are set.\n"
+        "   *  What a tent needed: a wall that does not know which side the\n"
+        "   *  weather is on can only lean the same amount both ways. */\n"
+        "  readonly outward: boolean;\n"
         "  /** Pick the arrangement from a COARSE hash, so neighbours agree.\n"
         "   *  For a MASS (rock, coral) rather than a set of objects. */\n"
         "  readonly smooth: boolean;\n"
         "  /** Feet. Non-zero means this FLOOR carries its own side wherever\n"
-        "   *  it meets something that is not the same skin — how a ship gets\n"
+        "   *  it meets something that is not the same BODY — how a ship gets\n"
         "   *  a hull, since deep water is not a hole. 0 = the board rule. */\n"
         "  readonly skirtFt: number;\n"
         "  /** How far that side's bottom pulls in, as a fraction. */\n"
         "  readonly skirtInset: number;\n"
-        "  readonly variants: readonly (readonly (readonly [\n"
-        "    number, number, number, number, number, number])[])[] | null;\n"
+        "  /** Squares of one non-empty body are one THING, and no side is\n"
+        "   *  drawn between them: a deck, the rail round it, the mast through\n"
+        "   *  it and the cabin on it are four skins and one hull. */\n"
+        "  readonly body: string;\n"
+        "  /** Draw at exactly this height, with no per-instance jitter.\n"
+        "   *  Anything BUILT says so: a jittered post is a platform standing\n"
+        "   *  clear of its own legs. */\n"
+        "  readonly exact: boolean;\n"
+        "  readonly variants: readonly (readonly Part[])[] | null;\n"
         "}\n"
         "export const SKINS: Record<string, SkinShape> = {")
     for name, sk in sorted(SKINS.items()):
-        if sk.variants:
-            vs = []
-            for parts in sk.variants:
-                body = ", ".join(
-                    "[" + ", ".join(_num(v) for v in p) + "]" for p in parts)
-                vs.append(f"[{body}]")
-            variants = "[\n      " + ",\n      ".join(vs) + "]"
-        else:
-            variants = "null"
+        variants = (f"[\n      {_arrangements(sk.variants)}]"
+                    if sk.variants else "null")
         lines.append(
             f'  {_skin_key(name)}: {{ substance: "{sk.substance}", '
             f"heightFt: {_num(sk.height_ft)}, "
             f"directional: {'true' if sk.directional else 'false'}, "
-            f"smooth: {'true' if sk.smooth else 'false'},\n"
-            f"    skirtFt: {_num(sk.skirt_ft)}, "
-            f"skirtInset: {_num(sk.skirt_inset)},\n"
+            f"outward: {'true' if sk.outward else 'false'},\n"
+            f"    smooth: {'true' if sk.smooth else 'false'}, "
+            f'    skirtFt: {_num(sk.skirt_ft)}, '
+            f"skirtInset: {_num(sk.skirt_inset)}, "
+            f'body: "{sk.body}", '
+            f"exact: {'true' if sk.exact else 'false'},\n"
             f"    variants: {variants} }},")
     lines.append("};\n")
     return "\n".join(lines)

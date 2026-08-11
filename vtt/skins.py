@@ -50,11 +50,82 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
-#: A shape part, in the same language as :data:`vtt.isocam.OBJECT_VARIANTS`:
-#: ``(x0, x1, z0, z1, y0, y1)`` — fractions of the square for x/z, fractions of
-#: the thing's standing height for y.
-Part = tuple[float, float, float, float, float, float]
+#: A shape part. There are two forms, and they are told apart by whether the
+#: first element is a NUMBER — the same discriminator on both sides of the wire.
+#:
+#: **Box** — ``(x0, x1, z0, z1, y0, y1)``, the original and still the common
+#: case: fractions of the square for x/z, fractions of the thing's standing
+#: height for y. Axis-aligned, six numbers, cheap.
+#:
+#: **Solid** — ``(bottom, top, y0, y1)``, a PRISMATOID: two polygons of equal
+#: vertex count, one at each height, joined by a quad per edge. This is the one
+#: that stops everything being a cube, and it subsumes the box, so nothing had
+#: to be rewritten to get it. What it buys, in the order it was asked for:
+#:
+#: * a top polygon narrower than the bottom is a **taper** — a tent's canvas
+#:   drawn in to a ridge line, a hull with tumblehome, a hipped roof;
+#: * a top polygon OFFSET from the bottom is a **lean** — the four slightly
+#:   off-vertical poles a timber watchtower stands on, a ladder against a
+#:   platform, a guy rope out to its peg;
+#: * more than four vertices is a **cut corner**, which is what turns a
+#:   stair-stepped hull outline into one continuous diagonal.
+#:
+#: A degenerate top (two coincident vertices) is a ridge; all-coincident is an
+#: apex. Both are legal and neither needs a special case in either rasterizer.
+Poly = tuple[tuple[float, float], ...]
+Box = tuple[float, float, float, float, float, float]
+Solid = tuple[Poly, Poly, float, float]
+Part = Box | Solid
 Variants = tuple[tuple[Part, ...], ...]
+
+
+def _signed_area(pts: Poly) -> float:
+    a = 0.0
+    for i in range(len(pts)):
+        x0, z0 = pts[i]
+        x1, z1 = pts[(i + 1) % len(pts)]
+        a += x0 * z1 - x1 * z0
+    return a / 2.0
+
+
+def solid(bottom: Sequence[tuple[float, float]],
+          top: Sequence[tuple[float, float]],
+          y0: float, y1: float) -> Solid:
+    """A prismatoid part. ``bottom`` and ``top`` must have the same length.
+
+    **The winding is normalized here rather than trusted.** Every face's normal
+    is derived from its vertex order, so a ring written the wrong way round
+    points its normals INTO the solid: the renderer then culls every face you
+    should see and keeps every face you should not. That is not a subtle
+    wrongness — the first watchtower roof simply did not appear, and nothing in
+    either program looked broken. Since the correct order is a fact about the
+    coordinate system and not about the shape, an author should not have to
+    carry it, so it is fixed on the way in.
+    """
+    b, t = tuple(bottom), tuple(top)
+    if len(b) != len(t):
+        raise ValueError(f"a solid's two polygons must match: {len(b)} vs {len(t)}")
+    # Counter-clockwise seen from above — the order the floor's own top face
+    # uses, which is negative under this shoelace because z grows southward.
+    if _signed_area(b) > 0:
+        b, t = tuple(reversed(b)), tuple(reversed(t))
+    return (b, t, float(y0), float(y1))
+
+
+def is_solid(part: Part) -> bool:
+    """Which of the two forms this part is. Mirrored by ``isSolid`` in the
+    browser, where the same question is ``typeof part[0] !== "number"``."""
+    return not isinstance(part[0], (int, float))
+
+
+def _poly_area(pts: Poly) -> float:
+    """Unsigned area of a footprint polygon, in fractions of a square."""
+    a = 0.0
+    for i in range(len(pts)):
+        x0, z0 = pts[i]
+        x1, z1 = pts[(i + 1) % len(pts)]
+        a += x0 * z1 - x1 * z0
+    return abs(a) / 2.0
 
 
 @dataclass(frozen=True)
@@ -89,6 +160,12 @@ class Skin:
     height_ft: float = 0.0
     #: Line up along the run rather than taking a per-square quarter-turn.
     directional: bool = False
+    #: Point at the OUTDOORS: turn so the part's authored +z side faces
+    #: whichever way this square is not enclosed. Beats ``directional`` where
+    #: both are set. What a tent needed and neither other rule could give — a
+    #: wall that does not know which side the weather is on can only lean the
+    #: same amount both ways, which is to say not at all.
+    outward: bool = False
     #: Pick the arrangement from a COARSE hash, so neighbouring squares usually
     #: match. For anything that is a MASS rather than a set of objects: a rock
     #: face varying per square is a field of separate cubes (measured — the
@@ -102,11 +179,29 @@ class Skin:
     #: against a HOLE, and deep water is not a hole, so a sea ship had no sides
     #: at all: a deck lying flat on the water like a raft.
     skirt_ft: float = 0.0
-    #: How far the BOTTOM of that side pulls in toward the square's centre, as
-    #: a fraction. A vertical drop is a slab; pulled in, the same two triangles
-    #: become a trapezoid, and a hull with tumblehome stops reading as a box.
-    #: The tile grid is untouched — this is a drawing, like WALL_THICKNESS.
+    #: How far the BOTTOM of that side pulls in, as a fraction of a square.
+    #: A vertical drop is a slab; pulled in, the same two triangles become a
+    #: trapezoid, and a hull with tumblehome stops reading as a box. The pull is
+    #: PERPENDICULAR to the edge, never toward the square's own centre: two
+    #: squares along one straight run then offset their bottoms identically and
+    #: the faces stay coplanar, which is the whole difference between a hull and
+    #: a row of separate cones. The tile grid is untouched — this is a drawing,
+    #: like WALL_THICKNESS.
     skirt_inset: float = 0.0
+    #: Squares of the same non-empty body are one THING, and no side is drawn
+    #: between them. A ship is a deck, a rail round it, a mast through it and a
+    #: cabin on it — four skins and one hull. Without this the deck grew a hull
+    #: side against its own mast, so the board had a shaft sunk round the mast
+    #: and a paper-thin outer rim where the rail met the water.
+    body: str = ""
+    #: Draw at exactly the height given, with no per-instance jitter.
+    #:
+    #: Jitter is life for a rock face and a lie for anything a neighbouring
+    #: square has to MEET: the posts of a watchtower and the platform they hold
+    #: up are two different squares, and twelve percent of fifteen feet is the
+    #: platform floating clear of its own legs. Anything built, and anything a
+    #: creature climbs, says so here.
+    exact: bool = False
 
 
 def _v(*arrangements: Sequence[Part]) -> Variants:
@@ -138,13 +233,64 @@ def _v(*arrangements: Sequence[Part]) -> Variants:
 #: 46% of the same height do that where three differently-decorated cubes of
 #: equal height do not. (`height_scale`'s jitter is only 12%, deliberately, and
 #: nowhere near enough on its own.)
+#: A third thing learned, and it is why the footprints run PAST the square. A
+#: shell one square thick beside a wandering track steps diagonally as often as
+#: it steps square, and two diagonal neighbours meet at a single point — so a
+#: hundred flush cliff squares came back as a picket of separate towers with
+#: daylight between them. Bulging each block a tenth of a square makes diagonal
+#: neighbours overlap and the face closes. It costs the track about seven inches
+#: of drawn width, which is nothing, and a rock face that bulges slightly over
+#: its own foot is what rock does.
+_OVER = 0.10
 _CLIFF = _v(
-    ((0.0, 1.0, 0.0, 1.0, 0.0, 1.00),),
-    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.74), (0.14, 0.82, 0.20, 0.88, 0.74, 0.90)),
-    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.58), (0.28, 1.00, 0.00, 0.72, 0.58, 0.84)),
-    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.88), (0.10, 0.72, 0.24, 0.90, 0.88, 1.00)),
-    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.46),),
-    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.66), (0.00, 0.64, 0.30, 1.00, 0.66, 0.94)),
+    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 1.00),),
+    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.74),
+     (0.14, 0.82, 0.20, 0.88, 0.74, 0.90)),
+    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.62),
+     (0.28, 1.00, 0.00, 0.72, 0.62, 0.84)),
+    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.88),
+     (0.10, 0.72, 0.24, 0.90, 0.88, 1.00)),
+    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.54),),
+    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.70),
+     (0.00, 0.64, 0.30, 1.00, 0.70, 0.94)),
+)
+
+#: A fallen boulder: a rounded lump, and emphatically NOT a piece of cliff.
+#:
+#: The pass mapped its scattered rock onto the cliff skin, so every boulder was
+#: drawn as the cliff is — a full-square footprint fourteen feet tall — and a
+#: hundred of them made the whole board a field of white dice. That was read as
+#: a variety problem and it was a CATEGORY problem: a cliff is a mass and wants
+#: to fill its square so its neighbours merge into a face, and a boulder is an
+#: object standing alone on open ground and wants a silhouette. They are two
+#: different things that happened to be made of the same granite, which is
+#: exactly the distinction a skin exists to draw.
+#:
+#: Eight-sided in plan and battered inward, because a rock the model is handed
+#: as a prism comes back as a rock and one it is handed as a cube comes back as
+#: masonry.
+def _lump(r: float, top_r: float, cx: float = 0.5, cz: float = 0.5,
+          skew: float = 0.0) -> tuple[Poly, Poly]:
+    """A rounded plan and a smaller one above it, for a weathered lump."""
+    import math as _m
+    base, cap = [], []
+    for i in range(8):
+        a = i * _m.pi / 4 + _m.pi / 8
+        wob = 1.0 + skew * _m.cos(3 * a)
+        base.append((cx + _m.cos(a) * r * wob, cz + _m.sin(a) * r * wob))
+        cap.append((cx + _m.cos(a) * top_r * wob, cz + _m.sin(a) * top_r * wob))
+    return tuple(base), tuple(cap)
+
+
+_BOULDER = _v(
+    (solid(*_lump(0.46, 0.26, skew=0.10), 0.00, 0.86),
+     solid(*_lump(0.26, 0.05, 0.52, 0.48), 0.86, 1.00)),
+    (solid(*_lump(0.44, 0.30, 0.46, 0.54, skew=-0.12), 0.00, 0.62),
+     solid(*_lump(0.24, 0.10, 0.40, 0.44), 0.62, 0.94)),
+    (solid(*_lump(0.48, 0.34, skew=0.16), 0.00, 0.44),
+     solid(*_lump(0.30, 0.16, 0.56, 0.42), 0.44, 0.80),
+     solid(*_lump(0.18, 0.06, 0.34, 0.62), 0.44, 0.66)),
+    (solid(*_lump(0.40, 0.14, 0.50, 0.50, skew=0.08), 0.00, 1.00),),
 )
 
 #: Coral heads: lower, lumpier, branching. Same idea as the cliff and a
@@ -198,21 +344,59 @@ _PALISADE = _v(
      (0.78, 1.00, 0.34, 0.66, 0.0, 0.94)),
 )
 
-#: A tent wall: canvas leaning steeply in to a ridge. Drawn along the run so a
-#: tent reads as one tent instead of four quarter-turned fragments.
+#: A tent wall: one canvas plane running from the pegs up and INWARD.
 #:
-#: The first version was a mild lean at nine feet, and every camp came back with
-#: three timber PENS in it. A tent is not a short building — what says "tent" is
-#: the pitch of the canvas, so the slope runs from full width at the pegs to a
-#: ridge line at the top across four steps, and the whole thing is lower than a
-#: wall. The material was already canvas; the model was painting the silhouette
-#: it was handed, which is the same lesson as the pillar and the ship's hull.
-_TENT_WALL = _v(
-    ((0.00, 1.00, 0.02, 0.98, 0.00, 0.26),
-     (0.00, 1.00, 0.16, 0.84, 0.26, 0.56),
-     (0.00, 1.00, 0.31, 0.69, 0.56, 0.82),
-     (0.00, 1.00, 0.43, 0.57, 0.82, 1.00)),
-)
+#: Four versions of this now, and the history is the argument for both the
+#: prismatoid and the outward rule. The first was a mild lean at nine feet, and
+#: every camp came back with three timber PENS in it. The second cut the slope
+#: into four stacked boxes, which is a ziggurat: from above, four terraces of
+#: canvas. The third was a genuine slope — and still nearly vertical, because
+#: it leaned the same amount toward both faces of the wall, and a square is
+#: five feet wide against a tent seven feet tall. None of them was a material
+#: problem; the material was canvas throughout. The model paints the
+#: silhouette it is handed.
+#:
+#: Authored with the OUTDOORS at +z, which ``outward`` then turns to face
+#: whichever way that actually is. The square stays solid to sight — it is a
+#: wall and remains one — but its SURFACE is a pitch instead of a face.
+_TENT_WALL = _v((
+    solid(((0.00, 0.00), (1.00, 0.00), (1.00, 1.00), (0.00, 1.00)),
+          ((0.00, 0.00), (1.00, 0.00), (1.00, 0.20), (0.00, 0.20)),
+          0.00, 0.72),
+    # The eaves pole the canvas is lashed over.
+    (0.00, 1.00, 0.02, 0.20, 0.70, 0.80),
+    # Guy ropes out past the pegs. They reach BEYOND the square on purpose: a
+    # rope is pegged into the ground outside the tent, and a part is an offset,
+    # so it is allowed to say so.
+    solid(((0.20, 1.20), (0.28, 1.20), (0.28, 1.28), (0.20, 1.28)),
+          ((0.22, 0.10), (0.28, 0.10), (0.28, 0.18), (0.22, 0.18)),
+          0.00, 0.68),
+    solid(((0.72, 1.20), (0.80, 1.20), (0.80, 1.28), (0.72, 1.28)),
+          ((0.72, 0.10), (0.78, 0.10), (0.78, 0.18), (0.72, 0.18)),
+          0.00, 0.68),
+))
+
+#: The canvas OVER a tent, on the squares you stand on inside it.
+#:
+#: A wall ring with a walkable floor in it is, seen from above, a roofless box —
+#: which is exactly what the camps came back as and what "they look like pens"
+#: meant. The roof has to be a separate thing because the interior is separate
+#: squares, and it can be one: nothing decorative may reach cover height, and a
+#: sheet of canvas six feet up reaches nothing at all. It starts well clear of
+#: the floor, so :func:`occludes_floor` passes it and the square stays as
+#: walkable in the picture as it is in the rules.
+#:
+#: FLAT, and that is the point rather than a shortcut. Each square would
+#: happily carry its own little ridge, and four of those side by side is
+#: corrugated iron — measured, and it is what the first roofed tents came back
+#: as. A roof has to be continuous across squares that cannot see each other,
+#: and the shape with that property is the one that does not vary. The PITCH
+#: lives in the walls, where the outward rule can aim it; this is the span
+#: between them, with the ridge batten on top.
+_TENT_CANOPY = _v((
+    (0.00, 1.00, 0.00, 1.00, 0.66, 0.76),
+    (0.00, 1.00, 0.42, 0.58, 0.76, 0.84),
+))
 
 #: A tower wall: a tall solid mass with merlons crowning it.
 #:
@@ -248,11 +432,90 @@ _DOORWAY = _v(
 #: A tent flap: the canvas rolled back at the jambs, a valance across the top.
 #: The same job as _DOORWAY and the same rule — the passage stays clear, because
 #: the square is one the rules let you walk through.
-_FLAP = _v(
-    ((0.00, 0.14, 0.28, 0.72, 0.00, 0.92),
-     (0.86, 1.00, 0.28, 0.72, 0.00, 0.92),
-     (0.00, 1.00, 0.34, 0.66, 0.72, 1.00)),
-)
+#: Authored facing the outdoors at +z, like the wall it interrupts, so the way
+#: in is on the side somebody would actually walk up to.
+_FLAP = _v((
+    solid(((0.00, 0.00), (0.17, 0.00), (0.17, 1.00), (0.00, 1.00)),
+          ((0.00, 0.00), (0.13, 0.00), (0.13, 0.30), (0.00, 0.30)),
+          0.00, 0.70),
+    solid(((0.83, 0.00), (1.00, 0.00), (1.00, 1.00), (0.83, 1.00)),
+          ((0.87, 0.00), (1.00, 0.00), (1.00, 0.30), (0.87, 0.30)),
+          0.00, 0.70),
+    (0.00, 1.00, 0.00, 0.24, 0.56, 0.78),
+))
+
+#: One leg of a timber watchtower: a pole, footed wide and leaning in.
+#:
+#: A stone tower is a building with a room in it, and the walled shelter is the
+#: right shape for one. A timber tower is not a building at all — it is four
+#: poles holding a platform up, open underneath, and you walk between the legs
+#: rather than through a door. Drawing it as a stockade got a squat wooden box;
+#: the thing that says "watchtower" is the LEGS and the daylight between them.
+#:
+#: The lean is small and it is the whole trick. Four exactly vertical posts read
+#: as machined columns; battered a few inches over fifteen feet, they read as
+#: cut trees somebody stood up in a hurry — which is what they are.
+_TOWER_POST = _v((
+    solid(((0.26, 0.26), (0.58, 0.26), (0.58, 0.58), (0.26, 0.58)),
+          ((0.40, 0.40), (0.62, 0.40), (0.62, 0.62), (0.40, 0.62)),
+          0.00, 0.88),
+    # The head, squared off to take the platform's beams.
+    (0.32, 0.72, 0.32, 0.72, 0.88, 1.00),
+))
+
+#: The platform a timber tower holds up, its rail, and the roof over it.
+#:
+#: All three live on ONE square — the middle of the tower's footprint — and
+#: reach out over the rest of it. That is deliberate rather than lazy: the
+#: platform is a REAL upper storey with its own terrain grid, and only one
+#: storey is ever drawn at a time, so from the ground floor the platform is
+#: something you look at rather than something you are on. Without this the
+#: tower read as four poles and a roof with a gap where the floor should be.
+#:
+#: Coordinates run past the square on purpose. A part is an offset, so ``-2.0``
+#: is two squares west; the shape is symmetric about the square's own centre so
+#: a quarter turn leaves it exactly where it was, which is why the post tower is
+#: an ODD five squares across.
+_TOWER_TOP = _v((
+    # The deck, whose top is the storey's own fifteen feet exactly.
+    (-2.10, 3.10, -2.10, 3.10, 0.44, 0.50),
+    # A rail round it. The platform's own floor carries a real low wall — three
+    # feet, half cover; this is what that low wall looks like from underneath.
+    (-2.10, 3.10, -2.10, -1.90, 0.50, 0.60),
+    (-2.10, 3.10, 2.90, 3.10, 0.50, 0.60),
+    (-2.10, -1.90, -1.90, 2.90, 0.50, 0.60),
+    (2.90, 3.10, -1.90, 2.90, 0.50, 0.60),
+    # Four corner uprights carrying the roof, with daylight under the eave so
+    # the platform is somewhere you can see people standing.
+    (-1.95, -1.65, -1.95, -1.65, 0.58, 0.72),
+    (2.65, 2.95, -1.95, -1.65, 0.58, 0.72),
+    (-1.95, -1.65, 2.65, 2.95, 0.58, 0.72),
+    (2.65, 2.95, 2.65, 2.95, 0.58, 0.72),
+    # The roof: a hipped pyramid, eaves just proud of the rail.
+    solid(((-2.30, -2.30), (3.30, -2.30), (3.30, 3.30), (-2.30, 3.30)),
+          ((0.34, 0.34), (0.66, 0.34), (0.66, 0.66), (0.34, 0.66)),
+          0.70, 0.98),
+    (0.36, 0.64, 0.36, 0.64, 0.98, 1.00),
+))
+
+#: A ladder leaning against a platform — two stringers and the rungs.
+#:
+#: The connector already existed and the board already marked it, but a mark on
+#: the floor is a thing you read and a ladder is a thing you SEE. It is drawn on
+#: the square the connector is on, so what the picture shows and what
+#: ``take_stairs`` accepts are the same square by construction.
+_LADDER = _v((
+    solid(((0.24, 0.84), (0.33, 0.84), (0.33, 0.93), (0.24, 0.93)),
+          ((0.24, 0.44), (0.33, 0.44), (0.33, 0.53), (0.24, 0.53)),
+          0.00, 1.00),
+    solid(((0.67, 0.84), (0.76, 0.84), (0.76, 0.93), (0.67, 0.93)),
+          ((0.67, 0.44), (0.76, 0.44), (0.76, 0.53), (0.67, 0.53)),
+          0.00, 1.00),
+    (0.26, 0.74, 0.80, 0.88, 0.14, 0.18),
+    (0.26, 0.74, 0.72, 0.80, 0.36, 0.40),
+    (0.26, 0.74, 0.64, 0.72, 0.58, 0.62),
+    (0.26, 0.74, 0.56, 0.64, 0.80, 0.84),
+))
 
 #: A stone parapet: a merloned roof edge, for the platform ON TOP of a tower.
 _PARAPET = _v(
@@ -275,6 +538,28 @@ _CHITIN = _v(
 )
 
 
+#: How far a hull's bottom pulls in from its deck edge, as a fraction of a
+#: square. Nearly nothing, and that is measured.
+#:
+#: A hull wants tumblehome, and a per-square side can very nearly give it one:
+#: :func:`vtt.isocam.footprint` mitres the bottom at each vertex, so a square
+#: whose outline turns still closes. What it cannot do is mitre ACROSS squares —
+#: a vessel's deck is carved out of a grid, and where the outline steps, the
+#: diagonal belongs to one square and the run beside it to the next. Each mitres
+#: correctly on its own and their bottoms part company, so at 0.42 every step of
+#: the bow opened a wedge of sky three feet wide at the keel. Rendered, a
+#: skyship looked like three separate hull plates hung under one deck.
+#:
+#: This is the SKIRT_INSET lesson again one level down: flush faces meet, and
+#: moved faces meet only if everything that moves them agrees. A tenth of a
+#: square leaves a gap of about five inches, which is below what the camera
+#: resolves, and still catches a different light down the side than a dead
+#: vertical slab would. The keel's DEPTH is what distinguishes the vessels —
+#: nine feet of freeboard on a caravel, fourteen of visible keel on an airship
+#: nobody's water is hiding.
+HULL_TAPER = 0.10
+
+
 # --------------------------------------------------------------------------
 # The catalogue
 # --------------------------------------------------------------------------
@@ -286,6 +571,11 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="the rock is a natural granite cliff face, fractured and "
                "weathered, not built masonry and not brickwork",
          variants=_CLIFF, height_ft=14, smooth=True),
+    Skin("boulder", "granite",
+         "raw grey granite, close-up of the bare fractured rock face",
+         words="fallen boulders lie about the track, rounded and weathered, "
+               "each one a separate stone",
+         variants=_BOULDER, height_ft=8),
     Skin("scree", "scree",
          "close-up of loose shale and broken slate scree",
          words="the ground is loose shale and scree"),
@@ -348,17 +638,40 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "close-up of dressed and coursed grey building stone",
          words="the watchtowers are squat drystone towers, merloned at the top",
          variants=_TOWER, height_ft=16),
-    Skin("tower-timber", "log-palisade",
+    # A timber tower is NOT a stockade. See _TOWER_POST: it is four poles and
+    # the daylight between them, so its three pieces are a leg, the platform
+    # they carry, and the ladder up. They are all `exact` because they have to
+    # MEET — a jittered post is a platform standing clear of its own legs.
+    Skin("tower-post", "log-palisade",
          "close-up of a wall of upright split logs, bark and axe marks",
-         words="the watchtowers are stockades of upright logs, hoarding at the "
-               "top",
-         variants=_TOWER, height_ft=14),
+         words="the watchtower is a timber frame — four raked pine legs, "
+               "cross-braced, holding a platform up over open ground",
+         variants=_TOWER_POST, height_ft=17, exact=True),
+    Skin("tower-top", "log-palisade",
+         "close-up of a wall of upright split logs, bark and axe marks",
+         words="the platform is planked and railed, under a shingled hip roof "
+               "on four corner posts with a deep overhanging eave",
+         variants=_TOWER_TOP, height_ft=30, exact=True),
+    Skin("tower-ladder", "log-palisade",
+         "close-up of a wall of upright split logs, bark and axe marks",
+         words="a ladder is lashed to the frame, running up to a hatch in the "
+               "platform",
+         variants=_LADDER, height_ft=16, exact=True),
+    Skin("tent-canopy", "canvas",
+         "a flat expanse of heavy woven CLOTH — coarse canvas sailcloth, "
+         "off-white and grey, individual threads visible, stained and patched, "
+         "soft fabric with no wood and no planks anywhere",
+         words="the tents are ROOFED — canvas over the whole span, ridged and "
+               "sagging between the poles",
+         variants=_TENT_CANOPY, height_ft=8, directional=True,
+         body="tent", exact=True),
     Skin("flap", "canvas",
          "a flat expanse of heavy woven CLOTH — coarse canvas sailcloth, "
          "off-white and grey, individual threads visible, stained and patched, "
          "soft fabric with no wood and no planks anywhere",
          words="the tent flaps are tied back at the poles",
-         variants=_FLAP, height_ft=8, directional=True),
+         variants=_FLAP, height_ft=8, outward=True, body="tent",
+         exact=True),
     Skin("doorway-stone", "dressed-stone",
          "close-up of dressed and coursed grey building stone",
          words="a low arched doorway is cut through at ground level",
@@ -381,47 +694,75 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "soft fabric with no wood and no planks anywhere",
          words="the tents are heavy stained canvas over timber poles, guy ropes "
                "pegged out, flaps tied back",
-         variants=_TENT_WALL, height_ft=8, directional=True),
+         variants=_TENT_WALL, height_ft=8, outward=True, body="tent",
+         exact=True),
 
     # --- ships ------------------------------------------------------------
+    #
+    # NB the tumblehome is nearly nothing, and that is measured rather than
+    # timid. See HULL_TAPER.
+    #
+    # Every skin a vessel wears shares one BODY, and that is load-bearing: a
+    # side is drawn wherever a hull skin meets something that is NOT the same
+    # body. Without the group the deck grew a hull side against its own mast —
+    # a shaft sunk through the middle of the ship — and the rail ring, being a
+    # different skin again, had no side at all, so the outermost strake of every
+    # vessel was a sheet of paper.
     Skin("hull", "tarred-planking",
          "close-up of tarred ship planking, caulked seams and iron nail heads",
-         words="the hull is tarred carvel planking with caulked seams"),
-    Skin("deck", "deck-planking",
-         "close-up of holystoned ship deck planking, pale scrubbed oak, pitched "
-         "seams",
-         words="the deck is scrubbed pale oak planking, seams payed with pitch",
-         skirt_ft=7, skirt_inset=0.5),
+         words="the hull is tarred carvel planking with caulked seams",
+         body="ship", exact=True),
     Skin("sea-deck", "deck-planking",
          "close-up of holystoned ship deck planking, pale scrubbed oak, pitched "
          "seams",
          words="a working sea deck — planking dark with spray, salt-bleached "
-               "in patches, the hull tarred black where it meets the water",
-         skirt_ft=9, skirt_inset=0.62),
+               "in patches, the hull tarred black where it meets the water, "
+               "the sea closing round it",
+         skirt_ft=9, skirt_inset=HULL_TAPER, body="ship", exact=True),
+    # An airship is not a boat that happens to be up. You see its UNDERSIDE —
+    # the whole keel, which a sea hull hides below the waterline — so it gets a
+    # side twice as deep and drawn in twice as hard, and a hull plan fine at
+    # both ends rather than a caravel's flat transom (see mapgen._hull).
+    # Sharing the caravel's deck was most of why the two came back identical.
+    Skin("sky-deck", "deck-planking",
+         "close-up of holystoned ship deck planking, pale scrubbed oak, pitched "
+         "seams",
+         words="an airship's weather deck, dry and sun-bleached, hanging in "
+               "open sky — the keel and its lift-fins visible beneath, nothing "
+               "under her but cloud",
+         skirt_ft=14, skirt_inset=HULL_TAPER, body="ship", exact=True),
     Skin("mast", "spar-timber",
          "a flat expanse of oiled timber, straight close grain all running one "
          "way, no corners and no edges",
          words="a single mast steps amidships, yard crossed and rigging set up "
                "to the rails",
-         variants=_MAST, height_ft=26),
+         variants=_MAST, height_ft=26, body="ship", exact=True),
     Skin("railing", "spar-timber",
          "a flat expanse of oiled timber, straight close grain all running one "
          "way, no corners and no edges",
          words="the deck is edged with a stanchion rail you can see the water "
                "through",
-         variants=_RAILING, directional=True),
+         variants=_RAILING, directional=True,
+         skirt_ft=9, skirt_inset=HULL_TAPER, body="ship"),
+    Skin("sky-rail", "spar-timber",
+         "a flat expanse of oiled timber, straight close grain all running one "
+         "way, no corners and no edges",
+         words="the deck is edged with a stanchion rail you can see the sky "
+               "through, safety lines rove between the posts",
+         variants=_RAILING, directional=True,
+         skirt_ft=14, skirt_inset=HULL_TAPER, body="ship"),
     Skin("plating", "riveted-brass",
          "close-up of riveted brass and iron plating, verdigris and oil stains",
          words="the vessel is a riveted brass-and-iron contraption — rivets, "
                "pipework, pressure gauges, vented steam",
-         variants=_PLATING, height_ft=8, directional=True),
+         variants=_PLATING, height_ft=8, directional=True, body="ship"),
     Skin("chitin", "chitin",
          "the glossy black-green back of a giant beetle filling the whole "
          "frame, hard armour plating with fine parallel grooves, oily "
          "iridescent sheen",
          words="the vessel is GROWN rather than built — ridged chitin, veined "
                "and iridescent, no straight lines anywhere",
-         variants=_CHITIN, height_ft=8, directional=True),
+         variants=_CHITIN, height_ft=8, directional=True, body="ship"),
     # A vessel's DECK, which is most of what you see of it. The first pass gave
     # all three styles the same scrubbed oak and changed only the trim, and the
     # three came back indistinguishable — correctly, because they WERE the same
@@ -431,15 +772,16 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "a flat expanse of riveted brass and iron deck plating, verdigris and "
          "oil stains, filling the whole frame",
          words="the deck is riveted metal plate, oil-stained, with grilles and "
-               "pipe runs let into it",
-         skirt_ft=7, skirt_inset=0.5),
+               "pipe runs let into it, boilers and vented steam below the keel",
+         skirt_ft=13, skirt_inset=HULL_TAPER, body="ship", exact=True),
     Skin("chitin-deck", "chitin",
          "the glossy black-green back of a giant beetle filling the whole "
          "frame, hard armour plating with fine parallel grooves, oily "
          "iridescent sheen",
          words="the deck is the creature's own back — ridged chitin underfoot, "
-               "warm and faintly translucent",
-         skirt_ft=7, skirt_inset=0.62),
+               "warm and faintly translucent, the belly of the thing curving "
+               "away beneath",
+         skirt_ft=13, skirt_inset=HULL_TAPER, body="ship", exact=True),
     # The rail versions. Same substance, same silhouette as any other rail, and
     # emphatically the same THREE FEET — a ship's rail is half cover, and what
     # it is made of has no vote on how tall it is.
@@ -447,13 +789,15 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "close-up of riveted brass and iron plating, verdigris and oil stains",
          words="the deck is edged with a pipework rail you can see the air "
                "through",
-         variants=_RAILING, directional=True),
+         variants=_RAILING, directional=True,
+         skirt_ft=13, skirt_inset=HULL_TAPER, body="ship"),
     Skin("chitin-rail", "chitin",
          "the glossy black-green back of a giant beetle filling the whole "
          "frame, hard armour plating with fine parallel grooves, oily "
          "iridescent sheen",
          words="the deck is edged with a grown chitin lip, ribbed and low",
-         variants=_RAILING, directional=True),
+         variants=_RAILING, directional=True,
+         skirt_ft=13, skirt_inset=HULL_TAPER, body="ship"),
 )}
 
 
@@ -466,10 +810,15 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
 #: same fact. A code with no entry keeps its default look, which is what every
 #: board had before skins existed.
 ARCH_SKINS: dict[str, dict[str, str]] = {
-    "mountain-pass": {"R": "cliff", "#": "cliff", "O": "cliff",
+    # NB `O` is a BOULDER and not a piece of cliff. Both are granite and they
+    # want opposite silhouettes: a cliff fills its square so its neighbours
+    # merge into one face, a boulder stands alone and needs an outline. Sharing
+    # one skin drew every fallen stone as a full-square fourteen-foot block and
+    # made the whole pass a field of dice.
+    "mountain-pass": {"R": "cliff", "#": "cliff", "O": "boulder",
                       ",": "scree", ".": "scree"},
-    "cave":          {"R": "cave-rock", "#": "cave-rock"},
-    "mine":          {"R": "cave-rock", "#": "cave-rock"},
+    "cave":          {"R": "cave-rock", "#": "cave-rock", "O": "boulder"},
+    "mine":          {"R": "cave-rock", "#": "cave-rock", "O": "boulder"},
     "reef":          {"R": "coral", "O": "drowned-column", "w": "drowned-wall"},
     "open-water":    {"R": "coral"},
     "sewer":         {"#": "sewer-brick", "~": "sludge", ".": "sewer-ledge",
@@ -481,7 +830,8 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
     # skyship's is dry and hangs in air, and you see its underside.
     "ship":          {"b": "sea-deck", "w": "railing", "O": "mast",
                       "#": "hull"},
-    "skyship":       {"b": "deck", "w": "railing", "O": "mast", "#": "hull"},
+    "skyship":       {"b": "sky-deck", "w": "sky-rail", "O": "mast",
+                      "#": "hull"},
     "ruins":         {"O": "drowned-column"},
     "sky-islands":   {"R": "cliff"},
     # NB: no entry for dungeon-room, crypt, dungeon-complex or arena. They had
@@ -577,9 +927,40 @@ def is_directional(name: str) -> bool:
     return bool(sk and sk.directional)
 
 
+def is_outward(name: str) -> bool:
+    sk = SKINS.get(name or "")
+    return bool(sk and sk.outward)
+
+
 def is_smooth(name: str) -> bool:
     sk = SKINS.get(name or "")
     return bool(sk and sk.smooth)
+
+
+def is_exact(name: str) -> bool:
+    """Draw at exactly the stated height, with no per-instance jitter."""
+    sk = SKINS.get(name or "")
+    return bool(sk and sk.exact)
+
+
+def body_of(name: str) -> str:
+    sk = SKINS.get(name or "")
+    return sk.body if sk else ""
+
+
+def same_body(a: str, b: str) -> bool:
+    """Are these two squares part of one THING?
+
+    A ship is a deck, a rail round it, a mast through it and a cabin on it —
+    four skins and one hull, so no side is drawn between any of them. The test
+    is by group and not by skin, which is the bug this replaced: a deck square
+    beside the mast counted as meeting something else and grew a hull face, so
+    every vessel had a shaft sunk round its own mast.
+    """
+    if a == b:
+        return True
+    ba = body_of(a)
+    return bool(ba) and ba == body_of(b)
 
 
 def skirt_of(name: str) -> tuple[float, float]:
@@ -612,8 +993,16 @@ def occludes_floor(name: str) -> bool:
     if sk is None or not sk.variants:
         return False
     for parts in sk.variants:
-        covered = sum((x1 - x0) * (z1 - z0)
-                      for x0, x1, z0, z1, y0, _y1 in parts if y0 <= 0.01)
+        covered = 0.0
+        for part in parts:
+            if is_solid(part):
+                bottom, _top, y0, _y1 = part
+                if y0 <= 0.01:
+                    covered += _poly_area(bottom)
+            else:
+                x0, x1, z0, z1, y0, _y1 = part
+                if y0 <= 0.01:
+                    covered += (x1 - x0) * (z1 - z0)
         if covered > 0.40:
             return True
     return False
