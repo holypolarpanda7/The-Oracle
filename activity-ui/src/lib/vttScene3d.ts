@@ -28,11 +28,14 @@
  *  `scene.light`, computed by the server, and will be a tint. Real lights here
  *  would let the picture disagree with the grid about who can see whom. */
 import * as THREE from "three";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { VttScene } from "./types";
 import {
   CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS,
   SKIRT_FT, SKIRT_INSET,
-  STRUCTURE_CODES, exposedRock, hullFootprint, isSolid, materialSlot, outAxis, outCorner, runAxis,
+  STRUCTURE_CODES, exposedRock, hullFootprint, isSetpieceSkin, isSolid, materialSlot,
+  outAxis, outCorner, runAxis, setpieceYaw,
   sameBody,
   skinAt, skinHeightScale, variantSmooth,
   rotatePart,
@@ -187,6 +190,60 @@ function requestTexture(id: number, settled: () => void): void {
     // No imagery server (the offline demo) or a pruned id. Remembered as bad so
     // it is asked for once, and the board simply stays flat-coloured.
     () => { TEXTURES.set(id, null); settled(); },
+  );
+}
+
+/** Landmark meshes, by URL. Module-level for the same reason as `TEXTURES`:
+ *  one shipwreck serves every board in every session, and the file is
+ *  committed and immutable so the cache can never go stale.
+ *
+ *  Only the GEOMETRY is kept — materials, normals and UVs in the file are
+ *  discarded. A set piece contributes volume and silhouette; once the painted
+ *  layer lands it is a depth occluder and draws no colour at all, which is
+ *  what makes a stranger's art style cost so little here. */
+const SETPIECE_MESHES = new Map<string, THREE.BufferGeometry | null | undefined>();
+
+/** Fetch a landmark's mesh, and tell the caller when its fate is decided.
+ *
+ *  Same trade as `requestTexture`: a mesh arriving invalidates the terrain and
+ *  the next frame rebuilds knowing the answer, rather than mutating live
+ *  geometry. It resolves once per board and a rebuild is cheap. Until then the
+ *  landmark is simply absent from the picture — never a placeholder box, which
+ *  would be a shape the depth map does not have. */
+function requestSetpiece(url: string, settled: () => void): void {
+  if (SETPIECE_MESHES.has(url)) return;        // resolved, or already in flight
+  SETPIECE_MESHES.set(url, undefined);
+  new OBJLoader().load(
+    url,
+    (group) => {
+      const geoms: THREE.BufferGeometry[] = [];
+      group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && m.geometry) {
+          // Position only. Merging needs every geometry to carry the same
+          // attributes, and an OBJ's groups routinely disagree about whether
+          // they have UVs — which fails the merge and loses the landmark.
+          const src = m.geometry as THREE.BufferGeometry;
+          const pos = src.getAttribute("position");
+          if (!pos) return;
+          const g = new THREE.BufferGeometry();
+          g.setAttribute("position", pos.clone());
+          if (src.index) g.setIndex(src.index.clone());
+          // All non-indexed, because merging requires every input to agree on
+          // that as well as on its attributes.
+          geoms.push(src.index ? g.toNonIndexed() : g);
+        }
+      });
+      if (!geoms.length) { SETPIECE_MESHES.set(url, null); settled(); return; }
+      const merged = mergeGeometries(geoms, false);
+      if (merged) merged.computeVertexNormals();
+      SETPIECE_MESHES.set(url, merged ?? geoms[0]);
+      settled();
+    },
+    undefined,
+    // No asset server, or a pack nobody collected. Remembered as bad so it is
+    // asked for once, and the board falls back to the tiles the piece stamped.
+    () => { SETPIECE_MESHES.set(url, null); settled(); },
   );
 }
 
@@ -717,7 +774,13 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           gridPts.push(x, here, z, x, here, z + 1);
         }
 
-        if (h > 0) {
+        if (h > 0 && isSetpieceSkin(skinAt(scene, code, x, z))) {
+          // The landmark's own mesh is this square's standing geometry, and
+          // drawing the tile's shape as well puts a statue inside a pillar.
+          // The floor above has already been laid, which is the half that must
+          // NOT be skipped: a set piece's walkable squares are real ground at
+          // a real elevation. Mirrors vtt/isocam.py.
+        } else if (h > 0) {
           const top = here + heightUnits(scene, h);
           const axis = axes.get(`${x},${z}`);
           if (APERTURES.has(code) && axis) {
@@ -843,6 +906,41 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       decorMb.at = d.y * scene.width + d.x;
       drawParts(decorMb, parts, yawOf(d.x, d.y), d.x, d.y, floorY(d.x, d.y) ?? base,
                 heightUnits(scene, ft), new THREE.Color(DECOR_TINT[d.kind] ?? "#6b6255"));
+    }
+
+    // Landmarks. Not built into a MeshBuilder like everything else: the
+    // geometry came out of a file rather than out of the shape tables, so it
+    // is placed with a transform instead of being emitted vertex by vertex.
+    // Every term of that transform is the SERVER'S — `scale` and `pivot` are
+    // measured off this same mesh by setpieces.mesh_fit — so there is no
+    // arithmetic here to arrive at differently.
+    for (const sp of scene.setpieces ?? []) {
+      if (!sp.mesh || !sp.scale) continue;
+      requestSetpiece(sp.mesh, invalidate);
+      const geom = SETPIECE_MESHES.get(sp.mesh);
+      if (!geom) continue;                     // in flight, or never collected
+      const mesh = new THREE.Mesh(geom, new THREE.MeshLambertMaterial({
+        color: new THREE.Color(tileStyle(sp.code || "#").fill),
+        ...(backdrop ? { colorWrite: false } : {}),
+      }));
+      const [px, py, pz] = sp.pivot ?? [0, 0, 0];
+      // scale -> centre on the footprint -> yaw -> stand on the floor.
+      // Half a square per unit of width is what puts an even-sided landmark on
+      // the seam and an odd-sided one on its middle square's own centre.
+      mesh.scale.setScalar(sp.scale);
+      mesh.position.set(-px, -py, -pz);
+      const pivot = new THREE.Group();
+      pivot.add(mesh);
+      // The handedness lives in `setpieceYaw`, where the alignment gate can
+      // reach it — `rotation.y` is inside three.js and cannot be compared
+      // against the Python.
+      pivot.rotation.y = setpieceYaw(sp.yaw_fix ?? 0, sp.yaw);
+      const holder = new THREE.Group();
+      holder.add(pivot);
+      holder.position.set(sp.x + sp.w / 2,
+                          floorY(sp.x, sp.y) ?? base,
+                          sp.y + sp.d / 2);
+      terrainGroup.add(holder);
     }
 
     shadeTargets = [];

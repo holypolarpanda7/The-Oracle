@@ -68,13 +68,23 @@ SOLID = [[[0.1, 0.2], [0.8, 0.25], [0.7, 0.9], [0.15, 0.85]],
 #: per-edge offset and a mitred one are visibly different at a cut corner.
 SKIRT_INSET_PROBE = 0.37
 
+#: (x, z, degrees) for a landmark's quarter turn.
+#:
+#: Gated because the two languages turn OPPOSITE WAYS by default and it cost a
+#: real bug: three.js `rotation.y` sends (x,z) to (z,-x) where the tiles — and
+#: therefore the cover — go to (-z,x). Off-axis points are here because a turn
+#: applied to (1,0) alone still agrees under a transpose.
+SPIN = [(1, 0, 90), (0, 1, 90), (1, 0, 180), (2, 3, 90), (2, 3, 270),
+        (-1.5, 0.5, 90), (3, -2, 180), (1, 1, 0)]
+
 _TS = r"""
 import { project, unproject, boundsOf, YAW_DEG, PITCH_DEG } from "./isocam.js";
 import {
   variantOf, yawOf, heightScale, hullFootprint, outAxis, rotatePart, sameBody,
+  setpieceRotate,
 } from "./boardView.js";
 const samples = %s, unprojects = %s, bounds = %s, squares = %s;
-const ends = %s, solid = %s, inset = %s;
+const ends = %s, solid = %s, inset = %s, spin = %s;
 console.log(JSON.stringify({
   yaw: YAW_DEG, pitch: PITCH_DEG,
   project: samples.map(([x, y, z]) => { const p = project(x, y, z); return [p.x, p.y, p.depth]; }),
@@ -98,6 +108,8 @@ console.log(JSON.stringify({
     return true;
   }, 0, 0)),
   turned: [0, 1, 2, 3].map((t) => rotatePart(solid, t)),
+  // A landmark's quarter turn. Must move the mesh the way it moves the tiles.
+  spin: spin.map(([x, z, d]) => setpieceRotate(x, z, d)),
   // A deck, the rail round it and the mast through it are one hull; the water
   // beside them is not.
   bodies: [sameBody("sea-deck", "railing"), sameBody("sea-deck", "mast"),
@@ -142,7 +154,7 @@ def _run_ts() -> dict:
         (work / "probe.mjs").write_text(
             _TS % (json.dumps(SAMPLES), json.dumps(UNPROJECTS), json.dumps(BOUNDS),
                    json.dumps(SQUARES), json.dumps(ENDS), json.dumps(SOLID),
-                   json.dumps(SKIRT_INSET_PROBE)),
+                   json.dumps(SKIRT_INSET_PROBE), json.dumps(SPIN)),
             encoding="utf8")
         r = subprocess.run(["npx", "node", ".isocam-check/probe.mjs"], cwd=ui,
                            capture_output=True, text=True,
@@ -226,6 +238,17 @@ def main(argv=None) -> int:
               py.height_scale("A", x, z, cover_height_ft("A")), ha, 1e-12)
         check(f"({x},{z}) height #", py.height_scale("#", x, z, cover_height_ft("#")),
               hw, 1e-12)
+
+    # A landmark's quarter turn. The two languages turn opposite ways by
+    # default, so this is gated rather than trusted: if the mesh turns one way
+    # and the tiles the other, the picture rotates and the cover does not, and
+    # a creature takes three-quarters cover from a face now behind it.
+    print("\nsetpiece spin (mesh must turn the way the tiles turn)")
+    from vtt import setpieces as _sp
+    for (x, z, deg), t in zip(SPIN, ts["spin"]):
+        gx, gz = _sp.rotate_xz(x, z, deg)
+        check(f"({x},{z}) turned {deg} .x", gx, t[0], a.tol)
+        check(f"({x},{z}) turned {deg} .z", gz, t[1], a.tol)
 
     # The floor's OUTLINE. This is the one that cuts a vessel's stair-stepped
     # deck into a continuous diagonal, and unlike the shape tables it is a

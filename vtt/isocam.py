@@ -839,6 +839,8 @@ def setpiece_triangles(inst: dict, mesh_file: str, *,
     centre. Rotating the mesh without rotating its tiles is the bug
     ``_turned`` exists to prevent, and this is the other half of it.
     """
+    from .setpieces import rotate_xz as _sp_rotate
+
     tris = _obj_triangles(mesh_file)
     if not tris:
         return []
@@ -847,9 +849,7 @@ def setpiece_triangles(inst: dict, mesh_file: str, *,
         return []
     px, py, pz = (list(inst.get("pivot") or (0.0, 0.0, 0.0)) + [0.0, 0.0, 0.0])[:3]
     up_z = str(inst.get("up") or "y") == "z"
-    yaw = math.radians(((int(inst.get("yaw_fix") or 0)
-                         + int(inst.get("yaw") or 0)) % 360))
-    ca, sa = math.cos(yaw), math.sin(yaw)
+    yaw_deg = (int(inst.get("yaw_fix") or 0) + int(inst.get("yaw") or 0)) % 360
     # The footprint's centre, in board squares. Half a square per unit width is
     # what puts an even-sided landmark on the seam and an odd-sided one on the
     # middle square's own centre — the same reason structures.py insists a post
@@ -865,7 +865,8 @@ def setpiece_triangles(inst: dict, mesh_file: str, *,
             x = vx * s - px
             y = vy * s - py
             z = vz * s - pz
-            pts.append((cx + x * ca - z * sa, floor_y + y, cz + x * sa + z * ca))
+            rx, rz = _sp_rotate(x, z, yaw_deg)
+            pts.append((cx + rx, floor_y + y, cz + rz))
         out.append(tuple(pts))
     return out
 

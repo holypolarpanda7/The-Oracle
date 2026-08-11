@@ -63,6 +63,7 @@ every entry — footprint, tiles, height — is authored and exact.
 """
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -681,6 +682,24 @@ _check_catalogue()
 # grid-is-truth rule exists to prevent: the painting conditioned on a landmark
 # a different size from the one the player is looking at.
 # --------------------------------------------------------------------------
+
+def rotate_xz(x: float, z: float, deg: int) -> tuple[float, float]:
+    """A point of a landmark's mesh after its quarter turn.
+
+    The one definition of which way a set piece turns, and it is fixed by the
+    TILES rather than chosen: :func:`_turned` sends a footprint square at
+    ``(u, v)`` to ``(-v, u)`` at ninety degrees, so the mesh must do the same
+    or the picture turns and the cover does not — a creature takes
+    three-quarters cover from a face of the statue that is now behind it.
+
+    Mirrored by ``setpieceRotate`` in ``activity-ui/src/lib/boardView.ts``,
+    which has to NEGATE the angle to get here because three.js's ``rotation.y``
+    is the other handedness. Gated by ``scripts/iso_alignment_check.py``.
+    """
+    a = math.radians(deg % 360)
+    c, s = math.cos(a), math.sin(a)
+    return (x * c - z * s, x * s + z * c)
+
 
 def _obj_bounds(path: Path) -> Optional[tuple[tuple[float, float, float],
                                               tuple[float, float, float]]]:

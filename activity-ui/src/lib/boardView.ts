@@ -158,6 +158,44 @@ export function skinAt(
   return sk.squares?.[`${x},${y}`] ?? sk.codes?.[code] ?? "";
 }
 
+/** Marks a square stamped by a vtt/setpieces landmark. Mirrors
+ *  `skins.SETPIECE_PREFIX`. */
+export const SETPIECE_PREFIX = "setpiece:";
+
+/** Is this square drawn by a landmark's MESH rather than by its own shape?
+ *
+ *  A prefix rather than an entry in SKINS because a mesh is a shape per
+ *  LANDMARK, not per square, so there is nothing for the per-square vocabulary
+ *  to hold — and every other skin lookup falls back to the code's own default
+ *  for a name it does not know, which here would draw the ordinary block AND
+ *  the mesh. See vtt/skins.py `is_setpiece`. */
+export function isSetpieceSkin(name: string): boolean {
+  return (name || "").startsWith(SETPIECE_PREFIX);
+}
+
+/** The angle to give a landmark's `rotation.y`, in radians.
+ *
+ *  NEGATED, and that is not a fudge. A quarter turn has to move the mesh the
+ *  way it moves the TILES, or the picture turns and the cover does not — a
+ *  creature takes three-quarters cover from a face of the statue now behind
+ *  it. `setpieces._turned` sends (x,z) to (-z,x) at 90 degrees; three.js
+ *  `rotation.y` is the other handedness and would send it to (z,-x). */
+export function setpieceYaw(yawFix: number, yaw: number): number {
+  return -(((yawFix || 0) + (yaw || 0)) * Math.PI / 180);
+}
+
+/** Where a point of a landmark's mesh lands after its quarter turn.
+ *
+ *  Exists so the gate can run the same points through both languages —
+ *  `rotation.y` itself is inside three.js and cannot be compared. Mirrors
+ *  `vtt.setpieces.rotate_xz`; see scripts/iso_alignment_check.py. */
+export function setpieceRotate(x: number, z: number, deg: number): [number, number] {
+  const a = setpieceYaw(0, deg);
+  const c = Math.cos(a), s = Math.sin(a);
+  // The rotation three.js applies for `rotation.y = a`.
+  return [x * c + z * s, -x * s + z * c];
+}
+
 /** The material slot a square draws from — a tile code, or `code@skin`.
  *  Must agree with `materials_for` in vtt/scene.py, which builds the same key
  *  server-side. */

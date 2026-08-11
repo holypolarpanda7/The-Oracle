@@ -465,6 +465,21 @@ export interface VttScene {
   /** Scenery — drawn by every view, honoured by none of the rules. Never tall
    *  enough to be mistaken for cover; see vtt/decor.py. */
   decor?: { x: number; y: number; kind: string }[];
+  /** Landmarks: a mesh, where it stands, and how to fit it to its squares.
+   *
+   *  `scale` and `pivot` are MEASURED off the mesh by the server
+   *  (vtt/setpieces.py `mesh_fit`) and must be applied, never recomputed here:
+   *  a browser deriving its own scale from its own parse of the same file is a
+   *  second answer to "how big is this", and the painting is conditioned on
+   *  the server's. `mesh: null` means the piece draws from the tiles it
+   *  stamped, which is what a board without the pack does. */
+  setpieces?: {
+    slug: string; name: string; words?: string; code?: string;
+    x: number; y: number; yaw: number; w: number; d: number;
+    height_ft: number; up?: string; yaw_fix?: number;
+    mesh: string | null;
+    scale?: number; pivot?: [number, number, number];
+  }[];
   /** Material slot -> the surface swatch it is built from, via
    *  /imagery/image/{id}. The slot is a tile code, or `code@skin` where the
    *  square is skinned — a board can carry a log palisade AND canvas tents,
