@@ -81,3 +81,9 @@ activity-ui/affix-shots/
 activity-ui/targeting-shots/
 activity-ui/route-shots/
 material-probe/
+
+# Third-party 3D asset PACKS, unzipped. Whole packs are large and are not ours
+# to hand on in bulk; only the individual meshes a set piece actually uses get
+# copied into activity-ui/public/assets/setpieces/ (which IS committed, with
+# its generated ATTRIBUTION.md beside them). See vtt/setpieces.py.
+assets_src/

@@ -533,6 +533,37 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   creature and is a box with a hole in it. Shelters demand clear ground around
   them — two built back to back seal a pocket, and the connectivity net then
   carves a corridor through somebody's tent to reach it.
+- **A LANDMARK may be somebody else's mesh, and it still owns no rules.**
+  `vtt/setpieces.py`. Everything else the board draws is derived from (tile
+  code, skin, x, z), which works because a wall, a cliff and a hull are things
+  a rule can describe — and stops working at a colossal seated guardian with a
+  human face, because no hash produces one. That is a capability limit, not an
+  efficiency one. A set piece is a mesh plus a footprint of tile codes it
+  STAMPS, and the tiles are its entire mechanical content, so cover, movement,
+  sight and breakability read the board exactly as always. Three guards fire at
+  import: a square the mesh FILLS must stamp an impassable code (a picture may
+  not close a square the rules leave open — `skins.occludes_floor` again); a
+  passable square must declare its `elevation` or a creature stands inside the
+  model; and a set piece may not stamp a code whose height the rules QUOTE,
+  since one mesh at one scale cannot honour a per-square quoted height — a
+  market stall was written and deleted by that rule, and furniture-sized things
+  stay tiles. **Not every set piece has a mesh**: a stepped pyramid is rock
+  faces and floors at a stated height, geometry the board has drawn since
+  elevation went in, so `source=None` and a model of one would only be a rival
+  answer to a shape the rules already fix. Enterable buildings stay in
+  `structures.py`; a set piece is fought AROUND or ON, never INTO. Sources are
+  **CC0 or CC-BY only** — the operative question for a public repo is
+  REDISTRIBUTION, not use, and "free for personal use" fails it. The packs are
+  a register in code (`PACKS`), unzipped into the gitignored `assets_src/`;
+  only meshes actually used are copied into
+  `activity-ui/public/assets/setpieces/` and committed, with an
+  ATTRIBUTION.md **generated** from that register (`scripts/setpiece_assets.py
+  --list | --audit | --collect | --attribution`) so file and code cannot drift,
+  exactly as the OFL fonts do. An entry's FILE half is a search key, not a
+  path — pack contents get renamed between releases — and the audit resolves it
+  and reports the mesh's bounding box against the height the entry declares.
+  Scale is always DERIVED by fitting the model to the squares it says it
+  covers; a per-pack magic multiplier is a number nobody can check.
 - **The cache key must name everything the picture depends on.** `isoboard_ref`
   hashed the tile grid, and a skin changes materials without changing one
   tile — so a skyship's timber, steampunk and organic styles shared a slug and
