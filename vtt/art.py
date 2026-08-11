@@ -565,6 +565,25 @@ def isoboard_ref(grid: Grid, archetype: str, seed: int,
     return f"iso-v{ISOBOARD_REV}-{base}-{tag}"
 
 
+def _setpiece_instances(gen) -> list[dict]:
+    """This board's landmarks, ready for the depth rasterizer.
+
+    Rebuilt from the generator's own record rather than taken from ``state()``,
+    because the art is rendered at OPEN time, before there is a row to read.
+    """
+    if not getattr(gen, "setpieces", None):
+        return []
+    from . import setpieces as _sp
+    out = []
+    for p in gen.setpieces:
+        slug = str(p.get("slug") or "")
+        if slug in _sp.CATALOGUE:
+            out.append(_sp.Placed(slug=slug, x=int(p.get("x") or 0),
+                                  y=int(p.get("y") or 0),
+                                  yaw=int(p.get("yaw") or 0)).instance())
+    return out
+
+
 def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
                      biome: Optional[str] = None, lighting: Optional[str] = None,
                      extra: str = "", conditions: str = "",
@@ -671,7 +690,13 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
                         standing=lambda c: tile_height_ft(c) > 0),
         square_ft=5, structure=STRUCTURE_CODES, skin_of=_skin_of,
         elevation=gen.elevation,
-        shells=_hull.shells(gen.grid.rows, _skin_of, gen.elevation))
+        shells=_hull.shells(gen.grid.rows, _skin_of, gen.elevation),
+        # The landmarks, or the painter is conditioned on a depth map with a
+        # HOLE where the colossus stands — it would paint open ground there and
+        # the geometry would then be a statue nothing in the picture agrees
+        # with. The tiles a set piece stamps are already in ``rows``; its mesh
+        # is not, and the mesh is most of its volume.
+        setpieces=_setpiece_instances(gen))
     depth = isocam.depth_image(**depth_kw)
     # The half depth cannot carry: what the ground is MADE of. Outdoors that is
     # the whole board, so without it the model invents terrain the grid does not

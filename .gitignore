@@ -82,6 +82,7 @@ activity-ui/targeting-shots/
 activity-ui/route-shots/
 material-probe/
 setpiece-probe/
+scene-probe/
 
 # Third-party 3D asset PACKS, unzipped. Whole packs are large and are not ours
 # to hand on in bulk; only the individual meshes a set piece actually uses get
