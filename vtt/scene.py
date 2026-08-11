@@ -3477,6 +3477,21 @@ class VttEngine:
             # denies — the exact confusion the painted-terrain rule exists for.
             lines.append(f"  {scenery}")
 
+        # Landmarks. Named for the OPPOSITE reason to scenery: a decoration is
+        # announced because it has no mechanical effect, and a set piece
+        # because it is entirely mechanical — the squares it stamped are real
+        # walls and real rock with real cover, already in the legend above, and
+        # nothing there says the eleven of them are one thing. The DM never
+        # sees the picture, so without this they cannot answer "what is that".
+        marks = self.setpieces_for(map_id)
+        if marks:
+            lines.append("  landmarks (their squares are already in the "
+                         "terrain above — this is only what they ARE): "
+                         + "; ".join(
+                             f"{m['name']} at {m['x']},{m['y']}"
+                             + (f" — {m['words']}" if m.get("words") else "")
+                             for m in marks[:6]))
+
         hurt = [o for o in self.breakables(map_id) if o["hp"] < o["hp_max"]]
         if hurt:
             lines.append("damaged: " + "; ".join(

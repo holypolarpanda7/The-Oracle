@@ -293,9 +293,30 @@ def main() -> int:
             gen = generate_map(arch, width=26, height=20, seed=seed)
             codes = S.skins_for(arch, style=gen.style)
             for name in list(codes.values()) + list(gen.skins.values()):
+                # A set-piece marker is the one skin with no SKINS entry, and
+                # deliberately so: a mesh is a shape per LANDMARK, not per
+                # square, so there is nothing for the per-square vocabulary to
+                # hold. It is checked by prefix instead — see skins.is_setpiece.
+                if S.is_setpiece(name):
+                    if not S.setpiece_slug(name):
+                        bad.append((arch, seed, f"{name} (empty slug)"))
+                    continue
                 if S.skin(name) is None:
                     bad.append((arch, seed, name))
     check(not bad, f"all {len(ARCHETYPES)} archetypes x3 seeds", str(bad[:3]))
+
+    # A landmark's marker must name a piece that still exists, or the board
+    # suppresses a square's geometry for a mesh nothing will ever draw.
+    from vtt import setpieces as SP
+    orphan = []
+    for arch in sorted(ARCHETYPES):
+        gen = generate_map(arch, width=26, height=20, seed=1)
+        for name in gen.skins.values():
+            slug = S.setpiece_slug(name)
+            if slug and slug not in SP.CATALOGUE:
+                orphan.append((arch, slug))
+    check(not orphan, "and every set-piece marker names a real landmark",
+          str(orphan[:3]))
     subs = S.substances()
     check(len(subs) == len({s.substance for s in S.SKINS.values()}),
           f"{len(subs)} substances for {len(S.SKINS)} skins — shared, as intended")

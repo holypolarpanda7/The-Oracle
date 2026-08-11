@@ -343,6 +343,28 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
                          _EDGE_COLORS.get(str(obj.get("code") or "")))
         # Otherwise the tile colour and edge already drew it — nothing to do.
 
+    # ---- landmarks ----
+    # A set piece needs no drawing here and gets none: the squares it stamped
+    # are ordinary tile codes, so the walls, rock and pillars of a mausoleum or
+    # a gate tower are already on this board with their real cover and their
+    # real footprint. What a top-down PNG cannot show is that those squares are
+    # one THING — and it has no way to draw a mesh, which is the whole reason
+    # the isometric board exists.
+    #
+    # So it gets the NAME, which is the project's standing answer to a picture
+    # that cannot be trusted to be clear: the code says what a square is, and
+    # the word is not a guess. One chip for the landmark rather than one per
+    # square, dropped at the middle of its footprint, and it goes in before
+    # wreckage so a broken pillar still reports what actually happened to it.
+    for sp_inst in state.get("setpieces") or []:
+        name = str(sp_inst.get("name") or "").strip()
+        if not name:
+            continue
+        cx = int(sp_inst.get("x", 0)) + max(1, int(sp_inst.get("w", 1))) // 2
+        cy = int(sp_inst.get("y", 0)) + max(1, int(sp_inst.get("d", 1))) // 2
+        if 0 <= cx < w_sq and 0 <= cy < h_sq:
+            labels.setdefault((cx, cy), name)
+
     # ---- wreckage ----
     # Painted over whatever is beneath it, on the square that was broken. When
     # no sprite has been drawn yet the square is still correct underneath — the
