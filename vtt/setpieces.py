@@ -65,8 +65,11 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
+from . import skins as _skins
 from .terrain import Grid, tile
 
 # --------------------------------------------------------------------------
@@ -83,6 +86,21 @@ PACK_WORKSPACE = "assets_src"
 #: depth rasterizer, so both sides look at one file — the invariant that keeps
 #: the painting aligned with what the player sees.
 MESH_ROOT = "activity-ui/public/assets/setpieces"
+
+#: A footprint square the piece RESERVES but does not change.
+#:
+#: Not a tile code — the grid never holds one. It exists because height became
+#: authoritative and footprints grew to suit: a sixty-foot tree reserves nine
+#: squares by nine, and eighty of those are ground its canopy merely hangs
+#: over. Stamping them with a code of its own repaved a meadow into flagstones
+#: wherever a tree stood, which is the picture contradicting the grid in the
+#: one direction nobody would think to check — the terrain was RIGHT before the
+#: landmark arrived.
+#:
+#: A reserved square is still checked by :func:`fits` (it must be clear ground
+#: the piece may stand on) and still kept clear of scatter. It simply keeps
+#: whatever it already was, along with its own elevation.
+KEEP = "-"
 
 #: Preferred mesh format, in order. OBJ first for a reason that is not taste:
 #: :mod:`vtt.isocam` has to rasterize the same mesh the browser draws, and OBJ
@@ -294,6 +312,8 @@ class SetPiece:
 
     def filled(self, cx: int, cy: int) -> bool:
         """Does the mesh close this square at floor level?"""
+        if self.code_at(cx, cy) == KEEP:
+            return False
         if self.fills:
             return self.fills[cy][cx] not in " ."
         return tile(self.code_at(cx, cy)).move_cost_ft is None
@@ -302,6 +322,25 @@ class SetPiece:
         for cy in range(self.depth):
             for cx in range(self.width):
                 yield cx, cy
+
+    @property
+    def stamped_code(self) -> str:
+        """The code this piece most stands for, for anything colouring it flat.
+
+        Its ORIGIN square is the wrong answer and was the first one tried: now
+        that footprints are mostly reserved ground, a landmark's top-left
+        corner is usually a square it never touched, so a tree came out painted
+        grass-green and a fountain with it. What a piece is made of is the code
+        it stamps most often.
+        """
+        counts: dict[str, int] = {}
+        for cx, cy in self.squares():
+            code = self.code_at(cx, cy)
+            if code != KEEP:
+                counts[code] = counts.get(code, 0) + 1
+        if not counts:
+            return "#"
+        return max(sorted(counts), key=lambda c: counts[c])
 
 
 # --------------------------------------------------------------------------
@@ -364,7 +403,7 @@ def _flat(w: int, d: int, code: str) -> tuple[str, ...]:
 
 
 def _island(size: int, inner: int, code: str,
-            ground: str = ".") -> tuple[tuple[str, ...], dict[str, int]]:
+            ground: str = KEEP) -> tuple[tuple[str, ...], dict[str, int]]:
     """A block of ``inner`` squares centred in a ``size`` mesh footprint.
 
     The shape a set piece takes whenever its MESH is wider than the part of it
@@ -385,8 +424,11 @@ def _island(size: int, inner: int, code: str,
     solid = lambda x, y: lo <= x < hi and lo <= y < hi        # noqa: E731
     rows = tuple("".join(code if solid(x, y) else ground
                          for x in range(size)) for y in range(size))
+    # A reserved square keeps its own elevation, so it declares none here. Only
+    # a square this piece actually stamps a passable code onto needs one, which
+    # is the guard's whole point.
     elev = {f"{x},{y}": 0 for y in range(size) for x in range(size)
-            if not solid(x, y)}
+            if not solid(x, y) and ground != KEEP}
     return rows, elev
 
 
@@ -428,8 +470,8 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
     SetPiece(
         "ruined-arch", "ruined arch",
         Source("quat-ruins", ("arch", "gate", "archway")),
-        ("O.O",), height_ft=18.0, body="arch",
-        elevation={"1,0": 0}, fills=("X X",),
+        ("O-O",), height_ft=18.0, body="arch",
+        fills=("X X",),
         words="a broken ceremonial arch, its span still standing on two piers",
         turns=(0, 90),
     ),
@@ -483,8 +525,7 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
         # covered nine squares by eleven. The cliff blocks are the pack's
         # actual masses, and one of them at 14 ft is three squares square.
         Source("kenney-nature", ("cliff_block_rock", "cliff_block", "rock_large")),
-        ("RRR", "RRR", "RR."), height_ft=14.0, body="boulders",
-        elevation={"2,2": 0},
+        ("RRR", "RRR", "RR-"), height_ft=14.0, body="boulders",
         words="a tumble of house-sized boulders",
         on=("g", "\"", ",", "s", "."),
     ),
@@ -538,8 +579,7 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
         # A hull is LONG and narrow, and the footprint was square-ish: two
         # squares abeam and five from stem to stern is what the mesh actually
         # measures at twenty feet.
-        ("##", "##", "##", "##", "#."), height_ft=20.0, body="wreck",
-        elevation={"1,4": 0},
+        ("##", "##", "##", "##", "#-"), height_ft=20.0, body="wreck",
         words="the broken-backed hull of a wrecked ship",
         on=("s", "~", "g", "."),
     ),
@@ -590,6 +630,16 @@ def _check_catalogue() -> None:
             raise ValueError(f"{p.slug}: up must be 'y' or 'z'")
         for cx, cy in p.squares():
             code = p.code_at(cx, cy)
+            if code == KEEP:
+                # Reserved, not stamped. It keeps its own terrain and its own
+                # elevation, so none of the checks below have anything to say
+                # about it — they are all about a code this piece IMPOSES.
+                if p.fills and p.fills[cy][cx] not in " .":
+                    raise ValueError(
+                        f"{p.slug} at {cx},{cy}: a reserved square cannot also "
+                        "be one the mesh fills — filling it would close a "
+                        "square whose terrain the piece never set.")
+                continue
             t = tile(code)
             walkable = t.move_cost_ft is not None
             if p.filled(cx, cy) and walkable:
@@ -616,6 +666,106 @@ def _check_catalogue() -> None:
 
 _check_packs()
 _check_catalogue()
+
+
+# --------------------------------------------------------------------------
+# Fitting the mesh to the squares
+#
+# The scale is computed HERE, on the server, and shipped in ``state()``. That
+# is the :mod:`vtt.hull` argument arriving from a third direction: the shape
+# tables are data and so can be generated, the camera is arithmetic and so has
+# to be gated, and this is a measurement of a FILE — so the only way to keep
+# two languages from disagreeing about it is to have one of them do it. A
+# browser that recomputed the scale from its own parse of the same OBJ would
+# be a second answer to "how big is this", and the failure mode is the one the
+# grid-is-truth rule exists to prevent: the painting conditioned on a landmark
+# a different size from the one the player is looking at.
+# --------------------------------------------------------------------------
+
+def _obj_bounds(path: Path) -> Optional[tuple[tuple[float, float, float],
+                                              tuple[float, float, float]]]:
+    """The mesh's bounding box. Deliberately not a mesh loader — ``v`` lines
+    and nothing else, which is why the catalogue prefers OBJ."""
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    seen = False
+    try:
+        with path.open("r", errors="ignore") as fh:
+            for line in fh:
+                if not line.startswith("v "):
+                    continue
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                try:
+                    xyz = [float(parts[1]), float(parts[2]), float(parts[3])]
+                except ValueError:
+                    continue
+                seen = True
+                for i in range(3):
+                    lo[i] = min(lo[i], xyz[i])
+                    hi[i] = max(hi[i], xyz[i])
+    except OSError:
+        return None
+    return (tuple(lo), tuple(hi)) if seen else None   # type: ignore[return-value]
+
+
+def mesh_path(slug: str, root: Optional[Path] = None) -> Optional[Path]:
+    """The collected mesh for this piece, or None if it was never collected.
+
+    None is not an error: a catalogue entry whose pack nobody has unzipped is a
+    landmark the board draws from its tiles alone, which is exactly what a
+    piece with ``source=None`` does on purpose. Degrading to the geometry the
+    board has always had beats a missing model leaving a hole in the room.
+    """
+    base = root or (Path(__file__).resolve().parents[1] / MESH_ROOT)
+    for ext in FORMATS:
+        p = base / f"{slug}.{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+@lru_cache(maxsize=64)
+def mesh_fit(slug: str, square_ft: int = 5) -> Optional[dict]:
+    """How to put this piece's mesh on its squares, in BOARD units.
+
+    Returns ``{"scale", "pivot"}`` where ``scale`` takes the mesh's own
+    arbitrary units to squares, and ``pivot`` is the point (already scaled) to
+    subtract so the model stands centred on its footprint with its base on the
+    floor. A renderer applies them and needs to know nothing else:
+
+        v -> (v * scale - pivot), then yaw, then + footprint centre
+
+    Cached because ``state()`` is called constantly and this reads a file; the
+    meshes are committed and immutable, so the cache can never go stale within
+    a run.
+    """
+    piece = CATALOGUE.get(slug)
+    if piece is None or piece.source is None:
+        return None
+    path = mesh_path(slug)
+    if path is None or path.suffix.lower() != ".obj":
+        return None
+    bounds = _obj_bounds(path)
+    if bounds is None:
+        return None
+    (x0, y0, z0), (x1, y1, z1) = bounds
+    # Which way is up is the pack's choice and a wrong guess is a landmark
+    # lying on its side, so it is declared per entry rather than sniffed.
+    tall = (y1 - y0) if piece.up == "y" else (z1 - z0)
+    if tall <= 0:
+        return None
+    # UNIFORM, and derived from the declared height rather than the footprint.
+    # See the audit's docstring: fitting width to the footprint made every tall
+    # thing a dwarf, and scaling one axis alone distorts anything organic.
+    scale = (piece.height_ft / tall) / float(square_ft or 5)
+    return {
+        "scale": scale,
+        "pivot": [(x0 + x1) / 2.0 * scale,
+                  (y0 if piece.up == "y" else z0) * scale,
+                  (z0 + z1) / 2.0 * scale],
+    }
 
 
 # --------------------------------------------------------------------------
@@ -649,16 +799,24 @@ class Placed:
         the other direction.
         """
         p = CATALOGUE[self.slug]
-        return {
+        # No mesh means the board's own geometry draws it from the tiles this
+        # piece stamped, which is what it has always done. That covers BOTH
+        # a piece authored without one (the pyramid) and a piece whose pack
+        # nobody has unzipped — the second must degrade the same way as the
+        # first, or an uncollected mesh leaves a hole in the room.
+        fit = mesh_fit(self.slug) if p.source is not None else None
+        out = {
             "slug": self.slug, "name": p.name,
             "x": self.x, "y": self.y, "yaw": self.yaw,
             "w": p.width, "d": p.depth,
             "height_ft": p.height_ft, "up": p.up, "yaw_fix": p.yaw_fix,
-            # No mesh means the board's own geometry draws it from the tiles
-            # this piece stamped, which is what it has always done.
-            "mesh": (f"/assets/setpieces/{self.slug}.obj"
-                     if p.source is not None else None),
+            "words": p.words, "code": p.stamped_code,
+            "mesh": (f"/assets/setpieces/{self.slug}{mesh_path(self.slug).suffix}"
+                     if fit is not None else None),
         }
+        if fit is not None:
+            out.update(fit)
+        return out
 
 
 def _turned(p: SetPiece, yaw: int) -> tuple[tuple[str, ...], dict[str, int],
@@ -726,9 +884,16 @@ def place(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0) -> Placed:
             x, y = x0 + cx, y0 + cy
             if not g.in_bounds(x, y):
                 continue
+            # Reserved squares are recorded as OCCUPIED — so nothing else is
+            # placed under the landmark — and otherwise left exactly as they
+            # were: same terrain, same elevation, and no set-piece skin, since
+            # there is no per-square geometry here to suppress.
+            if code == KEEP:
+                out.occupied.append((x, y))
+                continue
             g.set(x, y, code)
             out.occupied.append((x, y))
-            out.skins[f"{x},{y}"] = f"setpiece:{p.slug}"
+            out.skins[f"{x},{y}"] = f"{_skins.SETPIECE_PREFIX}{p.slug}"
             ft = elev.get(f"{cx},{cy}")
             if ft is not None:
                 out.elevation[f"{x},{y}"] = int(ft)

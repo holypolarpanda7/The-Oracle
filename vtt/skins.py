@@ -1007,6 +1007,34 @@ def skirt_of(name: str) -> tuple[float, float]:
     return (sk.skirt_ft, sk.skirt_inset)
 
 
+#: Marks a square that a :mod:`vtt.setpieces` landmark stamped, as written into
+#: the sparse per-square skin map by ``setpieces.place``.
+SETPIECE_PREFIX = "setpiece:"
+
+
+def is_setpiece(name: str) -> bool:
+    """Is this square drawn by a landmark's MESH rather than by its own shape?
+
+    A set piece is the one skin that hands over no silhouette of its own, and
+    it is the reason this is a prefix rather than an entry in :data:`SKINS`: a
+    mesh is a shape per LANDMARK, not a shape per square, so there is nothing
+    for the per-square vocabulary to hold. Every other skin lookup returns the
+    code's own default for a name it does not know, which is exactly wrong
+    here — a set-piece square would then draw its ordinary block AND the mesh,
+    a statue standing inside a pillar.
+
+    Only STANDING geometry is suppressed. The floor is still drawn, because a
+    landmark's walkable squares are real ground a creature stands on and their
+    elevation is a rules answer.
+    """
+    return (name or "").startswith(SETPIECE_PREFIX)
+
+
+def setpiece_slug(name: str) -> str:
+    """The landmark a square belongs to, or "" if it belongs to none."""
+    return (name or "")[len(SETPIECE_PREFIX):] if is_setpiece(name) else ""
+
+
 def occludes_floor(name: str) -> bool:
     """Would this skin's shape stand in the way on a square you can walk on?
 

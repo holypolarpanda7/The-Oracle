@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional, Sequence
 
 #: Rotation about the vertical axis. 45° puts the board corner-on, so both wall
@@ -770,6 +771,105 @@ def _prism(face, cx: float, cz: float, r: float, y1: float,
         face([(ax, y0, az), (ax, y1, az), (bx, y1, bz), (bx, y0, bz)])
 
 
+@lru_cache(maxsize=32)
+def _obj_triangles(path: str) -> tuple[tuple[tuple[float, float, float], ...], ...]:
+    """An OBJ's faces as triangles, in the file's own units.
+
+    Deliberately minimal: ``v`` and ``f`` and nothing else. No materials, no
+    normals, no texture coordinates — the geometry here is a DEPTH OCCLUDER,
+    and the painted layer supplies every appearance the board ever shows. That
+    is also why the catalogue prefers OBJ over glTF: this is the whole loader,
+    and it needs no dependency the server did not already have.
+
+    Faces of more than three vertices are fanned, matching what ``face()``
+    does with a polygon everywhere else on the board.
+    """
+    verts: list[tuple[float, float, float]] = []
+    tris: list[tuple[tuple[float, float, float], ...]] = []
+    try:
+        with open(path, "r", errors="ignore") as fh:
+            for line in fh:
+                if line.startswith("v "):
+                    p = line.split()
+                    if len(p) >= 4:
+                        try:
+                            verts.append((float(p[1]), float(p[2]), float(p[3])))
+                        except ValueError:
+                            pass
+                elif line.startswith("f "):
+                    idx: list[int] = []
+                    for tok in line.split()[1:]:
+                        # "f v/vt/vn" — only the vertex index is wanted.
+                        head = tok.split("/")[0]
+                        try:
+                            i = int(head)
+                        except ValueError:
+                            continue
+                        # OBJ is 1-based and allows NEGATIVE indices counting
+                        # back from the newest vertex. Reading a -1 as an
+                        # absolute index silently builds a mesh out of the
+                        # wrong corners, which looks like a broken model rather
+                        # than a broken parser.
+                        idx.append(i - 1 if i > 0 else len(verts) + i)
+                    for k in range(1, len(idx) - 1):
+                        try:
+                            tris.append((verts[idx[0]], verts[idx[k]],
+                                         verts[idx[k + 1]]))
+                        except IndexError:
+                            continue
+    except OSError:
+        return ()
+    return tuple(tris)
+
+
+def setpiece_triangles(inst: dict, mesh_file: str, *,
+                       floor_y: float = 0.0) -> list[tuple[tuple[float, float, float], ...]]:
+    """A landmark's triangles placed on the board, in board units.
+
+    The transform is fixed and short, and every term of it comes from the
+    server: ``scale`` and ``pivot`` are measured off this same file by
+    :func:`vtt.setpieces.mesh_fit`, so there is no arithmetic here for the
+    browser to arrive at differently — it applies the identical five steps to
+    the identical numbers.
+
+        scale -> centre on the footprint -> yaw -> stand on the floor
+
+    The yaw is the piece's own ``yaw_fix`` (which way the model was authored)
+    plus the quarter turn it was PLACED at, and it turns about the footprint's
+    centre. Rotating the mesh without rotating its tiles is the bug
+    ``_turned`` exists to prevent, and this is the other half of it.
+    """
+    tris = _obj_triangles(mesh_file)
+    if not tris:
+        return []
+    s = float(inst.get("scale") or 0.0)
+    if s <= 0:
+        return []
+    px, py, pz = (list(inst.get("pivot") or (0.0, 0.0, 0.0)) + [0.0, 0.0, 0.0])[:3]
+    up_z = str(inst.get("up") or "y") == "z"
+    yaw = math.radians(((int(inst.get("yaw_fix") or 0)
+                         + int(inst.get("yaw") or 0)) % 360))
+    ca, sa = math.cos(yaw), math.sin(yaw)
+    # The footprint's centre, in board squares. Half a square per unit width is
+    # what puts an even-sided landmark on the seam and an odd-sided one on the
+    # middle square's own centre — the same reason structures.py insists a post
+    # tower's footprint is odd.
+    cx = float(inst.get("x") or 0) + float(inst.get("w") or 1) / 2.0
+    cz = float(inst.get("y") or 0) + float(inst.get("d") or 1) / 2.0
+    out: list[tuple[tuple[float, float, float], ...]] = []
+    for tri in tris:
+        pts: list[tuple[float, float, float]] = []
+        for vx, vy, vz in tri:
+            if up_z:
+                vy, vz = vz, -vy
+            x = vx * s - px
+            y = vy * s - py
+            z = vz * s - pz
+            pts.append((cx + x * ca - z * sa, floor_y + y, cz + x * sa + z * ca))
+        out.append(tuple(pts))
+    return out
+
+
 def terrain_image(rows: Sequence[str], *, colour_of, **kw) -> bytes:
     """The board painted in its own terrain colours. PNG bytes.
 
@@ -809,7 +909,7 @@ def coverage_mask(rows: Sequence[str], **kw) -> bytes:
 
 
 def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
-                skin_of=None, elevation=None, shells=None,
+                skin_of=None, elevation=None, shells=None, setpieces=None,
                 _mask_only: bool = False, _colour_of=None,
                 square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
@@ -882,6 +982,16 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
         (eff_height(rows[z][x], x, z) + int(elev.get(f"{x},{z}", 0) or 0)
          for z in range(h_rows) for x in range(len(rows[z]))),
         default=0))
+    # A landmark's height belongs to the FRAME, not to any square. Its tiles
+    # say what standing on them costs and nothing about how far up the mesh
+    # goes, so a sixty-foot tree over a square of open ground contributes zero
+    # here — and comes back with its crown cropped off, which is exactly what a
+    # 26-ft mast did before skin heights were counted.
+    for _inst in (setpieces or []):
+        base = int(elev.get(f"{int(_inst.get('x') or 0)},"
+                            f"{int(_inst.get('y') or 0)}", 0) or 0)
+        tallest = max(tallest,
+                      units(float(_inst.get("height_ft") or 0) + base))
     b = bounds_of(w_cols, h_rows, tallest)
 
     scale = px_per_square
@@ -1050,6 +1160,13 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 shade(TOP_TINT)
             if ft <= 0:
                 continue
+            if _skins.is_setpiece(sk):
+                # The landmark's own mesh is this square's standing geometry.
+                # Drawing the tile's shape as well puts a statue inside a
+                # pillar — and the floor above has already been laid, which is
+                # the half that must NOT be skipped: a set piece's walkable
+                # squares are real ground at a real elevation.
+                continue
             sk_vars = _skins.variants_of(sk)
             if sk_vars:
                 # A skin's silhouette wins over everything, INCLUDING the
@@ -1118,6 +1235,34 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 m = 0.1
                 _box(face, x + m, x + 1 - m, z + m, z + 1 - m, here + top,
                      y0=here, shade=shade)
+
+    # The landmarks. Drawn after the squares because a mesh is not a square's
+    # geometry and has no place in a traversal ordered by x + z — the z-buffer
+    # settles the overlap, exactly as it does for the shells below.
+    for inst in (setpieces or []):
+        # Resolved here rather than demanded from the caller, so ``state()``'s
+        # own list can be handed straight in — the arrangement ``decor`` and
+        # ``shells`` already have. The URL in the instance is for the browser;
+        # the server needs the file it was copied from.
+        path = inst.get("_file")
+        if not path:
+            from . import setpieces as _sp
+            found = _sp.mesh_path(str(inst.get("slug") or ""))
+            path = str(found) if found is not None else ""
+        if not path:
+            continue
+        ix = int(inst.get("x") or 0)
+        iz = int(inst.get("y") or 0)
+        if shade:
+            shade(TOP_TINT)
+        if _colour_of:
+            # The code the piece STAMPS, not the code under its origin — most
+            # of a footprint is reserved ground now, so the corner square is
+            # usually one the landmark never touched.
+            cur_colour[0] = _colour_of(str(inst.get("code") or "#"), "")
+        base = units(int(elev.get(f"{ix},{iz}", 0) or 0))
+        for tri in setpiece_triangles(inst, str(path), floor_y=base):
+            face(tri)
 
     # The vessel shells. One traced outline per hull rather than a side per
     # square — see vtt.hull for why that cannot be done a square at a time.
