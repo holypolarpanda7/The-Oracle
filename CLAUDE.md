@@ -436,6 +436,19 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   three rewrites of the tent still came back as pens. A doorway counts as part
   of the wall it interrupts (the project's existing rule about doors), or a
   tent takes its own flap for the weather and pitches the roof at the way in.
+  **An outward skin does not ROLL for its arrangement**: 0 is the plain run and
+  1 is the CORNER (`out_corner`), because four of the twelve squares in a
+  tent's ring face the weather on two sides at once and a shape aimed at one of
+  them leaves the other a sheer face — two pitched sides and two cliffs.
+- **A THIN wall is not the skin of a mass.** `wall_parts` draws a slab hugging
+  each open side, which is right for the face of a thick band and wrong for a
+  wall with two faces: hugging BOTH sides of a one-square bulkhead draws two
+  slabs with a slot down the middle, which is how a ship's deckhouse came back
+  with double walls and a corridor between them. Two or more open sides means a
+  thin wall, and a thin wall is drawn on its CENTRELINE — a hub plus an arm
+  toward each square it carries on into — so it is one wall, mitres its own
+  corners, and stops cleanly at a stub end. It keeps less top face than a full
+  cube, so the tray this rule exists to prevent stays prevented.
 - **A MASS picks its shape from a coarse hash; an OBJECT picks per square —
   and a boulder is an OBJECT.** `variant_smooth` samples over two-square
   blocks. Only rock bordering open floor is drawn, so a one-square shell whose
@@ -452,20 +465,32 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   silhouettes — a cliff fills its square so neighbours merge into a face, a
   boulder stands alone and needs an outline — so sharing one drew every fallen
   stone as a full-square fourteen-foot block.
-- **A vessel's outline is a STAIRCASE, and its corners are cut.** A deck is
-  carved out of squares, so a hull given a vertical side is a sawtooth.
-  `isocam.footprint` cuts every corner where two adjacent sides both meet the
-  outside — that is precisely the outer corner of a stair step — at full depth,
-  so a one-square step is drawn as the diagonal it means and meets its
-  neighbour's exactly. Only where a skin declares its own side, so no board
-  that did not ask for it changed. **The taper is nearly nothing (`HULL_TAPER`,
-  a tenth of a square) and that is measured.** `footprint` mitres the bottom at
-  each vertex so a square whose outline turns still closes, but it cannot mitre
-  ACROSS squares — at a step the diagonal belongs to one square and the run
-  beside it to the next, each mitres correctly alone, and their bottoms part
-  company. At 0.42 every step of the bow opened a three-foot wedge of sky and a
-  skyship read as three hull plates hung under one deck. Same lesson as
-  `SKIRT_INSET` board-wide: flush faces meet.
+- **A thing bigger than a square cannot be drawn a square at a time.** A
+  vessel's deck is carved out of a grid, so its outline is a staircase, and
+  cutting each step's outer corner within its own square joins the steps into a
+  line — a one-square line. Joining the corners FARTHEST from the hull's middle
+  needs the outline as a LOOP, and no square can see one. So `vtt/hull.py`
+  traces it: the boundary of each vessel-bodied region, the notch vertices
+  dropped where the step is short (`MAX_SMOOTH_RUN`, or a chord swings across
+  the whole waist and hangs two square yards of hull over the water), the
+  triangle each dropped notch gave up kept so the deck reaches its own hull,
+  and the bottom mitred round the whole loop — which per-square geometry could
+  never do, because the mitre has to reach ACROSS squares.
+  **It is traced once on the server and SHIPPED in `state()`**, and that is the
+  point: the shape tables are data and so can be generated, the camera is
+  arithmetic and so has to be gated, but this is an algorithm over the board,
+  and the only way to add one without giving two languages a chance to disagree
+  is to have one of them do it. Two traps, both hit: a vessel's body is full of
+  HOLES (the mast's square, the cabin's, every crate) so only the outer loop is
+  the hull; and a boundary can PINCH, where the walker must always turn as
+  tightly as it can back toward the region or the outline breaks into
+  fragments that then draw little hulls inside the deck.
+  **The taper is nearly nothing (`HULL_TAPER`, a tenth of a square) and that is
+  measured**: the mitre closes a corner within one square and could not reach
+  across to the next, so at 0.42 every step of the bow opened a three-foot
+  wedge of sky. Same lesson as `SKIRT_INSET` board-wide: flush faces meet.
+  (The per-square chamfer that came first was deleted, not left standing. A
+  code path nothing reaches is a trap for whoever comes next.)
 - **A skyship is not a boat that happens to be up.** They shared a hull plan
   and a deck skin and came back the same vessel. A sea hull is fine at the bow,
   full through the waist and flat at the transom, and sits IN the water; an

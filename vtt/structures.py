@@ -313,7 +313,8 @@ def watchtower(g: Grid, rng: random.Random, out, x0: int, y0: int, *,
 
 
 def cabin(g: Grid, rng: random.Random, x0: int, y0: int, *,
-          skin: str = "hull", on: tuple[str, ...] = ("b",)) -> Built:
+          skin: str = "hull", roof: str = "cabin-roof",
+          on: tuple[str, ...] = ("b",)) -> Built:
     """A deckhouse: the captain's quarters, or a hold companionway.
 
     Same shape as any other shelter; it exists as its own name because a ship's
@@ -323,4 +324,4 @@ def cabin(g: Grid, rng: random.Random, x0: int, y0: int, *,
     w = rng.choice((4, 5))
     h = rng.choice((4, 4, 5))
     return shelter(g, rng, x0, y0, w, h, skin=skin, on=on,
-                   interior_floor="b")
+                   interior_floor="b", interior_skin=roof)

@@ -32,7 +32,7 @@ import type { VttScene } from "./types";
 // a drift waiting to happen, and the failure mode is invisible: the painting
 // lands on furniture the player is not looking at.
 export {
-  CORNER_CHAMFER, COVER_HEIGHT_FT, DECOR_KINDS, HEIGHT_JITTER, HOLE_CODES,
+  COVER_HEIGHT_FT, DECOR_KINDS, HEIGHT_JITTER, HOLE_CODES,
   MAX_DECOR_HEIGHT_FT, OBJECT_VARIANTS, PILLAR_RADIUS, SKINS, SKIRT_FT,
   SKIRT_INSET, STRUCTURE_CODES,
   TILE_HEIGHT_FT, WALL_THICKNESS, isSolid,
@@ -114,11 +114,33 @@ const OUT_DIRS: readonly (readonly [number, number])[] =
  *  Mirrors `out_axis` in vtt/isocam.py. */
 export function outAxis(
   inside: (x: number, z: number) => boolean, x: number, z: number,
+  corner = false,
 ): number {
-  for (let t = 0; t < 4; t++) {
-    if (!inside(x + OUT_DIRS[t][0], z + OUT_DIRS[t][1])) return t;
+  const outs = OUT_DIRS.map(([dx, dz]) => !inside(x + dx, z + dz));
+  if (corner) {
+    // A part is authored facing +z, and a quarter turn sends its +x side one
+    // step back round the compass — so a corner arrangement wants a turn where
+    // both of those land on real outdoors.
+    for (let t = 0; t < 4; t++) if (outs[t] && outs[(t + 3) % 4]) return t;
   }
+  for (let t = 0; t < 4; t++) if (outs[t]) return t;
   return 0;
+}
+
+/** Does this square face the outdoors on two sides that MEET?
+ *
+ *  A tent's corner. Four of the twelve squares in a tent's wall ring are one,
+ *  and a shape aimed at only one of their two outsides leaves the other a
+ *  sheer face — so every tent had two pitched sides and two cliffs, which is
+ *  what "the tents need corner pieces" means. Mirrors `out_corner` in
+ *  vtt/isocam.py. */
+export function outCorner(
+  inside: (x: number, z: number) => boolean, x: number, z: number,
+): boolean {
+  const outs = OUT_DIRS.map(([dx, dz]) => !inside(x + dx, z + dz));
+  if (outs.filter(Boolean).length !== 2) return false;
+  for (let t = 0; t < 4; t++) if (outs[t] && outs[(t + 3) % 4]) return true;
+  return false;
 }
 
 /** This square's skin name, or "" for the code's own default look.
@@ -254,74 +276,21 @@ function outlineBottoms(pts: [number, number][], ends: boolean[],
 /** This square's floor outline, which edges face the outside, and where the
  *  bottom of each side sits.
  *
- *  With no chamfer and nothing ending it is exactly the unit square the floor
- *  has always been. Corner `i` is cut when both of the sides meeting at it end
- *  — precisely the outer corner of a stair step, and cutting it is what joins
- *  a carved-out hull's steps into one line. Mirrors `footprint` in
- *  vtt/isocam.py; the two must agree or the painting is conditioned on a
- *  different vessel from the one on screen. */
+ *  A square's outline is its square. There WAS a corner chamfer here, cutting
+ *  each stair step's outer corner so a carved hull read as a line rather than
+ *  a flight of steps — it worked, and it was superseded: a one-square cut is
+ *  still a one-square answer, and joining the corners farthest from a hull's
+ *  middle needs the outline as a LOOP, which no square can see. That is
+ *  `scene.shells`, traced once on the server. Removed rather than left
+ *  standing, because a code path nothing reaches is a trap for whoever comes
+ *  next. Mirrors `footprint` in vtt/isocam.py. */
 export function hullFootprint(
-  eW: boolean, eE: boolean, eN: boolean, eS: boolean, chamfer = 0, inset = 0,
+  eW: boolean, eE: boolean, eN: boolean, eS: boolean, inset = 0,
 ): { pts: [number, number][]; ends: boolean[]; low: [number, number][] } {
   const sideEnds = [eW, eS, eE, eN];        // edge i runs corner i -> corner i+1
-  if (chamfer <= 0 || !(eW || eE || eN || eS)) {
-    const square = CORNERS.map(([x, z]) => [x, z] as [number, number]);
-    return { pts: square, ends: sideEnds,
-             low: outlineBottoms(square, sideEnds, inset) };
-  }
-  const cornerEnds = [eW && eN, eW && eS, eE && eS, eE && eN];
-  const cuts = cornerEnds.map((c) => (c ? chamfer : 0));
-  // Two cut corners on one edge can between them eat more than the edge is
-  // long. Computed as a factor per corner and applied afterwards, so the answer
-  // does not depend on which edge was looked at first.
-  const scale = [1, 1, 1, 1];
-  for (let j = 0; j < 4; j++) {
-    const k = j;
-    const m = (j + 1) % 4;
-    const total = cuts[k] + cuts[m];
-    if (total > 1) {
-      const f = 1 / total;
-      scale[k] = Math.min(scale[k], f);
-      scale[m] = Math.min(scale[m], f);
-    }
-  }
-  for (let i = 0; i < 4; i++) cuts[i] *= scale[i];
-
-  const pts: [number, number][] = [];
-  const ends: boolean[] = [];
-  const push = (p: [number, number], e: boolean) => {
-    // A full-depth cut lands exactly on a neighbouring corner. Merging the
-    // duplicate keeps the outline free of zero-length edges — the flag of the
-    // LATER point wins, because that is the edge leaving the merged vertex.
-    const last = pts[pts.length - 1];
-    if (last && Math.abs(last[0] - p[0]) < 1e-9 && Math.abs(last[1] - p[1]) < 1e-9) {
-      ends[ends.length - 1] = e;
-      return;
-    }
-    pts.push(p);
-    ends.push(e);
-  };
-  for (let i = 0; i < 4; i++) {
-    const prev = CORNERS[(i + 3) % 4];
-    const cur = CORNERS[i];
-    const nxt = CORNERS[(i + 1) % 4];
-    const t = cuts[i];
-    if (t > 0) {
-      push([cur[0] + (prev[0] - cur[0]) * t, cur[1] + (prev[1] - cur[1]) * t], true);
-      push([cur[0] + (nxt[0] - cur[0]) * t, cur[1] + (nxt[1] - cur[1]) * t],
-           sideEnds[i]);
-    } else {
-      push([cur[0], cur[1]], sideEnds[i]);
-    }
-  }
-  const first = pts[0];
-  const last = pts[pts.length - 1];
-  if (pts.length > 2 && Math.abs(first[0] - last[0]) < 1e-9
-      && Math.abs(first[1] - last[1]) < 1e-9) {
-    pts.pop();
-    ends.pop();
-  }
-  return { pts, ends, low: outlineBottoms(pts, ends, inset) };
+  const square = CORNERS.map(([x, z]) => [x, z] as [number, number]);
+  return { pts: square, ends: sideEnds,
+           low: outlineBottoms(square, sideEnds, inset) };
 }
 
 /** Draw at exactly the stated height, or with a little per-instance life?
@@ -406,16 +375,39 @@ export function tileHeightFt(code: string): number {
  *  seam. What you actually see of a thick wall is the skin where it meets open
  *  floor — and a buried square draws NOTHING, which is most of a thick band.
  *
+ *  **A THIN wall is a different thing and needs the other treatment.** Where a
+ *  square has floor on more than one side it is not the skin of a mass but a
+ *  wall with two faces: a cabin's bulkhead, a ruin's standing course. Hugging
+ *  each open side draws TWO slabs with a slot down the middle, which is
+ *  exactly how a ship's deckhouse came back with double walls and a corridor
+ *  between them. So a thin wall is drawn on its CENTRELINE instead — a hub and
+ *  an arm toward each square the wall carries on into — which gives one wall,
+ *  mitres its own corners, and stops cleanly at a stub end.
+ *
  *  Mirrors `wall_parts` in vtt/isocam.py. */
 export function wallParts(isOpen: (x: number, z: number) => boolean,
                           x: number, z: number):
     (readonly [number, number, number, number])[] {
   const t = _THICK;
+  const n = isOpen(x, z - 1);
+  const s = isOpen(x, z + 1);
+  const w = isOpen(x - 1, z);
+  const e = isOpen(x + 1, z);
   const out: (readonly [number, number, number, number])[] = [];
-  if (isOpen(x, z - 1)) out.push([0, 1, 0, t]);
-  if (isOpen(x, z + 1)) out.push([0, 1, 1 - t, 1]);
-  if (isOpen(x - 1, z)) out.push([0, t, 0, 1]);
-  if (isOpen(x + 1, z)) out.push([1 - t, 1, 0, 1]);
+  if ((n ? 1 : 0) + (s ? 1 : 0) + (w ? 1 : 0) + (e ? 1 : 0) >= 2) {
+    const lo = 0.5 - t / 2;
+    const hi = 0.5 + t / 2;
+    out.push([lo, hi, lo, hi]);                     // the hub
+    if (!n) out.push([lo, hi, 0, hi]);              // the wall carries on
+    if (!s) out.push([lo, hi, lo, 1]);
+    if (!w) out.push([0, hi, lo, hi]);
+    if (!e) out.push([lo, 1, lo, hi]);
+    return out;
+  }
+  if (n) out.push([0, 1, 0, t]);
+  if (s) out.push([0, 1, 1 - t, 1]);
+  if (w) out.push([0, t, 0, 1]);
+  if (e) out.push([1 - t, 1, 0, 1]);
   return out;
 }
 

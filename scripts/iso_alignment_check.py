@@ -54,8 +54,8 @@ SQUARES = [(0, 0), (1, 0), (0, 1), (3, 7), (12, 5), (59, 39), (40, 40), (7, 123)
 
 #: Every way a square's floor can meet the outside — all sixteen, because the
 #: outline is worked out from four booleans and there is no reason to sample.
-#: This is the function that turns a vessel's stair-stepped deck into one
-#: continuous diagonal, and it is hand-written twice.
+#: The mitred bottoms are the interesting half: a per-edge offset and a mitred
+#: one differ at every turn, and this is hand-written twice.
 ENDS = [(bool(m & 1), bool(m & 2), bool(m & 4), bool(m & 8)) for m in range(16)]
 
 #: A solid part put through every quarter turn. Rotation used to be four
@@ -72,7 +72,6 @@ _TS = r"""
 import { project, unproject, boundsOf, YAW_DEG, PITCH_DEG } from "./isocam.js";
 import {
   variantOf, yawOf, heightScale, hullFootprint, outAxis, rotatePart, sameBody,
-  CORNER_CHAMFER,
 } from "./boardView.js";
 const samples = %s, unprojects = %s, bounds = %s, squares = %s;
 const ends = %s, solid = %s, inset = %s;
@@ -86,9 +85,8 @@ console.log(JSON.stringify({
   // "A" quotes a cover height and must never jitter; "#" is free to.
   heightA: squares.map(([x, z]) => heightScale("A", x, z)),
   heightW: squares.map(([x, z]) => heightScale("#", x, z)),
-  chamfer: CORNER_CHAMFER,
   foot: ends.map(([w, e, n, s]) => {
-    const f = hullFootprint(w, e, n, s, CORNER_CHAMFER, inset);
+    const f = hullFootprint(w, e, n, s, inset);
     return [f.pts, f.ends, f.low];
   }),
   // Which way is the outdoors, for every way a square can be enclosed.
@@ -234,11 +232,9 @@ def main(argv=None) -> int:
     # function rather than data — so it cannot be generated and is written
     # twice. All sixteen ways a square can meet the outside, because there are
     # only sixteen.
-    print("\nfootprint (the cut corners that join a hull's steps)")
-    check("corner chamfer", py.CORNER_CHAMFER, ts["chamfer"], 0)
+    print("\nfootprint (which sides are closed, and where their bottoms sit)")
     for (e_w, e_e, e_n, e_s), t, turns in zip(ENDS, ts["foot"], ts["outward"]):
-        pts, ends, low = py.footprint(e_w, e_e, e_n, e_s, py.CORNER_CHAMFER,
-                                      SKIRT_INSET_PROBE)
+        pts, ends, low = py.footprint(e_w, e_e, e_n, e_s, SKIRT_INSET_PROBE)
         tag = "".join(c for c, on in zip("WENS", (e_w, e_e, e_n, e_s)) if on) or "-"
         check(f"[{tag}] vertices", len(pts), len(t[0]), 0)
         for i, ((px, pz), tp) in enumerate(zip(pts, t[0])):

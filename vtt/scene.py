@@ -893,6 +893,32 @@ class VttEngine:
                                           style=row.board_style or ""),
                 "squares": dict(row.skins or {})}
 
+    def shells_for(self, map_id: int) -> list[dict]:
+        """Every vessel SHELL on this board — one traced hull per body.
+
+        A hull is bigger than a square, so it cannot be drawn a square at a
+        time: joining the corners farthest from the middle needs the outline as
+        a loop. It is traced HERE, once, and both renderers draw the answer
+        rather than working one out — which is the only way to add geometry
+        this shape without giving the depth map and the browser two chances to
+        disagree. See :mod:`vtt.hull`.
+        """
+        from . import hull as _hull
+        from . import skins as _skins
+
+        row = self.get_scene(map_id)
+        if row is None:
+            return []
+        codes = _skins.skins_for(row.archetype or "", style=row.board_style or "")
+        squares = dict(row.skins or {})
+        if not any(_skins.body_of(n) for n in
+                   list(codes.values()) + list(squares.values())):
+            return []                      # not a vessel; nothing to trace
+        return _hull.shells(
+            list(row.terrain or []),
+            lambda c, x, z: _skins.skin_at(c, x, z, codes=codes, squares=squares),
+            row.elevation or {})
+
     def materials_for(self, map_id: int) -> dict[str, int]:
         """The surface swatch for every tile code on this board, {code: id}.
 
@@ -3289,6 +3315,9 @@ class VttEngine:
             # What the board is MADE of, as opposed to what it does. Material
             # and silhouette only — no rule reads a skin. See vtt/skins.py.
             "skins": self.skins_for(map_id),
+            # A vessel's hull, traced as one outline rather than a side per
+            # square. Empty on every board that is not a ship. See vtt/hull.py.
+            "shells": self.shells_for(map_id),
             # The route the last walk actually took, so a viewer can animate a
             # creature AROUND the wall rather than through it.
             "last_move": self.last_move(map_id),

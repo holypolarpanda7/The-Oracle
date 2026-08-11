@@ -154,40 +154,38 @@ def main() -> int:
           "and a quarter turn takes every vertex with it")
 
     head(6, "a hull's outline is joined, not a staircase")
-    # A deck is carved out of squares, so its edge steps. Cutting the outer
-    # corner of each step is what makes the steps one line: the cut runs
-    # exactly corner to corner, so a square's diagonal meets its neighbour's.
-    pts, ends, low = footprint(False, True, True, False, 1.0)
-    check(len(pts) == 3, "a step's outer corner is cut clean away",
-          f"{len(pts)} vertices instead of 4")
-    diag = [i for i, e in enumerate(ends) if e]
-    check(len(diag) == 1, "leaving ONE closed edge — the diagonal itself")
-    a, b = pts[diag[0]], pts[(diag[0] + 1) % len(pts)]
-    check(abs(abs(a[0] - b[0]) - 1.0) < 1e-9 and abs(abs(a[1] - b[1]) - 1.0) < 1e-9,
-          "which runs corner to corner, so it meets the next square's exactly",
-          f"{a} -> {b}")
-    plain, plain_ends, _plain_low = footprint(False, False, False, False, 1.0)
-    check(len(plain) == 4 and not any(plain_ends),
-          "a square in open floor is untouched — this changed no other board")
-    # The bottom of a side is MITRED at every vertex. Offsetting each side along
-    # its own normal keeps a straight run coplanar and opens a wedge wherever
-    # the outline turns, which on a hull is every corner of the bow.
-    _p, _e, mitred = footprint(True, False, True, False, 1.0, 0.4)
-    corner = [i for i, (a, b) in enumerate(zip(_p, mitred)) if a != b]
-    check(len(corner) >= 2, "and its side's bottom is pulled in, mitred at the turns",
-          f"{len(corner)} of {len(_p)} vertices moved")
-    shared = [i for i in range(len(_p))
-              if _e[i] and _e[i - 1]]
-    check(all(abs(mitred[i][0] - _p[i][0]) > 1e-9
-              or abs(mitred[i][1] - _p[i][1]) > 1e-9 for i in shared),
-          "so two sides meeting at a vertex share ONE bottom point")
-    # Every vessel skin is one BODY, so no side is drawn inside the ship.
-    ship = [n for n in ("sea-deck", "sky-deck", "railing", "sky-rail", "mast",
-                        "hull", "plated-deck", "chitin-rail")]
-    check(all(S.same_body(ship[0], n) for n in ship),
-          "a deck, its rail, its mast and its cabin are ONE hull",
-          "so the deck grows no side against its own mast")
-    check(not S.same_body("sea-deck", ""), "and the water beside it is not")
+    # A deck is carved out of squares, so its edge steps. Joining the corners
+    # FARTHEST from the middle is what makes the steps one line — and it cannot
+    # be done a square at a time, because no square can see the outline. So the
+    # server traces it once and every renderer draws the answer.
+    from vtt.hull import shells
+    gen = generate_map("ship", width=28, height=20, seed=5)
+    codes = S.skins_for("ship")
+    def sk(c, x, z, codes=codes, g=gen):
+        return S.skin_at(c, x, z, codes=codes, squares=g.skins)
+    hulls = shells(gen.grid.rows, sk, gen.elevation)
+    check(len(hulls) == 1, "one ship, ONE shell",
+          f"{len(hulls)} traced — the mast, the cabin and every crate punch a "
+          f"hole in the body, and only the outer boundary is the hull")
+    h = hulls[0]
+    check(len(h["loop"]) >= 8 and len(h["loop"]) < 40,
+          "traced as a loop of corner points", f'{len(h["loop"])} vertices')
+    diag = sum(1 for i, (ax, az) in enumerate(h["loop"])
+               if (lambda b: b[0] != ax and b[1] != az)(
+                   h["loop"][(i + 1) % len(h["loop"])]))
+    check(diag > 0, "with real diagonals, not only square steps",
+          f"{diag} of {len(h['loop'])} runs")
+    check(bool(h["fill"]), "and the deck reaches out to meet it",
+          f'{len(h["fill"])} triangles a smoothed notch gave up')
+    check(len(h["low"]) == len(h["loop"]),
+          "its bottom is the same loop, mitred at every vertex")
+    check(all(S.same_body(a, b) for a in ("sea-deck", "railing", "mast", "hull")
+              for b in ("sea-deck", "railing", "mast", "hull")),
+          "a deck, its rail, its mast and its cabin are ONE hull")
+    check(not shells(generate_map("cave", width=26, height=20, seed=5).grid.rows,
+                     lambda c, x, z: S.skin_at(c, x, z,
+                                               codes=S.skins_for("cave"))),
+          "and a board with no vessel on it traces nothing")
 
     head(7, "a tent is somewhere you can BE, not something you stand on")
     import random

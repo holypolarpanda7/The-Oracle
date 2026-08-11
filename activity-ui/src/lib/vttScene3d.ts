@@ -30,9 +30,9 @@
 import * as THREE from "three";
 import type { VttScene } from "./types";
 import {
-  CELL, CORNER_CHAMFER, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS,
+  CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS,
   SKIRT_FT, SKIRT_INSET,
-  STRUCTURE_CODES, exposedRock, hullFootprint, isSolid, materialSlot, outAxis, runAxis,
+  STRUCTURE_CODES, exposedRock, hullFootprint, isSolid, materialSlot, outAxis, outCorner, runAxis,
   sameBody,
   skinAt, skinHeightScale, variantSmooth,
   rotatePart,
@@ -651,8 +651,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // which is how a vessel gets a hull: deep water is not a hole, so a
         // sea ship used to have no sides at all.
         const here = floorY(x, z) ?? 0;
-        const skirtFt = shape?.skirtFt || SKIRT_FT;
-        const inset = shape?.skirtFt ? shape.skirtInset : SKIRT_INSET;
         // Sides are indexed the way `hullFootprint` winds them: W, S, E, N.
         const nbrs: [number, number][] =
           [[x - 1, z], [x, z + 1], [x + 1, z], [x, z - 1]];
@@ -660,8 +658,12 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         const sideDrop: number[] = [];
         for (const [nx2, nz2] of nbrs) {
           if (shape?.skirtFt) {
-            sideEnds.push(!sameBody(skinOf(nx2, nz2), skin));
-            sideDrop.push(here - heightUnits(scene, skirtFt));
+            // A VESSEL, and its side is not this square's business: the hull
+            // is one traced SHELL over the whole body (scene.shells), because
+            // joining the corners farthest from the middle needs the outline
+            // as a loop and no square can see one.
+            sideEnds.push(false);
+            sideDrop.push(here);
             continue;
           }
           const below = floorY(nx2, nz2);
@@ -677,8 +679,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           }
         }
         const { pts, ends: edgeEnds, low } = hullFootprint(
-          sideEnds[0], sideEnds[2], sideEnds[3], sideEnds[1],
-          shape?.skirtFt ? CORNER_CHAMFER : 0, inset);
+          sideEnds[0], sideEnds[2], sideEnds[3], sideEnds[1], SKIRT_INSET);
 
         // Floor under everything: an object stands ON a square, and without
         // this a pillar's base is a hole in the ground. Cut to the outline, so
@@ -701,7 +702,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           // match up one-for-one with the four compass drops; a vessel has one
           // depth all round, which is why the chamfer is only offered where a
           // skin declares its own side.
-          const drop = shape?.skirtFt ? sideDrop[0] : sideDrop[k];
+          const drop = sideDrop[k];
           // The bottom comes from `hullFootprint`, which MITRES it at every
           // vertex — offsetting each side along its own normal keeps a straight
           // run coplanar and opens a wedge of daylight wherever the outline
@@ -736,7 +737,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             if (!STRUCTURE_CODES.has(code) || exposedRock(isOpen, x, z)) {
               const vs = shape.variants;
               const pick = shape.smooth ? variantSmooth : variantOf;
-              const parts = vs[pick(x, z, vs.length)];
+              let parts = vs[pick(x, z, vs.length)];
               // "Part of the same structure" means the same BODY, a solid
               // neighbour, or an aperture. The second lets a DOORWAY find its
               // wall — its neighbours are the tower's own masonry, a different
@@ -749,7 +750,15 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
                 const c = at(ax, az);
                 return c !== null && (STRUCTURE_CODES.has(c) || APERTURES.has(c));
               };
-              const turns = shape.outward ? outAxis(same, x, z)
+              // An outward skin does NOT roll for its arrangement: which one
+              // it wears is a fact about where the square sits. Arrangement 0
+              // is the plain run, 1 is the CORNER — aimed at a single outside,
+              // the other side of a corner is left a sheer face, and a tent
+              // had two pitched sides and two cliffs.
+              const atCorner = shape.outward && vs.length > 1
+                && outCorner(same, x, z);
+              if (shape.outward) parts = vs[atCorner ? 1 : 0];
+              const turns = shape.outward ? outAxis(same, x, z, atCorner)
                 : shape.directional ? runAxis(same, x, z)
                 : yawOf(x, z);
               drawParts(mb, parts, turns, x, z, here, top - here, color);
@@ -792,6 +801,34 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           panelBlock(mb, x + 0.12, x + 0.88, z + 0.12, z + 0.88,
                      here, here + 0.22, color);
         }
+      }
+    }
+
+    // Vessel hulls. One traced outline per ship rather than a side per square
+    // — see vtt/hull.py for why that cannot be done a square at a time. The
+    // server ships the answer, so this draws and never derives.
+    for (const shell of scene.shells ?? []) {
+      const loop = shell.loop ?? [];
+      const low2 = shell.low ?? loop;
+      if (loop.length < 3) continue;
+      const slot = shell.slot || "b";
+      const mb = builderFor(slot);
+      mb.at = 0;
+      const col = new THREE.Color(
+        textured.has(slot) ? "#ffffff" : tileStyle(slot.split("@")[0]).fill);
+      const top = base + heightUnits(scene, shell.top_ft || 0);
+      const drop = top - heightUnits(scene, shell.drop_ft || 0);
+      // The deck out to its own hull: each triangle is what a smoothed notch
+      // gave up, so without them the planking stops short of the line.
+      for (const tri of shell.fill ?? []) {
+        mb.quad(v3(tri[0][0], top, tri[0][1]), v3(tri[1][0], top, tri[1][1]),
+                v3(tri[2][0], top, tri[2][1]), v3(tri[0][0], top, tri[0][1]), col);
+      }
+      for (let i = 0; i < loop.length; i++) {
+        const j = (i + 1) % loop.length;
+        mb.quad(v3(loop[i][0], top, loop[i][1]), v3(low2[i][0], drop, low2[i][1]),
+                v3(low2[j][0], drop, low2[j][1]), v3(loop[j][0], top, loop[j][1]),
+                col);
       }
     }
 

@@ -105,7 +105,7 @@ export function isSolid(part: Part): part is SolidPart {
 def render() -> str:
     from vtt.art import STRUCTURE_CODES
     from vtt.isocam import (
-        CORNER_CHAMFER, HEIGHT_JITTER, HOLE_CODES, OBJECT_VARIANTS,
+        HEIGHT_JITTER, HOLE_CODES, OBJECT_VARIANTS,
         PILLAR_RADIUS, SKIRT_FT, SKIRT_INSET, WALL_THICKNESS,
     )
     from vtt.decor import DECOR_KINDS, MAX_DECOR_HEIGHT_FT
@@ -140,11 +140,6 @@ def render() -> str:
                  " *  edge, never toward the square's centre, so two squares along\n"
                  " *  one straight run stay coplanar. */\n"
                  f"export const SKIRT_INSET = {_num(SKIRT_INSET)};\n")
-    lines.append("/** How deep a corner is cut where a floor's outline turns away\n"
-                 " *  on both sides. A vessel's deck is carved out of squares, so\n"
-                 " *  its outline is a STAIRCASE; at 1.0 each step is drawn as the\n"
-                 " *  diagonal it means and the whole bow reads as one line. */\n"
-                 f"export const CORNER_CHAMFER = {_num(CORNER_CHAMFER)};\n")
 
     holes = ", ".join(f'"{c}"' for c in sorted(HOLE_CODES))
     lines.append("/** Codes that are a HOLE, not ground — nothing is drawn on them.\n"

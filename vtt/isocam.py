@@ -229,19 +229,43 @@ def wall_parts(is_open, x: int, z: int) -> tuple[tuple[float, float, float, floa
     notch at every seam.
 
     What you actually see of a thick wall is the skin where it meets open floor.
-    So a wall square draws a slab hugging each open side, an L where two sides
-    are open, and — the part that pays for itself — NOTHING when it is buried,
-    which is most of a thick band.
+    So a wall square draws a slab hugging its open side, and — the part that
+    pays for itself — NOTHING when it is buried, which is most of a thick band.
+
+    **A THIN wall is a different thing and needs the other treatment.** Where a
+    square has floor on more than one side it is not the skin of a mass, it is
+    a wall with two faces: a cabin's bulkhead, a ruin's standing course, a
+    stockade. Hugging each open side draws TWO slabs with a slot down the
+    middle, which is exactly how a ship's deckhouse came back with double
+    walls and a corridor between them. So a thin wall is drawn on its
+    CENTRELINE instead — a hub in the middle and an arm toward each square the
+    wall carries on into — which gives one wall, mitres its own corners, and
+    stops cleanly at a stub end. It keeps less top face than a full cube, so
+    the tray this rule exists to prevent stays prevented.
     """
     t = WALL_THICKNESS
+    n, s = is_open(x, z - 1), is_open(x, z + 1)
+    w, e = is_open(x - 1, z), is_open(x + 1, z)
     out: list[tuple[float, float, float, float]] = []
-    if is_open(x, z - 1):
+    if (n + s + w + e) >= 2:
+        lo, hi = 0.5 - t / 2, 0.5 + t / 2
+        out.append((lo, hi, lo, hi))                    # the hub
+        if not n:
+            out.append((lo, hi, 0.0, hi))               # the wall carries on
+        if not s:
+            out.append((lo, hi, lo, 1.0))
+        if not w:
+            out.append((0.0, hi, lo, hi))
+        if not e:
+            out.append((lo, 1.0, lo, hi))
+        return tuple(out)
+    if n:
         out.append((0.0, 1.0, 0.0, t))
-    if is_open(x, z + 1):
+    if s:
         out.append((0.0, 1.0, 1.0 - t, 1.0))
-    if is_open(x - 1, z):
+    if w:
         out.append((0.0, t, 0.0, 1.0))
-    if is_open(x + 1, z):
+    if e:
         out.append((1.0 - t, 1.0, 0.0, 1.0))
     return tuple(out)
 
@@ -418,7 +442,20 @@ def is_solid_part(part) -> bool:
 OUT_DIRS = ((0, 1), (-1, 0), (0, -1), (1, 0))
 
 
-def out_axis(inside, x: int, z: int) -> int:
+def out_corner(inside, x: int, z: int) -> bool:
+    """Does this square face the outdoors on two sides that MEET?
+
+    A tent's corner. Four of the twelve squares in a tent's wall ring are one,
+    and a shape aimed at only one of their two outsides leaves the other a
+    sheer face — so every tent had two pitched sides and two cliffs, which is
+    what "the tents need corner pieces" means. A corner needs its own
+    arrangement, and this is the question that selects it.
+    """
+    outs = [not inside(x + dx, z + dz) for dx, dz in OUT_DIRS]
+    return sum(outs) == 2 and any(outs[t] and outs[(t - 1) % 4] for t in range(4))
+
+
+def out_axis(inside, x: int, z: int, corner: bool = False) -> int:
     """Quarter turns that point a part at the OUTDOORS.
 
     The third orientation rule, and the one a tent needed. :func:`yaw_of` turns
@@ -430,11 +467,21 @@ def out_axis(inside, x: int, z: int) -> int:
     is the whole of what says tent.
 
     ``inside(x, z)`` says whether a neighbour belongs to the same structure.
-    Directions are tried in a fixed order so a corner — which has two outsides —
-    picks the same one every time and in both languages.
+    Directions are tried in a fixed order so a square picks the same one every
+    time and in both languages.
+
+    With ``corner``, the turn is chosen so BOTH of the arrangement's outward
+    sides land on real outdoors: a part is authored facing +z, and a quarter
+    turn sends its +x side to the direction one step back round the compass, so
+    the corner arrangement wants a turn where those two agree.
     """
-    for turns, (dx, dz) in enumerate(OUT_DIRS):
-        if not inside(x + dx, z + dz):
+    outs = [not inside(x + dx, z + dz) for dx, dz in OUT_DIRS]
+    if corner:
+        for turns in range(4):
+            if outs[turns] and outs[(turns - 1) % 4]:
+                return turns
+    for turns in range(4):
+        if outs[turns]:
             return turns
     return 0
 
@@ -461,22 +508,6 @@ def rotate_part(part, turns: int):
     return (x0, x1, z0, z1, y0, y1)
 
 
-#: How deep a corner is cut where a floor's outline turns away on both sides,
-#: as a fraction of the square.
-#:
-#: A vessel's deck is carved out of a square grid, so its outline is a
-#: STAIRCASE, and a staircase given a vertical side is a hull with a sawtooth
-#: down each side. At 1.0 the cut runs corner to corner, and a one-square step
-#: becomes a clean diagonal that meets its neighbour's exactly — so the whole
-#: bow reads as one continuous line rather than a flight of steps. Where two
-#: cut corners share an edge each is held to half of it, or the polygon would
-#: turn itself inside out.
-#:
-#: Deliberately applied only where a skin declares its own side (see
-#: `Skin.skirt_ft`): a vessel asks for this, and cutting the corners of every
-#: board that happens to sit beside a chasm is a change nobody asked for.
-#: Mirrored by CORNER_CHAMFER in activity-ui/src/lib/boardView.ts.
-CORNER_CHAMFER = 1.0
 
 #: The square's four corners, in the order the floor's top face is wound —
 #: counter-clockwise seen from above, so the face's normal points up.
@@ -531,7 +562,7 @@ def _outline_bottoms(pts, ends, inset: float):
     return out
 
 
-def footprint(e_w: bool, e_e: bool, e_n: bool, e_s: bool, chamfer: float = 0.0,
+def footprint(e_w: bool, e_e: bool, e_n: bool, e_s: bool,
               inset: float = 0.0):
     """This square's floor outline, which edges face the outside, and where the
     bottom of each side sits.
@@ -539,63 +570,20 @@ def footprint(e_w: bool, e_e: bool, e_n: bool, e_s: bool, chamfer: float = 0.0,
     Returns ``(points, edge_ends, bottoms)`` — a polygon in square fractions,
     one flag per edge saying whether the floor STOPS there (so a side has to be
     drawn), and the same polygon pulled in by ``inset`` for the bottom of those
-    sides. With no chamfer and nothing ending it is exactly the unit square the
-    floor has always been, which is why turning this on changed no board that
-    did not ask for it.
+    sides.
 
-    Corner ``i`` is cut when both of the sides meeting at it end — that is
-    precisely the outer corner of a stair step, and cutting it is what joins
-    the steps into a line.
+    A square's outline is its square. There WAS a corner chamfer here, cutting
+    each stair step's outer corner so a carved hull read as a line rather than
+    a flight of steps — it worked, and it was superseded: a one-square cut is
+    still a one-square answer, and joining the corners farthest from a hull's
+    middle needs the outline as a LOOP, which no square can see. That is
+    :mod:`vtt.hull`, traced once on the server. Removed rather than left
+    standing, because a code path nothing reaches is a trap for whoever comes
+    next.
     """
     side_ends = (e_w, e_s, e_e, e_n)      # edge i runs corner i -> corner i+1
-    if chamfer <= 0.0 or not (e_w or e_e or e_n or e_s):
-        pts = list(_CORNERS)
-        ends = list(side_ends)
-        return pts, ends, _outline_bottoms(pts, ends, inset)
-
-    corner_ends = (e_w and e_n, e_w and e_s, e_e and e_s, e_e and e_n)
-    cuts = [chamfer if c else 0.0 for c in corner_ends]
-    # Two cut corners on one edge can between them eat more than the edge is
-    # long. Computed as a factor per corner and applied afterwards, so the
-    # answer does not depend on which edge was looked at first.
-    scale = [1.0, 1.0, 1.0, 1.0]
-    for j in range(4):
-        k, m = j, (j + 1) % 4
-        total = cuts[k] + cuts[m]
-        if total > 1.0:
-            f = 1.0 / total
-            scale[k] = min(scale[k], f)
-            scale[m] = min(scale[m], f)
-    cuts = [c * s for c, s in zip(cuts, scale)]
-
-    pts: list[tuple[float, float]] = []
-    ends: list[bool] = []
-
-    def push(p: tuple[float, float], e: bool) -> None:
-        # A full-depth cut lands exactly on a neighbouring corner. Merging the
-        # duplicate keeps the outline free of zero-length edges — the flag of
-        # the LATER point wins, because that is the edge actually leaving the
-        # merged vertex.
-        if pts and abs(pts[-1][0] - p[0]) < 1e-9 and abs(pts[-1][1] - p[1]) < 1e-9:
-            ends[-1] = e
-            return
-        pts.append(p)
-        ends.append(e)
-
-    for i in range(4):
-        prev, cur, nxt = _CORNERS[i - 1], _CORNERS[i], _CORNERS[(i + 1) % 4]
-        t = cuts[i]
-        if t > 0.0:
-            push((cur[0] + (prev[0] - cur[0]) * t,
-                  cur[1] + (prev[1] - cur[1]) * t), True)   # the cut itself
-            push((cur[0] + (nxt[0] - cur[0]) * t,
-                  cur[1] + (nxt[1] - cur[1]) * t), side_ends[i])
-        else:
-            push(cur, side_ends[i])
-    if len(pts) > 2 and abs(pts[0][0] - pts[-1][0]) < 1e-9 \
-            and abs(pts[0][1] - pts[-1][1]) < 1e-9:
-        pts.pop()
-        ends.pop()
+    pts = list(_CORNERS)
+    ends = list(side_ends)
     return pts, ends, _outline_bottoms(pts, ends, inset)
 
 
@@ -821,7 +809,7 @@ def coverage_mask(rows: Sequence[str], **kw) -> bytes:
 
 
 def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
-                skin_of=None, elevation=None,
+                skin_of=None, elevation=None, shells=None,
                 _mask_only: bool = False, _colour_of=None,
                 square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
@@ -1010,15 +998,16 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
             # east, north.
             nbrs = ((x - 1, z), (x, z + 1), (x + 1, z), (x, z - 1))
             if sk_ft:
-                # A VESSEL. Its sides are its hull, so it ends against anything
-                # that is not the same body however high that thing sits, and
-                # the drop is the hull's own depth.
-                inset, chamfer = sk_in, CORNER_CHAMFER
-                side_ends = [not _skins.same_body(skin_at(ax, az), sk)
-                             for ax, az in nbrs]
-                side_drop = [here - units(sk_ft)] * 4
+                # A VESSEL, and its side is not this square's business: the
+                # hull is one traced SHELL over the whole body (see vtt.hull),
+                # because joining the corners farthest from the middle needs
+                # the outline as a loop and no square can see one. The floor is
+                # still drawn here; the sides are drawn once, below.
+                inset = 0.0
+                side_ends = [False, False, False, False]
+                side_drop = [here] * 4
             else:
-                inset, chamfer = SKIRT_INSET, 0.0
+                inset = SKIRT_INSET
                 side_ends = []
                 side_drop = []
                 for ax, az in nbrs:
@@ -1033,8 +1022,7 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                         side_ends.append(False)
                         side_drop.append(here)
             poly, edge_ends, low = footprint(
-                side_ends[0], side_ends[2], side_ends[3], side_ends[1],
-                chamfer, inset)
+                side_ends[0], side_ends[2], side_ends[3], side_ends[1], inset)
             # Floor under everything — cut to the outline, so a hull that steps
             # a square at a time is drawn as the diagonal it should be.
             face([(x + px, here, z + pz) for px, pz in poly])
@@ -1048,11 +1036,7 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 run = math.sqrt(ex * ex + ez * ez)
                 if run < 1e-9:
                     continue
-                # A chamfered outline has cut the sides about, so its edges no
-                # longer match up one-for-one with the four compass drops; a
-                # vessel has one depth all round, which is why the chamfer is
-                # only offered where a skin declares its own side.
-                drop = side_drop[k] if not chamfer else side_drop[0]
+                drop = side_drop[k]
                 # Outward is the edge turned a quarter, for a ring wound
                 # counter-clockwise seen from above. The bottom comes from
                 # `footprint`, which MITRES it at every vertex — offsetting each
@@ -1097,7 +1081,15 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                     return 0 <= ax < len(row) and (row[ax] in struct
                                                    or row[ax] in _APERTURES)
                 if _skins.is_outward(sk):
-                    turns = out_axis(_same, x, z)
+                    # An outward skin does NOT roll for its arrangement: which
+                    # one it wears is a fact about where the square sits.
+                    # Arrangement 0 is the plain run, 1 is the CORNER — aimed
+                    # at a single outside, the other side of a corner is left a
+                    # sheer face, and a tent had two pitched sides and two
+                    # cliffs.
+                    at_corner = len(sk_vars) > 1 and out_corner(_same, x, z)
+                    parts = sk_vars[1 if at_corner else 0]
+                    turns = out_axis(_same, x, z, corner=at_corner)
                 elif _skins.is_directional(sk):
                     turns = run_axis(_same, x, z)
                 else:
@@ -1126,6 +1118,38 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 m = 0.1
                 _box(face, x + m, x + 1 - m, z + m, z + 1 - m, here + top,
                      y0=here, shade=shade)
+
+    # The vessel shells. One traced outline per hull rather than a side per
+    # square — see vtt.hull for why that cannot be done a square at a time.
+    for shell in (shells or []):
+        loop = shell.get("loop") or []
+        low = shell.get("low") or loop
+        if len(loop) < 3:
+            continue
+        top = units(int(shell.get("top_ft") or 0))
+        drop = top - units(float(shell.get("drop_ft") or 0))
+        if _colour_of:
+            code, _, name = str(shell.get("slot") or "").partition("@")
+            cur_colour[0] = _colour_of(code or "b", name)
+        # The deck out to its own hull. Each triangle is what a smoothed notch
+        # gave up, so without them the planking stops short of the line the
+        # hull was drawn to.
+        shade(TOP_TINT)
+        for tri in (shell.get("fill") or []):
+            face([(p[0], top, p[1]) for p in tri])
+        n = len(loop)
+        for i in range(n):
+            j = (i + 1) % n
+            ax, az = loop[i]
+            bx, bz = loop[j]
+            ex, ez = bx - ax, bz - az
+            run = math.sqrt(ex * ex + ez * ez)
+            if run < 1e-9:
+                continue
+            shade(_tint_for(-ez / run, 0.0, ex / run))
+            face([(ax, top, az), (low[i][0], drop, low[i][1]),
+                  (low[j][0], drop, low[j][1]), (bx, top, bz)])
+        shade(TOP_TINT)
 
     # Scenery last: it stands ON the floor and never occludes anything the
     # rules care about, so it needs no ordering of its own.

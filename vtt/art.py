@@ -660,6 +660,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
         # would then disagree with itself. Refuse rather than mislead.
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
+    from . import hull as _hull
     from .decor import decor_for
     from .terrain import cover_height_ft
     # One kwargs bundle, used for the depth map AND for the mask, so the cut
@@ -669,7 +670,8 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
         decor=decor_for(gen.grid.to_rows(), seed=gen.seed,
                         standing=lambda c: tile_height_ft(c) > 0),
         square_ft=5, structure=STRUCTURE_CODES, skin_of=_skin_of,
-        elevation=gen.elevation)
+        elevation=gen.elevation,
+        shells=_hull.shells(gen.grid.rows, _skin_of, gen.elevation))
     depth = isocam.depth_image(**depth_kw)
     # The half depth cannot carry: what the ground is MADE of. Outdoors that is
     # the whole board, so without it the model invents terrain the grid does not

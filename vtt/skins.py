@@ -359,22 +359,42 @@ _PALISADE = _v(
 #: Authored with the OUTDOORS at +z, which ``outward`` then turns to face
 #: whichever way that actually is. The square stays solid to sight — it is a
 #: wall and remains one — but its SURFACE is a pitch instead of a face.
-_TENT_WALL = _v((
-    solid(((0.00, 0.00), (1.00, 0.00), (1.00, 1.00), (0.00, 1.00)),
-          ((0.00, 0.00), (1.00, 0.00), (1.00, 0.20), (0.00, 0.20)),
-          0.00, 0.72),
-    # The eaves pole the canvas is lashed over.
-    (0.00, 1.00, 0.02, 0.20, 0.70, 0.80),
-    # Guy ropes out past the pegs. They reach BEYOND the square on purpose: a
-    # rope is pegged into the ground outside the tent, and a part is an offset,
-    # so it is allowed to say so.
-    solid(((0.20, 1.20), (0.28, 1.20), (0.28, 1.28), (0.20, 1.28)),
-          ((0.22, 0.10), (0.28, 0.10), (0.28, 0.18), (0.22, 0.18)),
-          0.00, 0.68),
-    solid(((0.72, 1.20), (0.80, 1.20), (0.80, 1.28), (0.72, 1.28)),
-          ((0.72, 0.10), (0.78, 0.10), (0.78, 0.18), (0.72, 0.18)),
-          0.00, 0.68),
-))
+#: **Arrangement 0 is the run and arrangement 1 is the CORNER**, by the same
+#: convention every outward skin uses. Four of the twelve squares in a tent's
+#: ring face the weather on two sides at once, and a shape aimed at one of them
+#: leaves the other a sheer face — so every tent had two pitched sides and two
+#: cliffs. The corner is a HIP: one canvas plane drawn in toward the inside
+#: corner from both outward edges at once, which is what a real tent does where
+#: two runs of canvas meet.
+_TENT_WALL = _v(
+    (solid(((0.00, 0.00), (1.00, 0.00), (1.00, 1.00), (0.00, 1.00)),
+           ((0.00, 0.00), (1.00, 0.00), (1.00, 0.20), (0.00, 0.20)),
+           0.00, 0.72),
+     # The eaves pole the canvas is lashed over.
+     (0.00, 1.00, 0.02, 0.20, 0.70, 0.80),
+     # Guy ropes out past the pegs. They reach BEYOND the square on purpose: a
+     # rope is pegged into the ground outside the tent, and a part is an
+     # offset, so it is allowed to say so.
+     solid(((0.20, 1.20), (0.28, 1.20), (0.28, 1.28), (0.20, 1.28)),
+           ((0.22, 0.10), (0.28, 0.10), (0.28, 0.18), (0.22, 0.18)),
+           0.00, 0.68),
+     solid(((0.72, 1.20), (0.80, 1.20), (0.80, 1.28), (0.72, 1.28)),
+           ((0.72, 0.10), (0.78, 0.10), (0.78, 0.18), (0.72, 0.18)),
+           0.00, 0.68)),
+    # The hip. Outdoors on +z AND +x, so the canvas is drawn in toward the one
+    # inside corner — a five-sided footprint pulling to a small cap over it.
+    (solid(((0.00, 0.00), (1.00, 0.00), (1.00, 1.00), (0.00, 1.00)),
+           ((0.00, 0.00), (0.20, 0.00), (0.20, 0.20), (0.00, 0.20)),
+           0.00, 0.72),
+     # Both eaves poles, meeting over the corner post.
+     (0.02, 0.22, 0.02, 1.00, 0.70, 0.80),
+     (0.02, 1.00, 0.02, 0.22, 0.70, 0.80),
+     # The corner pole, and one guy rope out along the diagonal.
+     (0.78, 0.96, 0.78, 0.96, 0.00, 0.66),
+     solid(((1.16, 1.16), (1.26, 1.16), (1.26, 1.26), (1.16, 1.26)),
+           ((0.80, 0.80), (0.88, 0.80), (0.88, 0.88), (0.80, 0.88)),
+           0.00, 0.64)),
+)
 
 #: The canvas OVER a tent, on the squares you stand on inside it.
 #:
@@ -731,6 +751,18 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
                "open sky — the keel and its lift-fins visible beneath, nothing "
                "under her but cloud",
          skirt_ft=14, skirt_inset=HULL_TAPER, body="ship", exact=True),
+    # A deckhouse with no lid is the tent's problem again: a wall ring round a
+    # walkable floor is a roofless box seen from above. Its own skin, because
+    # the inside is its own squares, and it starts well clear of the floor so
+    # occludes_floor passes it.
+    Skin("cabin-roof", "tarred-planking",
+         "close-up of tarred ship planking, caulked seams and iron nail heads",
+         words="the deckhouse is roofed in tarred planking, a low coaming "
+               "round its edge",
+         variants=_v((
+             (0.00, 1.00, 0.00, 1.00, 0.86, 0.96),
+             (0.00, 1.00, 0.42, 0.58, 0.96, 1.02),
+         )), height_ft=10, directional=True, body="ship", exact=True),
     Skin("mast", "spar-timber",
          "a flat expanse of oiled timber, straight close grain all running one "
          "way, no corners and no edges",

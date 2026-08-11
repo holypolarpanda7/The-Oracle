@@ -439,6 +439,27 @@ export interface VttScene {
   levels?: VttLevel[];
   doors: VttDoor[];
   elevation: Record<string, number>;
+  /** Vessel hulls, traced as whole outlines rather than a side per square.
+   *
+   *  A hull is bigger than a square: joining the corners farthest from its
+   *  middle needs the outline as a loop, and no square can see one. The server
+   *  traces it once (vtt/hull.py) and every renderer draws the ANSWER, so
+   *  there is no second implementation to drift. Empty on any board that is
+   *  not a ship. */
+  shells?: {
+    /** The material slot to draw it in — `code@skin`. */
+    slot: string;
+    /** Feet: the deck's own elevation, and how far the hull drops below it. */
+    top_ft: number;
+    drop_ft: number;
+    /** The outline at deck level, and the same loop mitred inward for the
+     *  bottom of the hull. */
+    loop: [number, number][];
+    low: [number, number][];
+    /** Triangles of deck outside the smoothed line — what each dropped notch
+     *  gave up, so the planking reaches its own hull. */
+    fill: [number, number][][];
+  }[];
   /** Discrete things standing on squares — read off the grid by the server. */
   objects?: VttObject[];
   /** Scenery — drawn by every view, honoured by none of the rules. Never tall
