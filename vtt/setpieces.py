@@ -465,18 +465,26 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
     ),
     SetPiece(
         "great-statue", "colossal guardian",
-        # The honest gap. Generic CC0 kits carry columns, arches and rubble in
-        # quantity and carry no named landmark creature at all; a search for a
-        # free sphinx returns marketplaces whose "free" models may not be
-        # redistributed, which is the one thing this repository needs.
-        Source("quat-ruins", ("statue", "colossus", "guardian"), stand_in=True),
+        # This asked for a seated guardian with a HUMAN face and was marked a
+        # stand-in, because open kits carry columns, arches and rubble in
+        # quantity and no named landmark creature at all — a search for a free
+        # sphinx returns marketplaces whose "free" models may not be
+        # redistributed, which is the one thing a public repository needs.
+        #
+        # The ruins pack has two statues and both are BEASTS. So, the fountain's
+        # lesson again: the entry became the thing the mesh is. A colossal stag
+        # carved in stone is a landmark in its own right rather than a
+        # apology for a missing sphinx, and it is no longer a stand-in.
+        Source("quat-ruins", ("statue_stag", "statue")),
         ("OOO", "OOO"), height_ft=22.0, body="colossus",
-        words="a colossal seated guardian carved from one block of stone",
+        words="a colossal stone stag, antlers broken, staring down the approach",
         on=("g", "\"", ".", "s"),
     ),
     SetPiece(
         "ruined-arch", "ruined arch",
-        Source("quat-ruins", ("arch", "gate", "archway")),
+        # Gothic FIRST: at eighteen feet it is three squares where the round
+        # arch is four, so the declared footprint is the honest one for it.
+        Source("quat-ruins", ("arch_gothic", "arch", "gate", "archway")),
         ("O-O",), height_ft=18.0, body="arch",
         fills=("X X",),
         words="a broken ceremonial arch, its span still standing on two piers",
@@ -521,7 +529,11 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
     ),
     SetPiece(
         "standing-stone", "standing stone",
-        Source("quat-nature", ("rock_tall", "monolith", "stone_tall", "rock")),
+        # NOT the Ultimate Nature Pack, whose rocks are all boulders — the
+        # narrowest needs two squares by two at eleven feet, and a monolith
+        # standing on end is by definition tall and narrow. Kenney's obelisk
+        # is under four feet across at that height.
+        Source("kenney-nature", ("statue_obelisk", "monolith", "rock_tall")),
         ("O",), height_ft=11.0,
         words="a weathered monolith standing on end",
     ),
