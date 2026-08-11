@@ -562,8 +562,44 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   exactly as the OFL fonts do. An entry's FILE half is a search key, not a
   path — pack contents get renamed between releases — and the audit resolves it
   and reports the mesh's bounding box against the height the entry declares.
-  Scale is always DERIVED by fitting the model to the squares it says it
-  covers; a per-pack magic multiplier is a number nobody can check.
+  Scale is always DERIVED, never authored — a per-pack magic multiplier is a
+  number nobody can check — and **the declared HEIGHT is what it is derived
+  from, with the footprint giving way.** Fitting a mesh's width to its declared
+  footprint (the first rule, now reversed) made every tall thing a dwarf: a
+  60-ft jungle giant came out 21 ft, a 40-ft gate tower 3 ft. The height is the
+  fiction and it frames the depth map; the footprint is a floor-level rules
+  statement about which squares are stamped, and nothing stops it being wider.
+  Scaling stays UNIFORM — stretching one axis to satisfy both numbers distorts
+  anything organic. `--audit` reports the squares a mesh NEEDS at its declared
+  height, which is how a wrong ENTRY is told from a wrong footprint: a gate
+  tower wanting 27x27 had matched the Castle Kit's crenellated *cap*, because
+  that kit is modular and sells no whole tower. A kit sold for assembling
+  buildings is `structures.py` territory; a set piece wants a pack that sells
+  whole objects.
+  Wider footprints then forced **`KEEP` — a square a piece RESERVES and does
+  not change.** A 9x9 tree is 80 squares of ground its canopy merely hangs
+  over, and stamping them repaved a meadow into flagstones: the picture
+  contradicting the grid in the one direction nobody checks, because the
+  terrain was RIGHT before the landmark arrived. A reserved square is still
+  checked by `fits` and still kept clear of scatter.
+  **`triggers.board_size_for` now grows a board for its SCENERY**, reversing
+  the note that a landmark needing a bigger board is one that mostly does not
+  appear — true when a footprint was a mesh's width, false once footprints were
+  measured honestly. `"open"` is deliberately absent from the archetype table:
+  it is the FALLBACK archetype, so giving it landmarks grew the default board
+  for scenery nobody asked for (the selftest caught exactly that).
+  **The mesh must turn the way the TILES turn.** `_turned` sends a footprint
+  square to `(-z, x)` at 90°; three.js `rotation.y` is the other handedness and
+  sends it to `(z, -x)`. Applied naively the picture rotates and the cover does
+  not, and both programs look correct in isolation — so the handedness lives in
+  `setpieces.rotate_xz` / `boardView.setpieceRotate` and is gated by
+  `iso_alignment_check.py`. The FIT (`mesh_fit`: scale + pivot) is measured on
+  the server and shipped in `state()`, never recomputed in the browser: it is a
+  measurement of a FILE, so the only way two languages cannot disagree is for
+  one of them to do it. All three renderers stay in step — the isometric board
+  draws the mesh, the depth map rasterizes it (a 40-line OBJ reader: `v` and
+  `f`, nothing else), and the Discord PNG draws no mesh at all but NAMES the
+  landmark, since its stamped tiles were always on that board already.
 - **The cache key must name everything the picture depends on.** `isoboard_ref`
   hashed the tile grid, and a skin changes materials without changing one
   tile — so a skyship's timber, steampunk and organic styles shared a slug and
