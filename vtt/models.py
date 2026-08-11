@@ -154,6 +154,21 @@ class TacticalMap(SQLModel, table=True):
     # canvas tents inside a palisaded camp, a ship's cabin against its hull.
     # Purely a look. No rule reads one, and none may.
     skins: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # Landmarks standing on this board: [{"slug","x","y","yaw"}]. See
+    # vtt.setpieces.
+    #
+    # The DECISION only. Footprint, height, mesh and scale are all read back
+    # from the catalogue, so a piece whose entry is corrected — a mausoleum
+    # that turns out to be three squares by five, a mesh re-resolved after a
+    # pack update — comes out right on boards that already exist. Storing the
+    # derived half would freeze today's answer into every saved board, which is
+    # the mistake `objects_for` avoids by reading the grid each time.
+    #
+    # Stored rather than derived because unlike decor this is not a pure
+    # function of the layout: `place` STAMPS tiles, and the stamped grid is
+    # what `terrain` above already holds. Re-deriving on load would place a
+    # second landmark on top of the first.
+    setpieces: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     # A whole-board style where the archetype genuinely offers a choice: a
     # skyship is timber, brass-and-steam or grown, and all three are right.
     board_style: str = Field(default="", sa_column=Column(String))

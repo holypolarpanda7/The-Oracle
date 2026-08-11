@@ -219,6 +219,7 @@ class VttEngine:
             terrain=gen.grid.to_rows(), elevation=gen.elevation or None,
             doors=gen.doors or None, lighting=gen.lighting,
             skins=gen.skins or None, board_style=gen.style or "",
+            setpieces=[dict(p) for p in gen.setpieces] or None,
             levels=[dict(l) for l in gen.levels] or None,
             fog=self._blank_fog(gen.width, gen.height) if fog else None,
             seed=seed, active=True, revision=1,
@@ -847,6 +848,32 @@ class VttEngine:
         rows = self.grid_of(row).to_rows()
         return _decor(rows, seed=row.seed or 0,
                       standing=lambda c: tile_height_ft(c) > 0)
+
+    def setpieces_for(self, map_id: int) -> list[dict]:
+        """Landmarks on this board, ready for either renderer.
+
+        The row stores the DECISION — which piece, where, which way round — and
+        everything else is read back from the catalogue here: footprint, height,
+        the mesh URL and the scale measured off that mesh. So correcting an
+        entry fixes boards that already exist, and a piece dropped from the
+        catalogue disappears instead of raising.
+        """
+        from . import setpieces as sp
+
+        row = self.get_scene(map_id)
+        if row is None or not row.setpieces:
+            return []
+        out: list[dict] = []
+        for rec in row.setpieces:
+            if not isinstance(rec, dict):
+                continue
+            slug = str(rec.get("slug") or "")
+            if slug not in sp.CATALOGUE:
+                continue
+            out.append(sp.Placed(slug=slug, x=int(rec.get("x") or 0),
+                                 y=int(rec.get("y") or 0),
+                                 yaw=int(rec.get("yaw") or 0)).instance())
+        return out
 
     def last_move(self, map_id: int) -> Optional[dict]:
         """The most recent walk on this board: ``{id, token_id, path}``.
@@ -3307,6 +3334,10 @@ class VttEngine:
             "objects": self.objects_for(map_id),
             # Scenery: drawn by every view, honoured by none of the rules.
             "decor": self.decor_for(map_id),
+            # Landmarks: a mesh reference and where it stands. Both renderers
+            # read this same list, and neither computes its scale — see
+            # setpieces.mesh_fit for why that measurement is the server's.
+            "setpieces": self.setpieces_for(map_id),
             # {tile code (or "code@skin") -> swatch image id}. The isometric
             # board builds its geometry out of these; a slot missing here just
             # falls back to its flat tile colour, which is plainer and equally

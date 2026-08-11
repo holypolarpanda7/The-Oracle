@@ -77,6 +77,10 @@ class GeneratedMap:
     # "to_x","to_y","name"}]. A watchtower is a real second floor, not a prop.
     levels: list[dict] = field(default_factory=list)
     stairs: list[dict] = field(default_factory=list)
+    # Landmarks placed on this board: [{"slug","x","y","yaw"}]. See
+    # vtt.setpieces — the mesh is drawing, the tiles it stamped are the rules,
+    # and they are already in ``grid`` by the time this list is written.
+    setpieces: list[dict] = field(default_factory=list)
 
     @property
     def width(self) -> int:
@@ -1254,6 +1258,90 @@ def archetype_for_place(*, hint: Optional[str] = None, biome: Optional[str] = No
     return default
 
 
+#: Which landmarks an archetype may stand, best first.
+#:
+#: NAMED per archetype rather than offered as a general "prefab anything"
+#: facility, for the reason :mod:`vtt.setpieces` gives: the LLM decides fiction
+#: and the code decides mechanics, so a DM saying a ruined temple stands here
+#: is fiction and choosing its footprint and where it goes is not.
+#:
+#: A slug whose mesh was never collected is harmless and deliberately left in —
+#: the piece still stamps its tiles, so it is a real obstacle with real cover,
+#: and it simply draws from the board's own geometry until somebody unzips the
+#: pack. That is the same degradation ``source=None`` gets on purpose.
+_SETPIECES: dict[str, tuple[str, ...]] = {
+    "forest": ("jungle-giant", "boulder-heap"),
+    "clearing": ("jungle-giant", "standing-stone"),
+    "swamp": ("jungle-giant", "ruined-wall"),
+    "ruins": ("step-pyramid", "great-statue", "ruined-arch", "broken-pillar",
+              "ruined-wall"),
+    "crypt": ("mausoleum", "broken-pillar"),
+    "cave": ("cave-pillar", "boulder-heap"),
+    "mountain-pass": ("boulder-heap", "standing-stone"),
+    "street": ("village-fountain", "gatehouse-tower"),
+    "camp": ("standing-stone", "boulder-heap"),
+    "arena": ("great-statue", "temple-plinth"),
+    "bridge": ("gatehouse-tower",),
+    "open": ("standing-stone", "boulder-heap"),
+    "reef": ("shipwreck",),
+    "open-water": ("shipwreck",),
+}
+
+#: Roughly how much of a board may be landmark, as a fraction of its squares.
+#:
+#: A cap rather than a count, because the pieces differ enormously — a jungle
+#: giant reserves eighty-one squares and a broken pillar one — and "two
+#: landmarks" means something completely different on each. Deliberately small:
+#: a set piece is something a fight happens AROUND, and a board that is mostly
+#: scenery has nowhere left to fight.
+SETPIECE_BUDGET = 0.14
+
+
+def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """Stand this archetype's landmarks on the board, within budget.
+
+    Runs after connectivity so a landmark cannot sever the board, and before
+    the spawn zones so nobody is dropped inside one. ``fits`` demands a clear
+    square of margin all round, which is also what keeps landmarks out of
+    corridors — a one-square passage has walls in the margin ring and is
+    refused.
+    """
+    from . import setpieces as _sp
+
+    pool = _SETPIECES.get(out.archetype) or ()
+    if not pool:
+        return
+    budget = int(grid.width * grid.height * SETPIECE_BUDGET)
+    if budget < 1:
+        return
+    want: list[str] = []
+    spent = 0
+    for slug in pool:
+        piece = _sp.CATALOGUE.get(slug)
+        if piece is None:
+            continue
+        cost = piece.width * piece.depth
+        # A landmark bigger than the whole budget is not shrunk to fit; it is
+        # simply not this board's landmark. The alternative is scaling it, and
+        # its height is a stated fact the rules read.
+        if spent + cost > budget:
+            continue
+        # Every board getting every landmark it may have makes each one
+        # furniture. Half of them, from the seed, keeps a colossus rare enough
+        # to be worth narrating.
+        if want and rng.random() < 0.5:
+            continue
+        want.append(slug)
+        spent += cost
+    if not want:
+        return
+    for placed in _sp.setpieces_for(grid, want, seed=out.seed):
+        out.setpieces.append({"slug": placed.slug, "x": placed.x,
+                              "y": placed.y, "yaw": placed.yaw})
+        out.skins.update(placed.skins)
+        out.elevation.update(placed.elevation)
+
+
 def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
                  seed: Optional[int] = None,
                  lighting: Optional[str] = None,
@@ -1304,6 +1392,10 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
             if not (_tile(grid.get(*(int(v) for v in key.split(",")))
                           ).move_cost_ft and _skins.occludes_floor(name))
         }
+
+    # Landmarks last, so they stand on a board already proved connected — and
+    # before the spawn zones, so nobody starts inside one.
+    _place_setpieces(grid, rng, out)
 
     party, foes = _opposed_zones(grid, rng, out.mode)
     out.spawn_party, out.spawn_foes = party, foes
