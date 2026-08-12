@@ -842,9 +842,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             const cx = x + 0.5, cz = z + 0.5;
             if (code === "O") {
               prism(mb, cx, cz, 0.32, here, top, 8, color);
-            } else if (code === "T") {
-              prism(mb, cx, cz, 0.13, here, top * 0.55 + here * 0.45, 6, color);
-              prism(mb, cx, cz, 0.46, here + (top - here) * 0.4, top, 8, color);
             } else if (OBJECT_VARIANTS[code]) {
               // A built silhouette, in one of several arrangements chosen by the
               // square itself — shared with the depth map the painted layer is

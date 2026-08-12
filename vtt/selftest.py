@@ -1230,6 +1230,48 @@ def test_setpieces() -> None:
     check("a board grows for a landmark it was asked for",
           grown[0] * grown[1] > plain[0] * plain[1], f"{plain} -> {grown}")
 
+    # --- a landmark the DM asked for sweeps the ground it stands on -------
+    # Without this the channel fails on exactly the boards most worth a
+    # landmark: a ruin scattered with broken pillars has no eleven-by-eleven
+    # clearing anywhere, and a ziggurat with a pillar standing on its plaza is
+    # not the alternative anyone wanted.
+    scattered = Grid.blank(24, 20, "g")
+    for i in range(0, 24, 3):
+        for j in range(0, 20, 3):
+            scattered.set(i, j, "T")
+    eq("scatter refuses a landmark nobody asked for",
+       sp.setpieces_for(scattered, ["step-pyramid"], seed=4), [])
+    asked_p = sp.setpieces_for(scattered, ["step-pyramid"], seed=4,
+                               clear=["step-pyramid"])
+    check("…and gives way to one the DM named", len(asked_p) == 1)
+    if asked_p:
+        check("the trees under it are gone",
+              all(scattered.get(x, y) != "T" for x, y in asked_p[0].occupied))
+    # A pyramid stamps every square it covers, so the sweep only SHOWS on a
+    # piece with reserved ones — a jungle giant is eighty squares of ground its
+    # canopy hangs over, and those keep whatever they were.
+    meadow = Grid.blank(24, 20, "g")
+    for i in range(0, 24, 3):
+        for j in range(0, 20, 3):
+            meadow.set(i, j, "T")
+    giant = sp.setpieces_for(meadow, ["jungle-giant"], seed=4,
+                             clear=["jungle-giant"])
+    check("a reserved square is swept too", len(giant) == 1)
+    if giant:
+        under = [meadow.get(x, y) for x, y in giant[0].occupied]
+        eq("…and becomes the ground around it, not a paving of its own",
+           sorted(set(under)), ["T", "g"])   # the trunk's own square, and grass
+    walls = Grid.blank(24, 20, "g")
+    for i in range(24):
+        walls.set(i, 10, "#")
+    placed_w = sp.setpieces_for(walls, ["step-pyramid"], seed=4,
+                                clear=["step-pyramid"])
+    check("a wall is never swept aside",
+          all(walls.get(x, 10) == "#" for x in range(24)),
+          "clearing may only ever take DECOR_CODES")
+    check("…so the piece goes beside it, or nowhere",
+          all(p.y + 9 <= 10 or p.y > 10 for p in placed_w))
+
     # --- every square is tried, not forty darts ---------------------------
     # A nine-by-nine piece wants an eleven-by-eleven clearing; a wooded board
     # has few, and a random miss is indistinguishable from a board with no room

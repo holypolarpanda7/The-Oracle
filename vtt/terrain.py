@@ -83,8 +83,11 @@ TILES: dict[str, Tile] = {t.code: t for t in (
     _t("#", "wall", None, blocks_sight=True, cover="total", art="stone wall"),
     _t("R", "rock face", None, blocks_sight=True, cover="total",
        art="rough rock face"),
+    # "thick tree trunk" was the art phrase, and it described the old geometry
+    # exactly: a post. What the board draws now is a crown on a trunk, and what
+    # an overhead camera sees of it is the crown.
     _t("T", "tree", None, blocks_sight=True, cover="three-quarters",
-       art="thick tree trunk"),
+       art="broad-canopied tree"),
     _t("O", "pillar", None, blocks_sight=True, cover="three-quarters",
        art="carved stone pillar"),
     _t("o", "crate", None, cover="half", cover_height_ft=4,
@@ -170,7 +173,12 @@ def tile_rule(code: str) -> str:
 #: authoritative; keep them in step.
 STAND_HEIGHT_FT: dict[str, int] = {
     "#": 10, "R": 10,          # structure
-    "T": 12, "O": 10,          # tree, pillar
+    # A tree is 18 ft, not the 12 it was. Twelve is a sapling, and drawn as a
+    # trunk with a crown on it (see isocam.OBJECT_VARIANTS) a sapling reads as a
+    # bush; the crown needs room above head height to be a canopy at all. It
+    # costs the rules nothing — a tree's cover is three-quarters because it is
+    # NARROW, so `cover_height_ft` is 0 and this number is drawing only.
+    "T": 18, "O": 10,          # tree, pillar
     "+": 8, "p": 8,            # closed door, portcullis
     "o": 4, "A": 4, "n": 3, "w": 3,   # these four carry a cover_height_ft
 }

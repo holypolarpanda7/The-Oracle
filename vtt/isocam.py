@@ -27,6 +27,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional, Sequence
 
+# The shape vocabulary itself — a part, and the prismatoid constructor that
+# normalizes its winding. `skins` imports nothing from this package, so this is
+# a plain import rather than the deferred ones further down.
+from .skins import Part, solid
+
 #: Rotation about the vertical axis. 45° puts the board corner-on, so both wall
 #: faces of a corner are visible and neither runs parallel to the screen edge.
 YAW_DEG = 45.0
@@ -602,7 +607,63 @@ def footprint(e_w: bool, e_e: bool, e_n: bool, e_s: bool,
 #: activity-ui/src/lib/boardView.ts; the depth map and the geometry must be the
 #: same object or the painting is conditioned on something the player is not
 #: looking at.
-OBJECT_VARIANTS: dict[str, tuple[tuple[tuple[float, float, float, float, float, float], ...], ...]] = {
+def _ring(r: float, cx: float = 0.5, cz: float = 0.5, wob: float = 0.0,
+          n: int = 8) -> tuple[tuple[float, float], ...]:
+    """A rounded plan of ``n`` points, wobbled so it is not a wheel."""
+    out = []
+    for i in range(n):
+        a = i * 2 * math.pi / n + math.pi / n
+        k = r * (1.0 + wob * math.cos(3 * a))
+        out.append((cx + math.cos(a) * k, cz + math.sin(a) * k))
+    return tuple(out)
+
+
+OBJECT_VARIANTS: dict[str, tuple[tuple[Part, ...], ...]] = {
+    # A TREE: a slim trunk under a crown that is wider than it is tall.
+    #
+    # It was two stacked cylinders written by hand in each language — and they
+    # had already drifted, so the depth map the painting is conditioned on
+    # carried a different tree from the one the player was looking at (Python
+    # gave it a 0.32 trunk running the whole height, the browser a 0.13 trunk
+    # stopping at 0.55). Both drew a post with a slightly wider post on top,
+    # and a forest came back painted as a field of sawn-off stumps on a lawn.
+    # That is the same failure as the crypt-of-dice and the cliff-as-village:
+    # the model paints the silhouette it is handed, and a cylinder is a stump.
+    #
+    # Here instead so BOTH sides read one table, and shaped as a real crown:
+    # rising out of the trunk, widest around two thirds up, closing to a soft
+    # top. The last ring is small but never a point — a crown that comes to an
+    # apex is a conifer, and only the third arrangement is meant to be one.
+    "T": (
+        # Broadleaf: a round, heavy head.
+        (solid(_ring(0.11), _ring(0.075, 0.52, 0.48), 0.00, 0.46),
+         solid(_ring(0.22, 0.52, 0.48, 0.14), _ring(0.50, 0.52, 0.48, 0.10),
+               0.38, 0.68),
+         solid(_ring(0.50, 0.52, 0.48, 0.10), _ring(0.13, 0.54, 0.46),
+               0.68, 1.00)),
+        # Older and leaning, its head thrown off the trunk.
+        (solid(_ring(0.12), _ring(0.08, 0.44, 0.56), 0.00, 0.52),
+         solid(_ring(0.20, 0.44, 0.56, 0.16), _ring(0.46, 0.42, 0.58, 0.12),
+               0.44, 0.74),
+         solid(_ring(0.46, 0.42, 0.58, 0.12), _ring(0.11, 0.40, 0.60),
+               0.74, 1.00)),
+        # A conifer: skirted low, tapering the whole way to a spire.
+        (solid(_ring(0.09), _ring(0.07), 0.00, 0.30),
+         solid(_ring(0.42, 0.50, 0.50, 0.10), _ring(0.25, 0.50, 0.50, 0.08),
+               0.24, 0.62),
+         solid(_ring(0.25, 0.50, 0.50, 0.08), _ring(0.04), 0.62, 1.00)),
+        # A split crown — two heads off one bole, which is what an old
+        # broadleaf in the open does.
+        (solid(_ring(0.13), _ring(0.09, 0.50, 0.50), 0.00, 0.40),
+         solid(_ring(0.18, 0.38, 0.44, 0.14), _ring(0.34, 0.34, 0.40, 0.12),
+               0.36, 0.66),
+         solid(_ring(0.34, 0.34, 0.40, 0.12), _ring(0.10, 0.32, 0.38),
+               0.66, 0.94),
+         solid(_ring(0.16, 0.64, 0.58, 0.14), _ring(0.30, 0.68, 0.62, 0.10),
+               0.40, 0.72),
+         solid(_ring(0.30, 0.68, 0.62, 0.10), _ring(0.09, 0.70, 0.64),
+               0.72, 1.00)),
+    ),
     # Sarcophagus / altar: a long chest with an overhanging tapered lid, and a
     # squatter cracked-open one.
     "A": (
@@ -1217,13 +1278,13 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 for wx0, wx1, wz0, wz1 in wall_parts(is_open, x, z):
                     _box(face, x + wx0, x + wx1, z + wz0, z + wz1,
                          here + top, y0=here, shade=shade)
-            elif code in ("O", "T"):
+            elif code == "O":
                 # Round, because the model paints the silhouette it is handed
-                # and a square column comes back as a square column.
+                # and a square column comes back as a square column. A TREE was
+                # here too, drawn as a second cylinder on top of this one; it is
+                # in OBJECT_VARIANTS now, where the browser reads the same table
+                # instead of a copy that had already drifted from this one.
                 _prism(face, x + 0.5, z + 0.5, PILLAR_RADIUS, here + top, y0=here)
-                if code == "T":
-                    _prism(face, x + 0.5, z + 0.5, 0.46, here + top,
-                           y0=here + top * 0.4)
             elif code in OBJECT_VARIANTS:
                 # A built silhouette. Drawn as one cube these came back as DICE
                 # — a crypt of thirty four-foot cubes reads as a board game

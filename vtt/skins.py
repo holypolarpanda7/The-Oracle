@@ -241,18 +241,58 @@ def _v(*arrangements: Sequence[Part]) -> Variants:
 #: neighbours overlap and the face closes. It costs the track about seven inches
 #: of drawn width, which is nothing, and a rock face that bulges slightly over
 #: its own foot is what rock does.
+#: A fourth thing learned, and it is the one that cost a village. Those
+#: footprints were BOXES — vertical sides, flat tops, four right angles — at six
+#: different heights, and a field of flat-topped boxes at varied heights is not
+#: a cliff, it is a hill town. Rendered, the pass came back as snowy cottages
+#: with wooden doors in them, and three attempts to argue the model out of it
+#: from the painter's side (a colour init, a middle denoise, an explicit
+#: negative) each failed in their own way: it invented carved stone instead, or
+#: it flattened the whole board into grey blocks. Nothing in a prompt beats the
+#: shape, which is the crypt-of-dice lesson (see ``isocam.OBJECT_VARIANTS``)
+#: arriving outdoors.
+#:
+#: So a cliff square is a PRISMATOID: the footprint still runs the full square
+#: and past it — everything above about merging still holds — and everything
+#: above the ground is battered, canted and irregular. No vertical face, no flat
+#: top, no right angle in plan. The bottoms are the only part still square, and
+#: they are buried between neighbours where nothing can see them.
 _OVER = 0.10
+_BASE: Poly = ((-_OVER, -_OVER), (1 + _OVER, -_OVER),
+               (1 + _OVER, 1 + _OVER), (-_OVER, 1 + _OVER))
+
+
+def _crag(top: Poly, y1: float, y0: float = 0.0) -> Solid:
+    """A mass rising from the full square to an irregular canted cap."""
+    return solid(_BASE, top, y0, y1)
+
+
 _CLIFF = _v(
-    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 1.00),),
-    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.74),
-     (0.14, 0.82, 0.20, 0.88, 0.74, 0.90)),
-    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.62),
-     (0.28, 1.00, 0.00, 0.72, 0.62, 0.84)),
-    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.88),
-     (0.10, 0.72, 0.24, 0.90, 0.88, 1.00)),
-    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.54),),
-    ((-_OVER, 1 + _OVER, -_OVER, 1 + _OVER, 0.0, 0.70),
-     (0.00, 0.64, 0.30, 1.00, 0.70, 0.94)),
+    # A single tall canted mass, leaning off the vertical in both axes.
+    (_crag(((0.18, 0.10), (0.92, 0.24), (0.80, 0.94), (0.10, 0.74)), 1.00),),
+    # A broad shoulder with a spur riding up out of it, off to one side.
+    (_crag(((0.04, 0.14), (1.00, 0.02), (1.06, 0.90), (0.02, 1.02)), 0.74),
+     solid(((0.14, 0.22), (0.82, 0.10), (0.88, 0.80), (0.20, 0.90)),
+           ((0.30, 0.40), (0.66, 0.34), (0.70, 0.66), (0.34, 0.72)),
+           0.74, 0.94)),
+    # Leaning hard: the cap is thrown a third of a square east of its foot,
+    # which is what an undercut looks like from this camera.
+    (_crag(((0.36, 0.12), (1.08, 0.22), (1.02, 0.86), (0.30, 0.96)), 0.62),
+     solid(((0.40, 0.20), (1.00, 0.28), (0.96, 0.80), (0.36, 0.88)),
+           ((0.52, 0.36), (0.86, 0.42), (0.82, 0.70), (0.50, 0.66)),
+           0.62, 0.86)),
+    # Tall and narrow-topped — a fin, standing out of the face.
+    (_crag(((0.24, 0.30), (0.78, 0.18), (0.86, 0.72), (0.30, 0.84)), 0.88),
+     solid(((0.30, 0.36), (0.72, 0.26), (0.78, 0.66), (0.34, 0.76)),
+           ((0.46, 0.48), (0.60, 0.44), (0.62, 0.60), (0.48, 0.62)),
+           0.88, 1.00)),
+    # Low and nearly whole: a shelf the track runs under, barely battered.
+    (_crag(((0.00, 0.06), (1.04, -0.02), (1.08, 1.00), (-0.04, 1.06)), 0.54),),
+    # A tilted slab: the cap swung round, so its skyline is a diagonal.
+    (_crag(((0.10, 0.02), (0.94, 0.22), (1.02, 0.90), (0.02, 0.78)), 0.70),
+     solid(((0.14, 0.10), (0.86, 0.28), (0.92, 0.84), (0.08, 0.72)),
+           ((0.26, 0.28), (0.62, 0.40), (0.66, 0.72), (0.24, 0.62)),
+           0.70, 0.96)),
 )
 
 #: A fallen boulder: a rounded lump, and emphatically NOT a piece of cliff.

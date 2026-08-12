@@ -72,7 +72,17 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 from . import skins as _skins
-from .terrain import Grid, tile
+from .terrain import DECOR_CODES, FLOOR, Grid, tile
+
+#: What a landmark the DM ASKED for may sweep off the ground it stands on.
+#:
+#: Exactly ``terrain.DECOR_CODES`` — "codes a generator may scatter as
+#: decoration without changing connectivity" — which is the same guarantee this
+#: needs from the other end: clearing one can never open a way through
+#: anything, because nothing was ever closed by one. A wall, a rock face or
+#: water is not on the list and never will be; a landmark that would need to
+#: move a wall is a landmark that does not fit.
+CLEARABLE = frozenset(DECOR_CODES)
 
 # --------------------------------------------------------------------------
 # Where the meshes live
@@ -1003,7 +1013,7 @@ def _turned(p: SetPiece, yaw: int) -> tuple[tuple[str, ...], dict[str, int],
 
 
 def fits(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0,
-         margin: int = 1, mode: str = "walk") -> bool:
+         margin: int = 1, mode: str = "walk", clear: bool = False) -> bool:
     """Room for this landmark here, on ground it may stand on?
 
     The margin is the same precaution :func:`vtt.structures.shelter` takes and
@@ -1015,6 +1025,13 @@ def fits(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0,
     floor of an open-water board, so reading it as "something already standing
     here" refused every landmark on every sea board — a wreck could not lie in
     the sea.
+
+    ``clear`` lets the piece count SCATTER as ground it may take — see
+    :data:`CLEARABLE`. Off by default, because a landmark the board happened to
+    have room for should not go rearranging the furniture; on for one the DM
+    asked for by name, which otherwise fails on exactly the boards most worth
+    having one. A nine-by-nine piece wants an eleven-by-eleven clearing, and a
+    ruin scattered with broken pillars has none.
     """
     tiles, _elev, _fills = _turned(p, yaw)
     w, d = len(tiles[0]), len(tiles)
@@ -1026,26 +1043,56 @@ def fits(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0,
                 continue
             inside = x0 <= x < x0 + w and y0 <= y < y0 + d
             code = g.get(x, y)
+            scatter = clear and code in CLEARABLE
             if inside:
-                if p.on and code not in p.on:
+                if p.on and code not in p.on and not scatter:
                     return False
-                if not g.passable(x, y, mode=mode):
+                if not g.passable(x, y, mode=mode) and not scatter:
                     return False          # already something standing here
-            elif not g.passable(x, y, mode=mode) and code != " ":
+            elif not g.passable(x, y, mode=mode) and code != " " and not scatter:
                 return False
 
     return True
 
 
-def place(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0) -> Placed:
+def _ground_under(g: Grid, p: SetPiece, mode: str) -> str:
+    """What a cleared square becomes: the commonest ground this piece stands on.
+
+    Read off the board rather than named in the entry, because a piece stands on
+    grass in a meadow and on flagstone in a ruin, and the entry has no way to
+    know which board it landed on.
+    """
+    counts: dict[str, int] = {}
+    for x, y in g.squares():
+        code = g.get(x, y)
+        if not g.passable(x, y, mode=mode):
+            continue
+        if p.on and code not in p.on:
+            continue
+        counts[code] = counts.get(code, 0) + 1
+    if counts:
+        return max(counts, key=lambda c: counts[c])
+    return (p.on[0] if p.on else FLOOR)
+
+
+def place(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0,
+          clear: bool = False, mode: str = "walk") -> Placed:
     """Stamp the piece onto the grid. The only place a set piece touches rules.
 
     Everything mechanical happens in these few lines — codes onto the grid,
     feet onto the elevation map — and everything after it is drawing. That
     separation is what lets the mesh come from a stranger's zip file.
+
+    ``clear`` sweeps scatter off the RESERVED squares. Only there, and only
+    scatter: every other square is about to be overwritten by the piece's own
+    code anyway, and a ziggurat whose plaza still has a broken pillar standing
+    on it is a picture nobody would draw. It can never open a way through
+    anything, since :data:`CLEARABLE` is the set of codes a generator scatters
+    without touching connectivity.
     """
     tiles, elev, _fills = _turned(p, yaw)
     out = Placed(slug=p.slug, x=x0, y=y0, yaw=yaw % 360)
+    ground = _ground_under(g, p, mode) if clear else ""
     for cy, row in enumerate(tiles):
         for cx, code in enumerate(row):
             x, y = x0 + cx, y0 + cy
@@ -1056,6 +1103,8 @@ def place(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0) -> Placed:
             # were: same terrain, same elevation, and no set-piece skin, since
             # there is no per-square geometry here to suppress.
             if code == KEEP:
+                if ground and g.get(x, y) in CLEARABLE:
+                    g.set(x, y, ground)
                 out.occupied.append((x, y))
                 continue
             g.set(x, y, code)
@@ -1097,7 +1146,8 @@ def _spots(g: Grid, p: SetPiece, rng: random.Random) -> Iterable[tuple[int, int,
 
 
 def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
-                  mode: str = "walk") -> list[Placed]:
+                  mode: str = "walk",
+                  clear: Sequence[str] = ()) -> list[Placed]:
     """Place the named landmarks on this board, deterministically.
 
     Derived from (layout, seed) and never stored — the :mod:`vtt.decor`
@@ -1117,17 +1167,20 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
     rng = random.Random((seed * 2654435761) & 0xFFFFFFFF)
     out: list[Placed] = []
     taken: set[tuple[int, int]] = set()
+    sweep = set(clear)
     for slug in slugs:
         p = CATALOGUE.get(slug)
         if p is None:
             continue
+        may_clear = slug in sweep
         for x0, y0, yaw in _spots(g, p, rng):
             tiles, _e, _f = _turned(p, yaw)
             w, d = len(tiles[0]), len(tiles)
             cells = {(x0 + cx, y0 + cy) for cy in range(d) for cx in range(w)}
-            if cells & taken or not fits(g, p, x0, y0, yaw, mode=mode):
+            if cells & taken or not fits(g, p, x0, y0, yaw, mode=mode,
+                                         clear=may_clear):
                 continue
-            out.append(place(g, p, x0, y0, yaw))
+            out.append(place(g, p, x0, y0, yaw, clear=may_clear, mode=mode))
             taken |= cells
             break
     return out

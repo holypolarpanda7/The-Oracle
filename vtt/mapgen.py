@@ -1418,7 +1418,8 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap,
         spent += cost
     if not want:
         return
-    for placed in _sp.setpieces_for(grid, want, seed=out.seed, mode=out.mode):
+    for placed in _sp.setpieces_for(grid, want, seed=out.seed, mode=out.mode,
+                                    clear=asked):
         out.setpieces.append({"slug": placed.slug, "x": placed.x,
                               "y": placed.y, "yaw": placed.yaw})
         out.skins.update(placed.skins)

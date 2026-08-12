@@ -19,12 +19,20 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import random
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# A board with no prior at its place picks its seed from the global RNG, so
+# every run of this test drew a different layout — and a check about a landmark
+# is a check about whether one FITS, which some layouts genuinely refuse. An
+# intermittent smoke test is worse than no smoke test: the one failure it is
+# certain to be blamed for is the change somebody is holding at the time.
+random.seed(20260812)
 
 FAILS: list[str] = []
 

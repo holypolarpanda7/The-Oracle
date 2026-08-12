@@ -313,7 +313,12 @@ SUBSTANCE: dict[str, str] = {
     "n": "wood",    # furniture
     "+": "wood",    # door
     "/": "wood",    # open door (the panel; its square's floor is separate)
-    "T": "bark",    # tree
+    # A tree is FOLIAGE, not bark. The swatch colours the whole square, and
+    # what a square of tree presents to a camera on the ceiling is its crown —
+    # so bark painted the canopy brown, and the model, handed brown cones on
+    # green ground, made them violet. The trunk is under the leaves from up
+    # here, which is what makes one colour per square an honest answer.
+    "T": "foliage",  # tree
     "p": "iron",    # portcullis
 }
 
@@ -322,6 +327,8 @@ SUBSTANCE_ART: dict[str, str] = {
     "wood": "old planked timber, close-up of the boards and their grain",
     "iron": "dark pitted wrought iron, close-up of the bare metal",
     "bark": "rough tree bark, close-up of the bark itself",
+    "foliage": "dense green leaf canopy seen from directly above, close-up of "
+               "the leaves themselves",
 }
 
 #: Concrete nouns for surfaces whose `tile.art` is too vague to render.
