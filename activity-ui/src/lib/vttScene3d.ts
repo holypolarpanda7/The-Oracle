@@ -32,7 +32,7 @@ import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { VttScene } from "./types";
 import {
-  CELL, DECOR_KINDS, HOLE_CODES, OBJECT_VARIANTS, SKINS,
+  CELL, DECOR_KINDS, DECOR_TINT, HOLE_CODES, OBJECT_VARIANTS, SKINS,
   SKIRT_FT, SKIRT_INSET,
   STRUCTURE_CODES, exposedRock, hullFootprint, isSetpieceSkin, isSolid, materialSlot,
   outAxis, outCorner, runAxis, setpieceYaw,
@@ -249,12 +249,6 @@ function requestSetpiece(url: string, settled: () => void): void {
 
 const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 
-/** Scenery colours. Muted on purpose: decoration that draws the eye competes
- *  with the things a player actually has to read — cover, hazards, creatures. */
-const DECOR_TINT: Record<string, string> = {
-  rug: "#5a3238", bones: "#c9c2ac", shards: "#8a7a63",
-  roots: "#4a5a34", sack: "#7a6a4a", brazier: "#6a5b46",
-};
 
 /** How much of a square a door panel fills ACROSS its wall. Mirrors
  *  vtt/render_image.py's _PANEL_THICKNESS and the flat renderer's: a door is a

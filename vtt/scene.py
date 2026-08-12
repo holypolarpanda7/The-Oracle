@@ -879,7 +879,8 @@ class VttEngine:
             return []
         rows = self.grid_of(row).to_rows()
         return _decor(rows, seed=row.seed or 0,
-                      standing=lambda c: tile_height_ft(c) > 0)
+                      standing=lambda c: tile_height_ft(c) > 0,
+                      archetype=row.archetype or "")
 
     def setpieces_for(self, map_id: int) -> list[dict]:
         """Landmarks on this board, ready for either renderer.

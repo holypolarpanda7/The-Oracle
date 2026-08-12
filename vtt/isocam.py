@@ -1365,7 +1365,7 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
         spec = DECOR_KINDS.get(d.get("kind", ""))
         if not spec:
             continue
-        ft, parts = spec
+        ft, parts = spec[0], spec[1]
         if _colour_of:
             cur_colour[0] = _colour_of("decor:" + d.get("kind", ""), "")
         dx, dz = int(d["x"]), int(d["y"])

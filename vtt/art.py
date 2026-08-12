@@ -651,7 +651,8 @@ def conditioning_kwargs(gen: GeneratedMap, *, skin_of=None) -> dict:
     return dict(
         rows=gen.grid.rows, height_ft=tile_height_ft, cover_ft=cover_height_ft,
         decor=decor_for(gen.grid.to_rows(), seed=gen.seed,
-                        standing=lambda c: tile_height_ft(c) > 0),
+                        standing=lambda c: tile_height_ft(c) > 0,
+                        archetype=gen.archetype),
         square_ft=5, structure=STRUCTURE_CODES, skin_of=skin_of,
         elevation=gen.elevation,
         shells=_hull.shells(gen.grid.rows, skin_of, gen.elevation),
@@ -989,9 +990,16 @@ def material_colour(code: str, look: str, store=None,
         _MATERIAL_RGB[key] = HOLE_COLOURS[code]
         return HOLE_COLOURS[key[0]]
     if code.startswith("decor:"):
-        # Scenery is small and its exact colour matters little; a mid brown
-        # keeps it from reading as a hole in the ground.
-        rgb = (104, 92, 74) if code[6:] in DECOR_KINDS else rgb
+        # Scenery gets the colour its KIND declares, which is a fact about the
+        # thing and not about the room. It used to be one flat brown for every
+        # kind — the browser had a per-kind tint table and the server did not,
+        # so a green shrub reached the painter as a brown lump, and brown lumps
+        # on grass are what came back as crates.
+        from .decor import colour_of as _decor_colour
+        kind = code[6:]
+        if kind in DECOR_KINDS:
+            hexed = _decor_colour(kind).lstrip("#")
+            rgb = tuple(int(hexed[i:i + 2], 16) for i in (0, 2, 4))
         _MATERIAL_RGB[key] = rgb
         return rgb
     try:

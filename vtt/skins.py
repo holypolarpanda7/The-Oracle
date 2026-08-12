@@ -309,6 +309,13 @@ _CLIFF = _v(
 #: Eight-sided in plan and battered inward, because a rock the model is handed
 #: as a prism comes back as a rock and one it is handed as a cube comes back as
 #: masonry.
+def _ring8(r: float, cx: float = 0.5, cz: float = 0.5) -> Poly:
+    """A plain eight-sided plan — what a column, a drum or a post is in plan."""
+    import math as _m
+    return tuple((cx + _m.cos(i * _m.pi / 4 + _m.pi / 8) * r,
+                  cz + _m.sin(i * _m.pi / 4 + _m.pi / 8) * r) for i in range(8))
+
+
 def _lump(r: float, top_r: float, cx: float = 0.5, cz: float = 0.5,
           skew: float = 0.0) -> tuple[Poly, Poly]:
     """A rounded plan and a smaller one above it, for a weathered lump."""
@@ -331,6 +338,84 @@ _BOULDER = _v(
      solid(*_lump(0.30, 0.16, 0.56, 0.42), 0.44, 0.80),
      solid(*_lump(0.18, 0.06, 0.34, 0.62), 0.44, 0.66)),
     (solid(*_lump(0.40, 0.14, 0.50, 0.50, skew=0.08), 0.00, 1.00),),
+)
+
+#: A town street's walls are BUILDINGS, and they were drawn as garden walls.
+#:
+#: ``#`` unskinned is the wall-face model at ten feet — right for a room, and on
+#: a street it is 43% of the board drawn as a waist-high slab. Rendered, the
+#: market came back as a plank floor with wooden FENCES around it and no
+#: buildings anywhere: the model painted the only thing a ten-foot slab beside a
+#: paved strip can be.
+#:
+#: So a street square is a house: a solid front to two thirds of its height and
+#: a ROOF above that, which is what says "building" from a camera on the
+#: ceiling. ``smooth`` makes neighbouring squares share an arrangement, so a run
+#: of them is a terrace with one ridge line rather than a row of separate huts.
+_ROOF_LOW, _ROOF_HIGH = 0.62, 0.70
+_TOWNHOUSE = _v(
+    # Gabled along x: the ridge runs east-west.
+    ((0.0, 1.0, 0.0, 1.0, 0.0, _ROOF_HIGH),
+     solid(((0.0, -0.06), (1.0, -0.06), (1.0, 1.06), (0.0, 1.06)),
+           ((0.0, 0.5), (1.0, 0.5), (1.0, 0.5), (0.0, 0.5)),
+           _ROOF_HIGH, 1.0)),
+    # Gabled along z, and a storey lower.
+    ((0.0, 1.0, 0.0, 1.0, 0.0, _ROOF_LOW),
+     solid(((-0.06, 0.0), (1.06, 0.0), (1.06, 1.0), (-0.06, 1.0)),
+           ((0.5, 0.0), (0.5, 0.0), (0.5, 1.0), (0.5, 1.0)),
+           _ROOF_LOW, 0.94)),
+    # Flat-topped with a parapet — a merchant's counting house.
+    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.86),
+     (0.0, 1.0, 0.0, 0.12, 0.86, 1.0),
+     (0.0, 1.0, 0.88, 1.0, 0.86, 1.0),
+     (0.0, 0.12, 0.0, 1.0, 0.86, 1.0),
+     (0.88, 1.0, 0.0, 1.0, 0.86, 1.0)),
+    # Hipped: drawn in on all four sides to a short ridge.
+    ((0.0, 1.0, 0.0, 1.0, 0.0, _ROOF_HIGH),
+     solid(((-0.06, -0.06), (1.06, -0.06), (1.06, 1.06), (-0.06, 1.06)),
+           ((0.28, 0.40), (0.72, 0.40), (0.72, 0.60), (0.28, 0.60)),
+           _ROOF_HIGH, 1.0)),
+)
+
+#: Half cover, four feet, out in a field: that is a BOULDER, not a crate.
+#:
+#: The tile is ``o`` and the generators scatter it outdoors for exactly the
+#: mechanical reason they scatter it indoors — a waist-high thing to get behind,
+#: which is what makes an open board a fight rather than a shooting gallery. The
+#: code is right and the picture was not: a meadow came back with twenty-one
+#: crates standing in it, and it was not the model inventing them, it was the
+#: grid asking for them. This is the whole skins argument in one square — a tile
+#: says what a square DOES and a skin says what it is MADE OF.
+#:
+#: No ``height_ft``: four feet is a number the RULES quote for this code, and a
+#: skin may reshape a quoted height but never restate one. These are drawn to
+#: the tile's own four feet, rounded instead of boxed.
+_FIELD_STONE = _v(
+    (solid(*_lump(0.42, 0.24, skew=0.12), 0.00, 0.82),
+     solid(*_lump(0.22, 0.08, 0.54, 0.46), 0.82, 1.00)),
+    (solid(*_lump(0.46, 0.30, 0.46, 0.54, skew=-0.14), 0.00, 0.70),
+     solid(*_lump(0.24, 0.10, 0.42, 0.48), 0.70, 0.92)),
+    (solid(*_lump(0.38, 0.16, 0.52, 0.48, skew=0.18), 0.00, 1.00),),
+)
+
+#: A dry ruin's snapped column: a ROUND drum, because a column is round.
+#:
+#: ``drowned-column`` was doing this job on land and it is built out of boxes —
+#: fine at the bottom of the sea where everything is furred over, and on a ruins
+#: board there are thirty-five of them and they came back painted as garden
+#: BENCHES. An unskinned ``O`` is already drawn as an eight-sided prism for
+#: exactly this reason; a skin that replaces it has to keep the roundness and
+#: only break the top.
+_SNAPPED_COLUMN = _v(
+    (solid(_ring8(0.30), _ring8(0.28), 0.0, 0.62),
+     solid(_ring8(0.29), _ring8(0.22, 0.54, 0.46), 0.62, 0.72)),
+    (solid(_ring8(0.31), _ring8(0.27), 0.0, 0.86),
+     solid(_ring8(0.28), _ring8(0.20, 0.46, 0.56), 0.86, 0.96)),
+    # A stub, with its own fallen drum lying beside it.
+    (solid(_ring8(0.32), _ring8(0.29), 0.0, 0.30),
+     solid(_ring8(0.20, 0.70, 0.62), _ring8(0.18, 0.74, 0.66), 0.0, 0.22)),
+    (solid(_ring8(0.30), _ring8(0.26, 0.54, 0.47), 0.0, 0.48),
+     solid(_ring8(0.26, 0.54, 0.47), _ring8(0.22, 0.58, 0.44), 0.48, 0.58)),
 )
 
 #: Coral heads: lower, lumpier, branching. Same idea as the cliff and a
@@ -636,6 +721,37 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="fallen boulders lie about the track, rounded and weathered, "
                "each one a separate stone",
          variants=_BOULDER, height_ft=8),
+    Skin("ruin-stub", "dressed-stone",
+         "close-up of dressed and coursed grey building stone",
+         words="what walls remain are collapsed courses of dressed stone, "
+               "broken-topped and eroded — not benches and not fences",
+         variants=_v(
+             ((0.00, 1.00, 0.20, 0.80, 0.0, 0.74),
+              (0.08, 0.66, 0.24, 0.76, 0.74, 1.00)),
+             ((0.00, 1.00, 0.24, 0.82, 0.0, 0.56),
+              (0.36, 0.96, 0.28, 0.78, 0.56, 0.96)),
+         ), directional=True),
+    Skin("broken-column", "dressed-stone",
+         "close-up of dressed and coursed grey building stone",
+         words="the columns are snapped off at different heights, weathered "
+               "drums of pale stone with fallen sections lying beside them",
+         variants=_SNAPPED_COLUMN),
+    # NB the swatch prompt is nearly all STONE. The first one said "grass and
+    # weeds forcing up through the joints" and the swatch came back mostly
+    # green, so the terrain image was green, so the board was a lawn — the
+    # material image is a sample of a SURFACE, and whatever it averages to is
+    # the colour the painter starts from.
+    Skin("ruin-floor", "ruined-paving",
+         "close-up of cracked and heaved grey flagstone paving, dry and dusty, "
+         "a few thin weeds in the cracks",
+         words="the ground is the RUINED FLOOR of the place — cracked "
+               "flagstones and fallen masonry heaved apart, weeds in the "
+               "joints; it is not a lawn and not open grass"),
+    Skin("field-stone", "granite",
+         "raw grey granite, close-up of the bare fractured rock face",
+         words="the low rocks are lichened granite boulders, waist high, "
+               "NOT crates and NOT boxes",
+         variants=_FIELD_STONE),
     Skin("scree", "scree",
          "close-up of loose shale and broken slate scree",
          words="the ground is loose shale and scree"),
@@ -690,6 +806,23 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # --- built things -----------------------------------------------------
     Skin("masonry", "dressed-stone",
          "close-up of dressed and coursed grey building stone"),
+    # A town street. Both halves are needed and neither is decoration: the
+    # walls said "fence" and the road said "planking", on a board that gets no
+    # terrain image at all (it is built up, so the depth map is the only
+    # conditioning) — which is precisely when the material CLAUSE is the whole
+    # of what the model has to go on.
+    Skin("townhouse", "plaster-timber",
+         "close-up of a timber-framed wall, white lime plaster between dark "
+         "oak beams",
+         words="the street is walled by the fronts of close-packed two-storey "
+               "townhouses — lime plaster and dark timber framing, shuttered "
+               "windows, doors onto the street, steep tiled roofs above",
+         variants=_TOWNHOUSE, height_ft=24, smooth=True),
+    Skin("cobbles", "cobble",
+         "close-up of a worn cobbled street surface, rounded granite setts and "
+         "the gaps between them",
+         words="the roadway is worn granite cobbles, rutted and greasy with "
+               "use, NOT planking and NOT floorboards"),
     # What a watchtower is BUILT of, and the DM's narration decides which — a
     # crossing in deep forest gets a timber tower and a mountain road a stone
     # one. See building_material: the board reads it off the biome the DM
@@ -895,7 +1028,18 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
     "open-water":    {"R": "coral"},
     "sewer":         {"#": "sewer-brick", "~": "sludge", ".": "sewer-ledge",
                       "W": "sludge", ",": "sewer-ledge"},
+    # Outdoors, ``o`` is a boulder. Its RULES are unchanged — half cover, four
+    # feet, breakable — and a camp keeps its actual crates, because a camp is
+    # where supplies are.
+    "open":          {"o": "field-stone"},
+    "clearing":      {"o": "field-stone"},
+    "forest":        {"o": "field-stone"},
+    "swamp":         {"o": "field-stone"},
+    "bridge":        {"o": "field-stone"},
+    "ruins":         {"O": "broken-column", "o": "field-stone",
+                      ",": "ruin-floor", ".": "ruin-floor", "w": "ruin-stub"},
     "camp":          {"#": "palisade"},
+    "street":        {"#": "townhouse", "=": "cobbles", ".": "cobbles"},
     # A sea ship and a skyship are not the same vessel, and sharing one deck
     # skin was most of why they came back looking identical. A caravel's deck
     # is wet, tarred and salt-bleached and its hull sits IN the water; a
@@ -904,7 +1048,6 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
                       "#": "hull"},
     "skyship":       {"b": "sky-deck", "w": "sky-rail", "O": "mast",
                       "#": "hull"},
-    "ruins":         {"O": "drowned-column"},
     "sky-islands":   {"R": "cliff"},
     # NB: no entry for dungeon-room, crypt, dungeon-complex or arena. They had
     # one — `masonry`, dressed grey building stone — and it bought nothing: it
@@ -954,14 +1097,34 @@ def _check_heights() -> None:
         raise ValueError(f"illegal skin assignment: {bad}")
 
 
+#: What a code is made of when the archetype says nothing.
+#:
+#: Only ``R``, and it is not a style choice — it is a correction. A rock face is
+#: in ``STRUCTURE_CODES``, so an unskinned one is drawn by the WALL-FACE model:
+#: a thin slab hugging the open side, which is right for masonry and, at the one
+#: or two percent of squares an ordinary outdoor board scatters rock across,
+#: comes out as a pale box standing on the grass. The painter reads a box on
+#: open ground as a CRATE, and a meadow strewn with crates is what every open,
+#: forest, camp and bridge board came back as. The mountain pass and the cave
+#: were never affected — they had said "cliff" and "cave-rock" for other reasons
+#: — which is precisely why it survived so long.
+#:
+#: The default is ``boulder`` rather than ``cliff`` because scattered rock is
+#: what these boards have: an OBJECT standing alone, which wants a silhouette,
+#: where a cliff is a MASS that wants to merge with its neighbours. That
+#: distinction is already written down in the catalogue and it is the same one
+#: the pass learned the hard way.
+DEFAULT_SKINS: dict[str, str] = {"R": "boulder"}
+
+
 def skins_for(archetype: str, *, style: str = "") -> dict[str, str]:
     """The default skin for each tile code on a board of this archetype."""
     arch = (archetype or "").strip().lower()
+    out = dict(DEFAULT_SKINS)
+    out.update(ARCH_SKINS.get(arch, {}))
     if arch == "skyship" and style in SKYSHIP_STYLES:
-        out = dict(ARCH_SKINS.get(arch, {}))
         out.update(SKYSHIP_STYLES[style])
-        return out
-    return dict(ARCH_SKINS.get(arch, {}))
+    return out
 
 
 def skin_at(code: str, x: int, y: int, *, codes: Optional[dict] = None,

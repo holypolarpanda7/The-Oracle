@@ -687,6 +687,30 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   a fresh layout every run, and a landmark check is a check about whether one
   fits, so it failed intermittently and would have been blamed on whatever
   change somebody was holding at the time.
+- **The GROUND is where a board stops making sense, and three different things
+  were wrong with it.** All three read as "the painter is being silly" and none
+  of them was the painter. **Scenery had no idea where it was**: `decor_for`
+  drew from one pool, so a meadow got rugs, sacks and braziers — now a kind
+  declares its SETTING (`built` / `paved` / `wild` / `under`; a cave has no
+  furniture and no vegetation, a street is open to the sky and nobody lays a rug
+  on it) and outdoor kinds exist at all (tussock, bush, deadfall, stones,
+  stump). **A tile's LOOK is a skin's job, and the rules code is often right
+  when the picture is wrong**: `_gen_open` scatters twenty-one `o` squares for
+  cover, and `o` is a crate — mechanically exactly right, and a field strewn
+  with crates. The `field-stone` skin leaves every rule alone (half cover, four
+  feet, breakable) and makes them boulders. Same fix for a street's `#`
+  (`townhouse`: buildings with ROOFS at 24 ft, where a 10-ft wall slab beside a
+  paved strip had come back as a garden fence) and a ruin's `,` and `O`.
+  **And a shape is a shape at every size**: the first outdoor scenery was built
+  out of BOXES, and a meadow came back strewn with purple crates — the same
+  lesson as the cliff and the crypt-of-dice, in the one place small enough to
+  think it did not matter. Everything wild is a prismatoid now.
+  Two traps worth remembering: a material swatch is a sample of a SURFACE and
+  whatever it averages to is where the painter starts, so asking for "weeds
+  forcing up through the joints" made a green swatch and the ruin stayed a lawn;
+  and `R` (rock face) is in `STRUCTURE_CODES`, so an unskinned one is drawn as a
+  thin WALL panel — `DEFAULT_SKINS` gives it `boulder` everywhere, which the
+  pass and the cave had been hiding by overriding it for other reasons.
 - **`vtt/decor.py` is scenery: in the room, not in the rules.** Bones, a rug, a
   brazier — drawn by the geometry and by the depth map, invisible to movement,
   cover and sight. It exists because the visual vocabulary was capped by the

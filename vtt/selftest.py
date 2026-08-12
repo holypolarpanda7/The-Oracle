@@ -1198,6 +1198,40 @@ def test_setpieces() -> None:
     eq("nothing stands in solid rock",
        sp.setpieces_for(walled, ["boulder-heap"], seed=1), [])
 
+    # --- scenery belongs to the kind of place it is in --------------------
+    from . import decor as _decor
+    from .terrain import tile_height_ft as _tall
+    from .mapgen import generate_map as _g2
+
+    def _kinds(arch: str, seed: int = 7) -> set:
+        gen = _g2(arch, width=30, height=22, seed=seed)
+        return {d["kind"] for d in _decor.decor_for(
+            gen.grid.to_rows(), seed=seed, archetype=arch,
+            standing=lambda c: _tall(c) > 0)}
+
+    meadow = _kinds("open")
+    check("nothing is furnished outdoors",
+          not (meadow & {"rug", "sack", "brazier"}), str(sorted(meadow)))
+    check("…and what IS out there grows or fell there",
+          meadow & {"tussock", "bush", "deadfall", "stump"}, str(sorted(meadow)))
+    room = _kinds("tavern")
+    check("nothing grows indoors",
+          not (room & {"bush", "tussock", "stump", "deadfall"}),
+          str(sorted(room)))
+    street = _kinds("street")
+    check("a street is paved, so it is neither",
+          not (street & {"bush", "tussock", "rug"}), str(sorted(street)))
+    under = _kinds("cave")
+    check("a cave has no furniture and no daylight to grow in",
+          not (under & {"rug", "brazier", "sack", "bush", "tussock"}),
+          str(sorted(under)))
+    # The colour is a fact about the thing, and both renderers read this one.
+    check("every kind declares its own tint",
+          all(_decor.colour_of(k).startswith("#") and len(_decor.colour_of(k)) == 7
+              for k in _decor.DECOR_KINDS))
+    check("a shrub is green and a stone is not",
+          _decor.colour_of("bush") != _decor.colour_of("stones"))
+
     # --- what the DM's words name ----------------------------------------
     eq("a ziggurat is a step pyramid",
        sp.landmark_for("a stepped ziggurat swallowed in vines"), ["step-pyramid"])

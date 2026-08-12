@@ -171,13 +171,27 @@ def render() -> str:
     lines.append("/** Scenery: drawn by every view, honoured by none of the rules.\n"
                  " *  kind -> [heightFt, parts]. Capped below the lowest cover height\n"
                  " *  in the tile table, so nothing decorative can ever be mistaken for\n"
-                 " *  something to crouch behind — see vtt/decor.py. */\n"
+                 " *  something to crouch behind — see vtt/decor.py. WHICH kinds a\n"
+                 " *  board may carry is decided on the server (a rug belongs in a\n"
+                 " *  room, a bush does not) and arrives in state(). */\n"
                  f"export const MAX_DECOR_HEIGHT_FT = {_num(MAX_DECOR_HEIGHT_FT)};\n"
                  "export const DECOR_KINDS: "
                  "Record<string, readonly [number, readonly Part[]]> = {")
-    for kind, (ft, parts) in sorted(DECOR_KINDS.items()):
+    for kind, spec in sorted(DECOR_KINDS.items()):
+        ft, parts = spec[0], spec[1]
         body = ", ".join(_part(p) for p in parts)
         lines.append(f"  {kind}: [{_num(ft)}, [{body}]],")
+    lines.append("};\n")
+
+    lines.append(
+        "/** Scenery tints. Muted on purpose: decoration that draws the eye\n"
+        " *  competes with what a player has to read — cover, hazards,\n"
+        " *  creatures. Generated, because the browser had its own table and\n"
+        " *  the server painted every kind one brown, so the colour the\n"
+        " *  painter was conditioned on was not the colour on the board. */\n"
+        "export const DECOR_TINT: Record<string, string> = {")
+    for kind, spec in sorted(DECOR_KINDS.items()):
+        lines.append(f'  {kind}: "{spec[3]}",')
     lines.append("};\n")
 
     # --- skins ------------------------------------------------------------
