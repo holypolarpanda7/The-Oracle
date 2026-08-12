@@ -731,9 +731,12 @@ _LANDMARK_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
       "tiered temple"), "step-pyramid"),
     (("cave column", "cave pillar", "stalactite", "stalagmite", "dripstone",
       "flowstone"), "cave-pillar"),
+    # "stone stag" is in here because it is what the MESH is, and the catalogue
+    # entry says so in its own words — a DM describing what the board already
+    # told them is standing there must key it.
     (("colossal statue", "colossus", "great statue", "giant statue",
-      "stone statue", "guardian statue", "idol", "effigy", "statue"),
-     "great-statue"),
+      "stone statue", "guardian statue", "stone stag", "idol", "effigy",
+      "statue", "stag"), "great-statue"),
     (("ruined arch", "broken arch", "ceremonial arch", "stone arch",
       "archway", "arch"), "ruined-arch"),
     (("broken pillar", "snapped column", "fallen pillar", "toppled pillar",

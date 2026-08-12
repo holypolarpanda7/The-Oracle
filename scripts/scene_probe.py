@@ -97,6 +97,25 @@ SCENES: tuple[tuple[str, str, str, str, str], ...] = (
      "over the side hand over hand.",
      "the deck of an airship under boarding", "sky", ""),
 
+    # ---- boards built AROUND a landmark ---------------------------------
+    # Every other scene here is about the derived geometry. These are about the
+    # one thing on the board that is somebody else's model: what the DM has to
+    # say to get one, and what it does to the picture once it is there.
+    ("gate-tower",
+     "The road ends at a gate tower, forty feet of grey stone with the "
+     "portcullis down and archers on the top.",
+     "the road up to a gate tower", "hills", "a gate tower"),
+
+    ("stag",
+     "In the middle of the fallen colonnade a stone stag stands over you, "
+     "antlers broken, twice the height of a man.",
+     "a ruined temple court", "forest", "a colossal stone stag"),
+
+    ("wreck",
+     "The hull lies half-buried in the sand where the reef tore it open, and "
+     "something has made a home of it.",
+     "a shallow reef", "sea", "a beached wreck"),
+
     # ---- the ones that SHOULD be hard -----------------------------------
     ("thin-hook",
      "A fight breaks out where you were standing.",
@@ -253,7 +272,8 @@ def _colour(code: str):
     return _COLS.get(code, (140, 140, 140))
 
 
-def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False) -> None:
+def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False,
+          depth: bool = False) -> None:
     """Render the real battlemap for the first ``limit`` scenes.
 
     ``tag`` names the arm of an experiment and goes in the file name; ``force``
@@ -295,6 +315,15 @@ def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False) -> N
             stem = f"paint-{tag + '-' if tag else ''}{r['label']}"
             (OUT / f"{stem}.png").write_bytes(blob)
             print(f"    -> scene-probe/{stem}.png  (id {got.image_id})")
+        if depth:
+            # What the painter was actually CONDITIONED on. Worth having beside
+            # the result: a landmark that never reached the depth map is
+            # invisible in exactly the same way as one the model ignored, and
+            # `depth_kw` really did carry no set pieces once.
+            for name, png in art.conditioning_images(
+                    gen, biome=r["biome"], lighting=gen.lighting).items():
+                (OUT / f"{stem}-{name}.png").write_bytes(png)
+            print(f"    -> scene-probe/{stem}-depth.png, -terrain.png")
 
 
 def main() -> int:
@@ -306,6 +335,8 @@ def main() -> int:
     ap.add_argument("--tag", default="", help="name this arm of an experiment")
     ap.add_argument("--force", action="store_true",
                     help="render past the cache (needed to compare two arms)")
+    ap.add_argument("--depth", action="store_true",
+                    help="also write the conditioning images beside the render")
     a = ap.parse_args()
 
     rows = decisions()
@@ -315,7 +346,7 @@ def main() -> int:
     if a.paint:
         want = [w.strip() for w in a.only.split(",") if w.strip()]
         paint([r for r in rows if r["label"] in want] if want else rows,
-              a.limit, tag=a.tag, force=a.force)
+              a.limit, tag=a.tag, force=a.force, depth=a.depth)
     return 0
 
 

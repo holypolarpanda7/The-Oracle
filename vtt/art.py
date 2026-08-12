@@ -626,6 +626,71 @@ def _setpiece_instances(gen) -> list[dict]:
     return out
 
 
+def conditioning_kwargs(gen: GeneratedMap, *, skin_of=None) -> dict:
+    """Everything the rasterizers need to draw THIS board, in one bundle.
+
+    One bundle, used for the depth map, for the terrain image AND for the mask,
+    so the cut can never be taken from different geometry than the picture was
+    conditioned on. Extracted so a caller that only wants to LOOK at the
+    conditioning (``scene_probe --depth``) gets the same geometry the render
+    got, rather than a second construction of it that can quietly diverge.
+    """
+    from . import hull as _hull
+    from . import skins as _skins
+    from .decor import decor_for
+    from .terrain import cover_height_ft, tile_height_ft
+
+    if skin_of is None:
+        code_skins = _skins.skins_for(gen.archetype, style=gen.style)
+        square_skins = dict(gen.skins or {})
+
+        def skin_of(c: str, x: int, z: int) -> str:      # noqa: E306
+            return _skins.skin_at(c, x, z, codes=code_skins,
+                                  squares=square_skins)
+
+    return dict(
+        rows=gen.grid.rows, height_ft=tile_height_ft, cover_ft=cover_height_ft,
+        decor=decor_for(gen.grid.to_rows(), seed=gen.seed,
+                        standing=lambda c: tile_height_ft(c) > 0),
+        square_ft=5, structure=STRUCTURE_CODES, skin_of=skin_of,
+        elevation=gen.elevation,
+        shells=_hull.shells(gen.grid.rows, skin_of, gen.elevation),
+        # The landmarks, or the painter is conditioned on a depth map with a
+        # HOLE where the colossus stands — it would paint open ground there and
+        # the geometry would then be a statue nothing in the picture agrees
+        # with. The tiles a set piece stamps are already in ``rows``; its mesh
+        # is not, and the mesh is most of its volume. This was missing once, and
+        # the symptom was landmarks that reached the board and the Discord PNG
+        # and never the painting.
+        setpieces=_setpiece_instances(gen))
+
+
+def conditioning_images(gen: GeneratedMap, *, store=None,
+                        biome: Optional[str] = None,
+                        lighting: Optional[str] = None) -> dict:
+    """The two pictures the painter is conditioned on, for inspection.
+
+    ``{"depth": png, "terrain": png}``. Nothing in play calls this — it is for
+    looking at, because a landmark that never reached the depth map is
+    invisible in exactly the same way as one the model chose to ignore, and
+    telling those apart by staring at the result is not possible.
+    """
+    from . import isocam
+
+    kw = conditioning_kwargs(gen)
+    look = board_look(biome or "", gen.archetype)
+    out = {"depth": isocam.depth_image(**kw)}
+    if store is None:
+        try:
+            from imagery import ImageStore
+            store = ImageStore()
+        except Exception:
+            store = None
+    out["terrain"] = isocam.terrain_image(
+        colour_of=lambda c, sk: material_colour(c, look, store, skin=sk), **kw)
+    return {k: v for k, v in out.items() if v}
+
+
 def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
                      biome: Optional[str] = None, lighting: Optional[str] = None,
                      extra: str = "", conditions: str = "",
@@ -721,24 +786,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
         # would then disagree with itself. Refuse rather than mislead.
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
-    from . import hull as _hull
-    from .decor import decor_for
-    from .terrain import cover_height_ft
-    # One kwargs bundle, used for the depth map AND for the mask, so the cut
-    # cannot be taken from different geometry than the picture was conditioned on.
-    depth_kw = dict(
-        rows=gen.grid.rows, height_ft=tile_height_ft, cover_ft=cover_height_ft,
-        decor=decor_for(gen.grid.to_rows(), seed=gen.seed,
-                        standing=lambda c: tile_height_ft(c) > 0),
-        square_ft=5, structure=STRUCTURE_CODES, skin_of=_skin_of,
-        elevation=gen.elevation,
-        shells=_hull.shells(gen.grid.rows, _skin_of, gen.elevation),
-        # The landmarks, or the painter is conditioned on a depth map with a
-        # HOLE where the colossus stands — it would paint open ground there and
-        # the geometry would then be a statue nothing in the picture agrees
-        # with. The tiles a set piece stamps are already in ``rows``; its mesh
-        # is not, and the mesh is most of its volume.
-        setpieces=_setpiece_instances(gen))
+    depth_kw = conditioning_kwargs(gen, skin_of=_skin_of)
     depth = isocam.depth_image(**depth_kw)
     # The half depth cannot carry: what the ground is MADE of. Outdoors that is
     # the whole board, so without it the model invents terrain the grid does not

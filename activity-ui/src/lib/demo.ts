@@ -352,6 +352,20 @@ function demoVtt(stage: number): VttScene {
           : "";
         return [{ x, y, code, name: label, label, axis, image_id: null }];
       })),
+    // A LANDMARK, so the offline demo exercises the one thing on the board
+    // that is somebody else's model rather than derived geometry. Its square
+    // is already a pillar in DEMO_TERRAIN and the piece stamps `O` — a set
+    // piece owns no rules, so the picture and the grid say the same thing
+    // here as everywhere. `scale` and `pivot` are what the server measured off
+    // the file (vtt/setpieces.py mesh_fit); a browser must never recompute
+    // them, so they are pasted rather than derived.
+    setpieces: [
+      { slug: "broken-pillar", name: "broken pillar", x: 7, y: 6, yaw: 0,
+        w: 1, d: 1, height_ft: 12, up: "y", yaw_fix: 0, code: "O",
+        words: "a snapped stone column, its top long gone",
+        mesh: "/assets/setpieces/broken-pillar.obj",
+        scale: 0.6015202, pivot: [0, 0, 0] },
+    ],
     debris: stage >= 2
       ? [{ x: 6, y: 5, code: ",", was: "pillar", material: "stone",
            label: "broken pillar", image_id: null }]
