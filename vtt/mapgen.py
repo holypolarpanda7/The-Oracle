@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from . import skins as _skins
 from .skins import SKYSHIP_STYLES
@@ -1161,9 +1161,18 @@ ARCHETYPES: dict[str, Callable[[Grid, random.Random, GeneratedMap], None]] = {
 }
 
 
-#: Loose words the DM might use -> the archetype that fits. First match wins,
-#: so put the specific phrases before the generic ones.
-_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+#: The words that say a fight is not on dry ground. Consulted FIRST, and ahead
+#: of anything built, because a medium is not scenery: it decides who can be
+#: there at all, what a weapon does, and how everything moves. An underwater
+#: ruin is fought swimming, whatever the ruin is made of — so the sea wins the
+#: argument with the architecture, where the architecture wins it with the
+#: country.
+#:
+#: It also settles the collision the tiers below would otherwise create:
+#: matching is by substring and "shipwreck" contains "ship", so a wreck named
+#: with no other clue would be fought on a ship's DECK. Reading the sea first
+#: puts it on the seabed, which is where it lies.
+_MEDIUM: tuple[tuple[tuple[str, ...], str], ...] = (
     (("skyship", "airship", "flying ship", "sky ship"), "skyship"),
     (("sky island", "floating island", "cloud", "aloft", "midair", "mid-air",
       "open sky", "in the air"), "sky-islands"),
@@ -1171,36 +1180,63 @@ _KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
       "underwater", "under the sea"), "reef"),
     (("open water", "open sea", "ocean", "the deep", "shipwreck", "sunken"),
      "open-water"),
+)
+
+#: Loose words for a STRUCTURE — something built, which a fight is fought
+#: inside or around. First match wins, so specific phrases come before generic
+#: ones.
+#:
+#: Consulted BEFORE the settings below, and that order is the whole point. A DM
+#: writing "an overgrown temple in the jungle" has named two things, and the one
+#: that decides the layout is the temple: the jungle is already carried by the
+#: place's biome, by the skins and by what the painter is told, while nothing
+#: else in the chain can put walls, terraces or a plaza on the board. Read the
+#: other way round — which is what one flat list did, since "jungle" happened to
+#: sit above "temple" in it — the board came back a plain patch of forest and
+#: the building the narration promised existed nowhere.
+_STRUCTURES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("tavern", "inn", "taproom", "alehouse", "common room"), "tavern"),
     (("crypt", "tomb", "burial", "sarcoph", "mausoleum", "catacomb"), "crypt"),
     (("sewer", "drain", "culvert"), "sewer"),
-    (("bridge", "span", "chasm", "ravine", "gorge"), "bridge"),
-    (("ship", "deck", "boat", "galley", "vessel"), "ship"),
     (("arena", "pit fight", "colosseum", "duelling ground"), "arena"),
     (("camp", "tents", "bivouac", "encampment"), "camp"),
+    (("ruin", "rubble", "toppled", "abandoned temple", "overgrown temple",
+      "jungle temple", "lost temple", "temple ruins", "ziggurat"), "ruins"),
+    (("street", "alley", "market", "plaza", "town square", "city"), "street"),
+    (("bridge", "span"), "bridge"),
+    (("ship", "deck", "boat", "galley", "vessel"), "ship"),
+    (("dungeon", "corridor", "vault", "keep", "castle", "hall", "temple",
+      "chamber", "room"), "dungeon-room"),
+)
+
+#: Loose words for the COUNTRY a fight happens in. Consulted when nothing built
+#: was named — and it usually is what a DM names, so this is not the poor
+#: relation the ordering makes it look.
+_SETTINGS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("chasm", "ravine", "gorge"), "bridge"),
     (("swamp", "bog", "marsh", "fen", "mire"), "swamp"),
     (("cave", "cavern", "grotto", "tunnel", "underdark"), "cave"),
-    (("ruin", "rubble", "toppled", "abandoned temple"), "ruins"),
-    (("street", "alley", "market", "plaza", "town square", "city"), "street"),
     (("pass", "mountain", "cliff", "ledge", "scree"), "mountain-pass"),
     (("forest", "wood", "grove", "thicket", "jungle"), "forest"),
     (("clearing", "glade", "meadow"), "clearing"),
-    (("dungeon", "corridor", "vault", "keep", "castle", "hall", "temple",
-      "chamber", "room"), "dungeon-room"),
     (("field", "plain", "road", "hill", "moor", "desert", "tundra"), "open"),
 )
 
 
 def archetype_for(text: Optional[str], default: str = "open") -> str:
-    """Pick the closest layout family for a scrap of DM language."""
+    """Pick the closest layout family for a scrap of DM language.
+
+    Medium beats architecture beats country — see :data:`_MEDIUM`.
+    """
     t = (text or "").strip().lower()
     if not t:
         return default
     if t in ARCHETYPES:
         return t
-    for words, arch in _KEYWORDS:
-        if any(w in t for w in words):
-            return arch
+    for table in (_MEDIUM, _STRUCTURES, _SETTINGS):
+        for words, arch in table:
+            if any(w in t for w in words):
+                return arch
     return default
 
 
@@ -1302,8 +1338,9 @@ _SETPIECES: dict[str, tuple[str, ...]] = {
 SETPIECE_BUDGET = 0.14
 
 
-def setpiece_area_for(archetype: str) -> int:
-    """Squares this archetype's landmarks would like, before a board exists.
+def setpiece_area_for(archetype: str,
+                      asked: Sequence[str] = ()) -> int:
+    """Squares this board's landmarks would like, before a board exists.
 
     Read by :func:`vtt.triggers.board_size_for`, which has to size the board
     BEFORE anything is generated on it. Only the biggest is counted rather than
@@ -1311,36 +1348,57 @@ def setpiece_area_for(archetype: str) -> int:
     summing the pool would size every forest for a tree AND a boulder field
     when it will only ever get one of each on a small board — and the largest
     piece is the one that actually cannot be fitted otherwise.
+
+    ``asked`` is what the DM named, which is counted the same way and for a
+    stronger reason: a landmark the fiction has already promised the table is
+    the one that must not be dropped for want of room.
     """
     from . import setpieces as _sp
 
     best = 0
-    for slug in _SETPIECES.get((archetype or "").strip().lower()) or ():
+    for slug in list(asked) + list(_SETPIECES.get(
+            (archetype or "").strip().lower()) or ()):
         piece = _sp.CATALOGUE.get(slug)
         if piece is not None:
             best = max(best, piece.width * piece.depth)
     return best
 
 
-def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap) -> None:
-    """Stand this archetype's landmarks on the board, within budget.
+def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap,
+                     asked: Sequence[str] = ()) -> None:
+    """Stand this board's landmarks on it, within budget.
 
     Runs after connectivity so a landmark cannot sever the board, and before
     the spawn zones so nobody is dropped inside one. ``fits`` demands a clear
     square of margin all round, which is also what keeps landmarks out of
     corridors — a one-square passage has walls in the margin ring and is
     refused.
+
+    ``asked`` is what the DM's ``landmark=`` named. It is placed FIRST, is
+    exempt from the archetype's pool (a ziggurat in a forest is a fair thing to
+    narrate, and the pool is a default rather than a permission), and is exempt
+    from the coin flip below — a landmark someone asked for by name is not a
+    surprise to be rationed.
     """
     from . import setpieces as _sp
 
-    pool = _SETPIECES.get(out.archetype) or ()
-    if not pool:
+    asked = [s for s in dict.fromkeys(asked) if s in _sp.CATALOGUE]
+    pool = [s for s in (_SETPIECES.get(out.archetype) or ())
+            if s not in asked]
+    if not asked and not pool:
         return
     budget = int(grid.width * grid.height * SETPIECE_BUDGET)
+    # The board was sized for what the DM asked for (`setpiece_area_for` counts
+    # it), so a budget that then refuses it would be the two halves of one
+    # decision disagreeing. The asked-for pieces raise the ceiling; everything
+    # after them still spends against it.
+    for slug in asked:
+        piece = _sp.CATALOGUE[slug]
+        budget = max(budget, piece.width * piece.depth)
     if budget < 1:
         return
-    want: list[str] = []
-    spent = 0
+    want: list[str] = list(asked)
+    spent = sum(_sp.CATALOGUE[s].width * _sp.CATALOGUE[s].depth for s in asked)
     for slug in pool:
         piece = _sp.CATALOGUE.get(slug)
         if piece is None:
@@ -1360,7 +1418,7 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap) -> None:
         spent += cost
     if not want:
         return
-    for placed in _sp.setpieces_for(grid, want, seed=out.seed):
+    for placed in _sp.setpieces_for(grid, want, seed=out.seed, mode=out.mode):
         out.setpieces.append({"slug": placed.slug, "x": placed.x,
                               "y": placed.y, "yaw": placed.yaw})
         out.skins.update(placed.skins)
@@ -1370,7 +1428,8 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap) -> None:
 def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
                  seed: Optional[int] = None,
                  lighting: Optional[str] = None,
-                 style: str = "", biome: str = "") -> GeneratedMap:
+                 style: str = "", biome: str = "",
+                 landmarks: Sequence[str] = ()) -> GeneratedMap:
     """Build a board. The same ``(archetype, width, height, seed, style)``
     always produces the identical grid — so a map can be regenerated from its
     row.
@@ -1379,6 +1438,12 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
     choice rather than a material fact (today: a skyship is timber, steampunk
     or grown). Left empty the generator picks from the seed, which is what
     every caller written before styles existed does.
+
+    ``landmarks`` are catalogue slugs the caller wants standing here — the DM
+    narrated them, so they are placed before the archetype's own pool and
+    without the rationing that keeps a colossus rare on boards nobody asked for
+    one. They are still placed by the code, and a piece that cannot be fitted
+    is simply absent: the fiction chooses what, the board chooses where.
     """
     archetype = archetype if archetype in ARCHETYPES else archetype_for(archetype)
     width = max(8, min(60, int(width)))
@@ -1420,7 +1485,7 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
 
     # Landmarks last, so they stand on a board already proved connected — and
     # before the spawn zones, so nobody starts inside one.
-    _place_setpieces(grid, rng, out)
+    _place_setpieces(grid, rng, out, asked=landmarks)
 
     party, foes = _opposed_zones(grid, rng, out.mode)
     out.spawn_party, out.spawn_foes = party, foes

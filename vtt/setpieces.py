@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -461,7 +462,10 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
         _PYRAMID_TILES, height_ft=20.0, elevation=_PYRAMID_ELEV,
         body="pyramid", turns=(0, 90, 180, 270),
         words="a tiered stone pyramid, its terraces climbing to a flat summit",
-        on=("g", "\"", ".", "s"),
+        # Rubble is ground too, and leaving it out kept every one of these off
+        # the RUINS boards — the archetype whose floor is eight hundred squares
+        # of broken stone, and the one whose whole pool is temple furniture.
+        on=("g", "\"", ".", "s", ","),
     ),
     SetPiece(
         "great-statue", "colossal guardian",
@@ -478,7 +482,7 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
         Source("quat-ruins", ("statue_stag", "statue")),
         ("OOO", "OOO"), height_ft=22.0, body="colossus",
         words="a colossal stone stag, antlers broken, staring down the approach",
-        on=("g", "\"", ".", "s"),
+        on=("g", "\"", ".", "s", ","),
     ),
     SetPiece(
         "ruined-arch", "ruined arch",
@@ -600,7 +604,10 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
         # measures at twenty feet.
         ("##", "##", "##", "##", "#-"), height_ft=20.0, body="wreck",
         words="the broken-backed hull of a wrecked ship",
-        on=("s", "~", "g", "."),
+        # Deep water included: an open-water board is deep water from edge to
+        # edge, and a wreck that may only lie on the shallows is a wreck that
+        # never appears on the one archetype named after the sea.
+        on=("s", "~", "g", ".", "W"),
     ),
     SetPiece(
         "cave-pillar", "cave column",
@@ -685,6 +692,124 @@ def _check_catalogue() -> None:
 
 _check_packs()
 _check_catalogue()
+
+
+# --------------------------------------------------------------------------
+# What the DM's words name
+#
+# The channel this table opens is the whole reason the catalogue is worth
+# having: the DM narrates a stepped ziggurat swallowed in vines, the code HAS a
+# step pyramid, and without a way across the board comes back a plain patch of
+# forest — a landmark the fiction has already promised the table and the
+# picture then denies. It is the same division of labour as everywhere else,
+# not a loosening of it: the DM says WHAT stands here, and the code still owns
+# the footprint, the tiles it stamps, where it goes and whether it fits.
+#
+# Matched on WORD BOUNDARIES, unlike ``mapgen._KEYWORDS``, because this
+# vocabulary is full of short nouns that live inside other words — "arch" is in
+# "archer", and a board full of archers is exactly the board a DM is describing
+# when a fight starts.
+# --------------------------------------------------------------------------
+
+#: Loose DM language -> catalogue slug, most specific phrasing first.
+#:
+#: Deliberately made of NOUN PHRASES rather than bare stems: a group whose key
+#: word is "ruin" fires on "a ruined arch" as well, and the DM then gets two
+#: landmarks for one thing they described.
+_LANDMARK_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("step pyramid", "stepped pyramid", "ziggurat", "pyramid",
+      "tiered temple"), "step-pyramid"),
+    (("cave column", "cave pillar", "stalactite", "stalagmite", "dripstone",
+      "flowstone"), "cave-pillar"),
+    (("colossal statue", "colossus", "great statue", "giant statue",
+      "stone statue", "guardian statue", "idol", "effigy", "statue"),
+     "great-statue"),
+    (("ruined arch", "broken arch", "ceremonial arch", "stone arch",
+      "archway", "arch"), "ruined-arch"),
+    (("broken pillar", "snapped column", "fallen pillar", "toppled pillar",
+      "broken column", "pillar", "column"), "broken-pillar"),
+    (("stepped plinth", "stepped platform", "plinth", "dais",
+      "raised platform"), "temple-plinth"),
+    (("ruined wall", "ruined walls", "collapsed wall", "broken wall",
+      "crumbling wall", "temple wall"), "ruined-wall"),
+    (("jungle giant", "great tree", "giant tree", "enormous tree",
+      "ancient tree", "huge tree", "banyan", "kapok"), "jungle-giant"),
+    (("standing stone", "standing stones", "monolith", "obelisk", "menhir"),
+     "standing-stone"),
+    (("boulder", "boulders", "fallen rocks", "rockfall", "rubble heap"),
+     "boulder-heap"),
+    (("mausoleum", "sepulchre", "sepulcher", "tomb house", "tomb"),
+     "mausoleum"),
+    (("gate tower", "gatehouse", "guard tower", "stone tower", "gate house"),
+     "gatehouse-tower"),
+    (("fountain",), "village-fountain"),
+    (("shipwreck", "wrecked ship", "beached wreck", "broken hull", "wreck"),
+     "shipwreck"),
+)
+
+
+def _check_landmark_words() -> None:
+    unknown = {slug for _w, slug in _LANDMARK_WORDS if slug not in CATALOGUE}
+    if unknown:
+        raise ValueError(
+            f"_LANDMARK_WORDS names landmarks that do not exist: {unknown}. "
+            "A word that keys nothing is a DM asking for a landmark and "
+            "silently getting none.")
+
+
+_check_landmark_words()
+
+
+def landmark_for(text: Optional[str], *, limit: int = 3) -> list[str]:
+    """Catalogue slugs for a scrap of DM language. Never raises.
+
+    Accepts a slug or a catalogue name outright, so a DM (or a caller) who
+    knows the vocabulary can be exact; otherwise every phrase in the text that
+    keys a landmark is returned, in the order they are written above.
+
+    A word is only read once: a match CONSUMES the span it sat on, so "a ruined
+    arch" is an arch rather than an arch plus a length of ruined wall. ``limit``
+    is the last guard — a lavish sentence naming five landmarks would otherwise
+    ask for more scenery than a board has room to fight on, and the budget in
+    ``mapgen._place_setpieces`` would drop the tail silently anyway.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return []
+    if t in CATALOGUE:
+        return [t]
+    by_name = {p.name.lower(): p.slug for p in CATALOGUE.values()}
+    if t in by_name:
+        return [by_name[t]]
+
+    taken: list[tuple[int, int]] = []
+
+    def _free(a: int, b: int) -> bool:
+        return not any(a < end and start < b for start, end in taken)
+
+    out: list[str] = []
+    for words, slug in _LANDMARK_WORDS:
+        if slug in out:
+            continue
+        for w in words:
+            m = re.search(rf"\b{re.escape(w)}s?\b", t)
+            if m and _free(m.start(), m.end()):
+                taken.append((m.start(), m.end()))
+                out.append(slug)
+                break
+        if len(out) >= max(1, limit):
+            break
+    return out
+
+
+def landmark_vocabulary() -> list[tuple[str, str]]:
+    """``(slug, name)`` for every landmark the board can stand.
+
+    For the DM prompt. A model cannot ask for a ziggurat it was never told
+    exists, and listing the catalogue is cheaper than teaching it the whole
+    keyword table — the resolver above is forgiving about the wording.
+    """
+    return [(p.slug, p.name) for p in CATALOGUE.values()]
 
 
 # --------------------------------------------------------------------------
@@ -878,12 +1003,18 @@ def _turned(p: SetPiece, yaw: int) -> tuple[tuple[str, ...], dict[str, int],
 
 
 def fits(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0,
-         margin: int = 1) -> bool:
+         margin: int = 1, mode: str = "walk") -> bool:
     """Room for this landmark here, on ground it may stand on?
 
     The margin is the same precaution :func:`vtt.structures.shelter` takes and
     for the same reason: a landmark jammed against a wall seals a pocket, and
     the generator's connectivity net then carves a corridor through it.
+
+    "Clear" is judged in the board's own MEDIUM, exactly as ``_connect_regions``
+    judges connectivity. Deep water is impassable to a walker and is the entire
+    floor of an open-water board, so reading it as "something already standing
+    here" refused every landmark on every sea board — a wreck could not lie in
+    the sea.
     """
     tiles, _elev, _fills = _turned(p, yaw)
     w, d = len(tiles[0]), len(tiles)
@@ -898,11 +1029,10 @@ def fits(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0,
             if inside:
                 if p.on and code not in p.on:
                     return False
-                if tile(code).move_cost_ft is None:
+                if not g.passable(x, y, mode=mode):
                     return False          # already something standing here
-            elif tile(code).move_cost_ft is None and code != " ":
+            elif not g.passable(x, y, mode=mode) and code != " ":
                 return False
-
 
     return True
 
@@ -937,8 +1067,37 @@ def place(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0) -> Placed:
     return out
 
 
+def _spots(g: Grid, p: SetPiece, rng: random.Random) -> Iterable[tuple[int, int, int]]:
+    """Every square this piece could stand on, inner ground first.
+
+    Two passes rather than one shuffle, because where a landmark goes is not a
+    uniform question. A set piece is something a fight happens AROUND, and one
+    shoved against the edge of the board is scenery you can only ever have
+    behind you — the edge is also where it fits most easily, since ``fits``
+    skips the margin ring where it runs off the board. So the inner two thirds
+    are offered first and the rim is the fallback.
+    """
+    tiles, _e, _f = _turned(p, 0)
+    inset_x = max(1, (g.width - len(tiles[0])) // 6)
+    inset_y = max(1, (g.height - len(tiles)) // 6)
+    inner: list[tuple[int, int, int]] = []
+    rim: list[tuple[int, int, int]] = []
+    for yaw in p.turns:
+        t, _e2, _f2 = _turned(p, yaw)
+        w, d = len(t[0]), len(t)
+        for y in range(0, max(1, g.height - d + 1)):
+            for x in range(0, max(1, g.width - w + 1)):
+                bucket = (inner if (inset_x <= x and x + w <= g.width - inset_x
+                                    and inset_y <= y and y + d <= g.height - inset_y)
+                          else rim)
+                bucket.append((x, y, yaw))
+    rng.shuffle(inner)
+    rng.shuffle(rim)
+    return inner + rim
+
+
 def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
-                  tries: int = 40) -> list[Placed]:
+                  mode: str = "walk") -> list[Placed]:
     """Place the named landmarks on this board, deterministically.
 
     Derived from (layout, seed) and never stored — the :mod:`vtt.decor`
@@ -946,6 +1105,14 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
     function of the board, so they survive a regeneration and cost no column.
     Which landmarks a board WANTS is the caller's business; a DM naming a
     ruined temple is fiction, and choosing where it goes is not.
+
+    Every candidate square is TRIED, in a seeded order. Forty random darts came
+    first and measured badly for the reason a dart game is hard: a nine-by-nine
+    piece needs an eleven-by-eleven clearing, a wooded board has few, and a
+    miss is indistinguishable from a board that had no room at all. Two of
+    three forests refused a pyramid the DM had already narrated; scanning
+    finds one on nearly every board, and where it still finds none, that is now
+    a real answer rather than bad luck.
     """
     rng = random.Random((seed * 2654435761) & 0xFFFFFFFF)
     out: list[Placed] = []
@@ -954,14 +1121,11 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
         p = CATALOGUE.get(slug)
         if p is None:
             continue
-        for _ in range(tries):
-            yaw = rng.choice(p.turns)
+        for x0, y0, yaw in _spots(g, p, rng):
             tiles, _e, _f = _turned(p, yaw)
             w, d = len(tiles[0]), len(tiles)
-            x0 = rng.randrange(0, max(1, g.width - w + 1))
-            y0 = rng.randrange(0, max(1, g.height - d + 1))
             cells = {(x0 + cx, y0 + cy) for cy in range(d) for cx in range(w)}
-            if cells & taken or not fits(g, p, x0, y0, yaw):
+            if cells & taken or not fits(g, p, x0, y0, yaw, mode=mode):
                 continue
             out.append(place(g, p, x0, y0, yaw))
             taken |= cells

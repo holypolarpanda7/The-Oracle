@@ -29,7 +29,7 @@ import math
 import os
 import random
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -94,6 +94,26 @@ DEFAULT_SIZE: dict[str, tuple[int, int]] = {
     SceneKind.EXPLORE: (30, 24),
     SceneKind.SOCIAL: (16, 12),
 }
+
+def _landmarks_from(asked: Optional[str | Sequence[str]]) -> list[str]:
+    """Catalogue slugs out of whatever a caller passed for ``landmarks``.
+
+    A string is DM language and goes through the resolver; a list may be either
+    slugs or phrases, and each element goes through the same door, so a caller
+    never has to know which it is holding.
+    """
+    from . import setpieces as _sp
+
+    if not asked:
+        return []
+    parts = [asked] if isinstance(asked, str) else list(asked)
+    out: list[str] = []
+    for part in parts:
+        for slug in _sp.landmark_for(str(part)):
+            if slug not in out:
+                out.append(slug)
+    return out
+
 
 #: Team colours the overlay falls back to when a token has no portrait.
 TEAM_COLORS = {Team.PARTY: "#4fa3ff", Team.FOE: "#ff5a5a", Team.NEUTRAL: "#d9b25a"}
@@ -175,6 +195,7 @@ class VttEngine:
                    creatures: Optional[list] = None,
                    board_scale: Optional[str] = None,
                    longest_range_ft: int = 0,
+                   landmarks: Optional[str | Sequence[str]] = None,
                    auto_close: bool = True) -> TacticalMap:
         """Open a tactical board for a session, closing any board already out.
 
@@ -184,6 +205,12 @@ class VttEngine:
         art come back instead of being regenerated, so a room the party fought
         in last week looks the same today.
 
+        ``landmarks`` is the same kind of input one level down: slugs, or loose
+        DM language ("a stepped ziggurat"), which
+        :func:`vtt.setpieces.landmark_for` maps. Named nothing, the place text
+        is read for one — a DM who describes a fountain in the square has said
+        so whether or not they knew there was a parameter for it.
+
         ``auto_close`` marks a board the *system* put out (a fight started), so
         the system may take it away again when the reason passes. A board the DM
         opened by hand is theirs until they close it — nothing tidies it up
@@ -191,13 +218,17 @@ class VttEngine:
         """
         kind = kind if kind in SceneKind.ALL else SceneKind.COMBAT
         arch = archetype_for(archetype or place_hint or "", default="open")
+        marks = _landmarks_from(landmarks)
+        if not marks:
+            marks = _landmarks_from(archetype or place_hint or "")
         # The scene KIND sets the floor; the fight standing on it decides the
         # rest. Explicit width/height still win outright — a caller who names a
         # size has said something the roster can't.
         base = DEFAULT_SIZE.get(kind, (24, 18))
         auto = board_size_for(base, archetype=arch, creatures=creatures,
                               scale=board_scale,
-                              longest_range_ft=int(longest_range_ft or 0))
+                              longest_range_ft=int(longest_range_ft or 0),
+                              landmarks=marks)
         w, h = int(width or auto[0]), int(height or auto[1])
 
         prior = self._prior_place_map(place_slug, arch, w, h) if (
@@ -206,7 +237,8 @@ class VttEngine:
             prior.seed if prior else random.randint(1, 2**31 - 1)))
 
         gen = generate_map(arch, width=w, height=h, seed=seed,
-                           lighting=lighting, biome=biome or place_hint or "")
+                           lighting=lighting, biome=biome or place_hint or "",
+                           landmarks=marks)
 
         self.close_scene(session_id=session_id)
 

@@ -85,7 +85,8 @@ MIN_SIDE, MAX_SIDE = 8, 60
 def board_size_for(base: tuple[int, int], *, archetype: str = "open",
                    creatures: Optional[list] = None,
                    scale: Optional[str] = None,
-                   longest_range_ft: int = 0) -> tuple[int, int]:
+                   longest_range_ft: int = 0,
+                   landmarks: Optional[list] = None) -> tuple[int, int]:
     """How big this board should be. ``(width, height)`` in squares.
 
     ``base`` is the scene kind's default — the answer when nothing else is
@@ -103,7 +104,10 @@ def board_size_for(base: tuple[int, int], *, archetype: str = "open",
       be at long range, which silently disables a rule the engine enforces;
     * **room for the SCENERY** — an archetype that stands landmarks needs the
       squares they occupy on top of the squares the fight needs, or the two
-      compete and the fight loses.
+      compete and the fight loses. ``landmarks`` are the ones the DM asked for
+      by name, which count the same way; the board being too small is the one
+      reason a promised landmark can go missing, and it is a reason within this
+      function's gift to remove.
 
     The last is a correction. :mod:`vtt.setpieces` used to argue the opposite —
     that a board is sized for the fight and never for the scenery, so a
@@ -145,7 +149,7 @@ def board_size_for(base: tuple[int, int], *, archetype: str = "open",
     # raises the budget, but the budget was never the thing being solved for.
     from .mapgen import SETPIECE_BUDGET, setpiece_area_for
 
-    scenery = setpiece_area_for(archetype)
+    scenery = setpiece_area_for(archetype, asked=list(landmarks or ()))
     if scenery:
         want = int((w * h + scenery) / max(0.01, 1.0 - SETPIECE_BUDGET))
         while w * h < want and (w < MAX_SIDE or h < MAX_SIDE):

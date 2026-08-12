@@ -189,6 +189,26 @@ def main() -> int:
         check("the DM can put the board away",
               m.vtt_engine.active_scene(session_id) is None)
 
+    print("\n\033[1m7. the DM narrates a landmark, and it is really there\033[0m")
+    # The whole chain for one sentence of fiction: loose words -> a catalogue
+    # slug -> a board grown to hold it -> squares that stop a creature. Until
+    # this channel existed the ziggurat was in the narration and nowhere else.
+    say("We climb toward the temple.",
+        "The canopy breaks on a stepped ziggurat swallowed in vines.\n"
+        "[[VTT: open | combat | an overgrown temple in the jungle | "
+        "The Sunken Shrine | landmark=a stepped ziggurat]]")
+    board = m.vtt_engine.active_scene(session_id)
+    check("the DM's landmark board opened", board is not None)
+    if board is not None:
+        slugs = [p.get("slug") for p in (board.setpieces or [])]
+        check("the ziggurat the narration promised is on the board",
+              "step-pyramid" in slugs, str(slugs))
+        state = m.vtt_engine.state(board.id)
+        marks = [p.get("slug") for p in (state.get("setpieces") or [])]
+        check("…and it is shipped to the players' view",
+              "step-pyramid" in marks, str(marks))
+        say("We back off.", "The steps stay silent.\n[[VTT: close]]")
+
     print()
     if FAILS:
         print(f"\033[31m{len(FAILS)} check(s) failed:\033[0m " + ", ".join(FAILS))

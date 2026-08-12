@@ -600,6 +600,39 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   draws the mesh, the depth map rasterizes it (a 40-line OBJ reader: `v` and
   `f`, nothing else), and the Discord PNG draws no mesh at all but NAMES the
   landmark, since its stamped tiles were always on that board already.
+- **A landmark has to be ASKED for, and a place is read in three tiers.**
+  `[[VTT: open | … | landmark=a stepped ziggurat]]` is the channel between the
+  fiction and the catalogue, and without it the model narrated a ziggurat the
+  board had never heard of — the picture flatly contradicting the prose, which
+  is the one direction the grid-is-truth rule does not cover.
+  `setpieces.landmark_for` maps loose words onto a slug on WORD BOUNDARIES
+  (unlike `mapgen`'s archetype table, because "arch" lives inside "archer" and
+  a board full of archers is what a DM describes when a fight starts);
+  `board_size_for` grows the board for what was asked; `_place_setpieces`
+  stands it before the archetype's own pool and exempt from the coin-flip
+  rationing. The DM still chooses only WHAT — the footprint, the place and the
+  fit stay the code's. The prompt lists the catalogue GENERATED from
+  `landmark_vocabulary()`: a model cannot ask for a ziggurat nobody told it
+  exists. Where nothing is named, the place text is read for one, so a DM who
+  never learned the parameter still gets the fountain they described.
+  **`archetype_for` reads medium, then architecture, then country.** A flat
+  first-match list put `jungle` above `temple`, so "an overgrown temple in the
+  jungle" came back a plain patch of forest — the jungle already reaches the
+  render through the biome and the skins, and nothing else in the chain can put
+  terraces on the board. The MEDIUM outranks both, because it decides who can
+  be there at all: an underwater ruin is fought swimming whatever it is built
+  of, and reading the sea first is also what keeps a "shipwreck" off a ship's
+  deck (matching is by substring).
+  **Placement TRIES every square in a seeded order** — forty random darts
+  measured badly, since a 9x9 piece wants an 11x11 clearing, wooded boards have
+  few, and a miss is indistinguishable from a board with no room. Two forests
+  in three refused a pyramid that fitted; six boards in ten stood nothing at
+  all. Scanning inner ground first keeps a landmark off the rim, where it fits
+  most easily and is least worth having. `fits` judges clearance in the board's
+  own MEDIUM (the `_connect_regions` rule), or deep water reads as "something
+  already standing here" and a wreck may not lie in the sea — and an `on` list
+  that forgets the archetype's actual floor is the same bug quietly: rubble
+  kept every temple piece off the RUINS boards.
 - **The cache key must name everything the picture depends on.** `isoboard_ref`
   hashed the tile grid, and a skin changes materials without changing one
   tile — so a skyship's timber, steampunk and organic styles shared a slug and

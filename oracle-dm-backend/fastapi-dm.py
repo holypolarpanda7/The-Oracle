@@ -170,6 +170,7 @@ from imagery.appearance import appearance_prompt, BEAUTY_BANDS
 from vtt import VttEngine
 from vtt import archetype_for_place as vtt_archetype_for_place
 from vtt import bridge as vtt_bridge
+from vtt import setpieces as vtt_setpieces
 from vtt.triggers import should_open_scene as vtt_should_open
 from vtt.triggers import scene_kind_for as vtt_scene_kind_for
 from vtt.triggers import should_close_scene as vtt_should_close
@@ -7340,6 +7341,20 @@ def _vtt_on() -> bool:
     return bool(getattr(_vtt_cfg(), "enabled", False))
 
 
+def _vtt_landmark_names() -> str:
+    """The landmarks a board can stand, for the prompt.
+
+    Generated from the catalogue rather than typed out, the same discipline the
+    set pieces' ATTRIBUTION.md follows: a model cannot ask for a ziggurat it was
+    never told exists, and a hand-written list goes stale the first time the
+    catalogue grows.
+    """
+    try:
+        return ", ".join(n for _s, n in vtt_setpieces.landmark_vocabulary())
+    except Exception:
+        return ""
+
+
 _VTT_HOOKS_IDLE = (
     "# Tactical board\n"
     "Play is theater-of-the-mind by default. When — and ONLY when — position and timing\n"
@@ -7349,6 +7364,12 @@ _VTT_HOOKS_IDLE = (
     "kind: combat | puzzle | chase | hazard | explore. Place type is plain language —\n"
     "'a smoky taproom', 'sewer tunnel', 'forest' — and a matching map is generated.\n"
     "A fight you open with [[COMBAT: start]] gets its board automatically; don't ask twice.\n"
+    "If your narration promises a LANDMARK — something big enough that the fight happens\n"
+    "around it — name it, or the board will not have one:\n"
+    "    [[VTT: open | combat | jungle | The Sunken Shrine | landmark=a stepped ziggurat]]\n"
+    "The board can stand: " + _vtt_landmark_names() + ".\n"
+    "Ask in plain words; the code chooses the footprint, where it stands, and grows the\n"
+    "board to hold it. Anything smaller you describe is scenery — narrate it freely.\n"
 )
 
 _VTT_HOOKS_ACTIVE = (
@@ -7598,6 +7619,7 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
               background_tasks: Optional[BackgroundTasks] = None,
               board_scale: Optional[str] = None,
               width: Optional[int] = None, height: Optional[int] = None,
+              landmarks: Optional[str] = None,
               auto_close: bool = True):
     """Open a board for this table, generating the layout now and the art later.
 
@@ -7634,6 +7656,10 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
         width=width, height=height,
         creatures=creatures,
         board_scale=board_scale,
+        # What the DM said stands here. Loose language, resolved by the
+        # catalogue: the fiction is theirs, and the footprint, the tiles it
+        # stamps and where it goes are still the board's.
+        landmarks=landmarks or (archetype or place_name or ""),
         # Outdoors, leave room for a bow to reach its own range band. Stated as
         # a policy rather than computed from what everyone is carrying: the
         # engine enforces long-range disadvantage, and on a 120-ft board that
@@ -7748,12 +7774,23 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                                   encounter_id=enc.id if enc else None,
                                   board_scale=(kv.get("scale") or "").lower() or None,
                                   width=bw, height=bh,
+                                  landmarks=kv.get("landmark") or None,
                                   background_tasks=background_tasks,
                                   auto_close=False)
                 if scene:
-                    notes.append(f"🗺 A board is laid out: {scene.name} "
-                                 f"({scene.width}x{scene.height} squares, "
-                                 f"{scene.width * scene.square_ft} ft across).")
+                    note = (f"🗺 A board is laid out: {scene.name} "
+                            f"({scene.width}x{scene.height} squares, "
+                            f"{scene.width * scene.square_ft} ft across)")
+                    # Name what actually got stood up. A landmark the DM asked
+                    # for and the board could not fit is the one failure they
+                    # cannot see from the narration, and the board's own legend
+                    # is only read when there is something to read.
+                    stood = [vtt_setpieces.CATALOGUE[p["slug"]].name
+                             for p in (scene.setpieces or [])
+                             if p.get("slug") in vtt_setpieces.CATALOGUE]
+                    if stood:
+                        note += f", with {', '.join(stood)}"
+                    notes.append(note + ".")
                 continue
             if scene is None:
                 continue  # every other verb needs a live board

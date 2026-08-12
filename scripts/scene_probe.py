@@ -45,61 +45,65 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "scene-probe"
 
 
-#: (label, narration, the hook the DM would emit, biome the world graph holds).
+#: (label, narration, the hook's place text, biome the world graph holds,
+#: what the hook's ``landmark=`` says — "" for a DM who names none).
 #:
 #: Written as PROSE first and the hook second, on purpose. The hook is what the
 #: model actually emits and the prose is what it was looking at, so a case where
 #: the prose is vivid and the hook is thin is the interesting one — that is the
-#: shape of most real failures.
-SCENES: tuple[tuple[str, str, str, str], ...] = (
+#: shape of most real failures. The landmark column is the newest of those: the
+#: prose promises a ziggurat, and until there was a channel for it the board
+#: had no way to hear.
+SCENES: tuple[tuple[str, str, str, str, str], ...] = (
     ("taproom",
      "The Gilded Sow is packed to the rafters, all pipe smoke and spilled ale. "
      "The bravo shoves the table aside and draws steel.",
-     "a smoky taproom", "interior"),
+     "a smoky taproom", "interior", ""),
 
     ("jungle-temple",
      "The canopy breaks and there it is — a stepped ziggurat swallowed in vines, "
      "its lower terrace crawling with the things that have been following you.",
-     "an overgrown temple in the jungle", "forest"),
+     "an overgrown temple in the jungle", "forest", "a stepped ziggurat"),
 
     ("crypt",
      "Sarcophagi in ranks, lids shouldered aside from the inside. Something dry "
      "is moving at the far end of the vault.",
-     "a burial vault", "dungeon"),
+     "a burial vault", "dungeon", ""),
 
     ("mountain-road",
      "The track narrows to a ledge with a hundred feet of nothing below it. "
      "Rocks come down first, then the goblins.",
-     "a high mountain pass", "mountains"),
+     "a high mountain pass", "mountains", "fallen boulders"),
 
     ("market",
      "Market day. Awnings, crates, a fountain running green — and three of the "
      "duke's men closing in from the alley mouths.",
-     "a crowded market square", "urban"),
+     "a crowded market square", "urban", "a fountain"),
 
     ("reef",
      "Twenty feet down, sunlight comes through in bars. The coral heads make a "
      "maze of it, and something long is circling.",
-     "a coral reef", "sea"),
+     "a coral reef", "sea", ""),
 
     ("skyship",
      "The deck pitches. Boarding lines thump into the rail and the raiders come "
      "over the side hand over hand.",
-     "the deck of an airship under boarding", "sky"),
+     "the deck of an airship under boarding", "sky", ""),
 
     # ---- the ones that SHOULD be hard -----------------------------------
     ("thin-hook",
      "A fight breaks out where you were standing.",
-     "", "forest"),                       # nothing in the hook; biome must save it
+     "", "forest", ""),                   # nothing in the hook; biome must save it
 
     ("name-only",
      "You are ambushed in the Grey Tors.",
-     "The Grey Tors", "mountains"),       # a NAME keys nothing; biome decides
+     "The Grey Tors", "mountains", ""),   # a NAME keys nothing; biome decides
 
     ("mixed-signal",
      "The old chapel has no roof left; birches have come up through the nave "
      "and the floor is more moss than flagstone.",
-     "a ruined chapel grown over with birches", "forest"),   # ruins vs forest
+     "a ruined chapel grown over with birches", "forest",
+     "a ruined wall"),                     # ruins vs forest
 )
 
 
@@ -110,28 +114,35 @@ def _fmt(v) -> str:
 def decisions() -> list[dict]:
     """Run every scene through the real decision chain."""
     from vtt.mapgen import archetype_for, archetype_for_place, generate_map, setpiece_area_for
-    from vtt.scene import DEFAULT_SIZE
+    from vtt.scene import DEFAULT_SIZE, _landmarks_from
     from vtt.triggers import board_size_for
 
     rows: list[dict] = []
-    for label, prose, hook, biome in SCENES:
+    for label, prose, hook, biome, asked in SCENES:
         # Step 2, both halves: what the HOOK alone keys, and what the real
         # resolver decides once the world graph's biome is allowed to speak.
         from_hook = archetype_for(hook, default="") or "(nothing)"
         arch = archetype_for_place(hint=hook, biome=biome, default="open")
 
+        # Step 2b: what the DM's landmark= words become. Falls back to the place
+        # text exactly as the backend does, so a DM who never learned the
+        # parameter still gets the fountain they described.
+        marks = _landmarks_from(asked) or _landmarks_from(hook)
+
         # Step 3. A representative party-and-foes roster, so sizing is real.
         roster = [(1, 30)] * 4 + [(1, 30)] * 5
         base = DEFAULT_SIZE.get("combat", (24, 18))
         w, h = board_size_for(base, archetype=arch, creatures=roster,
-                              longest_range_ft=150)
+                              longest_range_ft=150, landmarks=marks)
 
-        gen = generate_map(arch, width=w, height=h, seed=7, biome=biome)
+        gen = generate_map(arch, width=w, height=h, seed=7, biome=biome,
+                           landmarks=marks)
         rows.append({
             "label": label, "prose": prose, "hook": hook, "biome": biome,
+            "asked": asked, "marks": marks,
             "from_hook": from_hook, "arch": arch, "size": f"{w}x{h}",
             "base": f"{base[0]}x{base[1]}",
-            "scenery_sq": setpiece_area_for(arch),
+            "scenery_sq": setpiece_area_for(arch, marks),
             "landmarks": [p["slug"] for p in gen.setpieces],
             "mode": gen.mode, "style": gen.style,
             "desc": gen.description,
@@ -146,7 +157,9 @@ def report(rows: list[dict]) -> None:
     for r in rows:
         print(f"{B}{r['label']}{OFFC}")
         print(f"  {D}narration{OFFC}  {r['prose'][:96]}")
-        print(f"  {D}hook{OFFC}       [[VTT: open | combat | {r['hook'] or '<none>'} ]]"
+        asked = f" | landmark={r['asked']}" if r["asked"] else ""
+        print(f"  {D}hook{OFFC}       [[VTT: open | combat | "
+              f"{r['hook'] or '<none>'}{asked} ]]"
               f"   {D}biome={r['biome']}{OFFC}")
         keyed = r["from_hook"]
         via = "hook" if keyed not in ("(nothing)",) and keyed == r["arch"] else (
@@ -154,7 +167,14 @@ def report(rows: list[dict]) -> None:
         print(f"  {D}archetype{OFFC}  {r['arch']}   {D}via {via}{OFFC}")
         print(f"  {D}size{OFFC}       {r['size']}   {D}(kind default {r['base']}, "
               f"scenery wants {r['scenery_sq']} sq){OFFC}")
-        print(f"  {D}landmarks{OFFC}  {_fmt(', '.join(r['landmarks']))}")
+        # Asked vs stood. A landmark the DM named and the board could not fit is
+        # the one failure invisible from the narration, so it is called out.
+        stood = ", ".join(r["landmarks"])
+        lost = [s for s in r["marks"] if s not in r["landmarks"]]
+        if r["marks"]:
+            stood += f"   {D}(asked: {', '.join(r['marks'])}"
+            stood += f"; NOT PLACED: {', '.join(lost)})" if lost else ")"
+        print(f"  {D}landmarks{OFFC}  {_fmt(stood)}")
         print(f"  {D}board says{OFFC} {r['desc'][:96]}")
         print()
 

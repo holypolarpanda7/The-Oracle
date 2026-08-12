@@ -276,6 +276,20 @@ def test_mapgen() -> None:
     eq("…and so does a bare archetype name", archetype_for("sewer"), "sewer")
     eq("unknown wording falls back to open ground", archetype_for("???"), "open")
 
+    # Medium beats architecture beats country. A DM naming two things has named
+    # a building standing somewhere, and the building is the half nothing else
+    # in the chain can put on the board — the jungle already reaches the render
+    # through the biome and the skins. Read the other way (one flat list, with
+    # "jungle" above "temple") this came back a plain patch of forest.
+    eq("a building beats the country it stands in",
+       archetype_for("an overgrown temple in the jungle"), "ruins")
+    eq("…and the sea beats the building",
+       archetype_for("a sunken temple under the sea"), "reef")
+    eq("a wreck lies in the water, not on a ship's deck",
+       archetype_for("a shipwreck"), "open-water")
+    eq("…and on the reef when the reef is named",
+       archetype_for("a shipwreck on the reef"), "reef")
+
 
 # ---------------------------------------------------------------- engine
 
@@ -1183,6 +1197,47 @@ def test_setpieces() -> None:
     walled = Grid.blank(20, 16, "#")
     eq("nothing stands in solid rock",
        sp.setpieces_for(walled, ["boulder-heap"], seed=1), [])
+
+    # --- what the DM's words name ----------------------------------------
+    eq("a ziggurat is a step pyramid",
+       sp.landmark_for("a stepped ziggurat swallowed in vines"), ["step-pyramid"])
+    eq("a slug is taken at its word", sp.landmark_for("step-pyramid"),
+       ["step-pyramid"])
+    eq("two landmarks in one breath",
+       sp.landmark_for("fallen boulders beside a monolith"),
+       ["standing-stone", "boulder-heap"])
+    # Word boundaries, unlike the archetype table: a board full of ARCHERS is
+    # exactly the board a DM is describing when a fight starts.
+    eq("an archer is not an arch", sp.landmark_for("six archers on the wall"), [])
+    eq("wording that names nothing asks for nothing",
+       sp.landmark_for("a smoky taproom"), [])
+
+    # --- a landmark the DM asked for --------------------------------------
+    # The channel the catalogue exists for: the fiction says a ziggurat stands
+    # here, and a forest's own pool has never heard of one.
+    from .mapgen import _SETPIECES, generate_map as _gen
+    check("a forest would not offer a pyramid on its own",
+          "step-pyramid" not in _SETPIECES["forest"])
+    asked = [p["slug"] for p in _gen("forest", width=36, height=26, seed=2,
+                                     landmarks=["step-pyramid"]).setpieces]
+    check("but one the DM named stands anyway", "step-pyramid" in asked,
+          str(asked))
+    # And the board is grown to hold it before it is generated, or the two
+    # halves of one decision disagree.
+    from .triggers import board_size_for as _size
+    plain = _size((24, 18), archetype="dungeon-room")
+    grown = _size((24, 18), archetype="dungeon-room", landmarks=["step-pyramid"])
+    check("a board grows for a landmark it was asked for",
+          grown[0] * grown[1] > plain[0] * plain[1], f"{plain} -> {grown}")
+
+    # --- every square is tried, not forty darts ---------------------------
+    # A nine-by-nine piece wants an eleven-by-eleven clearing; a wooded board
+    # has few, and a random miss is indistinguishable from a board with no room
+    # at all. Two forests in three used to refuse a pyramid that fitted.
+    stood = sum(bool(sp.setpieces_for(Grid.blank(24, 20, "g"),
+                                      ["step-pyramid"], seed=s))
+                for s in range(1, 9))
+    eq("a landmark that fits somewhere is found", stood, 8)
 
 
 def main() -> int:
