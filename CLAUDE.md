@@ -650,26 +650,43 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   denoise to 0.60 to compensate turned everything into flat tinted geometry —
   exactly what `ISO_DENOISE_FLAT` already warns about. Both reverted; the
   reasoning is kept in `iso_denoise_for` so it isn't re-derived.
-- **The model paints the SILHOUETTE it is handed, and that is where natural
-  terrain fails.** A mountain pass comes back as a snowy village with wooden
-  doors: it is three quarters solid and one percent built, so it gets no init
-  image, and with depth as the only signal the model falls back on its prior
-  for blocky isometric masses. Three fixes were rendered against it and all
-  three measured worse than the disease is bad — judging "built up" by BUILT
-  codes so raw country gets its terrain image (the village goes and the pass
-  comes back as grey cubes: the flat tinted diagram again, and the cave took
-  the same loss), 0.85 as a middle ground (architecture straight back), and
-  forbidding houses and doors in the negative at full denoise (the model built
-  it out of carved stone instead). The fault is not in the painter's knobs: a
-  field of cuboids IS a village, which is the crypt-of-dice lesson outdoors, so
-  the fix belongs in a granite skin whose blocks are fractured and sloped. A
-  forest fails the same way for the same reason — a tree is drawn as a 12-ft
-  post with a 4.6-ft cylinder for a crown, so it is painted as a sawn-off
-  stump. Both are shape work, and both are gated by `gen_board_shapes.py`.
-  `scripts/scene_probe.py --paint --force --tag <arm>` is how an arm of that
+- **The model paints the SILHOUETTE it is handed, and no knob on the painter
+  outranks it.** A mountain pass came back as a snowy village with wooden
+  doors, and four attempts to argue the model out of it from the painter's side
+  all measured WORSE than the disease: judging "built up" by BUILT codes so raw
+  country gets its terrain image (village gone, board back as grey cubes — the
+  flat tinted diagram again, and the cave took the same loss), 0.85 as a middle
+  ground (architecture straight back), and forbidding houses and doors in the
+  negative — tried once against the old shapes (it built carved stone pilasters
+  instead) and once against the new (worse still: a timber shrine and a gilded
+  stupa; naming a thing a dozen times to forbid it is still naming it). The
+  fault was the shape both times. **A cliff square is a PRISMATOID**, battered
+  and canted with no flat top or right angle in plan — it was a full-square box
+  at one of six heights, and a field of flat-topped boxes at varied heights is
+  a hill town. Only the buried bottoms stay square, which keeps the merging
+  rule that stops a rock face breaking into towers. **A tree is a crown on a
+  trunk** (`isocam.OBJECT_VARIANTS["T"]`, four crowns), stands 18 ft rather
+  than 12 because a crown needs room above head height, and its swatch is
+  FOLIAGE not bark — one swatch colours the whole square, and what a square of
+  tree shows a camera on the ceiling is leaves. Painted brown they came back
+  violet; painted green the forest is a forest instead of a field of sawn-off
+  stumps. It also had to MOVE into the generated table: the old tree was two
+  cylinders written by hand in each language and they had already drifted, so
+  the depth map carried a different tree from the one the player saw.
+  `scripts/scene_probe.py --paint --force --tag <arm>` is how an arm of such an
   experiment is measured: **`--force` is not optional**, since the art cache is
   keyed on the layout and knows nothing about denoise or negatives, so a second
   arm is otherwise served the first arm's picture.
+- **A landmark the DM ASKED for sweeps the scatter under it.** Only
+  `terrain.DECOR_CODES` — the set a generator scatters *without* touching
+  connectivity — so a sweep can never open a way through anything and a wall is
+  never moved. Without it the channel failed on exactly the boards most worth a
+  landmark: a 9x9 piece wants an 11x11 clearing and a ruin strewn with broken
+  pillars has none. A landmark nobody asked for still takes the board as it
+  finds it. Found by making `vtt_smoke` DETERMINISTIC (`random.seed`) — it drew
+  a fresh layout every run, and a landmark check is a check about whether one
+  fits, so it failed intermittently and would have been blamed on whatever
+  change somebody was holding at the time.
 - **`vtt/decor.py` is scenery: in the room, not in the rules.** Bones, a rug, a
   brazier — drawn by the geometry and by the depth map, invisible to movement,
   cover and sight. It exists because the visual vocabulary was capped by the

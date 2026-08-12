@@ -518,13 +518,21 @@ def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
       village) at full denoise: the model simply built it out of something else
       — carved stone pilasters and arched gateways.
 
+    The negative was then tried a SECOND time, after the cliff geometry was
+    fixed and the pass was coming back as crags, on the theory that a nudge only
+    lands on a model that is not already certain. It measured worse than no
+    negative at all: same board, same seed, one extra clause, and the picture
+    gained a timber shrine, a gilded stupa and a row of stone plinths. Naming a
+    thing a dozen times to forbid it is still naming it. Reverted; the fix that
+    worked was the SHAPE, twice over.
+
     Which locates the fault, and it is not here. **The model paints the
-    silhouette it is handed**, and a mountain pass is handed a field of cuboids;
-    a field of cuboids IS a village. That is the crypt-of-dice lesson (see
-    ``isocam``: a crypt of four-foot cubes read as a board game however loudly
-    the prompt said "stone coffins") arriving outdoors. The fix belongs in the
-    SHAPES — a granite skin whose blocks are fractured and sloped rather than
-    stacked boxes — not in any knob on the painter.
+    silhouette it is handed**, and a mountain pass was handed a field of
+    cuboids; a field of cuboids IS a village. That is the crypt-of-dice lesson
+    (see ``isocam``: a crypt of four-foot cubes read as a board game however
+    loudly the prompt said "stone coffins") arriving outdoors. The fix was in
+    the SHAPES — see ``skins._CLIFF``, now battered and canted prismatoids —
+    and it worked: the pass comes back as snowy crags.
     """
     return (1.0 if standing_fraction(grid) >= BUILT_UP_FRACTION
             else ISO_DENOISE_FLAT)
