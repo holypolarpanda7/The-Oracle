@@ -650,6 +650,26 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   denoise to 0.60 to compensate turned everything into flat tinted geometry —
   exactly what `ISO_DENOISE_FLAT` already warns about. Both reverted; the
   reasoning is kept in `iso_denoise_for` so it isn't re-derived.
+- **The model paints the SILHOUETTE it is handed, and that is where natural
+  terrain fails.** A mountain pass comes back as a snowy village with wooden
+  doors: it is three quarters solid and one percent built, so it gets no init
+  image, and with depth as the only signal the model falls back on its prior
+  for blocky isometric masses. Three fixes were rendered against it and all
+  three measured worse than the disease is bad — judging "built up" by BUILT
+  codes so raw country gets its terrain image (the village goes and the pass
+  comes back as grey cubes: the flat tinted diagram again, and the cave took
+  the same loss), 0.85 as a middle ground (architecture straight back), and
+  forbidding houses and doors in the negative at full denoise (the model built
+  it out of carved stone instead). The fault is not in the painter's knobs: a
+  field of cuboids IS a village, which is the crypt-of-dice lesson outdoors, so
+  the fix belongs in a granite skin whose blocks are fractured and sloped. A
+  forest fails the same way for the same reason — a tree is drawn as a 12-ft
+  post with a 4.6-ft cylinder for a crown, so it is painted as a sawn-off
+  stump. Both are shape work, and both are gated by `gen_board_shapes.py`.
+  `scripts/scene_probe.py --paint --force --tag <arm>` is how an arm of that
+  experiment is measured: **`--force` is not optional**, since the art cache is
+  keyed on the layout and knows nothing about denoise or negatives, so a second
+  arm is otherwise served the first arm's picture.
 - **`vtt/decor.py` is scenery: in the room, not in the rules.** Bones, a rug, a
   brazier — drawn by the geometry and by the depth map, invisible to movement,
   cover and sight. It exists because the visual vocabulary was capped by the

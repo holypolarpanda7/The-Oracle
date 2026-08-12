@@ -491,6 +491,33 @@ def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
     the skins in the key they come back as three plainly different vessels at
     this very denoise: a tarred caravel, a verdigris brass contraption, a green
     chitin hull. The technique was fine; the cache was lying.
+
+    **Second-guessed a second time, from the other side, and it held again.** A
+    mountain pass is three quarters solid and one percent BUILT, so it is handed
+    no init image and comes back a snowy village with wooden doors in it — the
+    board's densest, most defensible failure. Three alternatives were rendered
+    against it and the cave (``scene_probe --paint --force --tag``), and all
+    three are worse:
+
+    * measuring how BUILT UP a board is by its built codes rather than by how
+      much of it stands, so raw country gets its terrain image at 0.72: the
+      village goes, and the pass comes back as untinted grey CUBES — the flat
+      tinted diagram ISO_DENOISE_FLAT exists to prevent, and the same loss the
+      cave took when it was measured before;
+    * 0.85 as a middle ground, on the theory that the depth carries the shapes
+      and the init need only carry the material: the architecture came straight
+      back, timber walls and doors;
+    * forbidding architecture in the NEGATIVE prompt (no houses, no doors, no
+      village) at full denoise: the model simply built it out of something else
+      — carved stone pilasters and arched gateways.
+
+    Which locates the fault, and it is not here. **The model paints the
+    silhouette it is handed**, and a mountain pass is handed a field of cuboids;
+    a field of cuboids IS a village. That is the crypt-of-dice lesson (see
+    ``isocam``: a crypt of four-foot cubes read as a board game however loudly
+    the prompt said "stone coffins") arriving outdoors. The fix belongs in the
+    SHAPES — a granite skin whose blocks are fractured and sloped rather than
+    stacked boxes — not in any knob on the painter.
     """
     return (1.0 if standing_fraction(grid) >= BUILT_UP_FRACTION
             else ISO_DENOISE_FLAT)

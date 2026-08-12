@@ -75,6 +75,13 @@ SCENES: tuple[tuple[str, str, str, str, str], ...] = (
      "Rocks come down first, then the goblins.",
      "a high mountain pass", "mountains", "fallen boulders"),
 
+    # Dense, and not one square of it made by anyone — the case that separates
+    # "how much of this board stands up" from "how much of it was built".
+    ("cave",
+     "The passage opens into a chamber the water cut, columns of dripstone "
+     "floor to ceiling, and something shifts its weight in the dark.",
+     "a dripping cavern", "underdark", "a cave column"),
+
     ("market",
      "Market day. Awnings, crates, a fountain running green — and three of the "
      "duke's men closing in from the alley mouths.",
@@ -246,8 +253,15 @@ def _colour(code: str):
     return _COLS.get(code, (140, 140, 140))
 
 
-def paint(rows: list[dict], limit: int) -> None:
-    """Render the real battlemap for the first ``limit`` scenes."""
+def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False) -> None:
+    """Render the real battlemap for the first ``limit`` scenes.
+
+    ``tag`` names the arm of an experiment and goes in the file name; ``force``
+    goes past the cache, which is what makes two arms comparable at all. The
+    cache key is the LAYOUT — it knows nothing about denoise or negatives — so
+    without it the second arm is served the first arm's picture and the two
+    look identical for reasons that have nothing to do with the change.
+    """
     from vtt import art
     from imagery import ImageStore
 
@@ -268,7 +282,8 @@ def paint(rows: list[dict], limit: int) -> None:
         try:
             got = art.render_iso_board(gen, store=store, biome=r["biome"],
                                        lighting=gen.lighting, name=r["label"],
-                                       controlnet=cn, controlnet_strength=strength)
+                                       controlnet=cn, controlnet_strength=strength,
+                                       force_new=force)
         except Exception as exc:                       # noqa: BLE001
             print(f"    failed: {exc}")
             continue
@@ -277,8 +292,9 @@ def paint(rows: list[dict], limit: int) -> None:
             continue
         blob = store.get_image_bytes(got.image_id)
         if blob:
-            (OUT / f"paint-{r['label']}.png").write_bytes(blob)
-            print(f"    -> scene-probe/paint-{r['label']}.png  (id {got.image_id})")
+            stem = f"paint-{tag + '-' if tag else ''}{r['label']}"
+            (OUT / f"{stem}.png").write_bytes(blob)
+            print(f"    -> scene-probe/{stem}.png  (id {got.image_id})")
 
 
 def main() -> int:
@@ -287,6 +303,9 @@ def main() -> int:
     ap.add_argument("--paint", action="store_true", help="render real battlemaps")
     ap.add_argument("--limit", type=int, default=3, help="scenes to paint")
     ap.add_argument("--only", default="", help="comma-separated scene labels")
+    ap.add_argument("--tag", default="", help="name this arm of an experiment")
+    ap.add_argument("--force", action="store_true",
+                    help="render past the cache (needed to compare two arms)")
     a = ap.parse_args()
 
     rows = decisions()
@@ -295,7 +314,8 @@ def main() -> int:
         sheet(rows)
     if a.paint:
         want = [w.strip() for w in a.only.split(",") if w.strip()]
-        paint([r for r in rows if r["label"] in want] if want else rows, a.limit)
+        paint([r for r in rows if r["label"] in want] if want else rows,
+              a.limit, tag=a.tag, force=a.force)
     return 0
 
 
