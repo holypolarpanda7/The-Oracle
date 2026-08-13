@@ -982,17 +982,68 @@ def _gen_sewer(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                        "channel of green filth")
 
 
+#: How far a reef channel is cut below the shelf, in feet.
+#:
+#: Ten, because that is a real drop: it puts a creature in the channel below the
+#: lip for sight and cover, costs a climb to leave, and — since elevation is
+#: drawn — gives the depth map something to be. It is also why a channel is
+#: worth crossing rather than a strip of differently-coloured floor.
+REEF_CHANNEL_FT = -10
+
+
+def _carve_channel(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """Cut one winding channel clean across the shelf, and record its depth.
+
+    A random WALK rather than a scatter of blobs: a channel is a thing water
+    cut, so it runs from one side of the board to the other and a swimmer can
+    follow it. Blobs made ponds, which is the shape the whole reef used to have.
+    """
+    across = rng.random() < 0.5
+    span, other = (g.width, g.height) if across else (g.height, g.width)
+    pos = rng.randrange(other // 4, max(other // 4 + 1, 3 * other // 4))
+    # Three to five squares wide. Wider was measured and it eats the board: at
+    # half up to 3, two channels took a third of the shelf, and a reef that is
+    # mostly channel is the flat plain again with the colours swapped.
+    half = rng.choice((1, 1, 2))
+    for step in range(span):
+        pos = max(1, min(other - 2, pos + rng.choice((-1, 0, 0, 1))))
+        if rng.random() < 0.12:
+            half = max(1, min(2, half + rng.choice((-1, 1))))
+        for d in range(-half, half + 1):
+            x, y = (step, pos + d) if across else (pos + d, step)
+            if not g.in_bounds(x, y):
+                continue
+            g.set(x, y, "W")
+            out.elevation[f"{x},{y}"] = REEF_CHANNEL_FT
+
+
 def _gen_reef(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
-    """Underwater: a coral shelf. Shallows a walker can wade, channels only a
-    swimmer crosses, coral heads that block both sight and line of effect."""
-    g.fill_rect(0, 0, g.width - 1, g.height - 1, "~")
-    for _ in range(int(g.width * g.height * 0.02)):
+    """Underwater: a coral SHELF, cut by channels and studded with heads.
+
+    It used to be seventy-three percent featureless shallow water with two
+    percent coral in it, and that was wrong twice over. Tactically it is a plain
+    — no cover, no lanes, nothing to decide — on the archetype whose own
+    description promises "sight lines die at twenty feet". And visually a board
+    that flat gives the depth map nothing at all to carry, so the painted layer
+    fell back on its prior for a flat green expanse and returned a POND, which
+    no amount of conditioning could argue it out of.
+
+    So: a sand shelf with silt and weed over it, coral heads standing in
+    clusters, and channels cut ten feet down through the lot of them. The relief
+    is the point on both sides of the wire — it is cover and a climb to the
+    rules, and it is the only thing the depth map can say to the painter.
+    """
+    g.fill_rect(0, 0, g.width - 1, g.height - 1, "s")
+    # Coral first, channels second: the water cut THROUGH the reef, and a
+    # channel that stops politely at a coral head is a path, not a channel.
+    for _ in range(int(g.width * g.height * 0.03)):
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
-        _blob(g, rng, cx, cy, rng.randint(4, 12), "W")     # deep channels
-    for _ in range(int(g.width * g.height * 0.015)):
-        cx, cy = rng.randrange(g.width), rng.randrange(g.height)
-        _blob(g, rng, cx, cy, rng.randint(1, 4), "R")      # coral heads
-    _scatter(g, rng, "s", 0.08, only_on=("~",), mode="swim")
+        _blob(g, rng, cx, cy, rng.randint(2, 7), "R")      # coral heads
+    for _ in range(rng.randint(2, 3)):
+        _carve_channel(g, rng, out)
+    # Silt and weed over the shelf: difficult going, and never in the channels,
+    # which are open water.
+    _scatter(g, rng, "~", 0.16, only_on=("s",), mode="swim")
 
     # A drowned ruin. Columns on a seabed should already have FALLEN — an intact
     # colonnade underwater is a stranger sight than a broken one, and the board
@@ -1023,12 +1074,13 @@ def _gen_reef(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                 elif rng.random() < 0.55:
                     g.set(x, y, "w")            # the wall worn down to a stub
                     out.skins[f"{x},{y}"] = "drowned-wall"
-    _scatter(g, rng, "O", 0.015, only_on=("~",), mode="swim")
+    _scatter(g, rng, "O", 0.015, only_on=("~", "s"), mode="swim")
     out.mode = "swim"
     out.lighting = "dim"
-    out.description = ("a sunlit coral shelf under the sea — sand flats, deep "
-                       "blue channels, coral heads taller than a man, and the "
-                       "snapped columns of a drowned ruin furred with weed")
+    out.description = ("a sunlit coral shelf under the sea — pale sand flats "
+                       "and weed, coral heads taller than a man standing in "
+                       "banks, deep blue channels cut ten feet down through "
+                       "the reef, and the snapped columns of a drowned ruin")
 
 
 def _gen_open_water(g: Grid, rng: random.Random, out: GeneratedMap) -> None:

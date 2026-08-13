@@ -744,11 +744,19 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   toward the sea's own colour, stronger and DARKER with distance (water
   absorbs; a grade that pales with distance reads as mist, which is a thing
   that happens in air). Deterministic, no GPU, and it lands on every swim board.
-  **The residue is the GENERATOR, not the painter**: `_gen_reef` lays 73%
-  featureless shallow water and 2% coral, which gives the rules no cover and
-  the picture nothing to be. A reef should be mostly shelf with channels cut
-  through it — relief the depth map can carry — and that is a mapgen change,
-  with real tactical consequences, not an art one.
+  **The residue was the GENERATOR, and fixing it is what actually worked.**
+  `_gen_reef` laid 73% featureless shallow water and 2% coral: no cover for the
+  rules, and nothing for the depth map to carry, on the archetype whose own
+  description promises that sight lines die at twenty feet. It is now a sand
+  SHELF (about 55%) with silt and weed over it, coral heads standing in banks
+  (6-8%), and two or three channels cut clean across it at
+  `REEF_CHANNEL_FT` = **-10 ft of real elevation** (17-28%). The relief is the
+  point on both sides of the wire — cover and a climb to the rules, and the only
+  thing a depth map can say to a painter. Channels are carved as a random WALK
+  from edge to edge, because a channel is a thing water cut and a swimmer can
+  follow it; blobs made ponds, which was the shape the whole reef had. Coral is
+  laid FIRST and the channels cut through it. Swept 117 boards: one connected
+  region for a swimmer and two spawn zones on every one.
 - **`vtt/decor.py` is scenery: in the room, not in the rules.** Bones, a rug, a
   brazier — drawn by the geometry and by the depth map, invisible to movement,
   cover and sight. It exists because the visual vocabulary was capped by the
