@@ -133,6 +133,13 @@ class PCProfile:
     # Remaining spell slots {slot level: count}. The engine decrements this
     # in-memory as it resolves; the backend persists spends from the report.
     slots: dict[int, int] = field(default_factory=dict)
+    # The lowest natural d20 that is a Critical Hit, and any naturals BELOW
+    # that which also crit. 20 is the base rule; a Champion's Improved Critical
+    # is 19, and "a 7 as well as a 20" is the case no threshold can express.
+    # Weapon attacks only — the SRD widens the range for "weapons and Unarmed
+    # Strikes", not for spell attacks.
+    crit_on: int = 20
+    crit_extra: set[int] = field(default_factory=set)
     # Action-economy features:
     attacks_per_action: int = 1          # Extra Attack: 2 at fighter 5, etc.
     features: set[str] = field(default_factory=set)
@@ -483,6 +490,23 @@ class CombatEngine:
                     if f"makes {word}" in d or f"{word} attacks" in d:
                         return n
         return 1
+
+    def _crit_kwargs(self, c: Combatant,
+                     profiles: dict[int, PCProfile]) -> dict:
+        """A PC's widened critical range, for WEAPON attack rolls.
+
+        A monster has none, so this is empty for everything the bestiary
+        drives and the base rule applies untouched.
+        """
+        p = profiles.get(c.character_id) if c.character_id else None
+        if p is None:
+            return {}
+        out: dict = {}
+        if int(getattr(p, "crit_on", 20) or 20) != 20:
+            out["crit_on"] = int(p.crit_on)
+        if getattr(p, "crit_extra", None):
+            out["crit_extra"] = set(p.crit_extra)
+        return out
 
     def _ability_mod(self, c: Combatant, ability: str,
                      profiles: dict[int, PCProfile]) -> int:
@@ -1146,7 +1170,7 @@ class CombatEngine:
         atk = attack_roll(mprof["attack_bonus"] + oa_exh, eff_ac, advantage=adv,
                           disadvantage=dis,
                           label=f"Opportunity attack ({enemy.name})",
-                          rng=self.rng)
+                          rng=self.rng, **self._crit_kwargs(enemy, profiles))
         self._maybe_prompt_shield(enemy, mover, atk, eff_ac, profiles,
                                   mprof, notes, after)
         oa_rolls = [self._roll_dict(
@@ -1503,7 +1527,7 @@ class CombatEngine:
         eff_ac = self._eff_ac(target)
         atk = attack_roll(atk_bonus, eff_ac, advantage=adv,
                           disadvantage=dis, label=f"{prof['name']} ({actor.name})",
-                          rng=self.rng)
+                          rng=self.rng, **self._crit_kwargs(actor, profiles))
         # May freeze the fight to ask the target's player (Shield).
         self._maybe_prompt_shield(actor, target, atk, eff_ac, profiles,
                                   prof, notes, after=None)
@@ -1905,7 +1929,8 @@ class CombatEngine:
                                              weapon=prof)
         atk = attack_roll(prof["attack_bonus"], self._eff_ac(second),
                           advantage=adv, disadvantage=dis,
-                          label=f"Cleave ({actor.name})", rng=self.rng)
+                          label=f"Cleave ({actor.name})", rng=self.rng,
+                          **self._crit_kwargs(actor, profiles))
         rolls.append(self._roll_dict(f"Cleave — {second.name}", atk.detail,
                                      atk.total, dc=self._eff_ac(second),
                                      success=bool(atk.hit)))

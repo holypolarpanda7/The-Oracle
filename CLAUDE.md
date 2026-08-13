@@ -231,6 +231,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   half — main/off-hand weapon choice, versatile dice, two-weapon fighting),
   `forge`
   (tempering needs a smith),
+  `subclass_engine` (the five things a subclass tells the ENGINE: a widened
+  crit range measured over thousands of rolls, a subclass-granted Extra
+  Attack, an Unarmored Defense it sets itself, third-caster spell slots,
+  and a granted sense reaching the sheet as a tag the board reads),
   `subclass_overrides` (the subclass slot end to end for whatever is IN
   it — offered at the right level, the pick sticks, always-prepared
   spells become castable at their tier, a stated resistance is enforced,
@@ -1327,6 +1331,35 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `options_are_feats` and the pick BECOMES that feat — Fighting Initiate's
   styles are real `fighting-style` rows with their own benefit text, and as a
   bare word they were a label every feat-reader walked past.
+- **A SUBCLASS speaks to the ENGINE, and five numbers were escaping the rule
+  that the DM narrates and the code factors.** Each was decided from the CLASS
+  table, so a subclass had no way to say anything — and three of the five broke
+  SRD subclasses, not just book ones. `rules/subclass_grants.py` reads them out
+  of the feature TEXT, the same door `_pc_defenses` and War Caster use.
+  **Crit range**: `attack_roll` hard-coded `natural == 20`, so the Champion's
+  Improved Critical — the entire point of the subclass — changed nothing. It
+  takes `crit_on` (the threshold) and `crit_extra`, because **"a 7 as well as a
+  20" is not a threshold** and reading it as one makes every roll of 8 a
+  critical hit; "18-20" IS a range and must be expanded, which looks identical
+  to "7 or 20" until you read the hyphen. A natural 1 still never crits.
+  Applied to WEAPON attacks only — the SRD widens the range for "weapons and
+  Unarmed Strikes", not for spell attacks.
+  **Extra Attack**: granted by Bladesinger, the Valor and Swords bards and any
+  book subclass, and every one of them attacked once forever.
+  **Unarmored Defense**: `_compute_ac` named `barbarian` and `monk` literally,
+  so a subclass setting its own base AC was worth nothing.
+  **Third-caster slots**: Spellcasting is a SUBCLASS feature, so keying slots on
+  the class gave the SRD's own Arcane Trickster and Eldritch Knight no spell
+  slots at all. `THIRD_CASTER_SLOTS` is the table; a full or half caster is
+  never demoted onto it.
+  **Senses** are the one thing PERSISTED rather than derived — written as a
+  `sense:` tag by `_sync_subclass_senses`, because `vtt/scene.py` reads a PC's
+  senses off the character row with plain SQL on purpose and must never have to
+  know what a subclass is. The better range wins, so a subclass never cancels
+  the darkvision a species was born with.
+  **Known data gap found doing this**: the Eldritch Knight's row came from the
+  book parse, which dropped its Spellcasting feature entirely — repaired in the
+  gitignored overrides slot, not in code.
 - **A SUBCLASS's always-prepared spells are enforced, and its stated damage
   defences are real.** A domain/oath/circle/patron list is "you thereafter
   always have these prepared", and `_castable_lists` — the list that tells the

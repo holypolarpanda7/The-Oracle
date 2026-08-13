@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Iterable, Optional
 
 from .roller import RollResult, double_dice, roll
 
@@ -107,17 +107,32 @@ def attack_roll(
     advantage: bool = False,
     disadvantage: bool = False,
     label: str = "",
+    crit_on: int = 20,
+    crit_extra: Optional[Iterable[int]] = None,
     rng: Optional[random.Random] = None,
 ) -> AttackResult:
+    """One attack roll.
+
+    ``crit_on`` is the lowest natural that is a critical hit — 20 by the base
+    rule, 19 for a Champion's Improved Critical, 18 once it improves. It is a
+    parameter rather than a constant because the widened range IS the feature:
+    hard-coded to 20 the Champion subclass changed nothing whatsoever.
+    ``crit_extra`` carries naturals below that threshold which also crit ("a 7
+    as well as a 20"), which no threshold can express.
+
+    A natural 1 still misses, and still is not a crit, even if some effect
+    dropped the threshold that far — the fumble rule outranks the crit rule.
+    """
     rng = rng or random
     natural, rolls = _roll_d20(rng, advantage, disadvantage)
     total = natural + attack_bonus
-    is_crit = natural == 20
     is_fumble = natural == 1
-    if is_crit:
-        hit: Optional[bool] = True
-    elif is_fumble:
-        hit = False
+    is_crit = (not is_fumble) and (natural >= int(crit_on or 20)
+                                   or natural in set(crit_extra or ()))
+    if is_fumble:
+        hit: Optional[bool] = False
+    elif is_crit:
+        hit = True
     elif target_ac is not None:
         hit = total >= target_ac
     else:

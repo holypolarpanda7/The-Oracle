@@ -6235,13 +6235,15 @@ def _spellcasting_mod(char: Character) -> int:
 
 def _is_caster(char: Character) -> bool:
     """True if the PC has any spell slots (a Spellcasting/Pact-Magic feature)."""
-    return bool(_spell_slots_for(char.char_class, char.level, None))
+    return bool(_spell_slots_for(char.char_class, char.level, None,
+                                 third_caster=_subclass_grants(char).third_caster))
 
 
 def _pc_open_slots(char: Character) -> list[int]:
     """Ascending list of the PC's currently-open (unexpended) slot levels."""
     out: list[int] = []
-    for s in _spell_slots_for(char.char_class, char.level, char.spell_slots_used):
+    for s in _spell_slots_for(char.char_class, char.level, char.spell_slots_used,
+                              third_caster=_subclass_grants(char).third_caster):
         for _ in range(max(0, int(s.get("total", 0)) - int(s.get("used", 0)))):
             out.append(int(s["level"]))
     return sorted(out)
@@ -6250,7 +6252,9 @@ def _pc_open_slots(char: Character) -> list[int]:
 def _expend_slot(char: Character, min_level: int = 1) -> Optional[int]:
     """Expend the PC's lowest OPEN slot of level >= min_level. Returns the level spent
     (mutating char.spell_slots_used) or None if none is available."""
-    for s in sorted(_spell_slots_for(char.char_class, char.level, char.spell_slots_used),
+    for s in sorted(_spell_slots_for(char.char_class, char.level,
+                                     char.spell_slots_used,
+                                     third_caster=_subclass_grants(char).third_caster),
                     key=lambda x: int(x["level"])):
         lvl = int(s["level"])
         if lvl < int(min_level or 1):
@@ -8724,6 +8728,61 @@ _RESIST_TEXT_RE = re.compile(
     r"[^.]{0,60}?\b(" + "|".join(damage_rules.DAMAGE_TYPES) + r")\b", re.I)
 
 
+def _sync_subclass_senses(char: Character) -> list[str]:
+    """Write a subclass's granted senses onto the sheet as `sense:` tags.
+
+    The one thing here that is PERSISTED rather than derived, and deliberately:
+    `vtt/scene.py` looks a PC's senses up straight off the character row so the
+    board never has to understand class features. The better range wins, so a
+    subclass never cancels the darkvision a species was born with.
+    """
+    g = _subclass_grants(char)
+    if not g.senses:
+        return []
+    tags = [x for x in (char.tags or []) if isinstance(x, str)]
+    added: list[str] = []
+    for kind, rng in g.senses.items():
+        have = 0
+        for tg in tags:
+            pfx, _, val = tg.partition(":")
+            if pfx.strip().lower() != "sense":
+                continue
+            m = re.match(rf"\s*{kind}\s*(\d+)", val.strip(), re.I)
+            if m:
+                have = max(have, int(m.group(1)))
+        if int(rng) > have:
+            tags = [tg for tg in tags
+                    if not (tg.partition(":")[0].strip().lower() == "sense"
+                            and tg.partition(":")[2].strip().lower()
+                            .startswith(kind.lower()))]
+            tags.append(f"sense:{kind} {int(rng)} ft")
+            added.append(f"{kind} {int(rng)} ft")
+    if added:
+        char.tags = tags
+    return added
+
+
+def _subclass_grants(char: Character) -> "subclass_grants.Grants":
+    """What this character's SUBCLASS grants the ENGINE, at their level.
+
+    Reads the FULL feature summaries off the rules row — deliberately not
+    `_sheet_features`, which truncates each to 90 characters for the Features
+    tab and would silently drop a rule stated late in a sentence.
+    """
+    from rules import subclass_grants
+    try:
+        with Session(engine) as s:
+            cls_row = _get_class_row(s, char.char_class)
+            feats = (_subclass_features_up_to(s, cls_row, char.subclass,
+                                              int(char.level or 1))
+                     if cls_row else [])
+        return subclass_grants.grants_from_features(
+            feats, class_name=char.char_class or "")
+    except Exception as e:
+        print(f"[subclass grants] {e}")
+        return subclass_grants.Grants()
+
+
 def _pc_defenses(char: Character, combatant=None) -> "damage_rules.Defenses":
     """What a PC resists — species traits, tags, and what they are doing now.
 
@@ -8900,6 +8959,12 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         attacks = 2
     else:
         attacks = 1
+    # A SUBCLASS may grant Extra Attack (Bladesinger, the Valor and Swords
+    # bards, and any book one). Decided from the class table alone, every one
+    # of them attacked once forever.
+    _grants = _subclass_grants(char)
+    if _grants.extra_attack:
+        attacks = max(attacks, 2)
     features: set[str] = set()
     if cls == "fighter":
         features.add("second wind")
@@ -8938,7 +9003,8 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         spell_dc = 8 + pb + mods[cast_key]
     # Remaining spell slots (total minus expended since the last rest).
     slots = {row["level"]: max(0, row["total"] - row["used"])
-             for row in _spell_slots_for(cls, lvl, char.spell_slots_used)}
+             for row in _spell_slots_for(cls, lvl, char.spell_slots_used,
+                                         third_caster=_grants.third_caster)}
     # Reaction spells the engine may auto-cast when they change an outcome.
     known = {(x if isinstance(x, str) else (x.get("name") or "")).strip().lower()
              for x in (char.spells or [])}
@@ -8947,6 +9013,7 @@ def _combat_pc_profile(char: Character) -> PCProfile:
         character_id=char.id, name=char.name, level=lvl, ability_mods=mods,
         prof=pb, skills=skills, save_profs=_save_proficiencies(char),
         weapons=weapons, attacks_per_action=attacks,
+        crit_on=_grants.crit_on, crit_extra=set(_grants.crit_extra),
         features=features, spell_attack_bonus=spell_atk, spell_dc=spell_dc,
         spell_mod=cast_key, slots=slots, reaction_spells=reaction_spells,
         exhaustion=int(char.exhaustion or 0),
@@ -15477,6 +15544,14 @@ def _progression(session: Session, char: Character, target_subclass: Optional[st
         char.level = new_level
         if target_subclass and chosen_row:
             char.subclass = chosen_row.name
+        # A sense a subclass grants is written onto the sheet as a `sense:` tag,
+        # the same channel an invocation's Devil's Sight already uses: the board
+        # reads the character row with plain SQL on purpose, so it must never
+        # have to know what a subclass is.
+        try:
+            _sync_subclass_senses(char)
+        except Exception as e:
+            print(f"[level-up] subclass senses: {e}")
         if asi_due:
             if feat:
                 asi_notes = _apply_feat(char, str(feat).strip().lower(), feat_choices)
@@ -18752,10 +18827,23 @@ def _load_class_slot_overrides() -> None:
 
 
 def _spell_slots_for(char_class: Optional[str], level: int,
-                     used: Optional[dict] = None) -> list[dict]:
+                     used: Optional[dict] = None,
+                     third_caster: bool = False) -> list[dict]:
+    """Spell slots for a class at a level.
+
+    ``third_caster`` is what an Arcane Trickster, an Eldritch Knight or any
+    subclass that teaches an otherwise non-casting class to cast runs on. Their
+    Spellcasting feature is a SUBCLASS feature, so keying slots on the class
+    alone gave the SRD's own two third casters no spell slots at all.
+    """
     cls = (char_class or "").strip().lower()
     lvl = max(1, min(20, int(level or 1)))
     used_map = {int(k): int(v) for k, v in (used or {}).items()}
+    if third_caster and cls not in _FULL_CASTERS and cls not in _HALF_CASTERS \
+            and cls != "warlock":
+        from rules.subclass_grants import third_caster_slots
+        return [{"level": i, "total": c, "used": min(c, used_map.get(i, 0))}
+                for i, c in enumerate(third_caster_slots(lvl), start=1) if c > 0]
     override = _CLASS_SLOT_OVERRIDES.get(cls, {}).get(lvl)
     if override is not None:
         return [{"level": i, "total": c, "used": min(c, used_map.get(i, 0))}
@@ -19167,6 +19255,20 @@ def _compute_ac(char: Character) -> int:
             base = max(base, 10 + dex + ability_modifier(_ability_score(char, "constitution")))
         elif cls == "monk":
             base = max(base, 10 + dex + ability_modifier(_ability_score(char, "wisdom")))
+        # ...and a SUBCLASS may set its own. Named by CLASS alone, a subclass
+        # that grants Unarmored Defense (or a flat AC bonus while unarmoured)
+        # was worth exactly nothing on the sheet.
+        try:
+            g = _subclass_grants(char)
+            if g.unarmored_ac:
+                a, b = g.unarmored_ac
+                base = max(base, 10 + ability_modifier(_ability_score(char, a))
+                           + ability_modifier(_ability_score(char, b)))
+            if g.ac_bonus_ability:
+                misc += max(1, ability_modifier(
+                    _ability_score(char, g.ac_bonus_ability)))
+        except Exception as e:
+            print(f"[ac] subclass grants: {e}")
         if "mage armor" in conds:
             base = max(base, 13 + dex)
     if "shield of faith" in conds:
@@ -19709,8 +19811,9 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
         # the client; computed while the character row is live).
         features = _sheet_features(session, char)
         resources = _class_resources_for(char)
-        spell_slots = _spell_slots_for(char.char_class, char.level,
-                                       char.spell_slots_used)
+        spell_slots = _spell_slots_for(
+            char.char_class, char.level, char.spell_slots_used,
+            third_caster=_subclass_grants(char).third_caster)
         background = char.background
         portrait = _activity_portrait_url(char.name,
                                           getattr(char, "active_portrait", None))
