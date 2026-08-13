@@ -11613,6 +11613,20 @@ def _castable_lists(char: Character) -> tuple[list[str], list[str]]:
                 cantrips.append(nm)
     except Exception as e:
         print(f"[castable] feat-option spells unavailable: {e}")
+    # A SUBCLASS's always-prepared spells (a domain, oath, circle or patron
+    # list) are prepared in addition to, and without counting against, the
+    # class's own preparations — so they belong on this list whatever the
+    # caster's mode. A cantrip granted this way rides with the cantrips; a
+    # leveled one is cast from the character's ordinary slots.
+    try:
+        for nm in subclass_granted_spells(char):
+            sp = rules_lib.get_spell(nm)
+            bucket = cantrips if (sp and (sp.level or 0) == 0) else leveled
+            other = leveled if bucket is cantrips else cantrips
+            if nm not in bucket and nm not in other:
+                bucket.append(nm)
+    except Exception as e:
+        print(f"[castable] subclass spells unavailable: {e}")
     return cantrips, leveled
 
 
@@ -14322,6 +14336,87 @@ def feat_option_spells(char: Character) -> List[str]:
             sp = rules_lib.get_spell(slug)
             out.append(sp.name if sp else slug)
     return list(dict.fromkeys(out))
+
+
+# A subclass's always-prepared spells, stated three ways in the feature text.
+# Reading the TEXT is the same door `_pc_defenses` opens for a species' damage
+# resistance and `_hands_gate` opens for War Caster: a subclass from a book the
+# repo may not carry needs nothing added to a list, only its own summary.
+_SUB_TIERED_RE = re.compile(r"[Aa]lways[- ]prepared[^:]*:\s*([^\n]+)")
+_SUB_TIER_RE = re.compile(r"\bL(\d{1,2})\s+([^;]+)")
+_SUB_ALWAYS_RE = re.compile(r"always have ([A-Z][^.]*?) prepared", re.I)
+_SUB_ADD_RE = re.compile(r"\bAdd ([^.]*?) as always-prepared", re.I)
+_SUB_KNOW_RE = re.compile(r"[Yy]ou know the ([A-Z][A-Za-z' ]+?) spell")
+_SUB_RITUAL_RE = re.compile(r"[Cc]ast ([^.]*?) as (?:a |an )?RITUALS?", re.I)
+
+
+def _resolve_spell_names(blob: str) -> List[str]:
+    """Pull spell names out of a comma/and-separated run.
+
+    Greedy longest-match against the spell table, because " and " is BOTH a
+    separator and part of a name: "Augury and Detect Poison and Disease" is two
+    spells, not three, and splitting naively invents "Disease".
+    """
+    parts: List[str] = []
+    for chunk in re.split(r",\s*", blob.strip(" .")):
+        parts.extend(p for p in re.split(r"\s+and\s+", chunk) if p.strip())
+    out: List[str] = []
+    i = 0
+    while i < len(parts):
+        best, best_span = None, 1
+        for span in range(min(3, len(parts) - i), 0, -1):
+            cand = " and ".join(parts[i:i + span]).strip(" .")
+            if not cand:
+                continue
+            try:
+                sp = rules_lib.get_spell(cand)
+            except Exception:
+                sp = None
+            if sp is not None:
+                best, best_span = sp.name, span
+                break
+        out.append(best or parts[i].strip(" ."))
+        i += best_span
+    return [s for s in out if s]
+
+
+def subclass_granted_spells(char: Character) -> List[str]:
+    """Spell NAMES this character's SUBCLASS hands them, at their current level.
+
+    A domain/oath/circle/patron spell list is "you thereafter always have these
+    prepared" — but `_castable_lists` only ever read `char.spells`, so a Blood
+    Domain cleric's Vampiric Touch was a spell the DM was told to REFUSE. The
+    tiers are filtered by level, so a level-3 cleric gets the level-3 row and
+    nothing above it.
+    """
+    out: List[str] = []
+    try:
+        with Session(engine) as s:
+            cls_row = _get_class_row(s, char.char_class)
+            feats = (_subclass_features_up_to(s, cls_row, char.subclass, char.level)
+                     if cls_row else [])
+    except Exception as e:
+        print(f"[subclass spells] lookup failed: {e}")
+        return out
+    for f in feats:
+        text = str(f.get("summary") or "")
+        for blob in _SUB_TIERED_RE.findall(text):
+            for tier, names in _SUB_TIER_RE.findall(blob):
+                if int(tier) <= int(char.level or 1):
+                    out.extend(_resolve_spell_names(names))
+        for rx in (_SUB_ALWAYS_RE, _SUB_ADD_RE, _SUB_RITUAL_RE):
+            for blob in rx.findall(text):
+                out.extend(_resolve_spell_names(blob))
+        for name in _SUB_KNOW_RE.findall(text):
+            out.extend(_resolve_spell_names(name))
+    seen: set = set()
+    uniq: List[str] = []
+    for n in out:
+        k = n.strip().lower()
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append(n.strip())
+    return uniq
 
 
 def character_feats(char: Character) -> List[Dict[str, Any]]:

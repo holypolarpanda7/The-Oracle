@@ -55,13 +55,19 @@ _NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
 # ----------------------------------------------------------------------
 # The one scaling shape
 # ----------------------------------------------------------------------
-def scaled(term: Any, level: int, *, default: int = 0) -> int:
+def scaled(term: Any, level: int, *, default: int = 0, caster_mod: int = 0) -> int:
     """``{base, per_level, from}`` -> ``base + per_level x (level - from)``.
 
     Floored, and never below ``base`` — a spell cast at its own minimum level
     gets the printed number. A bare int is a constant, which is most of a stat
     block. ``from`` defaults to 0, which is what "11 + the level of the spell"
     means; Hit Points say "40 + 10 for each level above 4th" and set it to 4.
+
+    ``caster_mod`` is the multiplier on the SUMMONER's spellcasting ability
+    modifier, for the class-feature companions whose printed AC is "13 + your
+    Wisdom modifier". The modifier itself is never passed around as a fourth
+    number — it is recovered from the save DC the caller already computed
+    (DC = 8 + PB + ability), so there is exactly one place it can be wrong.
     """
     if term is None:
         return default
@@ -72,7 +78,8 @@ def scaled(term: Any, level: int, *, default: int = 0) -> int:
     base = float(term.get("base", 0) or 0)
     per = float(term.get("per_level", 0) or 0)
     frm = float(term.get("from", 0) or 0)
-    return int(math.floor(base + per * max(0.0, float(level) - frm)))
+    cm = float(term.get("caster_mod", 0) or 0) * float(caster_mod)
+    return int(math.floor(base + per * max(0.0, float(level) - frm) + cm))
 
 
 # ----------------------------------------------------------------------
@@ -307,6 +314,9 @@ def build(entry: Dict[str, Any], *, level: int, variant: Optional[str] = None,
 
     ab = dict(entry.get("abilities") or {})
     ab.update(patch.get("abilities") or {})
+    # DC = 8 + PB + ability, so the summoner's spellcasting modifier is already
+    # in hand — no caller has to pass it, and none can pass a different one.
+    caster_mod = int(save_dc) - 8 - int(proficiency_bonus)
     label = str(patch.get("label") or vkey or "").strip()
     name = f"{entry['name']} ({label})" if label else entry["name"]
 
@@ -316,9 +326,11 @@ def build(entry: Dict[str, Any], *, level: int, variant: Optional[str] = None,
         "size": field("size", "Medium"),
         "type": field("type", "elemental"),
         "alignment": field("alignment", "unaligned"),
-        "armor_class": scaled(field("armor_class"), level, default=10),
+        "armor_class": scaled(field("armor_class"), level, default=10,
+                              caster_mod=caster_mod),
         "ac_desc": field("ac_desc"),
-        "hit_points": max(1, scaled(field("hit_points"), level, default=1)),
+        "hit_points": max(1, scaled(field("hit_points"), level, default=1,
+                                    caster_mod=caster_mod)),
         "strength": ab.get("str"), "dexterity": ab.get("dex"),
         "constitution": ab.get("con"), "intelligence": ab.get("int"),
         "wisdom": ab.get("wis"), "charisma": ab.get("cha"),

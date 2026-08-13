@@ -73,6 +73,44 @@ bonuses (2024 model) — the loader forces `ability_bonuses={}`.
 }
 ```
 
+**Two phrasings in `summary` are READ BY THE ENGINE, not just shown to the DM.**
+Write them deliberately — the same "read the feature text" door `_pc_defenses`
+opens for a species' resistance and `_hands_gate` opens for War Caster.
+
+* **Always-prepared spells.** `"Always-prepared domain spells: L3 Bane, Silence;
+  L5 Dispel Magic"` reaches `_castable_lists`, which is the list telling the DM
+  the PC may cast ONLY what is on it. Tiers are filtered by character level, so
+  a level-3 cleric gets the L3 row and nothing above it. `"You always have X
+  prepared"`, `"Add X as always-prepared …"`, `"You know the X spell"` and
+  `"Cast X as a ritual"` are read the same way. `" and "` is both a separator
+  and part of a name, so names are resolved longest-match against the spell
+  table — "Augury and Detect Poison and Disease" is two spells, not three.
+* **Damage defences.** `"Resistance to Cold damage"` becomes a real resistance
+  in combat. Two traps, both measured: the sheet keeps only the **first 90
+  characters** of a summary, so put the mechanical clause FIRST or it silently
+  does nothing; and the matcher needs the keyword before EACH type, so
+  "Resistance to Force and Radiant" grants Force alone — write "Resistance to
+  Force damage and Resistance to Radiant damage". A CONDITIONAL defence ("while
+  your rage is active") is correctly *not* picked up; state it in the text for
+  the DM and let a condition carry it, the way Rage already does.
+
+`scripts/subclass_overrides_smoke.py` checks all of this against whatever is in
+the slot — it derives its expectations from the file, so it never carries book
+data itself.
+
+### Companion stat blocks in `summons_overrides.json`
+
+A class-feature COMPANION (a familiar-like guardian a subclass grants) is the
+same shape as a summoned spirit and lives in the same slot — omit `spells`,
+since nothing casts it, and summon it by name with
+`[[SUMMON: <name> | | <owner's class level>]]`. Its `level` is the owner's CLASS
+level rather than a slot level; `materialize()` does not care which.
+
+A printed "AC 13 + your Wisdom modifier" is `{"base": 13, "caster_mod": 1}`.
+The modifier is never passed in — it is recovered from the save DC the caller
+already computed (`DC = 8 + PB + ability`), so there is exactly one place it can
+be wrong.
+
 ## `spells_overrides.json` → `rules_spell`  (loader: `ingest_spells_overrides`)
 ```json
 {

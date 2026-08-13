@@ -230,7 +230,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   components, War Caster, the [[GRIP]] hook that frees one, and the combat
   half — main/off-hand weapon choice, versatile dice, two-weapon fighting),
   `forge`
-  (tempering needs a smith), `resistance` (damage types out of scanned prose,
+  (tempering needs a smith),
+  `subclass_overrides` (the subclass slot end to end for whatever is IN
+  it — offered at the right level, the pick sticks, always-prepared
+  spells become castable at their tier, a stated resistance is enforced,
+  and a companion stat block materializes at its own declared formula;
+  expectations are derived from the gitignored file, never written in), `resistance` (damage types out of scanned prose,
   defences out of both bestiary shapes, and the arithmetic through the real
   engine — a mace on a skeleton, a fireball on a fire elemental), `routes` (roads costed from real geography, and
   no map data leaks), `map` (one terrain answer across scene/board/parchment;
@@ -1322,6 +1327,35 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `options_are_feats` and the pick BECOMES that feat — Fighting Initiate's
   styles are real `fighting-style` rows with their own benefit text, and as a
   bare word they were a label every feat-reader walked past.
+- **A SUBCLASS's always-prepared spells are enforced, and its stated damage
+  defences are real.** A domain/oath/circle/patron list is "you thereafter
+  always have these prepared", and `_castable_lists` — the list that tells the
+  DM the PC may cast ONLY what is on it — read `char.spells` and nothing else,
+  so a Blood Domain cleric's Vampiric Touch was a spell the DM was instructed to
+  REFUSE. `subclass_granted_spells` reads it out of the feature TEXT, the same
+  door `_pc_defenses` opens for a species' resistance and `_hands_gate` opens
+  for War Caster, so a subclass from a book the repo may not carry needs nothing
+  added to a list. Tiers are filtered by character level, so a level-3 cleric
+  gets the L3 row and nothing above it. **`" and "` is both a separator and part
+  of a name** — names resolve longest-match against the spell table, or "Augury
+  and Detect Poison and Disease" becomes three spells, one of them "Disease".
+  Two traps on the DEFENCE half, both measured: the sheet keeps only the FIRST
+  90 CHARACTERS of a feature summary, so a resistance written past that point
+  silently does nothing; and the matcher wants the keyword before EACH type, so
+  "Resistance to Force and Radiant" granted Force alone. A CONDITIONAL defence
+  ("while your Innate Sorcery is active") is deliberately NOT picked up —
+  granting it permanently would be a straight buff the book never gave, and the
+  Rage precedent (a condition, not a trait) is how one is meant to work.
+- **A class-feature COMPANION is a summon, and `caster_mod` is what let it be
+  one.** A guardian whose block reads "AC 13 + your Wisdom modifier, HP 5 +
+  five times your Ranger level" is exactly the recipe shape `rules/summons.py`
+  already materializes — except that `scaled()` could express the level term and
+  not the ability one. It takes `{"base": 13, "caster_mod": 1}` now, and the
+  modifier is never passed in: it is recovered from the save DC the caller
+  already computed (`DC = 8 + PB + ability`), so there is one place it can be
+  wrong instead of one per caller. The companion goes in the summons slot with
+  no `spells` key — nothing casts it — and its `level` is the owner's CLASS
+  level, which `materialize()` does not distinguish from a slot level.
 - **A named feat OPTION is a proper noun until something says what it does.**
   `owned_books/option_catalog.json` (gitignored, cached once — restart after
   editing) maps `tag -> option -> {cost, resource, grants_spell, at_will,
