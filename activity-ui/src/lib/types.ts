@@ -66,6 +66,22 @@ export interface QuestRow {
   leads?: string[];
 }
 
+/** Somebody else's quest. An NPC pursuing a goal of their own, which moves in
+ *  world-time whether or not the party is watching. `with_you` is the whole
+ *  difference between news and a journey you are on. */
+export interface VentureRow {
+  name: string;
+  owner: string;
+  owner_slug: string;
+  goal: string;
+  state: string;           // active | completed | failed
+  step: number;
+  steps: number;
+  with_you: boolean;
+  now?: string;            // what they are doing right now
+  outcome?: string;        // what it left behind, once it has ended
+}
+
 /** Someone who has an opinion of you, and why. */
 export interface BondRow {
   name: string;
@@ -106,6 +122,7 @@ export interface CodexRow {
 export interface ChronicleData {
   entries: JournalEntry[];
   quests: QuestRow[];
+  ventures?: VentureRow[];
   bonds: BondRow[];
   standing: StandingRow[];
   codex: CodexRow[];

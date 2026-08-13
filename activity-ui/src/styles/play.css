@@ -1033,6 +1033,26 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
   letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint);
 }
 
+/* --- journal: other people's roads (ventures) ---
+   Read as a quest card and a venture reads as work waiting for the party,
+   which is the one thing it is not. So: no gold spine, a quieter ground, and
+   the owner's NAME where a quest puts its title. */
+.chr-venture {
+  margin-bottom: 9px; padding: 10px 12px; border-radius: 6px;
+  background: rgba(8, 12, 22, 0.5);
+  border: 1px solid var(--edge); border-left: 3px solid var(--amethyst);
+}
+.chr-venture.riding { border-left-color: var(--teal); background: rgba(10, 20, 30, 0.7); }
+.chr-venture.completed, .chr-venture.failed { opacity: 0.6; }
+.chr-venture.failed { border-left-color: var(--crimson); }
+.chr-vwho {
+  padding: 0; border: 0; background: none; cursor: pointer;
+  font-family: inherit; font-size: 0.98rem; color: #f5efde;
+  text-shadow: 0 1px 4px #000;
+}
+.chr-vwho:hover { color: var(--gold); }
+.chr-qtag.comp { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 45%, var(--edge)); }
+
 /* --- journal: the record --- */
 .chr-day { margin-bottom: 12px; }
 .chr-daymark {

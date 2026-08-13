@@ -110,6 +110,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
      `living_powers`/`pantheon_payload` read it, so a power born in play is
      offered by character creation and a slain one stops being offered. Never
      hard-code a deity list in a caller.
+   - `ventures.py` — **other people's quests**: an NPC steps out of their role
+     and goes after something, in 1-3 stages, progressing on world-time whether
+     or not anyone is watching. See `docs/design/ventures.md`.
    - `demo.py` — runnable end-to-end demo.
 4. **`rules/`** — SRD **rules reference** (structured game data). Seeded from the
    open, CC-BY-4.0 5e SRD dataset so the DM brain + dice roller get exact numbers.
@@ -237,6 +240,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `targeting` (what a spell targets out of OCR-damaged prose; who the board
   says may be hit and why not the rest; a template clipped by line of effect;
   the action bar reaching the engine as an intent, and refusing when it can't),
+  `ventures` (an NPC's own quest: it is born, it moves on the clock unwatched,
+  the party joins and leaves, the DM settles a step at the table, and every
+  ending marks the world — a place calmed, a role promoted, a relic won, a
+  successor taking a dead venturer's post),
   `skins` (what a square is MADE of versus what it DOES: a skin changes no
   rule, may reshape a quoted height but never restate it, a tent you can walk
   into, a watchtower top that is a real storey, a hold at -8 ft)
@@ -1431,6 +1438,40 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   in component enforcement: imported sheets routinely arrive with no pack, and
   a false refusal stops play dead where a missed enforcement only makes the
   game slightly generous. A pack with *something* in it is taken at its word.
+- **An NPC may want something, and a VENTURE is not a companion.** Until
+  `eight_card_system/ventures.py` the world had people who *are* something (a
+  role, a hook) and quests the PARTY takes, and nothing in between — so an NPC
+  was furniture between the moments a player addressed them. A venture is an
+  NPC's own quest: a goal rolled from their trade, 1-3 stages ending in a
+  climax, a stage attempt every `STEP_DAYS` world-days. **The party may
+  ACCOMPANY (`ACCOMPANIES`, pc -> npc — deliberately the mirror of
+  `travels_with`) and stop at any moment**; accompanying opens no companion
+  relation and buys no control, only that the venture stops resolving behind
+  their backs and starts happening at the table. `step_venture` is the ONE place
+  a stage moves whichever side called it, so a watched and an unwatched venture
+  can never advance by different rules. **Depth is a real dial on the odds** —
+  measured over 431 ventures, depth 1 succeeds 79% unwatched, depth 2 61%,
+  depth 3 41%, because the setback allowance is `depth + 1` and every setback
+  raises the current stage's DC. The deep ones usually need somebody, which is
+  the whole argument for walking beside a person. A venture IS a QUEST entity
+  (tier `venture`) so the journal, the world slice and entropy's main-cast
+  protection read it for free — but it must never take a party STAKES clock,
+  because those escalate on the party's NEGLECT and neglect is not what decides
+  this. `create_entity`, never `upsert`: a second venture is a new thread, and
+  upserting by slug reopens the finished one.
+  **A venturer has to come HOME**, and the first long simulation is why: the
+  climax moves them to the wild place they were aiming at, and with no
+  homecoming they stand there forever — the town loses its smith, and because
+  eligibility keys on living somewhere the party has VISITED, the pool of people
+  who could ever set out drained to zero and ventures stopped appearing entirely
+  after 126 days. Same shape one level down: kill a venturer at the climax and
+  `census.spawn_successor` births the heir in the wilds the predecessor never
+  came back from, so the successor is moved to the venture's home.
+  **Rationing is per PASS, not per candidate** — rolled per candidate it is not
+  a rate limit at all, since a town of ten gets ten chances and something is
+  born nearly every time. And a venture is only ever rolled for somebody the
+  party could HEAR about (known to a PC, or living where they have been); a
+  stranger's errand in an unvisited town is a die roll nobody will ever see.
 - **Harm outside a fight lands too, and needs no initiative order.** A dog
   bites in a market street; that is not an encounter and nobody is going to
   roll for one. Every COMBAT verb but `start` used to be DROPPED when no

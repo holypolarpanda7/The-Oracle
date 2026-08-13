@@ -85,6 +85,24 @@ class QuestState:
     ALL = {OFFERED, ACTIVE, COMPLETED, FAILED}
 
 
+class QuestTier:
+    """How a QUEST entity came to exist, stored in ``attributes['tier']``.
+
+    The first three are the PARTY's adventure scaffold (see the QUEST hooks in
+    the backend). ``VENTURE`` is somebody else's: an NPC's own errand, driven by
+    them and progressing on world-time whether or not anybody is watching. It is
+    a quest row so the journal, the world slice and entropy's main-cast
+    protection all read it for free — but it never takes a party stakes clock,
+    because neglect is not what decides it.
+    """
+    MAIN = "main"
+    SIDE = "side"
+    RUMOR = "rumor"
+    VENTURE = "venture"
+
+    PARTY = {MAIN, SIDE, RUMOR}
+
+
 class Attitude:
     """NPC social attitude toward the party (5e social-interaction scale).
 
@@ -201,11 +219,17 @@ class RelationType:
     KNOWS_ABOUT = "knows_about"      # npc/pc -> lore/any (information held)
     # party / companionship
     TRAVELS_WITH = "travels_with"    # npc -> pc (companion currently in the party)
+    # An NPC's OWN quest, and a party tagging along on it. These are deliberately
+    # the mirror of TRAVELS_WITH: a companion is a body the party directs, while
+    # a venturer leads and the party merely goes along (see ventures.py).
+    PURSUES = "pursues"              # npc -> quest (a venture they drive themselves)
+    ACCOMPANIES = "accompanies"      # pc -> npc (travelling on THEIR errand)
 
     ALL = {
         LOCATED_IN, ADJACENT_TO, PART_OF, MEMBER_OF, ALLIED_WITH,
         HOSTILE_TO, KNOWS, OWNS, INVOLVES, LOCATED_AT,
         WORSHIPS, GOVERNS, SELLS, GIVES_QUEST, KNOWS_ABOUT, TRAVELS_WITH,
+        PURSUES, ACCOMPANIES,
     }
 
     # Relation types that are symmetric (traversed both ways for adjacency logic)

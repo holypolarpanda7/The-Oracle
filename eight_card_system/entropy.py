@@ -523,6 +523,10 @@ def advance_quest_clocks(graph: WorldGraph, *, session_id: Optional[str] = None,
             attrs = dict(q.attributes or {})
             if str(attrs.get("state", "active")).lower() != "active":
                 continue
+            # An NPC's own venture is not the party's to neglect — its owner is
+            # out there deciding it. ventures.advance_ventures is its clock.
+            if str(attrs.get("tier", "")) == "venture":
+                continue
             stakes = attrs.get("stakes")
             if not stakes:
                 continue  # no stakes => no clock (not every thread presses)

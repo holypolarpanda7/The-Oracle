@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { BondRow, ChronicleData, CodexRow, JournalEntry, QuestRow,
-              StandingRow } from "../lib/types";
+              StandingRow, VentureRow } from "../lib/types";
 
 /**
  * The Chronicle — the party's own record, and the people who have an opinion
@@ -54,6 +54,38 @@ function Quest({ q }: { q: QuestRow }) {
         {q.patron && <em>from {q.patron}</em>}
         {q.reward && <em>reward: {q.reward}</em>}
       </div>
+    </div>
+  );
+}
+
+/** Somebody else's road. Deliberately NOT rendered as a quest card: this is not
+ *  work waiting for the party, it is a person getting on with their own life,
+ *  and the only thing the party controls is whether they are walking it too. */
+function Venture({ v, onInspect }: {
+  v: VentureRow;
+  onInspect: (n: string) => void;
+}) {
+  const closed = v.state === "completed" || v.state === "failed";
+  const pct = Math.round((Math.min(v.step, v.steps) / Math.max(1, v.steps)) * 100);
+  return (
+    <div className={`chr-venture ${v.state}${v.with_you ? " riding" : ""}`}>
+      <div className="chr-qhead">
+        <button className="chr-vwho" onClick={() => onInspect(v.owner)}>
+          {v.owner}
+        </button>
+        {v.with_you && <em className="chr-qtag comp">you ride with them</em>}
+        {closed && <em className={`chr-qtag ${v.state}`}>{v.state}</em>}
+      </div>
+      <p className="chr-qline">wants to {v.goal}</p>
+      {!closed && v.now && (
+        <p className="chr-qline leads">
+          Step {v.step} of {v.steps} — {v.now}
+        </p>
+      )}
+      {!closed && v.steps > 1 && (
+        <div className="chr-rbar"><span style={{ width: `${pct}%` }} /></div>
+      )}
+      {closed && v.outcome && <p className="chr-qline stakes">{v.outcome}</p>}
     </div>
   );
 }
@@ -152,6 +184,12 @@ export function Chronicle({ data, onClose, onInspect }: {
   }
   const live = data.quests.filter((q) => q.state === "offered" || q.state === "active");
   const closed = data.quests.filter((q) => q.state === "completed" || q.state === "failed");
+  // Ventures are other people's, so they sort by whether the party is on them
+  // first and by whether they are still running second — the one you are
+  // walking is the one you need to see.
+  const ventures = [...(data.ventures ?? [])].sort((a, b) =>
+    Number(b.with_you) - Number(a.with_you)
+    || Number(a.state !== "active") - Number(b.state !== "active"));
 
   return (
     <div className="chr-veil" onClick={onClose}>
@@ -189,6 +227,14 @@ export function Chronicle({ data, onClose, onInspect }: {
               <>
                 <div className="chr-head">Settled</div>
                 {closed.map((q) => <Quest q={q} key={q.name} />)}
+              </>
+            )}
+            {ventures.length > 0 && (
+              <>
+                <div className="chr-head">Other people's roads</div>
+                {ventures.map((v) => (
+                  <Venture v={v} key={v.name} onInspect={onInspect} />
+                ))}
               </>
             )}
             <div className="chr-head">What happened</div>

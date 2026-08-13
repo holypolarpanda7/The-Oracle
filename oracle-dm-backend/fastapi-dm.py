@@ -38,13 +38,14 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from eight_card_system import WorldGraph
 from eight_card_system import entropy as world_entropy
+from eight_card_system import ventures as world_ventures
 from eight_card_system.graph import slugify
 from eight_card_system.seed import seed_minimal_world, backfill_coords, place_pc
 from eight_card_system.extraction import extract_and_apply
 from eight_card_system.models import (
     Entity as WorldEntity, Relation as WorldRelation, WorldEvent,
     EntityType, RelationType, Attitude, CompanionControl, NpcAttr, attitude_for_trust,
-    QuestState,
+    QuestState, QuestTier,
 )
 from rules import (
     RulesLibrary,
@@ -3629,10 +3630,16 @@ _QUEST_KEYWORDS = (
 
 
 def _format_quests_block(quests: list) -> str:
-    """Render active/offered quests as OPTIONAL threads for the DM (scaffold view)."""
+    """Render active/offered quests as OPTIONAL threads for the DM (scaffold view).
+
+    NPC ventures share the quest table but are somebody ELSE's thread and get
+    their own block (see world_ventures.render_block) — listed here they would
+    read as work waiting for the party.
+    """
     live = [q for q in quests
             if str((getattr(q, "attributes", None) or {}).get("state", "active"))
-            in (QuestState.OFFERED, QuestState.ACTIVE)]
+            in (QuestState.OFFERED, QuestState.ACTIVE)
+            and not world_ventures.is_venture(q)]
     if not live:
         return ""
     lines = ["# Active quests (optional threads — never force these)"]
@@ -6594,6 +6601,128 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
                                  + (f". {text}" if text else ""))
         except Exception as e:
             print(f"[quest] op {action} failed: {e}")
+    return notes
+
+
+# VENTURE hooks: somebody else's quest. An NPC steps out of their role and goes
+# after something they want; the party may travel with them, help, hinder, or
+# leave them to it. See eight_card_system/ventures.py — the CODE owns whether a
+# step succeeds when nobody is watching, and the DM owns it when they are.
+#   [[VENTURE: open   | <npc> | <goal (optional)> | <depth 1-3 (optional)>]]
+#   [[VENTURE: step   | <npc> | success|setback | <what happened>]]
+#   [[VENTURE: follow | <npc>]]        the party sets out with them
+#   [[VENTURE: leave  | <npc>]]        the party stops following
+#   [[VENTURE: resolve| <npc> | success|failure | <outcome>]]
+#   [[VENTURE: abandon| <npc> | <why they gave it up>]]
+VENTURE_HOOK_PATTERN = re.compile(r"\[\[VENTURE:(.+?)\]\]", re.IGNORECASE)
+_VENTURE_HOOK_ACTIONS = {"open", "step", "follow", "leave", "resolve", "abandon"}
+_VENTURE_GOOD = {"success", "succeed", "succeeded", "win", "won", "good", "yes",
+                 "done", "advance"}
+
+_VENTURE_GUIDE = (
+    "# Other people's quests\n"
+    "The folk of this world want things. A named NPC may step out of their role "
+    "and go after one — open it with [[VENTURE: open | <npc>]] (the code rolls "
+    "their goal and its steps from their trade), or name it yourself with "
+    "[[VENTURE: open | <npc> | <goal> | <1-3>]]. A venturer is NOT a companion: "
+    "they lead, they decide, and they may refuse the party's plan. If the party "
+    "goes along, [[VENTURE: follow | <npc>]]; when they walk away, "
+    "[[VENTURE: leave | <npc>]] and it goes on without them — succeeding or "
+    "failing on its own, in world-time. Settle a step only when it actually "
+    "happened in play: [[VENTURE: step | <npc> | success|setback | what "
+    "happened]]. Never narrate a step as finished without the hook."
+)
+
+# Cheap gate for the guide: the scene has to be about somebody else's business.
+_VENTURE_KEYWORDS = (
+    "go with", "come with", "travel with", "join", "help", "accompany", "tag along",
+    "follow", "leave them", "part ways", "his errand", "her errand", "their errand",
+    "what do you want", "what are you after", "why are you going", "set out",
+)
+
+
+def extract_venture_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull venture hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in VENTURE_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if len(parts) < 2:
+            continue
+        action = (parts[0] or "").strip().lower()
+        npc = (parts[1] or "").strip()
+        if action not in _VENTURE_HOOK_ACTIONS or not npc:
+            continue
+        ops.append({"action": action, "npc": npc,
+                    "args": [p.strip() for p in parts[2:]]})
+    clean = VENTURE_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def apply_venture_hooks(session_id: str, ops: list[dict],
+                        pc_slug: Optional[str] = None) -> list[str]:
+    """Apply venture hooks. Returns player-facing notes for the milestones —
+    setting out with someone, a step settled, and how it ended."""
+    if not ops:
+        return []
+    notes: list[str] = []
+    for op in ops:
+        action, npc = op["action"], op["npc"]
+        args = op.get("args", [])
+        try:
+            if action == "open":
+                goal = args[0] if args and not args[0].isdigit() else None
+                depth = next((int(a) for a in args if a.isdigit()), None)
+                got = world_ventures.open_venture(
+                    world, npc, goal=goal, depth=depth, session_id=session_id)
+                if got:
+                    notes.append(f"🧭 **{got['npc']}** has business of their own — "
+                                 f"{got['goal']}")
+            elif action == "step":
+                outcome = (args[0].strip().lower() if args else "success")
+                note = args[1] if len(args) > 1 else ""
+                good = outcome in _VENTURE_GOOD
+                got = world_ventures.step_venture(
+                    world, npc, "success" if good else "failure",
+                    note=note, session_id=session_id)
+                if not got:
+                    continue
+                if got.get("state") == QuestState.COMPLETED:
+                    notes.append(f"🧭 **{got['npc']}** got what they came for.")
+                elif got.get("state") == QuestState.FAILED:
+                    notes.append(f"🧭 **{got['npc']}**'s venture came apart.")
+                elif good:
+                    notes.append(f"🧭 *{got['npc']}:* step {got['stage_no']} of "
+                                 f"{got['stages']} — {got['stage_text']}")
+            elif action == "follow":
+                if not pc_slug:
+                    continue
+                got = world_ventures.accompany(world, pc_slug, npc)
+                if got:
+                    notes.append(f"🧭 Travelling with **{got['npc']}** — {got['goal']}")
+            elif action == "leave":
+                if pc_slug and world_ventures.part_ways(world, pc_slug, npc,
+                                                        session_id=session_id):
+                    notes.append("🧭 You go your own way; their road continues "
+                                 "without you.")
+            elif action == "resolve":
+                outcome = (args[0].strip().lower() if args else "success")
+                note = args[1] if len(args) > 1 else ""
+                got = world_ventures.resolve_venture(
+                    world, npc, outcome in _VENTURE_GOOD, note=note,
+                    session_id=session_id)
+                if got:
+                    marks = "; ".join(got.get("marks") or [])
+                    notes.append(
+                        (f"🧭 **{got['npc']}** saw it through" if outcome in _VENTURE_GOOD
+                         else f"🧭 **{got['npc']}** did not make it through")
+                        + (f" — {marks}" if marks else "."))
+            elif action == "abandon":
+                why = args[0] if args else ""
+                world_ventures.abandon_venture(world, npc, reason=why,
+                                               session_id=session_id)
+        except Exception as e:
+            print(f"[venture] op {action} failed: {e}")
     return notes
 
 
@@ -10698,6 +10827,19 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
                         "work, carousing — lifestyle costs apply) or as a short "
                         "personal side-tale covering those days."
                     )
+                    # A thread they once walked may have ended while they were
+                    # gone. They earned hearing about it without having to ask.
+                    try:
+                        became = world_ventures.catch_up_lines(
+                            world, anchor_slug, int(last))
+                        if became:
+                            texts.append(
+                                "# While they were away\n"
+                                "News the party would hear on arriving — people "
+                                "they once travelled with finished (or lost) "
+                                "their own errands:\n" + "\n".join(became))
+                    except Exception as e:
+                        print(f"[venture catch-up error] {e}")
                 if last is None or today > int(last):
                     world.upsert_entity(pc_e.name, pc_e.type, slug=pc_e.slug,
                                         status=pc_e.status,
@@ -10766,6 +10908,22 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
                 texts.append(qblock)
     except Exception as e:
         print(f"[quest context error] {e}")
+
+    # Ventures: NPCs pursuing goals of their own — the ones the party is
+    # travelling with (the scene) and the ones merely underway nearby (an
+    # opening). The block only renders when there is one, so a table that has
+    # never met a venturer never carries the weight; the GUIDE is gated on the
+    # block or on a scene that reads like somebody else's business.
+    try:
+        vblock = world_ventures.render_block(
+            world, getattr(ctx_obj, "entities", None) or [], anchor_slug)
+        if vblock:
+            texts.append(vblock)
+        if vblock or any(k in _scene_text(message, ctx_obj)
+                         for k in _VENTURE_KEYWORDS):
+            texts.append(_VENTURE_GUIDE)
+    except Exception as e:
+        print(f"[venture context error] {e}")
 
     # Arcane sites: rare, DM-flavored magical features persist on this place (a place can
     # hold several). Read active features back every turn so the look-and-feel stays
@@ -12482,6 +12640,14 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             _qc = world_entropy.advance_quest_clocks(world, session_id=req.session_id)
             if any(_qc.values()):
                 print(f"[quest-clock] {_qc}")
+            # Other people's quests move on the same clock: ventures the party
+            # is NOT walking roll a step forward, and somebody new may decide
+            # this is the year. Also logged as events before context assembly,
+            # so the DM narrates what the town has heard.
+            _vt = world_ventures.run_if_due(world, world.current_day(),
+                                            session_id=req.session_id)
+            if any(_vt.values()):
+                print(f"[ventures] {_vt}")
         except Exception as e:
             print(f"[entropy] clock sync failed: {e}")
 
@@ -12711,6 +12877,21 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                 dm_text = dm_text.rstrip() + "\n\n" + "\n".join(quest_notes)
         except Exception as e:
             print(f"[quest] hook processing failed: {e}")
+
+    # Ventures: somebody else's quest — opened, stepped, joined, left or ended.
+    # The party's own quest scaffold is untouched by these; a venture belongs to
+    # the NPC driving it and keeps moving whether or not the table is there.
+    dm_text, venture_ops = extract_venture_hooks(dm_text)
+    if venture_ops:
+        try:
+            _vpc = (_acting_member((_load_session_state(req.session_id).get("meta")
+                                    or {}), req.user_id) or {}).get("pc_slug")
+            venture_notes = apply_venture_hooks(req.session_id, venture_ops,
+                                                pc_slug=_vpc)
+            if venture_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(venture_notes)
+        except Exception as e:
+            print(f"[venture] hook processing failed: {e}")
 
     # Loot: gear the world hands over, rolled with the properties its rarity
     # can carry. The DM names the thing; the code decides what it turns out to be.
@@ -19636,6 +19817,11 @@ def _activity_journal(session_id: str, user_id: str) -> dict:
             rows = s.exec(select(WorldEntity)
                           .where(WorldEntity.type == EntityType.QUEST)).all()
             qs = [(e, dict(e.attributes or {})) for e in rows]
+        # A venture is somebody else's thread. It belongs in the journal — the
+        # party heard about it, maybe walked part of it — but never mixed in
+        # with their own work, so it is split out and marked with its owner.
+        ventures = [(e, a) for e, a in qs if world_ventures.is_venture(a)]
+        qs = [(e, a) for e, a in qs if not world_ventures.is_venture(a)]
         live = [(e, a) for e, a in qs
                 if a.get("state", QuestState.ACTIVE)
                 in (QuestState.OFFERED, QuestState.ACTIVE)]
@@ -19662,7 +19848,34 @@ def _activity_journal(session_id: str, user_id: str) -> dict:
     except Exception as e:
         print(f"[activity] journal quests failed: {e}")
 
-    return {"entries": entries, "quests": quests}
+    # Ventures: whose it is, what they want, how far along, and whether this PC
+    # is walking it right now — the whole difference between "news" and "a
+    # journey you are on".
+    venture_rows: list[dict] = []
+    try:
+        riding = {r["npc_slug"] for r in
+                  (world_ventures.accompanying(world, pc.slug) if pc is not None
+                   else [])}
+        ventures.sort(key=lambda p: p[1].get("last_touched_day", 0), reverse=True)
+        for ent, a in ventures[:12]:
+            stage = world_ventures.current_stage(a) or {}
+            row = {"name": ent.name,
+                   "owner": a.get("owner_name") or a.get("owner", ""),
+                   "owner_slug": a.get("owner", ""),
+                   "goal": str(a.get("goal", ""))[:200],
+                   "state": a.get("state", QuestState.ACTIVE),
+                   "step": int(a.get("stage", 0)) + 1,
+                   "steps": len(a.get("stages") or []),
+                   "with_you": a.get("owner") in riding}
+            if stage.get("text"):
+                row["now"] = str(stage["text"])[:200]
+            if a.get("marks"):
+                row["outcome"] = "; ".join(str(m) for m in a["marks"])[:200]
+            venture_rows.append(row)
+    except Exception as e:
+        print(f"[activity] journal ventures failed: {e}")
+
+    return {"entries": entries, "quests": quests, "ventures": venture_rows}
 
 
 # The relationship edge is the PERCEIVER's stance: npc -> pc. Any of the three
@@ -22562,14 +22775,15 @@ async def activity_ws(ws: WebSocket, channel: str):
                     await ws.send_json({"t": "chronicle_data",
                                         "entries": jr["entries"],
                                         "quests": jr["quests"],
+                                        "ventures": jr.get("ventures") or [],
                                         "bonds": _activity_bonds(session_id, user_id),
                                         "standing": _activity_standing(session_id, user_id),
                                         "codex": _activity_codex(session_id, user_id)})
                 except Exception as e:
                     print(f"[activity] chronicle failed: {e}")
                     await ws.send_json({"t": "chronicle_data", "entries": [],
-                                        "quests": [], "bonds": [], "standing": [],
-                                        "codex": [],
+                                        "quests": [], "ventures": [], "bonds": [],
+                                        "standing": [], "codex": [],
                                         "error": "The Chronicle is closed to you."})
                 continue
 
