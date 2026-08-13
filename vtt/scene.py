@@ -2194,6 +2194,32 @@ class VttEngine:
         return [{"token_id": i, "name": names.get(i, "?")} for i in ids]
 
     @staticmethod
+    def _elevation_summary(row: TacticalMap) -> str:
+        """What high ground this floor has, for the DM board.
+
+        Counted rather than mapped: a list of raised squares is unreadable, and
+        what a DM needs is that the high ground EXISTS, how high it is, and what
+        it costs — the rest they can read off the grid and the tokens.
+        """
+        elev = row.elevation or {}
+        if not elev:
+            return ""
+        tally: dict[int, int] = {}
+        for ft in elev.values():
+            n = int(ft or 0)
+            if n:
+                tally[n] = tally.get(n, 0) + 1
+        if not tally:
+            return ""
+        up = ", ".join(f"{n} squares at {ft:+d} ft"
+                       for ft, n in sorted(tally.items(), reverse=True))
+        return ("ground height: " + up +
+                " — climbing costs an extra foot per foot climbed, and stepping"
+                " off 10 ft or more is a fall. Height counts toward every"
+                " distance, and shooting down into a lower square is worth"
+                " cover to whoever is up there")
+
+    @staticmethod
     def _height_at(row: TacticalMap, sq: Square) -> int:
         return int((row.elevation or {}).get(f"{sq[0]},{sq[1]}", 0) or 0)
 
@@ -3441,6 +3467,14 @@ class VttEngine:
         desc = (row.notes or {}).get("description")
         if desc:
             lines.append(f"  {desc}")
+        # HIGH GROUND. A creature standing on a ledge already gets a note on
+        # its own line, which is no help at all to a DM deciding whether
+        # anybody SHOULD: the board knew about its own height and only ever
+        # mentioned it once somebody was on it. Elevation is not a tile, so the
+        # legend cannot carry it either.
+        high = self._elevation_summary(row)
+        if high:
+            lines.append(f"  {high}")
         # One grid per floor, each carrying only the creatures standing on it.
         # A single-storey board prints exactly what it always printed.
         for fi, floor in enumerate(floors):

@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence
+from typing import Callable, Iterable, Optional, Sequence
 
 from . import skins as _skins
 from .skins import SKYSHIP_STYLES
@@ -268,6 +268,127 @@ def _island(grid: Grid, rng: random.Random, cx: int, cy: int, radius: float,
     return laid
 
 
+# --------------------------------------------------------------------------
+# Height
+#
+# The board has folded elevation into every distance, reach, cover check and
+# spell area since it went 3D, climbing costs a foot per foot as the SRD has it,
+# and stepping off ten feet or more is reported as a FALL for the DM to charge.
+# All of that was true and almost nothing used it: fourteen of the twenty-one
+# archetypes generated a board that was perfectly flat, including the one called
+# mountain-pass. A fight on flat ground is the same fight from either side, and
+# height is the cheapest asymmetry there is — it costs movement to take, it
+# costs a fall to leave in a hurry, and it changes who can see whom without
+# changing a single rule.
+#
+# Two heights, on purpose. A STEP is free to come down and cheap to climb, so it
+# shapes a fight without punishing anyone; a LEDGE is the one you have to decide
+# about, because stepping off it is a fall.
+# --------------------------------------------------------------------------
+
+STEP_FT = 5
+LEDGE_FT = 10
+
+
+def _raise(out: GeneratedMap, squares: Iterable[Square], ft: int) -> None:
+    """Record height on squares. Zero is stored as nothing, not as zero."""
+    for x, y in squares:
+        if ft:
+            out.elevation[f"{x},{y}"] = int(ft)
+        else:
+            out.elevation.pop(f"{x},{y}", None)
+
+
+def _terrace(g: Grid, out: GeneratedMap, x0: int, y0: int, x1: int, y1: int,
+             ft: int, *, on: tuple[str, ...] = (), steps: str = "") -> list[Square]:
+    """Raise (or sink) a rectangle, and mark the way up.
+
+    ``steps`` names a side (n/s/e/w) whose edge squares are set to half the
+    height, which is a ramp: it halves each climb, it is somewhere a creature
+    can stand between the two levels, and it tells a reader where the ledge is
+    meant to be taken. Without one a terrace is a wall you may climb anywhere,
+    which is legal and reads as nothing.
+    """
+    got: list[Square] = []
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            if not g.in_bounds(x, y):
+                continue
+            if on and g.get(x, y) not in on:
+                continue
+            got.append((x, y))
+    _raise(out, got, ft)
+    # A ramp is only worth having on a LEDGE. Half of a five-foot step is two
+    # feet, which is a number nobody needs to be told and which costs a climb
+    # of five feet either way — the step is already cheap enough to take.
+    if steps and got and abs(ft) >= LEDGE_FT:
+        edge = {"n": [(x, y0) for x in range(x0, x1 + 1)],
+                "s": [(x, y1) for x in range(x0, x1 + 1)],
+                "w": [(x0, y) for y in range(y0, y1 + 1)],
+                "e": [(x1, y) for y in range(y0, y1 + 1)]}.get(steps, [])
+        ramp = [sq for sq in edge if sq in got]
+        _raise(out, ramp, int(ft / 2))
+        for x, y in ramp:
+            if g.get(x, y) not in APERTURES and g.passable(x, y):
+                g.set(x, y, "u")
+    return got
+
+
+def _mound(g: Grid, rng: random.Random, out: GeneratedMap, cx: int, cy: int,
+           radius: float, ft: int, *, on: tuple[str, ...] = ()) -> list[Square]:
+    """A rounded rise in two tiers — the shape of ground rather than of masonry.
+
+    Outer ring at half height so the climb is two short ones and the silhouette
+    is a hill instead of a plinth. Nothing here changes what a square IS; a
+    mound of grass is still grass.
+    """
+    got: list[Square] = []
+    for x, y in g.squares():
+        if on and g.get(x, y) not in on:
+            continue
+        d = math.hypot(x - cx, y - cy) / max(0.5, radius)
+        if d > 1.0:
+            continue
+        got.append((x, y))
+        _raise(out, [(x, y)], ft if d < 0.55 else int(ft / 2))
+    return got
+
+
+
+def _storey(out: GeneratedMap, g: Grid, name: str, base_ft: int,
+            squares: Iterable[Square], code: str = FLOOR) -> int:
+    """Build a real upper (or lower) FLOOR out of the squares given.
+
+    A level starts as all VOID and you lay only the floor you mean, which is
+    what makes a gallery a gallery: everywhere else is open to the room below,
+    you can see and fall through it, and the two storeys share the fight. Same
+    machinery ``structures`` uses for a watchtower platform and a ship's hold.
+
+    Returns the level index for ``_stair``.
+    """
+    rows = [[VOID] * g.width for _ in range(g.height)]
+    n = 0
+    for x, y in squares:
+        if g.in_bounds(x, y):
+            rows[y][x] = code
+            n += 1
+    if not n:
+        return 0
+    out.levels.append({"name": name, "base_ft": int(base_ft),
+                       "terrain": ["".join(r) for r in rows], "stairs": []})
+    return len(out.levels)
+
+
+def _stair(out: GeneratedMap, level: int, frm: Square, to: Square,
+           kind: str = "stairs") -> None:
+    """Join a square on one floor to a square on another, both ways."""
+    if not level:
+        return
+    out.stairs.append({"level": 0, "x": int(frm[0]), "y": int(frm[1]),
+                       "to_level": int(level), "to_x": int(to[0]),
+                       "to_y": int(to[1]), "kind": kind})
+
+
 def _blob(grid: Grid, rng: random.Random, cx: int, cy: int, size: int,
           code: str) -> None:
     """An organic patch of a tile around a point."""
@@ -393,8 +514,27 @@ def _gen_dungeon_room(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         if d:
             out.doors.append({"x": d[0], "y": d[1], "state": "closed",
                               "name": "door", "dc": None})
+    # A DAIS, or a floor that drops. Either way the room stops being a flat
+    # rectangle: whoever holds the high end shoots down into it, and getting up
+    # there costs a climb.
+    m2 = m + 1
+    if rng.random() < 0.7:
+        d = max(3, min(6, g.height // 4))
+        top = rng.random() < 0.5
+        y0 = m2 if top else g.height - 1 - m2 - d
+        _terrace(g, out, m2, y0, g.width - 1 - m2, y0 + d, STEP_FT,
+                 on=(FLOOR, ",", "o", "O"), steps=("s" if top else "n"))
+        out.description = ("a pillared stone chamber, flagstones cracked with "
+                           "age, a broad dais along one end")
+    else:
+        pit = max(4, min(9, g.width // 3))
+        px = (g.width - pit) // 2
+        py = (g.height - max(3, pit // 2)) // 2
+        _terrace(g, out, px, py, px + pit, py + max(3, pit // 2), -STEP_FT,
+                 on=(FLOOR, ",", "o"), steps="w")
+        out.description = ("a pillared stone chamber built around a sunken "
+                           "floor, flagstones cracked with age")
     out.lighting = rng.choice(["dim", "dim", "bright"])
-    out.description = "a pillared stone chamber, flagstones cracked with age"
 
 
 def _bsp_cells(x0: int, y0: int, x1: int, y1: int, rng: random.Random,
@@ -440,6 +580,15 @@ def _gen_dungeon_complex(g: Grid, rng: random.Random, out: GeneratedMap) -> None
     _scatter(g, rng, "o", 0.02)
     out.lighting = "dim"
     out.description = "a warren of stone rooms joined by narrow corridors"
+    # Not every room in a complex is on the same course of stone. A third of
+    # them sit a step up or down, so a doorway is a step and a corridor fight
+    # has a high side.
+    for rx0, ry0, rx1, ry1 in rooms:
+        if rng.random() >= 0.34:
+            continue
+        _terrace(g, out, rx0 + 1, ry0 + 1, rx1 - 1, ry1 - 1,
+                 rng.choice((STEP_FT, STEP_FT, -STEP_FT)),
+                 on=(FLOOR, ",", "o", "O"))
 
 
 def _gen_cave(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -470,6 +619,24 @@ def _gen_cave(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _scatter(g, rng, "O", 0.03)
     out.lighting = "dark"
     out.description = "a damp natural cavern, stalagmites and standing water"
+    # A cave is the one place that is obviously three-dimensional and the board
+    # drew it flat. A SHELF along one side of the cavern, ten feet up, reached
+    # where the rock has fallen in — and the floor of the deepest part lower
+    # than the rest, so a fight in here has a top and a bottom.
+    floor = [(x, y) for x, y in g.squares() if g.get(x, y) in (FLOOR, ",")]
+    if floor:
+        xs = [x for x, _y in floor]
+        ys = [y for _x, y in floor]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        band = max(2, (y1 - y0) // 5)
+        top = rng.random() < 0.5
+        sy0 = y0 if top else y1 - band
+        _terrace(g, out, x0, sy0, x1, sy0 + band, LEDGE_FT,
+                 on=(FLOOR, ","), steps=("s" if top else "n"))
+        _mound(g, rng, out, (x0 + x1) / 2, (y0 + y1) / 2,
+               max(2.0, min(x1 - x0, y1 - y0) / 4.0), -STEP_FT, on=(FLOOR, ","))
+        out.description += ", a shelf of rock along one wall above the floor"
 
 
 def _gen_forest(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -494,6 +661,14 @@ def _gen_forest(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _connect_regions(g, rng)
     out.lighting = rng.choice(["bright", "dim"])
     out.description = "old woodland — thick trunks, tangled undergrowth, a shallow stream"
+    # Woodland is not a table top: a knoll to hold and a hollow to be caught in.
+    _mound(g, rng, out, rng.randrange(2, max(3, g.width - 2)),
+           rng.randrange(2, max(3, g.height - 2)),
+           rng.uniform(2.0, 3.5), STEP_FT, on=("g", "\""))
+    if rng.random() < 0.6:
+        _mound(g, rng, out, rng.randrange(2, max(3, g.width - 2)),
+               rng.randrange(2, max(3, g.height - 2)),
+               rng.uniform(2.0, 3.0), -STEP_FT, on=("g", "\""))
 
 
 def _gen_clearing(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -509,6 +684,11 @@ def _gen_clearing(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         out.effects.append({"kind": "light", "name": "campfire", "shape": "sphere",
                             "x": cx, "y": cy, "radius_ft": 20, "color": "#ffb347"})
     out.description = "a open glade ringed by dark trees"
+    if rng.random() < 0.75:
+        _mound(g, rng, out, g.width // 2 + rng.randint(-4, 4),
+               g.height // 2 + rng.randint(-3, 3),
+               rng.uniform(2.5, 4.0), LEDGE_FT, on=("g", "\"", ","))
+        out.description += ", a green barrow mound at its centre"
 
 
 def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -534,6 +714,35 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _scatter(g, rng, ",", 0.04, only_on=("=",))
     out.lighting = rng.choice(["bright", "dim"])
     out.description = "a narrow city street between shuttered buildings, crates stacked at the walls"
+    # ROOFS. A street fight with archers above it is the asymmetric fight, and
+    # the buildings were solid blocks with nothing on top. The roof level is
+    # laid over the building squares only, so the street itself stays open sky
+    # from up there — you can see down into it, shoot into it, and fall into it.
+    roof = [(x, y) for x, y in g.squares() if g.get(x, y) == WALL]
+    if len(roof) > 12:
+        level = _storey(out, g, "Rooftops", 20, roof)
+        if level:
+            # Outside stairs: a square of street beside a building, and the
+            # roof square it climbs to. Two or three of them, spread out — one
+            # way up to a roof that covers half the board is a chokepoint
+            # rather than a second storey, and the point of the roofs is that
+            # both sides can use them.
+            want = 2 if len(roof) < 120 else 3
+            placed: list[Square] = []
+            for x, y in sorted(roof, key=lambda sq: (sq[0] * 7 + sq[1] * 13) % 101):
+                if len(placed) >= want:
+                    break
+                if any(abs(x - px) + abs(y - py) < max(6, g.width // 4)
+                       for px, py in placed):
+                    continue
+                for dx, dy in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+                    sx, sy = x + dx, y + dy
+                    if g.in_bounds(sx, sy) and g.get(sx, sy) in ("=", FLOOR, ","):
+                        g.set(sx, sy, "u")
+                        _stair(out, level, (sx, sy), (x, y), kind="stair")
+                        placed.append((x, y))
+                        break
+            out.description += ", roofs above it reached by an outside stair"
 
 
 def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -561,6 +770,28 @@ def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                           "name": "tavern door", "dc": None})
     out.lighting = "dim"
     out.description = "a low-beamed taproom, tables and benches, a fire burning in the hearth"
+    # A GALLERY over the taproom. The classic tavern brawl is fought up and
+    # down the stairs, and every tavern this generator has ever made was one
+    # flat room — the machinery for a real storey has existed since floors went
+    # in and no generator used it.
+    inner = [(x, y) for x, y in g.squares() if g.get(x, y) == FLOOR]
+    if inner and g.width >= 14 and g.height >= 12:
+        xs = [x for x, _y in inner]
+        ys = [y for _x, y in inner]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        depth = max(2, (y1 - y0) // 4)
+        north = rng.random() < 0.5
+        gy0 = y0 if north else y1 - depth
+        walk = [(x, y) for x, y in inner if gy0 <= y <= gy0 + depth]
+        level = _storey(out, g, "Gallery", 10, walk)
+        if level:
+            # The stair stands at one end of the run, on the taproom floor.
+            foot = min(walk, key=lambda sq: (sq[0], sq[1]))
+            below = (foot[0], foot[1] + depth + 1 if north else foot[1] - 1)
+            if g.in_bounds(*below) and g.get(*below) == FLOOR:
+                g.set(*below, "u")
+                _stair(out, level, below, foot)
+            out.description += ", a gallery running along one side above it"
 
 
 def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -662,6 +893,24 @@ def _gen_ruins(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _scatter(g, rng, "\"", 0.06, only_on=(",",))
     _connect_regions(g, rng)
     out.description = "toppled masonry and broken colonnades, weeds through the flagstones"
+    # What is left of a building is rarely all at one height: a floor still
+    # standing at the far end, and a cellar open to the sky where the rest fell
+    # in.
+    if rng.random() < 0.8:
+        tw = max(4, g.width // 3)
+        th = max(3, g.height // 3)
+        tx = rng.randrange(1, max(2, g.width - tw - 1))
+        ty = rng.randrange(1, max(2, g.height - th - 1))
+        _terrace(g, out, tx, ty, tx + tw, ty + th, LEDGE_FT,
+                 on=(",", "\"", FLOOR), steps=rng.choice(("n", "s", "e", "w")))
+    if rng.random() < 0.6:
+        cw = max(3, g.width // 5)
+        ch = max(3, g.height // 5)
+        cx0 = rng.randrange(1, max(2, g.width - cw - 1))
+        cy0 = rng.randrange(1, max(2, g.height - ch - 1))
+        _terrace(g, out, cx0, cy0, cx0 + cw, cy0 + ch, -LEDGE_FT,
+                 on=(",", "\"", FLOOR), steps=rng.choice(("n", "s", "e", "w")))
+    out.description += ", a floor still standing at one end over a fallen cellar"
 
 
 def _gen_camp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -720,6 +969,15 @@ def _gen_camp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     out.lighting = "dim"
     out.description = ("a war camp — canvas tents around a guttering fire, a "
                        "log palisade thrown up across one approach")
+    # A camp that has been anywhere throws up a bank. One side of the board
+    # stands a step higher behind it, which is the asymmetry a raid is fought
+    # across.
+    if rng.random() < 0.7:
+        band = max(2, g.height // 6)
+        top = rng.random() < 0.5
+        y0 = 0 if top else g.height - 1 - band
+        _terrace(g, out, 0, y0, g.width - 1, y0 + band, STEP_FT,
+                 on=("g", "\"", ",", FLOOR))
 
 
 def _hull(g: Grid, rng: random.Random, surround: str, deck: str = "b",
@@ -883,8 +1141,19 @@ def _gen_arena(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         py = rng.randrange(2, g.height - 2)
         if g.get(px, py) == "s":
             g.set(px, py, rng.choice(("O", "o", ",")))
+    # The tiers are the whole point of a PIT, and the board had none: the sand
+    # sat at the same height as the stone around it, so "pit" was a word in the
+    # description. The ring inside the wall is raised a full ledge, which makes
+    # the floor a place you drop INTO and have to climb out of.
+    for x, y in list(g.squares()):
+        if g.get(x, y) != "s":
+            continue
+        d = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2
+        if d > 0.72:
+            _raise(out, [(x, y)], LEDGE_FT if d > 0.86 else STEP_FT)
     out.lighting = "bright"
-    out.description = "a sand-floored fighting pit ringed by stone tiers"
+    out.description = ("a sand-floored fighting pit sunk below stone tiers, "
+                       "the crowd looking down into it")
 
 
 def _gen_crypt(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -903,6 +1172,13 @@ def _gen_crypt(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                           "name": "crypt door", "dc": 15})
     out.lighting = "dark"
     out.description = "a burial vault, stone coffins in ranks, dust and cobweb"
+    # The bier: the one thing in a burial vault that is meant to be looked up
+    # at, and the board had it flush with the floor.
+    bw = max(3, g.width // 4)
+    bh = max(3, g.height // 4)
+    bx = (g.width - bw) // 2
+    by = (g.height - bh) // 2
+    _terrace(g, out, bx, by, bx + bw, by + bh, STEP_FT, on=(FLOOR, ",", "A"))
 
 
 def _gen_swamp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -917,6 +1193,11 @@ def _gen_swamp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _connect_regions(g, rng)
     out.lighting = "dim"
     out.description = "black bog water between hummocks of reed and drowned trees"
+    # Hummocks: dry ground a step above the mire, which is where anyone with
+    # sense stands and what everyone else has to wade to.
+    for _ in range(rng.randint(3, 6)):
+        _mound(g, rng, out, rng.randrange(g.width), rng.randrange(g.height),
+               rng.uniform(1.5, 3.0), STEP_FT, on=("g", "m", "\""))
 
 
 def _gen_pass(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -959,6 +1240,19 @@ def _gen_pass(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                      if g.get(x, yy) == "," and rng.random() < 0.2}
     out.description = ("a high pass cut between raw granite cliffs — fractured "
                        "rock faces, fallen boulders, loose scree underfoot")
+    # A pass HAS levels — that is what a pass is, a track cut across a slope —
+    # and the board had ten raised squares on it. Benches of rock stepping up
+    # from the track, each one a place to shoot down from.
+    open_sq = [(x, y) for x, y in g.squares() if g.get(x, y) in (".", ",", "g")]
+    if open_sq:
+        ys = [y for _x, y in open_sq]
+        lo, hi = min(ys), max(ys)
+        for i, ft in enumerate((LEDGE_FT, LEDGE_FT * 2)):
+            band = max(1, (hi - lo) // 6)
+            y0 = lo + i * band
+            _terrace(g, out, 0, y0, g.width - 1, y0 + band - 1, ft,
+                     on=(".", ",", "g"), steps="s")
+        out.description += ", benches of rock stepping up from the track"
 
 
 def _gen_sewer(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -980,6 +1274,10 @@ def _gen_sewer(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     out.description = ("a vaulted sewer tunnel — slime-blackened brick to the "
                        "tide line, weeping mortar, ledges either side of a slow "
                        "channel of green filth")
+    # The ledges are WALKWAYS: they stand above the channel, which is the whole
+    # reason to be on one. Drawn flush they were just dry floor.
+    _raise(out, [(x, y) for x, y in g.squares()
+                 if g.get(x, y) in (FLOOR, ",")], STEP_FT)
 
 
 #: How far a reef channel is cut below the shelf, in feet.
@@ -1185,6 +1483,13 @@ def _gen_open(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         _blob(g, rng, cx, cy, rng.randint(1, 3), rng.choice(("T", "R", "\"")))
     _connect_regions(g, rng)
     out.description = "open ground, scattered rocks and scrub"
+    # The high ground. On a featureless field it is the only thing worth
+    # taking, and the fallback archetype had none of it.
+    if rng.random() < 0.8:
+        _mound(g, rng, out, rng.randrange(g.width // 4, 3 * g.width // 4),
+               rng.randrange(g.height // 4, 3 * g.height // 4),
+               rng.uniform(2.5, 4.5), LEDGE_FT, on=("g", ",", "\""))
+        out.description = "open ground rising to a knoll, scattered rocks and scrub"
 
 
 #: archetype -> generator. Keep the keys stable: they're persisted on the map row.

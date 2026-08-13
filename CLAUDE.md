@@ -838,6 +838,29 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   every other board→combat channel): can't see the target = disadvantage,
   target can't see you = advantage, and in a dark room both apply and cancel —
   which is correct, and is why darkvision is worth having.
+- **Almost no board is flat any more, and height is the cheapest asymmetry
+  there is.** Elevation had been folded into every distance, reach, cover check
+  and spell area since the board went 3D, climbing had cost a foot per foot
+  since then, and a drop of 10 ft or more had been reported as a fall — and
+  FOURTEEN of the twenty-one archetypes still generated a perfectly flat board,
+  including the one called `mountain-pass`. The rules were ready and the
+  generators were not. `mapgen` now has a height vocabulary (`_raise`,
+  `_terrace`, `_mound`, and `_storey`/`_stair` for real floors) and every
+  archetype but `open-water` uses it: a dais or a sunken floor in a chamber,
+  tiers around the arena's pit, a rock shelf in a cave, benches on the pass,
+  a knoll on open ground, hummocks in the swamp, a standing floor over a fallen
+  cellar in a ruin, walkways above a sewer's channel, a rampart round a camp,
+  rooms a step apart in a complex — and two real STOREYS where the fiction has
+  always had one: a tavern GALLERY and a street's ROOFTOPS, both reached by
+  stairs the generator lays. Two heights only: a STEP (5 ft) is cheap to climb
+  and free to come down, so it shapes a fight without punishing anyone; a LEDGE
+  (10 ft) is the one you have to decide about, because stepping off it is a
+  fall. A ramp is only worth laying on a ledge — half of a step is two feet,
+  which is a number nobody needs. The DM board now states the high ground
+  (`_elevation_summary`) whether or not anyone is standing on it: it used to
+  mention height only on a creature's own line, which is no help at all to a DM
+  deciding whether anybody *should* take it. The selftest guards it — a
+  generator may be rewritten, but not back into a table top.
 - **A board is sized by the FIGHT, not by one number.** `triggers.board_size_for`
   starts from the scene kind's default (`DEFAULT_SIZE`: combat 24x18, explore
   30x24, chase 34x14…) and grows it for room to STAND (total footprint on the

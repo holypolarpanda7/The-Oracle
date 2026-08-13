@@ -1198,6 +1198,29 @@ def test_setpieces() -> None:
     eq("nothing stands in solid rock",
        sp.setpieces_for(walled, ["boulder-heap"], seed=1), [])
 
+    # --- most boards are not flat -----------------------------------------
+    # Height is the cheapest asymmetry a fight can have: it costs movement to
+    # take, a fall to leave in a hurry, and it changes who can see whom without
+    # changing a rule. Fourteen of the twenty-one archetypes used to generate a
+    # perfectly flat board, including the one called mountain-pass. This is the
+    # guard on that: a generator may be rewritten, but not back into a table
+    # top.
+    from .mapgen import ARCHETYPES as _ARCH, generate_map as _gm
+    flat = []
+    for name in sorted(_ARCH):
+        vertical = False
+        for seed in (3, 7, 11):
+            gen = _gm(name, width=30, height=22, seed=seed)
+            if gen.elevation or len(gen.levels) > 0:
+                vertical = True
+                break
+        if not vertical:
+            flat.append(name)
+    # open-water is a sea SURFACE: flat is what it is.
+    check("a board has somewhere to stand above the fight",
+          set(flat) <= {"open-water"}, f"flat archetypes: {flat}")
+
+
     # --- scenery belongs to the kind of place it is in --------------------
     from . import decor as _decor
     from .terrain import tile_height_ft as _tall
