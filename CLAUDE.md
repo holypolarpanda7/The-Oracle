@@ -243,7 +243,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `ventures` (an NPC's own quest: it is born, it moves on the clock unwatched,
   the party joins and leaves, the DM settles a step at the table, and every
   ending marks the world — a place calmed, a role promoted, a relic won, a
-  successor taking a dead venturer's post),
+  successor taking a dead venturer's post; plus the other side of it — an
+  opposed venture rolls on harder, a race lost ends it outright, and a covert
+  saboteur walking beside them is exposed as a BETRAYAL or gets away clean),
   `skins` (what a square is MADE of versus what it DOES: a skin changes no
   rule, may reshape a quoted height but never restate it, a tent you can walk
   into, a watchtower top that is a real storey, a hold at -8 ft)
@@ -1472,6 +1474,31 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   born nearly every time. And a venture is only ever rolled for somebody the
   party could HEAR about (known to a PC, or living where they have been); a
   stranger's errand in an unvisited town is a die roll nobody will ever see.
+- **A party may want somebody to FAIL, and opposing is not the mirror of
+  accompanying.** `OPPOSES` (pc -> npc) is the stance — deliberately not
+  `HOSTILE_TO`, since you can want the smith's guild seat to go to somebody else
+  without hating the smith, and this edge ends when the venture does. An
+  ACCOMPANIED venture pauses the offline roll because the party is standing in
+  it; an OPPOSED one keeps rolling, harder, because sabotage is a thing you do
+  and then walk away from — a declared enemy who has to stand there watching to
+  matter is not an enemy, it is an escort. `effective_dc` adds `OPPOSED_DC` at
+  roll time and never writes it back: a setback is permanent and lives in the
+  stage, opposition lasts only while somebody is set against them, and storing
+  them the same way would leave a relented grudge lifting the bar forever.
+  `hinder` is one act of sabotage (a setback, COUNTED — the count is what gets
+  traced back), `thwart` is the race the venturer lost (no roll; the goal is
+  gone), `relent` backs off. **A hindered venture fails the way any venture
+  fails**, so sabotaging the ranger who was going to make the road safe leaves
+  the road unsafe — there is no consequence-free way to wreck somebody's work.
+  **Discovery is rolled ONCE, at resolution**, scaled by how much the party
+  actually interfered: a clock ticking through a covert operation is a lot of
+  machinery for a question that only matters at the end, and a party that got
+  away with it should get away with it cleanly. An OPEN enemy skips the roll.
+  On discovery the deed lands in `relationships.record_deed` as **`betrayal`**
+  if the party was ACCOMPANYING while working against them — which is what
+  betrayal is, and the ledger already prices it at the slow-decay maximum —
+  else `theft`. Opposing while accompanying is allowed and is the saboteur
+  inside the camp, not a bug.
 - **Harm outside a fight lands too, and needs no initiative order.** A dog
   bites in a market street; that is not an encounter and nobody is going to
   roll for one. Every COMBAT verb but `start` used to be DROPPED when no

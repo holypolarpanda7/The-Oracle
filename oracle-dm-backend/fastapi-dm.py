@@ -6614,8 +6614,15 @@ def apply_quest_hooks(session_id: str, ops: list[dict], ctx_obj=None) -> list[st
 #   [[VENTURE: leave  | <npc>]]        the party stops following
 #   [[VENTURE: resolve| <npc> | success|failure | <outcome>]]
 #   [[VENTURE: abandon| <npc> | <why they gave it up>]]
+# ... and the other side of it — the party may want somebody to FAIL:
+#   [[VENTURE: oppose | <npc> | <why> | covert]]   set against their errand
+#   [[VENTURE: hinder | <npc> | <what the party did>]]   one act of sabotage
+#   [[VENTURE: thwart | <npc> | <how the goal is now gone>]]   they lost the race
+#   [[VENTURE: relent | <npc>]]                    back off
 VENTURE_HOOK_PATTERN = re.compile(r"\[\[VENTURE:(.+?)\]\]", re.IGNORECASE)
-_VENTURE_HOOK_ACTIONS = {"open", "step", "follow", "leave", "resolve", "abandon"}
+_VENTURE_HOOK_ACTIONS = {"open", "step", "follow", "leave", "resolve", "abandon",
+                         "oppose", "hinder", "thwart", "relent"}
+_VENTURE_COVERT = {"covert", "secret", "secretly", "hidden", "quietly", "unseen"}
 _VENTURE_GOOD = {"success", "succeed", "succeeded", "win", "won", "good", "yes",
                  "done", "advance"}
 
@@ -6630,7 +6637,17 @@ _VENTURE_GUIDE = (
     "[[VENTURE: leave | <npc>]] and it goes on without them — succeeding or "
     "failing on its own, in world-time. Settle a step only when it actually "
     "happened in play: [[VENTURE: step | <npc> | success|setback | what "
-    "happened]]. Never narrate a step as finished without the hook."
+    "happened]]. Never narrate a step as finished without the hook.\n"
+    "The party may also want somebody to FAIL — a rival, an enemy, or just "
+    "somebody whose success would cost them. [[VENTURE: oppose | <npc> | why | "
+    "covert]] sets them against it (add `covert` when the venturer must not "
+    "know whose hand it is); every step then costs more, watched or not. One "
+    "concrete act of sabotage is [[VENTURE: hinder | <npc> | what they did]]. "
+    "Winning the race outright — taking the prize, the seat, the road — is "
+    "[[VENTURE: thwart | <npc> | how]], and it ends the venture there. "
+    "[[VENTURE: relent | <npc>]] backs off. A hindered venture still FAILS the "
+    "way any venture fails, so sabotaging the ranger who was going to make the "
+    "road safe leaves the road unsafe: name that cost in the fiction."
 )
 
 # Cheap gate for the guide: the scene has to be about somebody else's business.
@@ -6638,6 +6655,9 @@ _VENTURE_KEYWORDS = (
     "go with", "come with", "travel with", "join", "help", "accompany", "tag along",
     "follow", "leave them", "part ways", "his errand", "her errand", "their errand",
     "what do you want", "what are you after", "why are you going", "set out",
+    # ... and the other side: a party may want somebody to fail.
+    "sabotage", "stop them", "stop him", "stop her", "beat them", "get there first",
+    "rival", "undercut", "outbid", "betray", "warn them off", "against them",
 )
 
 
@@ -6721,6 +6741,45 @@ def apply_venture_hooks(session_id: str, ops: list[dict],
                 why = args[0] if args else ""
                 world_ventures.abandon_venture(world, npc, reason=why,
                                                session_id=session_id)
+            elif action == "oppose":
+                if not pc_slug:
+                    continue
+                covert = any(a.strip().lower() in _VENTURE_COVERT for a in args)
+                why = next((a for a in args
+                            if a.strip().lower() not in _VENTURE_COVERT), "")
+                got = world_ventures.oppose(world, pc_slug, npc, reason=why,
+                                            covert=covert, session_id=session_id)
+                if got:
+                    notes.append(
+                        f"🧭 Working against **{got['npc']}**"
+                        + (" — quietly." if covert else ", openly."))
+            elif action == "relent":
+                if pc_slug:
+                    world_ventures.relent(world, pc_slug, npc,
+                                          session_id=session_id)
+            elif action == "hinder":
+                what = args[0] if args else ""
+                got = world_ventures.hinder_venture(
+                    world, npc, note=what, by=pc_slug, session_id=session_id)
+                if not got:
+                    continue
+                if got.get("state") == QuestState.FAILED:
+                    notes.append(f"🧭 **{got['npc']}**'s venture came apart.")
+                else:
+                    still = world_ventures.venture_of(world, npc)
+                    cap = world_ventures.setback_limit(
+                        (still.attributes or {}) if still is not None else {})
+                    notes.append(f"🧭 *{got['npc']}* is set back — "
+                                 f"{got['setbacks']} of {cap}.")
+            elif action == "thwart":
+                how = args[0] if args else ""
+                got = world_ventures.thwart_venture(
+                    world, npc, reason=how, by=pc_slug, session_id=session_id)
+                if got:
+                    seen = got.get("exposed") or []
+                    notes.append(
+                        f"🧭 **{got['npc']}** will not get what they were after."
+                        + (" *They know it was you.*" if seen else ""))
         except Exception as e:
             print(f"[venture] op {action} failed: {e}")
     return notes
@@ -19856,6 +19915,12 @@ def _activity_journal(session_id: str, user_id: str) -> dict:
         riding = {r["npc_slug"] for r in
                   (world_ventures.accompanying(world, pc.slug) if pc is not None
                    else [])}
+        # Only the party's OWN stance is theirs to see. Whether the venturer has
+        # worked out who is behind it is the venturer's business, and the
+        # Chronicle is not where a covert operation gets blown.
+        against = {r["npc_slug"] for r in
+                   (world_ventures.opposing(world, pc.slug) if pc is not None
+                    else [])}
         ventures.sort(key=lambda p: p[1].get("last_touched_day", 0), reverse=True)
         for ent, a in ventures[:12]:
             stage = world_ventures.current_stage(a) or {}
@@ -19866,7 +19931,8 @@ def _activity_journal(session_id: str, user_id: str) -> dict:
                    "state": a.get("state", QuestState.ACTIVE),
                    "step": int(a.get("stage", 0)) + 1,
                    "steps": len(a.get("stages") or []),
-                   "with_you": a.get("owner") in riding}
+                   "with_you": a.get("owner") in riding,
+                   "against_you": a.get("owner") in against}
             if stage.get("text"):
                 row["now"] = str(stage["text"])[:200]
             if a.get("marks"):

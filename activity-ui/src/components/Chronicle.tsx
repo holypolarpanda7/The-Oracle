@@ -68,12 +68,14 @@ function Venture({ v, onInspect }: {
   const closed = v.state === "completed" || v.state === "failed";
   const pct = Math.round((Math.min(v.step, v.steps) / Math.max(1, v.steps)) * 100);
   return (
-    <div className={`chr-venture ${v.state}${v.with_you ? " riding" : ""}`}>
+    <div className={`chr-venture ${v.state}${v.with_you ? " riding" : ""}`
+                    + (v.against_you ? " opposed" : "")}>
       <div className="chr-qhead">
         <button className="chr-vwho" onClick={() => onInspect(v.owner)}>
           {v.owner}
         </button>
         {v.with_you && <em className="chr-qtag comp">you ride with them</em>}
+        {v.against_you && <em className="chr-qtag opp">you work against them</em>}
         {closed && <em className={`chr-qtag ${v.state}`}>{v.state}</em>}
       </div>
       <p className="chr-qline">wants to {v.goal}</p>
@@ -188,7 +190,7 @@ export function Chronicle({ data, onClose, onInspect }: {
   // first and by whether they are still running second — the one you are
   // walking is the one you need to see.
   const ventures = [...(data.ventures ?? [])].sort((a, b) =>
-    Number(b.with_you) - Number(a.with_you)
+    Number(b.with_you || b.against_you) - Number(a.with_you || a.against_you)
     || Number(a.state !== "active") - Number(b.state !== "active"));
 
   return (

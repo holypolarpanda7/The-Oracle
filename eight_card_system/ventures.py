@@ -70,6 +70,19 @@ SETBACK_DC_STEP = 2
 TRUST_ON_SUCCESS = 15
 TRUST_ON_FAILURE = -4      # they don't blame you much; they blame themselves
 
+# --- working against one -----------------------------------------------------
+# Opposition is worth about the same as one setback's worth of DC, and unlike a
+# setback it is not baked into the stored stage — it lifts the bar only while
+# the party is actually set against them, and stops the moment they relent.
+OPPOSED_DC = 3
+# Whether the venturer ever learns WHO. Rolled once, when the venture ends,
+# because a discovery clock ticking through a covert operation is a lot of
+# machinery for a question that only matters at the end. The more the party
+# actually interfered, the more there is to trace back.
+DISCOVERY_BASE = 0.2
+DISCOVERY_PER_ACT = 0.15
+DISCOVERY_MAX = 0.85
+
 
 # ---------------------------------------------------------------------------
 # What an NPC of a given trade wants badly enough to leave the shop for.
@@ -298,6 +311,19 @@ def _live(attrs: dict) -> bool:
         QuestState.OFFERED, QuestState.ACTIVE)
 
 
+def effective_dc(graph: WorldGraph, npc_ref, stage: dict) -> int:
+    """What this step actually costs right now.
+
+    The stored `dc` is what the world asks; opposition is added on top and NOT
+    written back, because it must lift the bar only while somebody is actually
+    set against them and drop the moment they relent. A setback, which IS
+    permanent, is baked into the stage — the two are different kinds of fact
+    and are deliberately stored differently.
+    """
+    dc = int(stage.get("dc", 12))
+    return dc + (OPPOSED_DC if opponents(graph, npc_ref) else 0)
+
+
 def setback_limit(attrs: dict) -> int:
     """How much can go wrong before the whole thing is off. Scales with depth,
     so a long venture has room to stumble and a short one does not."""
@@ -367,17 +393,77 @@ def accompanying(graph: WorldGraph, pc_ref) -> list[dict]:
     return out
 
 
-def followers(graph: WorldGraph, npc_ref) -> list[Entity]:
-    """The PCs currently travelling on this NPC's venture."""
+def _pcs_related(graph: WorldGraph, npc_ref, rel_type: str) -> list[tuple[Entity, dict]]:
+    """The PCs holding `rel_type` toward this NPC, with the edge's own record."""
     with Session(graph.engine) as s:
         npc = graph._resolve_entity(s, npc_ref)
         if npc is None:
             return []
         rels = s.exec(select(Relation).where(
             Relation.dst_id == npc.id,
-            Relation.rel_type == RelationType.ACCOMPANIES,
+            Relation.rel_type == rel_type,
             Relation.valid_to == None)).all()  # noqa: E711
-        return [e for e in (s.get(Entity, r.src_id) for r in rels) if e is not None]
+        out: list[tuple[Entity, dict]] = []
+        for r in rels:
+            e = s.get(Entity, r.src_id)
+            if e is not None:
+                out.append((e, dict(r.attributes or {})))
+        return out
+
+
+def followers(graph: WorldGraph, npc_ref) -> list[Entity]:
+    """The PCs currently travelling on this NPC's venture."""
+    return [e for e, _ in _pcs_related(graph, npc_ref, RelationType.ACCOMPANIES)]
+
+
+def opponents(graph: WorldGraph, npc_ref) -> list[tuple[Entity, dict]]:
+    """The PCs currently set against this NPC's venture, and how openly.
+
+    Returned with the edge attributes because `covert` is the whole difference
+    between a rival and a rumour: an open enemy is somebody the venturer can
+    name, and a covert one is bad luck until they work it out.
+    """
+    return _pcs_related(graph, npc_ref, RelationType.OPPOSES)
+
+
+def opposing(graph: WorldGraph, pc_ref) -> list[dict]:
+    """Ventures this PC is working against. The mirror of `accompanying`."""
+    out: list[dict] = []
+    with Session(graph.engine) as s:
+        pc = graph._resolve_entity(s, pc_ref)
+        if pc is None:
+            return out
+        rels = s.exec(select(Relation).where(
+            Relation.src_id == pc.id,
+            Relation.rel_type == RelationType.OPPOSES,
+            Relation.valid_to == None)).all()  # noqa: E711
+        for r in rels:
+            npc = s.get(Entity, r.dst_id)
+            if npc is None:
+                continue
+            quest = None
+            for qr in s.exec(select(Relation).where(
+                    Relation.src_id == npc.id,
+                    Relation.rel_type == RelationType.PURSUES,
+                    Relation.valid_to == None)).all():  # noqa: E711
+                q = s.get(Entity, qr.dst_id)
+                if q is not None and _live(q.attributes or {}):
+                    quest = q
+                    break
+            attrs = dict((quest.attributes or {}) if quest is not None else {})
+            edge = dict(r.attributes or {})
+            out.append({
+                "npc": npc, "npc_slug": npc.slug, "npc_name": npc.name,
+                "quest": quest,
+                "goal": attrs.get("goal", ""),
+                "stage": current_stage(attrs),
+                "stage_no": int(attrs.get("stage", 0)) + 1,
+                "stages": len(attrs.get("stages") or []),
+                "covert": bool(edge.get("covert")),
+                "reason": edge.get("reason", ""),
+                "acts": int(attrs.get("hindrances", 0)),
+            })
+    return out
 
 
 def live_ventures(graph: WorldGraph) -> list[tuple[Entity, Entity]]:
@@ -767,7 +853,7 @@ def advance_ventures(graph: WorldGraph, today: int, *,
         era = today // max(1, STEP_DAYS)
         rng = random.Random(f"venture-step:{quest.slug}:{era}")
         roll = rng.randint(1, 20) + _competence(npc, rng)
-        good = roll >= int(stage.get("dc", 12))
+        good = roll >= effective_dc(graph, npc.slug, stage)
         res = step_venture(graph, npc.slug, "success" if good else "failure",
                            note="", session_id=session_id)
         out["stepped"] += 1
@@ -938,6 +1024,10 @@ def resolve_venture(graph: WorldGraph, npc_ref, success: bool, *, note: str = ""
         return None
     state = QuestState.COMPLETED if success else QuestState.FAILED
     walked = followers(graph, npc.slug)
+    # Settled BEFORE the companions are released: whether an act was betrayal
+    # rather than mere rivalry is a question about who was walking beside them
+    # at the time, and closing those edges first would lose the answer.
+    exposed = _settle_opposition(graph, npc, quest, success, session_id=session_id)
 
     marks = _apply_outcome(graph, npc, quest, success, session_id=session_id)
     quest = _patch(graph, quest, {"state": state, "resolved_day": graph.current_day(),
@@ -966,7 +1056,11 @@ def resolve_venture(graph: WorldGraph, npc_ref, success: bool, *, note: str = ""
 
     for pc in walked:
         graph.close_relation(pc.slug, RelationType.ACCOMPANIES, npc.slug)
-        # An NPC who is dead has no opinion left to hold.
+        # An NPC who is dead has no opinion left to hold — and one who has just
+        # worked out that this companion was the saboteur is not about to
+        # thank them for the company. The deed ledger has that stance now.
+        if pc.name in exposed:
+            continue
         if graph.get_entity(npc.slug) is not None and \
                 graph.get_entity(npc.slug).status == "active":
             try:
@@ -987,7 +1081,7 @@ def resolve_venture(graph: WorldGraph, npc_ref, success: bool, *, note: str = ""
         location=quest.attributes.get("location_slug"),
         involved=[npc.slug, quest.slug], session_id=session_id)
     return {**_summary(npc, quest), "state": state, "marks": marks,
-            "walked_with": [p.name for p in walked]}
+            "walked_with": [p.name for p in walked], "exposed": exposed}
 
 
 def abandon_venture(graph: WorldGraph, npc_ref, *, reason: str = "",
@@ -1003,6 +1097,10 @@ def abandon_venture(graph: WorldGraph, npc_ref, *, reason: str = "",
     graph.close_relation(npc.slug, RelationType.PURSUES, quest.slug)
     for pc in followers(graph, npc.slug):
         graph.close_relation(pc.slug, RelationType.ACCOMPANIES, npc.slug)
+    # Nobody is exposed by a venture that was never attempted — giving it up
+    # is the one ending that leaves no trail back to whoever wanted it given up.
+    for pc, _edge in opponents(graph, npc.slug):
+        graph.close_relation(pc.slug, RelationType.OPPOSES, npc.slug)
     home = (quest.attributes or {}).get("home_slug")
     if home:
         try:
@@ -1047,6 +1145,150 @@ def accompany(graph: WorldGraph, pc_ref, npc_ref) -> Optional[dict]:
     return _summary(npc, quest)
 
 
+def oppose(graph: WorldGraph, pc_ref, npc_ref, *, reason: str = "",
+           covert: bool = False, session_id: Optional[str] = None) -> Optional[dict]:
+    """The party sets itself against somebody else's errand.
+
+    Deliberately NOT the mirror of accompanying in one respect: an opposed
+    venture keeps rolling on the world clock, harder. Sabotage is a thing you
+    do and then walk away from, and a declared enemy who has to stand there
+    watching to matter is not an enemy, it is an escort.
+
+    Opposing while ALSO accompanying is allowed and is not a bug — it is the
+    saboteur inside the camp. Presence still pauses the offline roll; the
+    opposition still lifts the DC of every step settled at the table.
+    """
+    npc = graph.get_entity(npc_ref)
+    pc = graph.get_entity(pc_ref)
+    if npc is None or pc is None or pc.type != EntityType.PC:
+        return None
+    quest = venture_of(graph, npc.slug)
+    if quest is None:
+        return None
+    graph.add_relation(pc, RelationType.OPPOSES, npc,
+                       attributes={"since_day": graph.current_day(),
+                                   "venture": quest.slug, "covert": bool(covert),
+                                   "reason": reason})
+    # An OPEN enemy is a fact about the world the moment it is declared; a
+    # covert one leaves no event, or the log itself gives the game away.
+    if not covert:
+        graph.add_event(f"{pc.name} set themselves against {npc.name}"
+                        + (f" — {reason}" if reason else "."),
+                        involved=[pc.slug, npc.slug], session_id=session_id)
+    return {**_summary(npc, quest), "covert": bool(covert)}
+
+
+def relent(graph: WorldGraph, pc_ref, npc_ref, *,
+           session_id: Optional[str] = None) -> bool:
+    """Stop working against them. The venture gets its own DC back."""
+    npc = graph.get_entity(npc_ref)
+    pc = graph.get_entity(pc_ref)
+    if npc is None or pc is None:
+        return False
+    covert = any(e.slug == pc.slug and edge.get("covert")
+                 for e, edge in opponents(graph, npc.slug))
+    if not graph.close_relation(pc.slug, RelationType.OPPOSES, npc.slug):
+        return False
+    if not covert:
+        graph.add_event(f"{pc.name} let {npc.name} be.",
+                        involved=[pc.slug, npc.slug], session_id=session_id)
+    return True
+
+
+def hinder_venture(graph: WorldGraph, npc_ref, *, note: str = "", by=None,
+                   session_id: Optional[str] = None) -> Optional[dict]:
+    """One concrete act of sabotage: it costs the venture a setback.
+
+    This is `step_venture(... failure)` with a name on it. The distinction is
+    not cosmetic — a hindrance is COUNTED, and the count is what the venturer
+    has to trace back when they come to work out why nothing has gone right.
+    """
+    quest = venture_of(graph, npc_ref)
+    if quest is None:
+        return None
+    acts = int((quest.attributes or {}).get("hindrances", 0)) + 1
+    _patch(graph, quest, {"hindrances": acts})
+    if by is not None:
+        # An act of sabotage by somebody not yet declared an enemy makes them
+        # one — covertly, since a party that wanted it known would have said so.
+        pc = graph.get_entity(by)
+        if pc is not None and not any(e.slug == pc.slug
+                                      for e, _ in opponents(graph, npc_ref)):
+            oppose(graph, pc.slug, npc_ref, reason=note, covert=True,
+                   session_id=session_id)
+    return step_venture(graph, npc_ref, "failure", note=note,
+                        session_id=session_id)
+
+
+def thwart_venture(graph: WorldGraph, npc_ref, *, reason: str = "", by=None,
+                   session_id: Optional[str] = None) -> Optional[dict]:
+    """The party got there first, and the goal is simply gone.
+
+    Not a roll — a race the venturer lost. The venture resolves FAILED and its
+    failure mutates the world exactly as any other failure does: sabotage the
+    ranger who was going to make the road safe and the road stays unsafe. That
+    the cost lands on somebody else is the point, not an oversight.
+    """
+    quest = venture_of(graph, npc_ref)
+    if quest is None:
+        return None
+    pc = graph.get_entity(by) if by is not None else None
+    acts = int((quest.attributes or {}).get("hindrances", 0)) + 1
+    _patch(graph, quest, {"hindrances": acts,
+                          "thwarted_by": pc.slug if pc is not None else "unknown",
+                          "thwarted_why": reason})
+    if pc is not None and not any(e.slug == pc.slug
+                                  for e, _ in opponents(graph, npc_ref)):
+        oppose(graph, pc.slug, npc_ref, reason=reason, covert=True,
+               session_id=session_id)
+    return resolve_venture(graph, npc_ref, False, note=reason,
+                           session_id=session_id)
+
+
+def _settle_opposition(graph: WorldGraph, npc: Entity, quest: Entity,
+                       success: bool, *,
+                       session_id: Optional[str] = None) -> list[str]:
+    """When it is over, does the venturer work out who was against them?
+
+    Rolled once, here, rather than on a clock through the operation: the
+    question only ever matters at the end, and a covert party that got away
+    with it should get away with it cleanly. An OPEN enemy skips the roll —
+    they were never hiding — and lands the deed regardless of the outcome,
+    because what the party DID is the deed and how it turned out is the story.
+    """
+    from . import relationships as _rel
+    a = quest.attributes or {}
+    acts = int(a.get("hindrances", 0))
+    found: list[str] = []
+    walked = {p.slug for p in followers(graph, npc.slug)}
+    for pc, edge in opponents(graph, npc.slug):
+        covert = bool(edge.get("covert"))
+        if covert:
+            chance = min(DISCOVERY_MAX, DISCOVERY_BASE + DISCOVERY_PER_ACT * acts)
+            rng = random.Random(f"venture-discovery:{quest.slug}:{pc.slug}")
+            if rng.random() > chance:
+                graph.close_relation(pc.slug, RelationType.OPPOSES, npc.slug)
+                continue    # they never learn whose hand it was
+        # Walking beside somebody and working against them at once has its own
+        # name, and the deed ledger already knows what it is worth.
+        tag = "betrayal" if pc.slug in walked else "theft"
+        try:
+            _rel.record_deed(
+                graph, pc.slug, npc.slug, tag=tag,
+                text=(a.get("thwarted_why")
+                      or f"worked against {quest.name}")[:120],
+                session_id=session_id)
+        except Exception as e:  # noqa: BLE001
+            print(f"[ventures] deed failed: {e}")
+        graph.add_event(
+            f"{npc.name} knows who was behind it: {pc.name}."
+            + ("" if success else f" {quest.name} was lost because of them."),
+            involved=[npc.slug, pc.slug], session_id=session_id)
+        graph.close_relation(pc.slug, RelationType.OPPOSES, npc.slug)
+        found.append(pc.name)
+    return found
+
+
 def part_ways(graph: WorldGraph, pc_ref, npc_ref, *,
               session_id: Optional[str] = None) -> bool:
     """Stop following. The venture carries on without them, from where it is."""
@@ -1081,7 +1323,8 @@ def render_block(graph: WorldGraph, entities: list, pc_slug: Optional[str]) -> s
     ignore it.
     """
     with_them = accompanying(graph, pc_slug) if pc_slug else []
-    riding = {row["npc_slug"] for row in with_them}
+    against = opposing(graph, pc_slug) if pc_slug else []
+    riding = {row["npc_slug"] for row in with_them} | {r["npc_slug"] for r in against}
 
     nearby: list[str] = []
     for e in entities or []:
@@ -1104,7 +1347,7 @@ def render_block(graph: WorldGraph, entities: list, pc_slug: Optional[str]) -> s
         line += ")"
         nearby.append(line)
 
-    if not with_them and not nearby:
+    if not with_them and not against and not nearby:
         return ""
 
     out = ["# Other people's quests (ventures)"]
@@ -1125,6 +1368,28 @@ def render_block(graph: WorldGraph, entities: list, pc_slug: Optional[str]) -> s
                    "do not narrate a step done without the hook. If the party "
                    "walks away, [[VENTURE: leave | <npc>]] and it continues "
                    "without them.")
+    if against:
+        out.append("The party is WORKING AGAINST these people. Every step they "
+                   "attempt is harder for it, watched or not. They do not "
+                   "automatically know why — play the venturer's own attempts to "
+                   "find out, and let them suspect the wrong person.")
+        for row in against:
+            st = row.get("stage") or {}
+            out.append(f"- **{row['npc_name']}** — still trying to {row['goal']}"
+                       + (" [the party's hand in this is HIDDEN from them]"
+                          if row["covert"] else
+                          " [they know the party stands against them]"))
+            if st.get("text"):
+                out.append(f"  · step {row['stage_no']} of {row['stages']}: "
+                           f"{st['text']}"
+                           + (f" ({row['acts']} act(s) of interference so far)"
+                              if row["acts"] else ""))
+        out.append("A concrete act of sabotage is "
+                   "[[VENTURE: hinder | <npc> | what the party did]] — it costs "
+                   "them a setback and leaves a trail. If the party makes the "
+                   "goal outright unreachable (took the prize, won the seat, got "
+                   "there first), that is [[VENTURE: thwart | <npc> | how]] and "
+                   "it ends. Backing off is [[VENTURE: relent | <npc>]].")
     if nearby:
         out.append("Underway nearby — the party may hear of these, join them "
                    "([[VENTURE: follow | <npc>]]), or leave them to it:")

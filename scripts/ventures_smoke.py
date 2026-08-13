@@ -319,6 +319,111 @@ check("depth decides how much may go wrong",
       f"{V.setback_limit({'depth': 1})} vs {V.setback_limit({'depth': 3})}")
 
 # ---------------------------------------------------------------------------
+# 7b. working AGAINST one
+# ---------------------------------------------------------------------------
+rival = W.create_entity("Salla Pyke", EntityType.NPC,
+                        attributes={"role": "merchant"}, tags=["npc"])
+W.add_relation(rival, RelationType.LOCATED_IN, "millbrook")
+V.open_venture(W, rival.slug, depth=3)
+rv = V.venture_of(W, rival.slug)
+plain_dc = int((V.current_stage(rv.attributes or {}) or {})["dc"])
+check("with nobody against them a step costs what the world asks",
+      V.effective_dc(W, rival.slug, V.current_stage(rv.attributes or {})) == plain_dc)
+
+stance = V.oppose(W, pc.slug, rival.slug, reason="the road is ours", covert=False)
+check("a PC can set themselves against a venture", bool(stance))
+check("opposition lifts the bar on every step",
+      V.effective_dc(W, rival.slug, V.current_stage(rv.attributes or {}))
+      == plain_dc + V.OPPOSED_DC)
+check("and it is NOT written into the stored stage",
+      int((V.current_stage(V.venture_of(W, rival.slug).attributes or {}) or {})["dc"])
+      == plain_dc)
+check("opposing() reports it from the party's side",
+      [r["npc_slug"] for r in V.opposing(W, pc.slug)] == [rival.slug])
+
+# Unlike accompanying, opposition does NOT pause the world — sabotage is a
+# thing you do and walk away from.
+W.ratchet_day(W.current_day() + V.STEP_DAYS + 1)
+res_op = V.advance_ventures(W, W.current_day())
+check("an OPPOSED venture keeps rolling on the clock",
+      res_op["stepped"] >= 1, str(res_op))
+
+# One concrete act of sabotage costs them a step and leaves a trail.
+before_sb = int((V.venture_of(W, rival.slug).attributes or {}).get("setbacks", 0))
+V.hinder_venture(W, rival.slug, note="their carts were cut loose in the night",
+                 by=pc.slug)
+rva = V.venture_of(W, rival.slug).attributes or {}
+check("a hindrance costs a setback", int(rva.get("setbacks", 0)) == before_sb + 1)
+check("and is counted, because it is what gets traced back",
+      int(rva.get("hindrances", 0)) == 1)
+
+check("relenting gives them their own DC back",
+      V.relent(W, pc.slug, rival.slug)
+      and V.effective_dc(W, rival.slug, V.current_stage(rva)) == int(
+          V.current_stage(rva)["dc"]))
+
+# THWART: the race, not a roll. The goal is gone, and the world still pays for
+# the failure — sabotage has a price somebody bears.
+racer = W.create_entity("Colm Tanner", EntityType.NPC,
+                        attributes={"role": "guard captain", "level": 3},
+                        tags=["npc"])
+W.add_relation(racer, RelationType.LOCATED_IN, "millbrook")
+V.open_venture(W, racer.slug, depth=2)
+raq = V.venture_of(W, racer.slug)
+W.upsert_entity(raq.name, EntityType.QUEST, slug=raq.slug,
+                attributes={"outcome_kind": "safer", "location_slug": wilds.slug})
+W.upsert_entity("The Hollow Barrows", EntityType.PLACE, slug=wilds.slug,
+                attributes={"danger": "moderate"})
+out_t = V.thwart_venture(W, racer.slug, reason="the party took the bounty first",
+                         by=pc.slug)
+check("thwarting ends the venture as a failure",
+      out_t and out_t["state"] == QuestState.FAILED, str(out_t and out_t["state"]))
+check("and the world still pays for the failure",
+      (W.get_entity(wilds.slug).attributes or {}).get("danger") == "high",
+      str((W.get_entity(wilds.slug).attributes or {}).get("danger")))
+check("the thwarter is recorded",
+      (W.get_entity(raq.slug).attributes or {}).get("thwarted_by") == pc.slug)
+
+# Discovery: a covert hand is either traced or it is not, and a betrayal —
+# working against somebody you are walking beside — is named as one.
+turncoat = W.create_entity("Ysolde Fenwick", EntityType.NPC,
+                           attributes={"role": "priest"}, tags=["npc"])
+W.add_relation(turncoat, RelationType.LOCATED_IN, "millbrook")
+V.open_venture(W, turncoat.slug, depth=1)
+V.accompany(W, pc.slug, turncoat.slug)
+V.oppose(W, pc.slug, turncoat.slug, reason="their god is not ours", covert=True)
+# Interfere hard, so discovery is near-certain rather than a coin flip.
+tcq = V.venture_of(W, turncoat.slug)
+W.upsert_entity(tcq.name, EntityType.QUEST, slug=tcq.slug,
+                attributes={"hindrances": 5})
+check("a saboteur may also be walking beside them",
+      len(V.followers(W, turncoat.slug)) == 1
+      and len(V.opponents(W, turncoat.slug)) == 1)
+out_b = V.resolve_venture(W, turncoat.slug, False, note="it came to nothing")
+sent = None
+try:
+    from sqlmodel import select as _sel
+    with Session(W.engine) as s:
+        npc_row = s.exec(_sel(Entity).where(Entity.slug == turncoat.slug)).first()
+        pc_row = s.exec(_sel(Entity).where(Entity.slug == pc.slug)).first()
+        edge = s.exec(_sel(Relation).where(Relation.src_id == npc_row.id,
+                                           Relation.dst_id == pc_row.id,
+                                           Relation.valid_to == None)).first()  # noqa: E711
+        sent = (edge.attributes or {}).get("sentiment") if edge else None
+        ledger = (edge.attributes or {}).get("ledger") if edge else []
+except Exception as e:
+    ledger = []
+    print(e)
+check("a heavily-interfered covert hand is traced",
+      out_b and out_b.get("exposed") == ["Wren"], str(out_b and out_b.get("exposed")))
+check("and working against somebody you walk beside is BETRAYAL",
+      any(x.get("g") == "betrayal" for x in (ledger or [])), str(ledger))
+check("an exposed saboteur earns no gratitude for the company",
+      (sent or 0) < 0, str(sent))
+check("the opposition edge closes with the venture",
+      V.opposing(W, pc.slug) == [])
+
+# ---------------------------------------------------------------------------
 # 8. the world does this on its OWN account
 # ---------------------------------------------------------------------------
 # Birth is gated per PASS, not per candidate, so a single pass may rightly
@@ -366,6 +471,10 @@ check("the party stakes clock leaves a venture alone",
 # 10. the Chronicle carries it, marked as somebody else's
 # ---------------------------------------------------------------------------
 V.accompany(W, pc.slug, tinker.slug)
+# The stakes-clock check above deliberately backdated this row to day 0; the
+# journal keeps only the most recently touched dozen, so put it back in view.
+W.upsert_entity(tq.name, EntityType.QUEST, slug=tq.slug,
+                attributes={"last_touched_day": W.current_day()})
 journal = m._activity_journal(session_id, user_id)
 vrows = journal.get("ventures") or []
 mine = [r for r in vrows if r["owner_slug"] == tinker.slug]

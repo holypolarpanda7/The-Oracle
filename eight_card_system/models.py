@@ -224,12 +224,16 @@ class RelationType:
     # a venturer leads and the party merely goes along (see ventures.py).
     PURSUES = "pursues"              # npc -> quest (a venture they drive themselves)
     ACCOMPANIES = "accompanies"      # pc -> npc (travelling on THEIR errand)
+    # Working AGAINST somebody's errand. Not HOSTILE_TO: you can want the
+    # smith's guild seat to go to somebody else without hating the smith, and
+    # this edge ends when the venture does, where hostility outlives it.
+    OPPOSES = "opposes"              # pc -> npc (set against their venture)
 
     ALL = {
         LOCATED_IN, ADJACENT_TO, PART_OF, MEMBER_OF, ALLIED_WITH,
         HOSTILE_TO, KNOWS, OWNS, INVOLVES, LOCATED_AT,
         WORSHIPS, GOVERNS, SELLS, GIVES_QUEST, KNOWS_ABOUT, TRAVELS_WITH,
-        PURSUES, ACCOMPANIES,
+        PURSUES, ACCOMPANIES, OPPOSES,
     }
 
     # Relation types that are symmetric (traversed both ways for adjacency logic)

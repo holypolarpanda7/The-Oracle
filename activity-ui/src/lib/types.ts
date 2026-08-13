@@ -78,6 +78,7 @@ export interface VentureRow {
   step: number;
   steps: number;
   with_you: boolean;
+  against_you: boolean;    // the party is working to make this one fail
   now?: string;            // what they are doing right now
   outcome?: string;        // what it left behind, once it has ended
 }

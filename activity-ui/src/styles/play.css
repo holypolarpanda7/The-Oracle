@@ -1043,6 +1043,7 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
   border: 1px solid var(--edge); border-left: 3px solid var(--amethyst);
 }
 .chr-venture.riding { border-left-color: var(--teal); background: rgba(10, 20, 30, 0.7); }
+.chr-venture.opposed { border-left-color: var(--ember); background: rgba(28, 14, 10, 0.55); }
 .chr-venture.completed, .chr-venture.failed { opacity: 0.6; }
 .chr-venture.failed { border-left-color: var(--crimson); }
 .chr-vwho {
@@ -1052,6 +1053,7 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
 }
 .chr-vwho:hover { color: var(--gold); }
 .chr-qtag.comp { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 45%, var(--edge)); }
+.chr-qtag.opp { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 45%, var(--edge)); }
 
 /* --- journal: the record --- */
 .chr-day { margin-bottom: 12px; }

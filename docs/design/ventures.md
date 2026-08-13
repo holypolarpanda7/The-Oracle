@@ -70,6 +70,55 @@ else can:
 A failure out in the country also raises that place's danger: somebody went out
 there and stirred something.
 
+## Working against one
+
+A party may want somebody to fail. `OPPOSES` (pc → npc) is the stance —
+deliberately not `HOSTILE_TO`, because you can want the smith's guild seat to go
+to someone else without hating the smith, and this edge ends when the venture
+does where hostility outlives it.
+
+**Opposition is not the mirror of accompanying, and that is the whole point.** An
+accompanied venture *pauses* the offline roll, because the party is standing in
+it. An opposed one keeps rolling — harder. Sabotage is a thing you do and then
+walk away from, and a declared enemy who has to stand there watching to matter is
+not an enemy, it is an escort.
+
+`effective_dc` adds `OPPOSED_DC` (+3) at roll time and never writes it back: a
+setback is permanent and lives in the stage, opposition lasts only while somebody
+is actually set against them. Two different kinds of fact, stored differently.
+
+Three verbs:
+
+* **`hinder`** — one concrete act of sabotage. It is `step_venture(failure)` with
+  a name on it, and the distinction is not cosmetic: a hindrance is **counted**,
+  and the count is what the venturer has to trace back.
+* **`thwart`** — the race, not a roll. The party took the prize, won the seat,
+  got there first; the goal is simply gone, and the venture resolves FAILED.
+* **`relent`** — back off, and they get their own DC back.
+
+**A hindered venture fails the way any venture fails.** Sabotage the ranger who
+was going to make the road safe and the road stays unsafe. That the cost lands on
+somebody else is the design, not an oversight — there is no consequence-free way
+to wreck somebody's work.
+
+### Do they ever learn it was you?
+
+Rolled **once, at resolution**, not on a clock through the operation: the
+question only matters at the end, and a covert party that got away with it should
+get away with it cleanly. Chance is `DISCOVERY_BASE + DISCOVERY_PER_ACT ×
+hindrances`, capped — the more you actually interfered, the more there is to
+trace. An **open** enemy skips the roll entirely; they were never hiding.
+
+On discovery a deed lands in `relationships.record_deed`, and the tag is chosen
+by what the party actually did: **`betrayal`** if they were *accompanying* the
+venture while working against it — which is exactly what betrayal is, and the
+ledger already prices it at the slow-decay maximum — otherwise `theft`. An
+exposed saboteur also gets no companion trust for the journey, however it ended.
+
+Opposing while accompanying is allowed and is not a bug. It is the saboteur
+inside the camp: presence still pauses the offline roll, opposition still lifts
+the DC of every step settled at the table.
+
 ## Reusing the quest table
 
 A venture IS a `QUEST` entity with `tier: "venture"`, which buys three things for
@@ -127,6 +176,11 @@ code has to say so.
 [[VENTURE: leave   | <npc>]]
 [[VENTURE: resolve | <npc> | success|failure | <outcome>]]
 [[VENTURE: abandon | <npc> | <why>]]
+
+[[VENTURE: oppose  | <npc> | <why> | covert]]
+[[VENTURE: hinder  | <npc> | <what the party did>]]
+[[VENTURE: thwart  | <npc> | <how the goal is now gone>]]
+[[VENTURE: relent  | <npc>]]
 ```
 
 With no goal given, the code rolls one from the NPC's trade — `family_for` maps a
@@ -137,11 +191,17 @@ same division of labour the tactical board keeps.
 
 ## What the players see
 
-* The DM prompt gets `render_block`: ventures the party is ON (the scene, with
-  the current step and an explicit reminder that the NPC leads) and ventures
-  merely underway nearby (colour, and an opening).
+* The DM prompt gets `render_block`, in three lists because they are three
+  different situations: ventures the party is ON (the scene, with the current
+  step and an explicit reminder that the NPC leads), ventures they are set
+  AGAINST (with whether their hand is hidden, and how much interference has
+  already happened), and ventures merely underway nearby (colour, and an
+  opening).
 * The Chronicle's journal tab gets **Other people's roads** — a distinct card,
   not a quest card, showing whose road it is, what they want, which step they are
-  on, and whether the party is riding with them.
+  on, and whether the party is riding with them or working against them. Only the
+  party's OWN stance is shown: whether the venturer has worked out who is behind
+  it is the venturer's business, and the Chronicle is not where a covert
+  operation gets blown.
 * A returning player is told, in the away-time block, how a thread they once
   walked ended (`catch_up_lines`) — they earned hearing it without having to ask.
