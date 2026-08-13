@@ -726,19 +726,32 @@ def _gen_forest(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
         _blob(g, rng, cx, cy, rng.randint(1, 4), "T")
     _scatter(g, rng, "\"", 0.12, only_on=("g",))
-    # A stream cutting across, with a ford or a fallen log to cross by.
+    # A stream cutting across, with a ford or a fallen log to cross by — and
+    # its BANKS, which is the difference between a stream and a blue stripe. It
+    # was two squares wide, flat, and painted over as grass every time: at
+    # board scale a one- or two-square feature with no relief is a couple of
+    # percent of the picture and the model simply does not keep it. Cut five
+    # feet down it is carried by the depth map, and it is cover and a scramble
+    # in the rules besides.
     if rng.random() < 0.6:
         sx = rng.randrange(2, max(3, g.width - 2))
         y = 0
+        cut: list[Square] = []
         while y < g.height:
-            g.set(sx, y, "~")
-            g.set(min(g.width - 1, sx + 1), y, "~")
+            wide = 2 if rng.random() < 0.35 else 1
+            for d in range(wide + 1):
+                x = min(g.width - 1, sx + d)
+                g.set(x, y, "~")
+                cut.append((x, y))
             sx = max(1, min(g.width - 2, sx + rng.choice((-1, 0, 0, 1))))
             y += 1
+        _raise(out, cut, -STEP_FT)
         bridge_y = rng.randrange(1, g.height - 1)
         for x in range(g.width):
             if g.get(x, bridge_y) == "~":
+                # A log over the gully, at the height of the banks it joins.
                 g.set(x, bridge_y, "b")
+                _raise(out, [(x, bridge_y)], 0)
     _connect_regions(g, rng)
     out.lighting = rng.choice(["bright", "dim"])
     out.description = "old woodland — thick trunks, tangled undergrowth, a shallow stream"

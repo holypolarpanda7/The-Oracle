@@ -765,16 +765,38 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="fallen boulders lie about the track, rounded and weathered, "
                "each one a separate stone",
          variants=_BOULDER, height_ft=8),
+    # A ruined wall is a RUBBLE COURSE, not a panel. The first version was a
+    # long thin slab with a coping on top, drawn along the run — which is a
+    # fence, and is what came back painted: a garden fence around a ruin. What
+    # makes masonry read as fallen masonry is that its top is BROKEN, so these
+    # are three or four separate blocks of different heights with gaps between
+    # them, each one battered in plan so nothing is a right angle.
     Skin("ruin-stub", "dressed-stone",
          "close-up of dressed and coursed limestone ashlar, warm pale "
          "sandy grey with ochre weathering",
-         words="what walls remain are collapsed courses of dressed stone, "
-               "broken-topped and eroded — not benches and not fences",
+         words="what walls remain are broken courses of fallen masonry — "
+               "stubs of different heights with gaps between them, rubble "
+               "spilling from the breaks",
          variants=_v(
-             ((0.00, 1.00, 0.20, 0.80, 0.0, 0.74),
-              (0.08, 0.66, 0.24, 0.76, 0.74, 1.00)),
-             ((0.00, 1.00, 0.24, 0.82, 0.0, 0.56),
-              (0.36, 0.96, 0.28, 0.78, 0.56, 0.96)),
+             (solid(((0.00, 0.30), (0.34, 0.26), (0.36, 0.74), (0.02, 0.78)),
+                    ((0.02, 0.32), (0.32, 0.30), (0.33, 0.70), (0.04, 0.74)),
+                    0.0, 1.00),
+              solid(((0.40, 0.24), (0.72, 0.28), (0.70, 0.72), (0.38, 0.76)),
+                    ((0.42, 0.28), (0.70, 0.32), (0.68, 0.68), (0.40, 0.72)),
+                    0.0, 0.62),
+              solid(((0.78, 0.30), (1.00, 0.26), (1.00, 0.70), (0.76, 0.74)),
+                    ((0.80, 0.34), (1.00, 0.30), (1.00, 0.66), (0.78, 0.70)),
+                    0.0, 0.84)),
+             (solid(((0.00, 0.26), (0.26, 0.30), (0.24, 0.76), (0.02, 0.72)),
+                    ((0.02, 0.30), (0.24, 0.34), (0.22, 0.72), (0.04, 0.68)),
+                    0.0, 0.54),
+              solid(((0.32, 0.28), (0.66, 0.24), (0.68, 0.72), (0.34, 0.78)),
+                    ((0.34, 0.32), (0.64, 0.28), (0.66, 0.68), (0.36, 0.74)),
+                    0.0, 0.96),
+              # The rubble that fell out of the gap, lying at the foot.
+              solid(((0.70, 0.34), (0.94, 0.30), (0.96, 0.66), (0.72, 0.70)),
+                    ((0.74, 0.40), (0.90, 0.38), (0.92, 0.62), (0.76, 0.64)),
+                    0.0, 0.26)),
          ), directional=True),
     Skin("broken-column", "dressed-stone",
          "close-up of dressed and coursed limestone ashlar, warm pale "
