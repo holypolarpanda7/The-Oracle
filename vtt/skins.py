@@ -1097,6 +1097,8 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
     # made the whole pass a field of dice.
     "mountain-pass": {"R": "cliff", "#": "cliff", "O": "boulder",
                       ",": "scree", ".": "scree"},
+    "terraces":      {"R": "cliff", "#": "cliff", "O": "boulder",
+                      ",": "scree", ".": "scree", "o": "field-stone"},
     "cave":          {"R": "cave-rock", "#": "cave-rock", "O": "boulder"},
     "mine":          {"R": "cave-rock", "#": "cave-rock", "O": "boulder"},
     "reef":          {"R": "coral", "O": "drowned-column", "w": "drowned-wall",

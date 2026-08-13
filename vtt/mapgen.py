@@ -355,6 +355,87 @@ def _mound(g: Grid, rng: random.Random, out: GeneratedMap, cx: int, cy: int,
 
 
 
+def _plateaus(g: Grid, rng: random.Random, out: GeneratedMap, *,
+              tiers: int = 3, step_ft: int = LEDGE_FT,
+              on: tuple[str, ...] = (), face: str = "R",
+              ramps: int = 2) -> None:
+    """Stack the whole board into terraces, with cliffs between and ways up.
+
+    The difference between a board with a ledge on it and a board that IS
+    stepped. Each tier is a band across the board at its own height; between
+    two tiers there is a face of impassable rock, so the only way up is a RAMP —
+    which is what makes the high ground a position to be taken rather than a
+    square anyone can climb onto from anywhere.
+
+    Boundaries wander (a straight terrace is a retaining wall, not a hillside),
+    and the ramps are cut before the cliff is drawn so a tier is never sealed.
+    ``_connect_regions`` runs after every generator and would carve its own way
+    through, which is a safety net and not a design: two deliberate ramps read
+    as a path up a mesa, and a hole punched through a cliff by a connectivity
+    pass reads as nothing at all.
+    """
+    tiers = max(2, tiers)
+    across = g.width >= g.height
+    span, depth = (g.height, g.width) if across else (g.width, g.height)
+    band = max(2, span // tiers)
+    # Where each boundary sits, as it wanders along the board.
+    edges: list[list[int]] = []
+    for t in range(1, tiers):
+        pos = t * band
+        line = []
+        for _ in range(depth):
+            pos = max(1, min(span - 2, pos + rng.choice((-1, 0, 0, 0, 1))))
+            line.append(pos)
+        edges.append(line)
+
+    def tier_at(x: int, y: int) -> int:
+        # Ground rises AWAY from the camera, and that is a drawing decision
+        # with a reason: the isometric view looks along +x and +z, so a tier
+        # that climbs toward the viewer hides its own riser behind the tier in
+        # front of it. The first terraced board was measured as perfectly flat
+        # for exactly that reason — the heights were all there and not one face
+        # was visible. Climbing away from the camera turns every riser to face
+        # it.
+        a, b = (y, x) if across else (x, y)
+        n = 0
+        for line in edges:
+            if a < line[min(b, len(line) - 1)]:
+                n += 1
+        return n
+
+    for x, y in g.squares():
+        if on and g.get(x, y) not in on:
+            continue
+        t = tier_at(x, y)
+        if t:
+            _raise(out, [(x, y)], t * step_ft)
+
+    # The faces, and the gaps left in them. A ramp is a run of squares that
+    # keeps the LOWER tier's height, so walking up one is a climb of nothing at
+    # the boundary and a climb of the step once you leave it — the same total,
+    # spread over ground you can be shot on.
+    for i, line in enumerate(edges):
+        gaps = sorted(rng.sample(range(2, max(3, depth - 2)),
+                                 k=min(ramps, max(1, depth // 8))))
+        wide = max(2, depth // 14)
+        for b in range(depth):
+            a = line[min(b, len(line) - 1)]
+            x, y = (b, a) if across else (a, b)
+            if not g.in_bounds(x, y):
+                continue
+            if on and g.get(x, y) not in on:
+                continue
+            if any(abs(b - gp) <= wide for gp in gaps):
+                # A way up: keep it walkable, and step it half a tier so the
+                # climb is two short ones rather than one that eats a turn.
+                _raise(out, [(x, y)], int((len(edges) - i - 0.5) * step_ft))
+                if g.passable(x, y):
+                    g.set(x, y, "u")
+                continue
+            g.set(x, y, face)
+            out.elevation.pop(f"{x},{y}", None)
+
+
 def _storey(out: GeneratedMap, g: Grid, name: str, base_ft: int,
             squares: Iterable[Square], code: str = FLOOR) -> int:
     """Build a real upper (or lower) FLOOR out of the squares given.
@@ -684,7 +765,10 @@ def _gen_clearing(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         out.effects.append({"kind": "light", "name": "campfire", "shape": "sphere",
                             "x": cx, "y": cy, "radius_ft": 20, "color": "#ffb347"})
     out.description = "a open glade ringed by dark trees"
-    if rng.random() < 0.75:
+    if rng.random() < 0.28:
+        _plateaus(g, rng, out, tiers=2, on=("g", "\"", ","), face="R", ramps=2)
+        out.description += ", the ground stepping up to a higher shelf"
+    elif rng.random() < 0.75:
         _mound(g, rng, out, g.width // 2 + rng.randint(-4, 4),
                g.height // 2 + rng.randint(-3, 3),
                rng.uniform(2.5, 4.0), LEDGE_FT, on=("g", "\"", ","))
@@ -893,10 +977,16 @@ def _gen_ruins(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _scatter(g, rng, "\"", 0.06, only_on=(",",))
     _connect_regions(g, rng)
     out.description = "toppled masonry and broken colonnades, weeds through the flagstones"
-    # What is left of a building is rarely all at one height: a floor still
-    # standing at the far end, and a cellar open to the sky where the rest fell
-    # in.
-    if rng.random() < 0.8:
+    # What is left of a building is rarely all at one height. Sometimes the
+    # whole site is terraced — foundations at three heights with the retaining
+    # walls still standing — and otherwise one floor still stands at the far
+    # end over a cellar.
+    if rng.random() < 0.3:
+        _plateaus(g, rng, out, tiers=3, on=(",", "\"", FLOOR), face="#",
+                  ramps=2)
+        out.description += (", the site terraced in three courses with the "
+                            "retaining walls still standing")
+    elif rng.random() < 0.8:
         tw = max(4, g.width // 3)
         th = max(3, g.height // 3)
         tx = rng.randrange(1, max(2, g.width - tw - 1))
@@ -1241,18 +1331,12 @@ def _gen_pass(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     out.description = ("a high pass cut between raw granite cliffs — fractured "
                        "rock faces, fallen boulders, loose scree underfoot")
     # A pass HAS levels — that is what a pass is, a track cut across a slope —
-    # and the board had ten raised squares on it. Benches of rock stepping up
-    # from the track, each one a place to shoot down from.
-    open_sq = [(x, y) for x, y in g.squares() if g.get(x, y) in (".", ",", "g")]
-    if open_sq:
-        ys = [y for _x, y in open_sq]
-        lo, hi = min(ys), max(ys)
-        for i, ft in enumerate((LEDGE_FT, LEDGE_FT * 2)):
-            band = max(1, (hi - lo) // 6)
-            y0 = lo + i * band
-            _terrace(g, out, 0, y0, g.width - 1, y0 + band - 1, ft,
-                     on=(".", ",", "g"), steps="s")
-        out.description += ", benches of rock stepping up from the track"
+    # and the board had ten raised squares on it. The whole track is stepped
+    # now: benches of rock at ten and twenty feet with cliff faces between them
+    # and ramps of scree where you can get up.
+    _plateaus(g, rng, out, tiers=3, on=(".", ",", "g"), face="R", ramps=2)
+    out.description += (", the track stepping up in benches of rock with "
+                        "cliffs between them")
 
 
 def _gen_sewer(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -1483,13 +1567,45 @@ def _gen_open(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         _blob(g, rng, cx, cy, rng.randint(1, 3), rng.choice(("T", "R", "\"")))
     _connect_regions(g, rng)
     out.description = "open ground, scattered rocks and scrub"
-    # The high ground. On a featureless field it is the only thing worth
-    # taking, and the fallback archetype had none of it.
-    if rng.random() < 0.8:
+    # Sometimes the whole field is stepped — a run of low mesas with rock
+    # between them — and otherwise it gets a knoll. Both beat a table top, and
+    # a board that is ALWAYS terraced stops being a thing you notice.
+    if rng.random() < 0.3:
+        _plateaus(g, rng, out, tiers=2, on=("g", ",", "\""), face="R", ramps=2)
+        out.description = ("open ground stepping up in low mesas, rock faces "
+                           "between them")
+    elif rng.random() < 0.8:
         _mound(g, rng, out, rng.randrange(g.width // 4, 3 * g.width // 4),
                rng.randrange(g.height // 4, 3 * g.height // 4),
                rng.uniform(2.5, 4.5), LEDGE_FT, on=("g", ",", "\""))
         out.description = "open ground rising to a knoll, scattered rocks and scrub"
+
+
+def _gen_terraces(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """Stacked plateaus: three or four floors of ground with cliffs between.
+
+    The board every other archetype only hints at. Height here is not a feature
+    ON the map, it is the SHAPE of the map: each tier is a place to hold, the
+    faces between them are impassable rock, and the ramps are the two or three
+    squares everyone is going to fight over. A creature on the top tier is
+    twenty or thirty feet above the bottom one, which every distance, cover and
+    spell-area check on this board already folds in.
+    """
+    g.fill_rect(0, 0, g.width - 1, g.height - 1, "g")
+    _scatter(g, rng, ",", 0.10, only_on=("g",))
+    _plateaus(g, rng, out, tiers=rng.choice((3, 3, 4)), on=("g", ","),
+              face="R", ramps=rng.choice((2, 2, 3)))
+    # Scrub and fallen rock on the flats, which is what makes a terrace a place
+    # rather than a step in a diagram.
+    _scatter(g, rng, "\"", 0.05, only_on=("g",))
+    _scatter(g, rng, "o", 0.02, only_on=("g", ","))
+    for _ in range(rng.randint(1, 3)):
+        cx, cy = rng.randrange(g.width), rng.randrange(g.height)
+        _blob(g, rng, cx, cy, rng.randint(1, 4), "R")
+    _connect_regions(g, rng)
+    out.description = ("stacked plateaus of dry rock — flats of scree and "
+                       "scrub at three heights, sheer faces between them, and "
+                       "ramps where the rock has fallen away")
 
 
 #: archetype -> generator. Keep the keys stable: they're persisted on the map row.
@@ -1515,6 +1631,7 @@ ARCHETYPES: dict[str, Callable[[Grid, random.Random, GeneratedMap], None]] = {
     "sky-islands": _gen_sky,
     "skyship": _gen_skyship,
     "open": _gen_open,
+    "terraces": _gen_terraces,
 }
 
 
@@ -1573,6 +1690,8 @@ _SETTINGS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("chasm", "ravine", "gorge"), "bridge"),
     (("swamp", "bog", "marsh", "fen", "mire"), "swamp"),
     (("cave", "cavern", "grotto", "tunnel", "underdark"), "cave"),
+    (("terrace", "plateau", "mesa", "escarpment", "stepped", "quarry",
+      "tiers of rock"), "terraces"),
     (("pass", "mountain", "cliff", "ledge", "scree"), "mountain-pass"),
     (("forest", "wood", "grove", "thicket", "jungle"), "forest"),
     (("clearing", "glade", "meadow"), "clearing"),
@@ -1671,6 +1790,7 @@ _SETPIECES: dict[str, tuple[str, ...]] = {
     "crypt": ("mausoleum", "broken-pillar"),
     "cave": ("cave-pillar", "boulder-heap"),
     "mountain-pass": ("boulder-heap", "standing-stone"),
+    "terraces": ("standing-stone", "boulder-heap", "ruined-arch"),
     "street": ("village-fountain", "gatehouse-tower"),
     "camp": ("standing-stone", "boulder-heap"),
     "arena": ("great-statue", "temple-plinth"),

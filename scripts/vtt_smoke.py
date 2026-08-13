@@ -197,7 +197,26 @@ def main() -> int:
         check("the DM can put the board away",
               m.vtt_engine.active_scene(session_id) is None)
 
-    print("\n\033[1m7. the DM narrates a landmark, and it is really there\033[0m")
+    print("\n\033[1m7. the board's HEIGHT reaches the DM\033[0m")
+    # Nearly every archetype generates high ground now, and a DM who is not
+    # told about it will fight on the floor forever. The board reported height
+    # only on a creature's own line until this was added, which is no use for
+    # deciding whether anyone should take it.
+    say("We push into the old hall.",
+        "Stone steps climb to a dais at the far end.\n"
+        "[[VTT: open | combat | a pillared stone chamber | The Long Hall]]")
+    hall = m.vtt_engine.active_scene(session_id)
+    check("a board opened", hall is not None)
+    if hall is not None:
+        raised = bool(m.vtt_engine.get_scene(hall.id).elevation)
+        board = m.vtt_engine.render(hall.id)
+        check("the generated chamber has high ground on it", raised)
+        check("…and the DM board says so, with what it costs",
+              "ground height:" in board and "fall" in board,
+              board.split("\n")[2][:120] if raised else "no elevation")
+        say("We back out.", "The hall goes quiet.\n[[VTT: close]]")
+
+    print("\n\033[1m8. the DM narrates a landmark, and it is really there\033[0m")
     # The whole chain for one sentence of fiction: loose words -> a catalogue
     # slug -> a board grown to hold it -> squares that stop a creature. Until
     # this channel existed the ziggurat was in the narration and nowhere else.

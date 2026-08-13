@@ -337,7 +337,15 @@ function demoVtt(stage: number): VttScene {
         stairs: [{ x: 17, y: 1, to: 0, tx: 17, ty: 2, kind: "stair" }] },
     ],
     doors: [{ x: 0, y: 3, state: "open", name: "mill door" }],
-    elevation: {},
+    // A DAIS across the north end, five feet up, exactly as the dungeon-room
+    // generator now lays one. The offline demo is the only board a browser can
+    // draw with no backend, and it was perfectly flat while nearly every real
+    // board grew height — so nothing here exercised the one thing every
+    // distance, cover and area check folds in.
+    elevation: Object.fromEntries(
+      [1, 2, 3].flatMap((y) =>
+        Array.from({ length: 18 }, (_, i) => [`${i + 1},${y}`, 5])),
+    ),
     // Objects are read off the terrain by the server, exactly as the engine
     // does — so the offline demo shows the same board the live one would, minus
     // the sprite pictures (there is no image store here, and the tile colours

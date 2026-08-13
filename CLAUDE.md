@@ -861,6 +861,31 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   mention height only on a creature's own line, which is no help at all to a DM
   deciding whether anybody *should* take it. The selftest guards it — a
   generator may be rewritten, but not back into a table top.
+- **`_plateaus` stacks a whole board, and it climbs AWAY from the camera.**
+  A ledge on a flat board and a board that IS stepped are different things: the
+  primitive lays two to four tiers with impassable rock between them and two or
+  three RAMPS, which is what makes high ground a position to be taken rather
+  than a square anyone can scramble onto from anywhere. Boundaries wander,
+  because a straight terrace is a retaining wall rather than a hillside, and the
+  ramps are cut before the faces are drawn so no tier is ever sealed. The
+  `terraces` archetype is built entirely from it (a DM asking for a mesa, a
+  plateau, an escarpment or a quarry gets one), `mountain-pass` is now genuinely
+  stepped, and `open`, `clearing` and `ruins` come out fully terraced about a
+  third of the time — not always, or every board is the same board.
+  **Which way it climbs is a drawing decision with a reason**: the isometric
+  view looks along +x and +z, so a tier rising TOWARD the viewer hides its own
+  riser behind the tier in front of it. The first terraced board measured as
+  perfectly flat for exactly that reason — every height was present and not one
+  face was visible. Ground rises away from the camera.
+- **Play only uses what the prompt asks for.** The board grew height and the DM
+  would have kept fighting on the floor: the active-board block explained how to
+  CREATE a ledge and how to rule on cover, and never once said the ground was
+  worth contesting. It now gives the tactical direction outright — shooters
+  climb, melee shoves them off, a hurt creature drops out of sight and takes the
+  fall as the cheaper price — and `vtt_smoke` pins that a generated chamber has
+  high ground AND that the DM board states it with what it costs. The offline
+  demo board carries a dais for the same reason: it is the only board a browser
+  can draw with no backend, and it was flat while every real board grew height.
 - **A board is sized by the FIGHT, not by one number.** `triggers.board_size_for`
   starts from the scene kind's default (`DEFAULT_SIZE`: combat 24x18, explore
   30x24, chase 34x14…) and grows it for room to STAND (total footprint on the
