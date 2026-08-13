@@ -1198,6 +1198,30 @@ def test_setpieces() -> None:
     eq("nothing stands in solid rock",
        sp.setpieces_for(walled, ["boulder-heap"], seed=1), [])
 
+    # --- a monster takes the high ground ----------------------------------
+    # The DM prompt tells the LLM to contest height; this is the half of the
+    # fight the LLM never touches. The engine decides a BAND and the bridge
+    # turns it into a square, and that translation used to read flat distance
+    # only — so on a board made of ledges every monster archer stood in the mud.
+    import tempfile as _tf2
+    from . import bridge as _bridge
+    _db = os.path.join(_tf2.mkdtemp(), "band.db")
+    _v = VttEngine(database_url=f"sqlite:///{_db}")
+    _v.create_tables()
+    _sc = _v.open_scene("test:band", kind="combat", archetype="open",
+                        width=20, height=14, seed=5, render_art=False)
+    for _x in range(20):
+        for _y in range(14):
+            _v.set_terrain(_sc.id, [(_x, _y)], "g")
+    _v.set_elevation(_sc.id, [(x, y) for x in range(20) for y in (0, 1, 2)], 10)
+    _v.add_token(_sc.id, "Kara", kind="pc", team="party", x=10, y=10)
+    _shooter = _v.add_token(_sc.id, "Archer", kind="monster", team="foe",
+                            x=10, y=8, combatant_id=77)
+    _bridge.apply_band_move(_v, _sc.id, 77, "far")
+    _moved = _v.get_token(_shooter.id)
+    eq("a monster holding a range band goes UP",
+       _v.token_height_ft(_v.get_scene(_sc.id), _moved), 10)
+
     # --- most boards are not flat -----------------------------------------
     # Height is the cheapest asymmetry a fight can have: it costs movement to
     # take, a fall to leave in a hurry, and it changes who can see whom without

@@ -223,6 +223,31 @@ def apply_band_move(vtt: VttEngine, map_id: int, combatant_id: int,
     grid = vtt.grid_of(row)
     band_l = band.strip().lower()
 
+    # HEIGHT, when the square is otherwise as good. The engine thinks in bands
+    # and the board turns a band into a square, and that translation used to be
+    # decided by flat distance alone — so on a board built entirely out of
+    # ledges and terraces, a monster archer would stand in the mud below them
+    # forever. The DM prompt tells the LLM to take the high ground; this is the
+    # half of the fight the LLM never touches.
+    #
+    # A step at a time: height only counts in the mover's favour up to one
+    # LEDGE, so a terrace two tiers up is never CHOSEN for being high — it has
+    # to be taken a tier per turn.
+    #
+    # That is a limit on the preference, not on the move. A band move is
+    # already unbounded in distance (``free=True, enforce_speed=False`` below:
+    # the engine charged this in its own coarse economy and the board must not
+    # bill it twice), so a monster could always cross the whole board to reach
+    # the right band, and it still can. Making band moves pay real feet is a
+    # change to the engine's abstraction rather than to this translation, and
+    # it is not made here.
+    here_ft = vtt.token_height_ft(row, tok)
+
+    def _gain(sq: tuple[int, int]) -> int:
+        """Feet of height this square would win, 0 if it is a cliff or a drop."""
+        got = int((row.elevation or {}).get(f"{sq[0]},{sq[1]}", 0) or 0) - here_ft
+        return got if 0 < got <= 10 else 0
+
     target_sq = None
     m = _MELEE_RE.match(band_l)
     if m:
@@ -241,8 +266,14 @@ def apply_band_move(vtt: VttEngine, map_id: int, combatant_id: int,
                 if geo.token_distance_ft(
                         geo.footprint(cand[0], cand[1], size_squares(tok.size)),
                         geo.footprint(other.x, other.y, size_squares(other.size)),
-                        row.square_ft) <= (tok.reach_ft or 5) and d < best_d:
-                    best, best_d = cand, d
+                        row.square_ft) > (tok.reach_ft or 5):
+                    continue
+                # Closest, and of the equally close ones the highest: a
+                # creature that has to close still picks the side of the step
+                # it would rather be standing on.
+                score = d * 4 - _gain(cand)
+                if score < best_d:
+                    best, best_d = cand, score
         target_sq = best
     elif band_l in ("near", "far"):
         foes = [t for t in vtt.tokens(map_id, include_defeated=False)
@@ -257,6 +288,10 @@ def apply_band_move(vtt: VttEngine, map_id: int, combatant_id: int,
                 continue
             d = geo.distance_ft((x, y), (anchor.x, anchor.y), row.square_ft)
             err = abs(d - want_ft) + geo.distance_squares((tok.x, tok.y), (x, y))
+            # Anything holding a range band belongs UP. Weighted a square per
+            # five feet gained, which is enough to beat a small error in the
+            # band and not enough to send it across the board for a ledge.
+            err -= _gain((x, y)) // 5
             if err < best_err:
                 best, best_err = (x, y), err
         target_sq = best

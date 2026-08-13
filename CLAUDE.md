@@ -877,6 +877,20 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   riser behind the tier in front of it. The first terraced board measured as
   perfectly flat for exactly that reason — every height was present and not one
   face was visible. Ground rises away from the camera.
+- **The LLM is not the only thing that moves a creature.** The engine decides a
+  BAND (`melee with Gruk` / `near` / `far`) and `bridge.apply_band_move` turns
+  it into a square — and that translation read flat distance alone, so on a
+  board made of ledges and terraces every monster archer stood in the mud below
+  them however loudly the DM prompt talked about high ground. It now prefers
+  height: strongly for a creature holding a range band (a shooter belongs up),
+  and as a tiebreak among the equally-close squares when closing to melee.
+  Height counts only up to one LEDGE above the mover, so a terrace two tiers up
+  is never chosen for being high — it is taken a tier per turn. That is a limit
+  on the PREFERENCE and not on the move: a band move is already unbounded in
+  distance (`free=True, enforce_speed=False`, because the engine charged it in
+  its own coarse economy and the board must not bill it twice), and making band
+  moves pay real feet is a change to the engine's abstraction rather than to
+  this translation.
 - **Play only uses what the prompt asks for.** The board grew height and the DM
   would have kept fighting on the floor: the active-board block explained how to
   CREATE a ledge and how to rule on cover, and never once said the ground was
