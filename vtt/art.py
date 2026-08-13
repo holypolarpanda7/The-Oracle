@@ -750,7 +750,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
         extra=", ".join(p for p in (
             extra,
             f"({material_words}:1.35)" if material_words else "",
-            _void_reads_as(gen.grid, lighting)) if p),
+            _void_reads_as(gen.grid, lighting, gen.mode)) if p),
         conditions=conditions)
     # The skins go into the cache key. Two boards with identical tiles and
     # different materials are two pictures, and hashing only the tiles served
@@ -833,11 +833,14 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
     if res is None or res.offline or not res.image_id:
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
     _mask_to_board(store, res.image_id, depth_kw)
+    if gen.mode == "swim":
+        _underwater_grade(store, res.image_id)
     return BattlemapArt(image_id=res.image_id, prompt="", caption=res.caption,
                         width=w_px, height=h_px, reused=bool(getattr(res, "reused", False)))
 
 
-def _void_reads_as(grid: Grid, lighting: Optional[str]) -> str:
+def _void_reads_as(grid: Grid, lighting: Optional[str],
+                   mode: str = "walk") -> str:
     """What the empty parts of the board are, in words.
 
     The depth map can only say a square is FAR. On a board with open sky or a
@@ -847,10 +850,22 @@ def _void_reads_as(grid: Grid, lighting: Optional[str]) -> str:
 
     Said only when the board actually HAS such squares, so an ordinary room is
     not told about a sky it does not have.
+
+    ``mode`` is the medium the board is FOUGHT in, and it changes what water
+    is. On a walking board a stretch of water is a surface you look at; on a
+    SWIM board you are inside it, and the same clause — "its surface catching
+    the light" — put the camera above the sea and turned a reef into a pond.
     """
     rows = grid.to_rows()
     has = {c for row in rows for c in row}
     bits = []
+    if mode == "swim":
+        # Said first and about the whole board, because it is the one fact
+        # every square of it shares.
+        bits.append("the ENTIRE scene is underwater, looked down on from above "
+                    "through clear water — sunlight comes down in shafts and "
+                    "dapples the sea floor, silt hangs in it, and NO water "
+                    "surface is anywhere in the picture")
     if "^" in has:
         night = (lighting or "").lower() == "dark"
         # "Sky" alone was not enough: a flat expanse under an overhead camera
@@ -867,9 +882,96 @@ def _void_reads_as(grid: Grid, lighting: Optional[str]) -> str:
     if "x" in has:
         bits.append("the gaps are a deep chasm dropping away into shadow, "
                     "its far walls lost in darkness")
-    if "W" in has:
+    if "W" in has and mode != "swim":
         bits.append("the open water is deep and dark, its surface catching the light")
+    elif "W" in has:
+        bits.append("the deep water is a channel in the sea floor dropping away "
+                    "into blue darkness")
     return ", ".join(bits)
+
+
+#: How hard the underwater grade pulls, at the near edge and the far edge.
+#:
+#: Two numbers because water is a DEPTH effect: the far side of an isometric
+#: board has more of it between the camera and the sand than the near side, so
+#: the tint strengthens toward the top of the frame and the board reads as
+#: receding into haze rather than as a flat sheet of tinted paper.
+SUBSEA_TINT = (0.42, 0.78, 0.98)
+SUBSEA_NEAR, SUBSEA_FAR = 0.26, 0.66
+#: How much light the far side has lost. Water ABSORBS: distance underwater is
+#: darker and bluer, not paler, and the first grade without this washed the top
+#: of every board toward white — which reads as mist, and mist is a thing that
+#: happens in air.
+SUBSEA_FALLOFF = 0.34
+
+
+def _underwater_grade(store, image_id: int) -> None:
+    """Put the water back between the camera and the sea floor.
+
+    Everything else on this board is decided per SQUARE — a tile code, a skin,
+    a swatch — and the one thing that makes a reef read as a reef is not a
+    property of any square: it is the water column in front of all of them.
+    Measured, four ways, and none of the per-square levers reached it. The
+    seabed swatch was corrected until it was a genuine sea floor, the coral was
+    rebuilt from stalks into domes and plates, the prompt was told in as many
+    words that the entire scene is underwater and that no surface is in view —
+    and the board still came back as a green pond with reeds, because ninety
+    percent of it is flat, a flat green expanse in a fantasy diorama is a pond,
+    and no amount of conditioning outvotes that prior.
+
+    So the grade is APPLIED rather than requested. This is not a retouch of the
+    model's judgement; it is the one part of the picture the pipeline never gave
+    it any way to paint. It is deterministic, costs no GPU, and lands on every
+    swim board including the ones nobody has looked at.
+    """
+    from io import BytesIO
+
+    try:
+        import numpy as np
+        from PIL import Image
+
+        raw = store.get_image_bytes(image_id)
+        if not raw:
+            return
+        img = Image.open(BytesIO(raw)).convert("RGBA")
+        arr = np.asarray(img).astype(np.float32)
+        rgb, alpha = arr[..., :3], arr[..., 3:]
+
+        h = arr.shape[0]
+        # 0 at the bottom of the frame (nearest the camera), 1 at the top.
+        depth = np.linspace(1.0, 0.0, h, dtype=np.float32)[:, None, None]
+        k = SUBSEA_NEAR + (SUBSEA_FAR - SUBSEA_NEAR) * depth
+
+        tint = np.array(SUBSEA_TINT, dtype=np.float32)[None, None, :]
+        # Toward the water's own colour, and toward each other: distance eats
+        # contrast underwater before it eats brightness.
+        haze = rgb.mean(axis=2, keepdims=True) * tint * (
+            1.0 - SUBSEA_FALLOFF * depth)
+        graded = rgb * (1.0 - k) + haze * k
+        # A little of the light that got down here, falling from above.
+        shafts = (1.0 + 0.05 * np.cos(
+            np.linspace(0, 9 * np.pi, arr.shape[1], dtype=np.float32))[None, :, None])
+        graded = np.clip(graded * shafts, 0, 255)
+
+        out = Image.fromarray(
+            np.concatenate([graded, alpha], axis=2).astype(np.uint8), "RGBA")
+        buf = BytesIO()
+        out.save(buf, format="PNG")
+        data = buf.getvalue()
+
+        from sqlmodel import Session
+
+        from imagery.models import EntityImage
+        with Session(store.engine) as sess:
+            row = sess.get(EntityImage, image_id)
+            if row is None:
+                return
+            row.image = data
+            row.byte_size = len(data)
+            sess.add(row)
+            sess.commit()
+    except Exception as e:      # an ungraded board beats no board
+        print(f"[vtt.art] could not grade the underwater board: {e}")
 
 
 def _mask_to_board(store, image_id: int, depth_kw: dict) -> None:
@@ -1082,6 +1184,13 @@ def material_look(code: str, skin: str = "") -> str:
     return ANY_LOOK if (code in LOOK_AGNOSTIC or code in SUBSTANCE) else ""
 
 
+def _skin_negative(skin: str) -> str:
+    """Extra negative terms this skin's material declares, if any."""
+    from . import skins as _skins
+    sk = _skins.skin(skin)
+    return getattr(sk, "negative", "") if sk is not None else ""
+
+
 def render_material(code: str, *, store=None, context: str = "",
                     skin: str = "",
                     size_px: int = MATERIAL_RENDER_PX) -> Optional[int]:
@@ -1111,7 +1220,11 @@ def render_material(code: str, *, store=None, context: str = "",
             ImageKind.MATERIAL, subject, look="", context=ctx,
             ref_slug=material_ref(code, skin),
             extra=_MATERIAL_STYLE,
-            negative_extra=MATERIAL_NEGATIVE,
+            # A skin may add to the negative. See Skin.negative: what a
+            # material must NOT be cannot be said in the positive prompt, which
+            # is where it kept being attempted.
+            negative_extra=", ".join(
+                p for p in (MATERIAL_NEGATIVE, _skin_negative(skin)) if p),
             width=size_px, height=size_px, store_width=size_px,
             max_per_bucket=1)
     except Exception as e:

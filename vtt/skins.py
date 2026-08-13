@@ -194,6 +194,16 @@ class Skin:
     #: side against its own mast, so the board had a shaft sunk round the mast
     #: and a paper-thin outer rim where the rail met the water.
     body: str = ""
+    #: Extra NEGATIVE terms for this skin's swatch, on top of
+    #: ``art.MATERIAL_NEGATIVE``.
+    #:
+    #: Here because the alternative kept being attempted inside ``art``, where
+    #: it does the opposite of what it says: a swatch prompt is a POSITIVE
+    #: prompt, so "no plants, no water surface" is a request for plants and a
+    #: water surface. The seabed asked for both and got an aerial photograph of
+    #: a BEACH — surf, sand and palm fronds. What a material must not be is a
+    #: negative, and it belongs next to the material.
+    negative: str = ""
     #: Draw at exactly the height given, with no per-instance jitter.
     #:
     #: Jitter is life for a rock face and a lie for anything a neighbouring
@@ -420,15 +430,29 @@ _SNAPPED_COLUMN = _v(
 
 #: Coral heads: lower, lumpier, branching. Same idea as the cliff and a
 #: different silhouette, so a reef never reads as a quarry.
+#: Rewritten as MASSES. The first version was thin vertical boxes in clusters —
+#: which is a stand of REEDS, and that is exactly what every reef came back
+#: painted as, on a board whose seabed conditioning was by then correct. Coral
+#: is domes, plates and thick antlers; nothing on a reef is a stalk.
 _CORAL = _v(
-    ((0.20, 0.62, 0.24, 0.66, 0.0, 0.72), (0.50, 0.86, 0.44, 0.80, 0.0, 0.50),
-     (0.30, 0.54, 0.34, 0.58, 0.72, 1.0)),
-    ((0.16, 0.56, 0.30, 0.72, 0.0, 0.60), (0.46, 0.90, 0.18, 0.60, 0.0, 0.86),
-     (0.34, 0.62, 0.50, 0.80, 0.60, 0.80)),
-    ((0.24, 0.78, 0.22, 0.76, 0.0, 0.42), (0.36, 0.60, 0.34, 0.58, 0.42, 1.0),
-     (0.60, 0.84, 0.50, 0.74, 0.42, 0.70)),
-    ((0.10, 0.50, 0.20, 0.58, 0.0, 0.80), (0.44, 0.72, 0.46, 0.82, 0.0, 0.56),
-     (0.20, 0.42, 0.30, 0.50, 0.80, 1.0)),
+    # Brain coral: a boulder-shaped dome, deeply wrinkled.
+    (solid(*_lump(0.38, 0.34, skew=0.14), 0.0, 0.46),
+     solid(*_lump(0.34, 0.14, 0.52, 0.48, skew=0.10), 0.46, 0.74)),
+    # Table coral: a short stem under a wide flat plate.
+    (solid(*_lump(0.12, 0.16), 0.0, 0.44),
+     solid(*_lump(0.44, 0.42, 0.48, 0.52, skew=0.16), 0.44, 0.56),
+     solid(*_lump(0.18, 0.10, 0.66, 0.62), 0.0, 0.34)),
+    # Antler coral: three THICK arms leaning out of one foot.
+    (solid(*_lump(0.26, 0.20), 0.0, 0.24),
+     solid(_lump(0.14, 0.09, 0.40, 0.44)[0], _lump(0.09, 0.06, 0.26, 0.30)[1],
+           0.24, 0.86),
+     solid(_lump(0.13, 0.08, 0.58, 0.46)[0], _lump(0.08, 0.05, 0.74, 0.34)[1],
+           0.24, 0.70),
+     solid(_lump(0.12, 0.08, 0.50, 0.62)[0], _lump(0.07, 0.05, 0.56, 0.80)[1],
+           0.24, 0.92)),
+    # A low knuckle of dead coral rock with a small dome beside it.
+    (solid(*_lump(0.44, 0.38, 0.46, 0.50, skew=-0.12), 0.0, 0.34),
+     solid(*_lump(0.22, 0.10, 0.62, 0.40), 0.34, 0.62)),
 )
 
 #: A snapped column. Ruins and drowned ruins want the pillar to have ALREADY
@@ -709,6 +733,26 @@ HULL_TAPER = 0.10
 # The catalogue
 # --------------------------------------------------------------------------
 
+#: The seabed, described as a SURFACE and nothing else.
+#:
+#: Written positively throughout. The first version said "seen from directly
+#: above THROUGH clear turquoise water, no water surface in view, no plants" and
+#: came back an aerial beach — surf line, dry sand and palm fronds — because
+#: every one of those nouns is a request when it appears in a positive prompt.
+#: What must be absent lives in ``_SEABED_NEG``.
+_SEABED_ART = (
+    "underwater sea floor filling the frame: pale sand rippled into parallel "
+    "ridges, scattered shells and small pebbles, fine silt, dappled caustic "
+    "light, a blue-green underwater haze over everything"
+)
+
+_SEABED_NEG = (
+    "beach, shoreline, coast, surf, waves, waterline, foam, island, "
+    "palm, palm frond, leaves, grass, reeds, lily pad, plants, aerial photo, "
+    "water surface, reflection, sky"
+)
+
+
 SKINS: dict[str, Skin] = {s.name: s for s in (
     # --- rock, in its several honest forms -------------------------------
     Skin("cliff", "granite",
@@ -769,6 +813,31 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="the reef heads are living coral in ochre and violet, "
                "encrusted and irregular",
          variants=_CORAL, height_ft=9, smooth=True),
+    # UNDER the water, not on it. The shared `~` swatch is a picture of a pond
+    # SURFACE — ripples, bubbles, water-lily leaves round the edge — which is
+    # right for a stream through a meadow and catastrophic on a reef, where
+    # three quarters of the board wears it and the fight is happening twenty
+    # feet down. The board came back as a green pond with reeds in it, and the
+    # painter was doing as it was told.
+    #
+    # A swim board's water squares are not a surface at all: they are the
+    # SEABED, seen from above through clear water. Say that in the swatch, and
+    # say it again in the words — the board's own description already claims a
+    # coral shelf and was losing the argument to the picture.
+    Skin("seabed-shallow", "sunlit-shallows", _SEABED_ART,
+         words="everything here is UNDERWATER on a sunlit sand shelf — the "
+               "sand is seen through clear turquoise water, dappled with "
+               "caustics; this is the sea floor, not a pond seen from the bank",
+         negative=_SEABED_NEG),
+    Skin("seabed-deep", "deep-channel",
+         "underwater: a deep blue-green trench cut into a pale sand floor, the "
+         "bottom lost in darkness, fine silt, dappled light fading out with "
+         "depth",
+         words="the deeper channels drop away into blue-green darkness",
+         negative=_SEABED_NEG),
+    Skin("seabed-sand", "sunlit-shallows", _SEABED_ART,
+         words="the flats are pale rippled sand on the sea bed",
+         negative=_SEABED_NEG),
     Skin("drowned-column", "drowned-stone",
          "a flat expanse of pale ancient cut stone crusted with barnacles and "
          "green weed, filling the whole frame",
@@ -1030,8 +1099,11 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
                       ",": "scree", ".": "scree"},
     "cave":          {"R": "cave-rock", "#": "cave-rock", "O": "boulder"},
     "mine":          {"R": "cave-rock", "#": "cave-rock", "O": "boulder"},
-    "reef":          {"R": "coral", "O": "drowned-column", "w": "drowned-wall"},
-    "open-water":    {"R": "coral"},
+    "reef":          {"R": "coral", "O": "drowned-column", "w": "drowned-wall",
+                      "~": "seabed-shallow", "W": "seabed-deep",
+                      "s": "seabed-sand"},
+    "open-water":    {"R": "coral", "W": "seabed-deep", "~": "seabed-shallow",
+                      "s": "seabed-sand"},
     "sewer":         {"#": "sewer-brick", "~": "sludge", ".": "sewer-ledge",
                       "W": "sludge", ",": "sewer-ledge"},
     # Outdoors, ``o`` is a boulder. Its RULES are unchanged — half cover, four

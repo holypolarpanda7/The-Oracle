@@ -705,6 +705,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   out of BOXES, and a meadow came back strewn with purple crates — the same
   lesson as the cliff and the crypt-of-dice, in the one place small enough to
   think it did not matter. Everything wild is a prismatoid now.
+  **A swatch prompt is a POSITIVE prompt, so what a material must not be needs
+  a negative** — `Skin.negative`, on top of `art.MATERIAL_NEGATIVE`. Written
+  into the positive it does the opposite of what it says: the seabed swatch
+  asked for "no water surface in view, no plants" and came back an aerial
+  photograph of a BEACH, surf and palm fronds included.
   **An ACHROMATIC swatch is an invitation to invent a hue.** "Dressed grey
   stone" is a request for a colourless image and the model obliges; every stone
   swatch averaged to a dead, faintly COOL grey, and the painter — free to pick
@@ -722,6 +727,28 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   and `R` (rock face) is in `STRUCTURE_CODES`, so an unskinned one is drawn as a
   thin WALL panel — `DEFAULT_SKINS` gives it `boulder` everywhere, which the
   pass and the cave had been hiding by overriding it for other reasons.
+- **Underwater is a COLOUR GRADE, and it is applied rather than requested.**
+  Every other thing on a board is decided per square — a tile, a skin, a
+  swatch — and the one thing that makes a reef read as a reef is a property of
+  none of them: the water column in front of all of them. Four per-square
+  levers were measured and none reached it. The `~` swatch was a picture of a
+  pond SURFACE with lily leaves (right for a stream through a meadow,
+  catastrophic on the 73% of a reef that wears it) and is now a genuine sea
+  floor; the coral was thin vertical boxes, which is a stand of REEDS, and is
+  now domes, plates and thick antlers; `_void_reads_as` was asserting "its
+  surface catching the light" on a board fought INSIDE the water, and now takes
+  the medium; the prompt says in as many words that the whole scene is
+  submerged. The board still came back a green pond, because ninety percent of
+  it is flat, and a flat green expanse in an isometric fantasy diorama is a
+  pond. So `_underwater_grade` puts the water back after the render — tinted
+  toward the sea's own colour, stronger and DARKER with distance (water
+  absorbs; a grade that pales with distance reads as mist, which is a thing
+  that happens in air). Deterministic, no GPU, and it lands on every swim board.
+  **The residue is the GENERATOR, not the painter**: `_gen_reef` lays 73%
+  featureless shallow water and 2% coral, which gives the rules no cover and
+  the picture nothing to be. A reef should be mostly shelf with channels cut
+  through it — relief the depth map can carry — and that is a mapgen change,
+  with real tactical consequences, not an art one.
 - **`vtt/decor.py` is scenery: in the room, not in the rules.** Bones, a rug, a
   brazier — drawn by the geometry and by the depth map, invisible to movement,
   cover and sight. It exists because the visual vocabulary was capped by the
