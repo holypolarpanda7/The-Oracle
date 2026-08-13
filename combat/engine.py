@@ -2013,6 +2013,34 @@ class CombatEngine:
                       f"(wanted: {what})."})
         return None
 
+    def _do_reposition(self, encounter_id, actor, intent, profiles, rep):
+        """Move without changing how far away you are.
+
+        The engine thinks in BANDS, so every move it knew how to make was a
+        change of band — and a creature already at the range it wants could not
+        move at all. That is most of a fight: an archer holding its distance
+        still wants the ledge, the cover, the square that is not in the open.
+        Measured before this existed, monsters moved on 6 turns out of 30 and
+        the rest of the time stood exactly where they spawned.
+
+        It costs a step of movement and provokes nothing: staying inside the
+        same band means staying inside the reach you were already in, and 5e
+        does not punish moving WITHIN reach. What square it actually lands on
+        is the board's business — ``vtt.bridge.apply_band_move`` re-picks the
+        best one for the band, which is where cover and high ground are chosen.
+        """
+        fresh = self.tracker.get_combatant(actor.id) or actor
+        if fresh.move_left <= 0:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{actor.name} has no movement left to reposition."})
+            return
+        band = fresh.position or "near"
+        self.tracker.update_economy(actor.id, move_left=fresh.move_left - 1)
+        rep.events.append({"kind": "move", "actor": actor.name, "to": band,
+                           "reposition": True, "steps": 1, "rolls": [],
+                           "notes": ["takes better ground at the same range"]})
+
     def _do_dash(self, encounter_id, actor, intent, profiles, rep):
         paid = self._spend_action_or_cunning(actor, rep, intent, profiles, "Dash")
         if not paid:
@@ -2550,6 +2578,63 @@ class CombatEngine:
 
     # ---------------- monster autopilot ----------------
 
+    def _plan_turn(self, encounter_id: int, cur: Combatant,
+                   foes: list[Combatant]) -> list[dict]:
+        """What a creature with no player behind it does with its whole turn.
+
+        Written as a plan rather than a single act, because a turn is an
+        ECONOMY and the old AI spent about a third of one: it swung if a target
+        was already in reach and otherwise stood still. Everything here is a
+        thing a player does without thinking —
+
+        * hit what is nearly dead rather than spreading damage around;
+        * shooters take better ground every turn instead of standing where they
+          spawned, which is what ``reposition`` is for;
+        * close the distance when closing is what is needed, Dashing when it
+          takes a Dash;
+        * break contact when badly hurt and able to fight at range, which
+          spends the Disengage rather than eating an opportunity attack;
+        * and never end a turn having done nothing — a creature with no reach
+          and no shot DODGES, which is a real use of the action and the
+          difference between a monster and a statue.
+
+        Deliberately not a search over every option: this is a stat block's
+        instinct, not a chess engine, and a fight the players cannot predict at
+        all is not more fun than one they can read.
+        """
+        atks = self._monster_attacks(cur)
+        has_ranged = any(a["ranged"] for a in atks)
+        has_melee = any(not a["ranged"] for a in atks)
+        in_reach = [f for f in foes if self._steps_between(cur, f) == 0]
+        hurt = cur.current_hp * 4 <= max(1, cur.max_hp)
+
+        # Finish what is nearly down; among equals, the nearest.
+        pool = in_reach or foes
+        tgt = min(pool, key=lambda p: (p.current_hp, self._steps_between(cur, p)))
+        steps = self._steps_between(cur, tgt)
+        me = cur.name
+
+        if in_reach and hurt and has_ranged:
+            # Wounded and able to shoot: get out rather than trade in reach.
+            return [{"verb": "disengage", "actor": me},
+                    {"verb": "move", "actor": me, "arg": "near"},
+                    {"verb": "attack", "actor": me, "target": tgt.name,
+                     "arg": "ranged"}]
+        if in_reach and has_melee:
+            return [{"verb": "attack", "actor": me, "target": tgt.name}]
+        if has_ranged:
+            # Shoot, and use the move to stand somewhere better while doing it.
+            return [{"verb": "reposition", "actor": me},
+                    {"verb": "attack", "actor": me, "target": tgt.name,
+                     "arg": "ranged"}]
+        if steps <= 1:
+            return [{"verb": "move", "actor": me,
+                     "arg": f"melee with {tgt.name}"},
+                    {"verb": "attack", "actor": me, "target": tgt.name}]
+        return [{"verb": "dash", "actor": me},
+                {"verb": "move", "actor": me, "arg": "near"},
+                {"verb": "dodge", "actor": me}]
+
     def run_monster_turn(self, encounter_id: int,
                          intents: Optional[list[dict]] = None,
                          profiles: Optional[dict[int, PCProfile]] = None,
@@ -2578,26 +2663,18 @@ class CombatEngine:
                 return rep
         if not rep.events and not rep.turn_over:
             # Default AI: hit whoever is in reach, else close and swing.
-            pcs = [c for c in self.tracker.order(encounter_id)
-                   if c.kind == "pc" and not c.defeated]
-            if pcs:
-                tgt = min(pcs, key=lambda p: (self._steps_between(cur, p),
-                                              p.current_hp))
-                steps = self._steps_between(cur, tgt)
-                seq: list[dict] = []
-                has_ranged = any(a["ranged"] for a in self._monster_attacks(cur))
-                if steps == 0:
-                    seq = [{"verb": "attack", "actor": cur.name, "target": tgt.name}]
-                elif steps <= 1:
-                    seq = [{"verb": "move", "actor": cur.name,
-                            "arg": f"melee with {tgt.name}"},
-                           {"verb": "attack", "actor": cur.name, "target": tgt.name}]
-                elif has_ranged:
-                    seq = [{"verb": "attack", "actor": cur.name, "target": tgt.name,
-                            "arg": "ranged"}]
-                else:
-                    seq = [{"verb": "dash", "actor": cur.name},
-                           {"verb": "move", "actor": cur.name, "arg": "near"}]
+            #
+            # ENEMIES, not player characters. This read `kind == "pc"`, which
+            # is the same assumption `Combatant.side` was added to kill: a
+            # conjured spirit fights FOR the party, a charmed guard fights
+            # against its own, and two monster sides fighting each other found
+            # no targets at all and stood on opposite edges of the board for
+            # twenty turns doing nothing (measured — `scripts/ai_arena.py`).
+            mine = self._side(cur)
+            foes = [c for c in self.tracker.order(encounter_id)
+                    if not c.defeated and self._side(c) != mine]
+            if foes:
+                seq = self._plan_turn(encounter_id, cur, foes)
                 rep = self.resolve(encounter_id, seq, profiles, env=env)
         if rep.paused:
             return rep
