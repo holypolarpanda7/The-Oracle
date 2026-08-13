@@ -157,6 +157,12 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=0,
                     help="stop after N renders — for probing before committing "
                          "to the whole batch")
+    ap.add_argument("--redraw", default="",
+                    help="comma-separated substances/labels to draw AGAIN even "
+                         "though they exist. The swatch prompt is the thing you "
+                         "iterate on, and without this the only way to see a "
+                         "changed one was to rename the substance — which "
+                         "renames it in the code forever to fix a picture.")
     a = ap.parse_args(argv)
     if not (a.audit or a.render or a.sheet or a.prune):
         a.audit = True
@@ -192,14 +198,34 @@ def main(argv=None) -> int:
     print(f"{n_codes} surface kinds over {len(contexts)} looks "
           f"(look-agnostic ones once) = {len(jobs)} swatches\n")
 
-    missing, have = [], 0
+    redraw = {w.strip().lower() for w in a.redraw.split(",") if w.strip()}
+    missing, have, again = [], 0, []
     for job in jobs:
-        code, skin, look = job[0], job[1], job[2]
-        if store.list_for(ImageKind.MATERIAL,
-                          slugify(material_ref(code, skin)), context_key(look)):
+        code, skin, look, label = job[0], job[1], job[2], job[3]
+        drawn = bool(store.list_for(ImageKind.MATERIAL,
+                                    slugify(material_ref(code, skin)),
+                                    context_key(look)))
+        wanted = redraw and any(w in label.lower() for w in redraw)
+        if drawn and not wanted:
             have += 1
+        elif drawn:
+            again.append(job)
         else:
             missing.append(job)
+    if again:
+        # Drop the stored ones first, so the render below is the plain
+        # missing-swatch path and nothing has to know about overwriting.
+        from sqlmodel import Session, select
+        from imagery.models import EntityImage
+        slugs = {slugify(material_ref(c, k)) for c, k, _l, _lb, _t in again}
+        with Session(store.engine) as sess:
+            for r in sess.exec(select(EntityImage)).all():
+                if r.ref_slug in slugs:
+                    sess.delete(r)
+            sess.commit()
+        print(f"redrawing {len(again)}: "
+              + ", ".join(sorted({j[3] for j in again})))
+        missing.extend(again)
 
     if a.prune:
         from sqlmodel import Session, select

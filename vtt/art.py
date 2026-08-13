@@ -322,8 +322,14 @@ SUBSTANCE: dict[str, str] = {
     "p": "iron",    # portcullis
 }
 
+#: What a swatch is ASKED for. Name the colour: "grey stone" is a request for
+#: an achromatic image, the model obliges, and a square of dead neutral grey is
+#: the one thing the painter feels free to invent a hue for — the ruins' columns
+#: came back BLUE, and the tree crowns came back violet before their swatch went
+#: green. A real stone has a colour, so say which.
 SUBSTANCE_ART: dict[str, str] = {
-    "stone": "dressed grey stone, close-up of the cut stone itself",
+    "stone": "close-up of cut limestone blocks, warm pale sandy grey with "
+             "ochre and buff weathering",
     "wood": "old planked timber, close-up of the boards and their grain",
     "iron": "dark pitted wrought iron, close-up of the bare metal",
     "bark": "rough tree bark, close-up of the bark itself",

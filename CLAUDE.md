@@ -705,8 +705,19 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   out of BOXES, and a meadow came back strewn with purple crates — the same
   lesson as the cliff and the crypt-of-dice, in the one place small enough to
   think it did not matter. Everything wild is a prismatoid now.
-  Two traps worth remembering: a material swatch is a sample of a SURFACE and
-  whatever it averages to is where the painter starts, so asking for "weeds
+  **An ACHROMATIC swatch is an invitation to invent a hue.** "Dressed grey
+  stone" is a request for a colourless image and the model obliges; every stone
+  swatch averaged to a dead, faintly COOL grey, and the painter — free to pick
+  a hue where the init has none — came back with BLUE columns in a ruin and
+  violet crowns on the trees before their swatch went green. Real limestone has
+  a colour, so the prompt names one, and the drift stops. The lesson generalises
+  past stone: a swatch that says only what a thing is made of and nothing about
+  what colour it is has left the decision to the sampler.
+  (`material_prerender.py --redraw <substance>` exists for this: the swatch
+  PROMPT is the thing you iterate on, and before it the only way to see a
+  changed one was to rename the substance in the code forever.)
+  Two more traps worth remembering: a material swatch is a sample of a SURFACE
+  and whatever it averages to is where the painter starts, so asking for "weeds
   forcing up through the joints" made a green swatch and the ruin stayed a lawn;
   and `R` (rock face) is in `STRUCTURE_CODES`, so an unskinned one is drawn as a
   thin WALL panel — `DEFAULT_SKINS` gives it `boulder` everywhere, which the

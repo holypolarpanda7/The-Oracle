@@ -722,7 +722,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
                "each one a separate stone",
          variants=_BOULDER, height_ft=8),
     Skin("ruin-stub", "dressed-stone",
-         "close-up of dressed and coursed grey building stone",
+         "close-up of dressed and coursed limestone ashlar, warm pale "
+         "sandy grey with ochre weathering",
          words="what walls remain are collapsed courses of dressed stone, "
                "broken-topped and eroded — not benches and not fences",
          variants=_v(
@@ -732,7 +733,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
               (0.36, 0.96, 0.28, 0.78, 0.56, 0.96)),
          ), directional=True),
     Skin("broken-column", "dressed-stone",
-         "close-up of dressed and coursed grey building stone",
+         "close-up of dressed and coursed limestone ashlar, warm pale "
+         "sandy grey with ochre weathering",
          words="the columns are snapped off at different heights, weathered "
                "drums of pale stone with fallen sections lying beside them",
          variants=_SNAPPED_COLUMN),
@@ -742,8 +744,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # material image is a sample of a SURFACE, and whatever it averages to is
     # the colour the painter starts from.
     Skin("ruin-floor", "ruined-paving",
-         "close-up of cracked and heaved grey flagstone paving, dry and dusty, "
-         "a few thin weeds in the cracks",
+         "close-up of cracked and heaved limestone paving, warm pale sandy "
+         "grey, dry and dusty, a few thin weeds in the cracks",
          words="the ground is the RUINED FLOOR of the place — cracked "
                "flagstones and fallen masonry heaved apart, weeds in the "
                "joints; it is not a lawn and not open grass"),
@@ -805,7 +807,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
 
     # --- built things -----------------------------------------------------
     Skin("masonry", "dressed-stone",
-         "close-up of dressed and coursed grey building stone"),
+         "close-up of dressed and coursed limestone ashlar, warm pale "
+         "sandy grey with ochre weathering"),
     # A town street. Both halves are needed and neither is decoration: the
     # walls said "fence" and the road said "planking", on a board that gets no
     # terrain image at all (it is built up, so the depth map is the only
@@ -828,7 +831,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # one. See building_material: the board reads it off the biome the DM
     # already typed, so nothing new has to be asked for.
     Skin("tower-stone", "dressed-stone",
-         "close-up of dressed and coursed grey building stone",
+         "close-up of dressed and coursed limestone ashlar, warm pale "
+         "sandy grey with ochre weathering",
          words="the watchtowers are squat drystone towers, merloned at the top",
          variants=_TOWER, height_ft=16),
     # A timber tower is NOT a stockade. See _TOWER_POST: it is four poles and
@@ -866,7 +870,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          variants=_FLAP, height_ft=8, outward=True, body="tent",
          exact=True),
     Skin("doorway-stone", "dressed-stone",
-         "close-up of dressed and coursed grey building stone",
+         "close-up of dressed and coursed limestone ashlar, warm pale "
+         "sandy grey with ochre weathering",
          words="a low arched doorway is cut through at ground level",
          variants=_DOORWAY, height_ft=16, directional=True),
     Skin("doorway-timber", "log-palisade",
@@ -874,7 +879,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="a plank-framed doorway is cut through at ground level",
          variants=_DOORWAY, height_ft=14, directional=True),
     Skin("parapet", "dressed-stone",
-         "close-up of dressed and coursed grey building stone",
+         "close-up of dressed and coursed limestone ashlar, warm pale "
+         "sandy grey with ochre weathering",
          words="the tower tops are merloned stone parapets",
          variants=_PARAPET, height_ft=9, directional=True),
     Skin("palisade", "log-palisade",
