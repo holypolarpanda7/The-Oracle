@@ -25,6 +25,31 @@ from sqlalchemy import Column, JSON, String, Integer, Boolean
 from sqlmodel import Field, SQLModel
 
 
+class Awareness:
+    """What a creature knows when the dice come out.
+
+    Three states, because two is not enough and four is more than a DM will
+    reliably use:
+
+    * ``ALERT`` — it knows there is a fight and roughly where you are. Every
+      fight before this existed started here, which is why an ambush read the
+      same as a stand-up brawl.
+    * ``SUSPICIOUS`` — it has heard something. It acts on its turn, but it does
+      not know where you are: it SEARCHES rather than attacks, which is exactly
+      the action the board already resolves against a hider's own Stealth roll.
+    * ``UNAWARE`` — it has no idea. It is SURPRISED on the first round, which
+      in 5e means it neither moves nor acts and can take no reaction until that
+      turn ends.
+    """
+
+    ALERT = "alert"
+    SUSPICIOUS = "suspicious"
+    UNAWARE = "unaware"
+    ALL = (ALERT, SUSPICIOUS, UNAWARE)
+    #: Ordered from least to most informed, so escalation is a max().
+    RANK = {UNAWARE: 0, SUSPICIOUS: 1, ALERT: 2}
+
+
 class CombatantKind:
     PC = "pc"
     NPC = "npc"
@@ -99,6 +124,15 @@ class Combatant(SQLModel, table=True):
     # summoner's own creature provoked opportunity attacks from the party and
     # counted as an enemy for flanking and Help.
     side: Optional[str] = Field(default=None, sa_column=Column(String))
+    #: How much this creature knows about the fight it is in: ``alert``,
+    #: ``suspicious`` or ``unaware`` — see :class:`Awareness`.
+    #:
+    #: A fight does not always begin with everyone squared up and looking at
+    #: each other, and until this existed every fight did. A sentry who has
+    #: heard something is not a sentry who has seen you, and a sleeping camp is
+    #: neither. It is per CREATURE and not per side, because half a camp waking
+    #: is the interesting case.
+    awareness: str = Field(default="alert", sa_column=Column(String))
 
     # A conjured creature and the concentration holding it up. Both are needed,
     # not just the summoner: a caster who moves their concentration to another

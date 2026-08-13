@@ -6857,6 +6857,25 @@ _COMBAT_HOOKS_IDLE = (
     "    [[COMBAT: add | goblin | x2]]   (SRD monster; for one the bestiary lacks, base it\n"
     "                                     on a real creature: add | Name | like veteran | tough)\n"
     "The party is seated automatically and initiative is rolled for everyone. Narrate as usual.\n"
+    "A player saying ROLL INITIATIVE means exactly this: start the fight and put the board\n"
+    "out. Do it — do not ask them whether they are sure.\n"
+    "SAY WHAT THE OPPOSITION KNOWS. A fight does not always begin with everyone squared\n"
+    "up, and if you say nothing they are all fully alert:\n"
+    "    [[COMBAT: start | The Sleeping Camp | unaware]]     they have no idea you are there.\n"
+    "                                     Every one of them is SURPRISED: it loses its whole\n"
+    "                                     first turn — no move, no action, no reaction — and\n"
+    "                                     comes out of it suspicious rather than blind\n"
+    "    [[COMBAT: start | The Watchpost | suspicious]]      they have heard SOMETHING but do\n"
+    "                                     not know where you are. On its turn a creature that\n"
+    "                                     can see nobody SEARCHES instead of attacking, rolling\n"
+    "                                     Perception against the Stealth check the board is\n"
+    "                                     already remembering for each hidden creature\n"
+    "Then wake them when the fiction says so — a failed Stealth check, a shout, a slammed\n"
+    "door, a spell going off:\n"
+    "    [[COMBAT: alert]]                everything that can hear now knows where you are\n"
+    "    [[COMBAT: alert | Sentry | suspicious]]   just that one, and only to uneasy\n"
+    "Never roll a creature's Perception yourself and never decide it \"probably noticed\" —\n"
+    "set the state and let the board contest it.\n"
 )
 
 _COMBAT_HOOKS_ACTIVE = (
@@ -7085,6 +7104,46 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                     _combat_enroll_pcs(enc.id, session_id)
                     roster_changed = True
                     started_now = True
+                    # How much the opposition knows, as one word. A fight does
+                    # not always begin with everyone squared up: `unaware` is
+                    # the sleeping camp the party crept into, `suspicious` the
+                    # sentry who heard something. Set on the ENCOUNTER here and
+                    # applied to each creature as it is added, because the
+                    # roster arrives one [[COMBAT: add]] at a time.
+                    aware = ""
+                    for a in args[1:]:
+                        word = str(a).strip().lower().replace("aware=", "")
+                        if word in _AWARENESS_WORDS:
+                            aware = _AWARENESS_WORDS[word]
+                    if aware:
+                        _ENCOUNTER_AWARENESS[enc.id] = aware
+                        notes.append(
+                            "🫥 The opposition is "
+                            + ("caught completely unaware — surprised for the "
+                               "first round" if aware == "unaware"
+                               else "alert to something, but does not know "
+                                    "where you are"))
+                continue
+            if action in ("alert", "aware"):
+                # Something gave the party away — a failed Stealth check, a
+                # shout, a slammed door, a fireball. One call so every path
+                # reaches the same rule.
+                if enc is None:
+                    continue
+                who = [w for w in args if w and "=" not in w]
+                level = "alert"
+                for a in args:
+                    word = str(a).strip().lower().replace("aware=", "")
+                    if word in _AWARENESS_WORDS:
+                        level = _AWARENESS_WORDS[word]
+                        who = [w for w in who if w.strip().lower() != word]
+                woke = combat.raise_awareness(enc.id, names=who or None, to=level)
+                if woke:
+                    names = ", ".join(w["name"] for w in woke)
+                    notes.append(f"🔔 {names} "
+                                 + ("now knows exactly where you are."
+                                    if level == "alert"
+                                    else "has heard something."))
                 continue
             if enc is None:
                 # Harm still lands with no initiative order running: a dog in
@@ -7158,7 +7217,8 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                         combat.add_combatant(
                             enc.id, label, max_hp=built["hp"],
                             armor_class=built["ac"],
-                            monster_slug=built.get("slug"))
+                            monster_slug=built.get("slug"),
+                            awareness=_ENCOUNTER_AWARENESS.get(enc.id, "alert"))
                     if built.get("note"):
                         notes.append(f"⚔ {built['note']}")
                 else:
@@ -7171,8 +7231,9 @@ def apply_combat_hooks(session_id: str, ops: list[dict]) -> list[str]:
                     # them. That is the difference from the old flat 10 HP.
                     for i in range(count):
                         label = name if count == 1 else f"{name} {i + 1}"
-                        combat.add_combatant(enc.id, label, max_hp=hp or 10,
-                                             armor_class=ac)
+                        combat.add_combatant(
+                            enc.id, label, max_hp=hp or 10, armor_class=ac,
+                            awareness=_ENCOUNTER_AWARENESS.get(enc.id, "alert"))
                     notes.append(
                         f"⚠ nothing in the bestiary matches '{name}' and no "
                         f"stat block was given, so it is standing there with "
@@ -7353,6 +7414,25 @@ def _vtt_landmark_names() -> str:
         return ", ".join(n for _s, n in vtt_setpieces.landmark_vocabulary())
     except Exception:
         return ""
+
+
+#: The words a DM might reach for, and the three states they mean.
+#:
+#: Loose on purpose — "asleep", "oblivious" and "unaware" are the same fact
+#: about a fight, and a hook that only accepts the canonical word is a hook the
+#: model gets wrong half the time.
+_AWARENESS_WORDS = {
+    "unaware": "unaware", "asleep": "unaware", "sleeping": "unaware",
+    "oblivious": "unaware", "surprised": "unaware", "ambushed": "unaware",
+    "suspicious": "suspicious", "alerted-ish": "suspicious",
+    "wary": "suspicious", "searching": "suspicious", "uneasy": "suspicious",
+    "alert": "alert", "aware": "alert", "ready": "alert", "waiting": "alert",
+}
+
+#: encounter id -> what its opposition knows, until each creature is added.
+#: The roster arrives one hook at a time, so the preset has to outlive the
+#: [[COMBAT: start]] that set it.
+_ENCOUNTER_AWARENESS: Dict[int, str] = {}
 
 
 _VTT_HOOKS_IDLE = (

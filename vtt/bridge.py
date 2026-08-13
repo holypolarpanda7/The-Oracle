@@ -407,6 +407,19 @@ class BoardSpatial:
         t = self._tok(c)
         return t is not None and bool(t.squeezing)
 
+    def search(self, actor) -> Optional[dict]:
+        """Take the Search action on the board, for a creature the engine runs.
+
+        The engine knows a creature wants to look for something; only the board
+        knows who is hidden, what they rolled and whether this searcher beat it.
+        Same shape as every other board->combat channel: a callback, so the
+        engine keeps knowing nothing about squares.
+        """
+        tok = self.vtt.token_for_combatant(self.map_id, getattr(actor, "id", 0))
+        if tok is None:
+            return None
+        return self.vtt.search(self.map_id, tok.name)
+
     def can_see(self, a, b) -> Optional[bool]:
         """Can ``a`` perceive ``b``? ``None`` when the board can't say.
 

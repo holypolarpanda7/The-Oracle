@@ -954,6 +954,25 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `reveal_from_party` lights the floor each creature is actually standing on.
   `state()` still ships the ground floor's flat, where it has always been, and
   repeats every floor's own inside `levels[]`.
+- **A fight begins with everyone knowing something different.** Until
+  `Combatant.awareness` every fight started squared up, so an ambush read
+  exactly like a stand-up brawl. Three states, per CREATURE (half a camp waking
+  is the interesting case): `alert` knows where you are and is the default;
+  `suspicious` has heard something and, on its turn, SEARCHES rather than
+  swinging at a square it has no reason to think you are in — which runs
+  through the board's existing hide contest, Perception against the Stealth
+  roll it already remembers, with `found_by` kept per creature; `unaware` is
+  SURPRISED on round one, losing move, action and reaction entirely, and comes
+  out of it **suspicious rather than blind**, because a creature that stays
+  unaware after steel is drawn is a statue for the rest of the fight.
+  `[[COMBAT: start | The Sleeping Camp | unaware]]` sets the opposition (the
+  preset outlives the hook, since the roster arrives one `add` at a time), and
+  `[[COMBAT: alert | Sentry | suspicious]]` is the one call every waking —
+  a failed Stealth check, a shout, a slammed door, a spell — routes through.
+  Escalation only ever goes UP: a creature that has seen you does not go back
+  to wondering. **The DM sets the state and the board contests it**; the prompt
+  says outright never to roll a creature's Perception by hand. "Roll
+  initiative" from a player means start the fight and put the board out.
 - **A jump is the one way over what you cannot walk.** Boards grew chasms,
   ten-foot channels, ledges and stacked terraces and there was no rule for
   going OVER any of it — a creature could climb at a foot per foot or walk

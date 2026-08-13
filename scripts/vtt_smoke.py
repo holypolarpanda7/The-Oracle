@@ -197,7 +197,31 @@ def main() -> int:
         check("the DM can put the board away",
               m.vtt_engine.active_scene(session_id) is None)
 
-    print("\n\033[1m7. the board's HEIGHT reaches the DM\033[0m")
+    print("\n\033[1m7. creeping in: the camp is surprised, then wakes\033[0m")
+    # A fight that begins with everyone squared up is the only fight the engine
+    # could describe until awareness existed. This is the other one.
+    say("We creep up on the camp.",
+        "Three of them are asleep around the embers.\n"
+        "[[COMBAT: start | The Sleeping Camp | unaware]]\n"
+        "[[COMBAT: add | bandit | x2]]")
+    enc2 = m.combat.get_active(session_id)
+    roster = [c for c in m.combat.order(enc2.id) if c.kind != "pc"]
+    check("the foes are seated UNAWARE",
+          roster and all(c.awareness == "unaware" for c in roster),
+          str([(c.name, c.awareness) for c in roster]))
+    # Their first turn is spent being surprised, and they wake into suspicion.
+    first = roster[0]
+    m.combat.set_current(enc2.id, first.id) if hasattr(m.combat, "set_current") else None
+    say("I hold still.", "Nothing stirs.")
+    check("…and a hook can wake the whole camp",
+          bool(m.combat.raise_awareness(enc2.id, to="alert")))
+    woken = [c for c in m.combat.order(enc2.id) if c.kind != "pc"]
+    check("…which leaves every one of them alert",
+          all(c.awareness == "alert" for c in woken),
+          str([(c.name, c.awareness) for c in woken]))
+    say("We finish it.", "The camp is quiet again.\n[[COMBAT: end]]")
+
+    print("\n\033[1m8. the board's HEIGHT reaches the DM\033[0m")
     # Nearly every archetype generates high ground now, and a DM who is not
     # told about it will fight on the floor forever. The board reported height
     # only on a creature's own line until this was added, which is no use for
@@ -216,7 +240,7 @@ def main() -> int:
               board.split("\n")[2][:120] if raised else "no elevation")
         say("We back out.", "The hall goes quiet.\n[[VTT: close]]")
 
-    print("\n\033[1m8. the DM narrates a landmark, and it is really there\033[0m")
+    print("\n\033[1m9. the DM narrates a landmark, and it is really there\033[0m")
     # The whole chain for one sentence of fiction: loose words -> a catalogue
     # slug -> a board grown to hold it -> squares that stop a creature. Until
     # this channel existed the ziggurat was in the narration and nowhere else.

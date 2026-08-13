@@ -29,7 +29,7 @@ from dice import roll as dice_roll, ability_modifier
 from rules import damage as dmg
 from rules.models import Monster
 
-from .models import Encounter, Combatant, CombatantKind
+from .models import Awareness, Encounter, Combatant, CombatantKind
 
 
 def _default_engine(database_url: Optional[str] = None) -> Engine:
@@ -80,6 +80,63 @@ class CombatTracker:
 
     def create_tables(self) -> None:
         SQLModel.metadata.create_all(self.engine)
+        # `create_all` makes missing TABLES and nothing else, so a new column on
+        # an existing database is a column that is simply not there and every
+        # query naming it fails. Same ad-hoc migration the board and the world
+        # graph use.
+        try:
+            with self.engine.begin() as conn:
+                have = {r[1] for r in conn.exec_driver_sql(
+                    'PRAGMA table_info("combat_combatant")')}
+                if have and "awareness" not in have:
+                    conn.exec_driver_sql(
+                        'ALTER TABLE "combat_combatant" ADD COLUMN '
+                        "awareness VARCHAR DEFAULT 'alert'")
+        except Exception as e:      # never block a fight on a migration
+            print(f"[combat] awareness column check failed: {e}")
+
+    def set_awareness(self, combatant_id: int, awareness: str) -> dict:
+        """Set what one creature knows. Returns what changed.
+
+        Escalation only ever goes UP through :attr:`Awareness.RANK` unless the
+        DM says otherwise outright — a creature that has seen you does not go
+        back to wondering because the next round is quiet, and a fight where
+        alertness could silently decay would be one nobody could reason about.
+        """
+        with Session(self.engine) as s:
+            c = s.get(Combatant, combatant_id)
+            if c is None:
+                return {"ok": False, "reason": "no such combatant"}
+            want = awareness if awareness in Awareness.ALL else Awareness.ALERT
+            was = c.awareness or Awareness.ALERT
+            c.awareness = want
+            s.add(c)
+            s.commit()
+            return {"ok": True, "name": c.name, "was": was, "now": want}
+
+    def raise_awareness(self, encounter_id: int, *, names: Optional[list[str]] = None,
+                        to: str = Awareness.ALERT) -> list[dict]:
+        """Wake creatures up. Everything on the NPC side unless names are given.
+
+        This is what a failed Stealth check, a shout, a slammed door or a
+        thrown fireball actually does to a room, and it is one call so every
+        one of those paths reaches the same rule.
+        """
+        want = to if to in Awareness.ALL else Awareness.ALERT
+        out: list[dict] = []
+        wanted = {n.strip().lower() for n in (names or []) if n.strip()}
+        for c in self.order(encounter_id):
+            if c.kind == CombatantKind.PC:
+                continue
+            if wanted and c.name.lower() not in wanted:
+                continue
+            if Awareness.RANK.get(c.awareness or Awareness.ALERT, 2) >= \
+                    Awareness.RANK.get(want, 2):
+                continue
+            got = self.set_awareness(c.id, want)
+            if got.get("ok"):
+                out.append(got)
+        return out
 
     # ----- encounters -----
 
@@ -151,6 +208,7 @@ class CombatTracker:
         monster_slug: Optional[str] = None,
         notes: Optional[str] = None,
         side: Optional[str] = None,
+        awareness: str = Awareness.ALERT,
     ) -> Combatant:
         with Session(self.engine) as s:
             c = Combatant(
@@ -159,6 +217,8 @@ class CombatTracker:
                 armor_class=armor_class, dex_mod=dex_mod, initiative=initiative,
                 character_id=character_id, monster_slug=monster_slug,
                 conditions=[], notes=notes, side=side,
+                awareness=(awareness if awareness in Awareness.ALL
+                           else Awareness.ALERT),
             )
             s.add(c)
             s.commit()

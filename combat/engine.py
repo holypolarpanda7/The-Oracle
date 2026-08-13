@@ -38,7 +38,7 @@ from dice.mechanics import ability_check, attack_roll, damage_roll, saving_throw
 from rules import damage as dmgtypes
 from rules.models import Monster, Spell
 
-from .models import Combatant
+from .models import Awareness, Combatant
 from .tracker import CombatTracker
 
 
@@ -2058,6 +2058,32 @@ class CombatEngine:
         rep.events.append({"kind": "disengage", "actor": actor.name, "rolls": [],
                            "notes": ["Cunning Action"] if paid == "bonus" else []})
 
+    def _do_search(self, encounter_id, actor, intent, profiles, rep):
+        """Take the Search action, and let the BOARD do the finding.
+
+        The board has resolved hiding as a contest since the hide rules went in
+        — a Stealth roll it remembers, a Perception check against that number,
+        and a `found_by` list so the guard who spotted you sees you while the
+        rest of the room does not. Nothing ever took the Search action except a
+        player typing it. A creature that has heard something and cannot see
+        anyone now does, which is what makes an ambush a thing you can lose.
+        """
+        spent = self._spend_action_or_cunning(actor, rep, intent, profiles, "Search")
+        if spent is None:
+            return
+        ev = {"kind": "search", "actor": actor.name, "rolls": [], "notes": []}
+        finder = getattr(self.spatial, "search", None) if self.spatial else None
+        if finder is None:
+            ev["notes"].append("searches, but there is no board to search")
+            rep.events.append(ev)
+            return
+        got = finder(actor) or {}
+        found = [f.get("name") for f in (got.get("found") or [])]
+        ev["notes"].append(
+            f"searches and finds {', '.join(found)}" if found
+            else "searches and finds nothing")
+        rep.events.append(ev)
+
     def _do_dodge(self, encounter_id, actor, intent, profiles, rep):
         if not self._spend_action(actor, rep, intent, "Dodge"):
             return
@@ -2602,6 +2628,18 @@ class CombatEngine:
         instinct, not a chess engine, and a fight the players cannot predict at
         all is not more fun than one they can read.
         """
+        # A creature that has only HEARD something does not know where you are.
+        # It searches — which is the action the board already resolves against
+        # each hider's own Stealth roll — rather than swinging at a square it
+        # has no reason to think you are standing in. Only when it can see
+        # nobody: once a target is in the open, being suspicious is moot.
+        if (cur.awareness or Awareness.ALERT) == Awareness.SUSPICIOUS:
+            seen = None
+            if self.spatial is not None and hasattr(self.spatial, "can_see"):
+                seen = any(self.spatial.can_see(cur, f) for f in foes)
+            if seen is False:
+                return [{"verb": "search", "actor": cur.name}]
+
         atks = self._monster_attacks(cur)
         has_ranged = any(a["ranged"] for a in atks)
         has_melee = any(not a["ranged"] for a in atks)
@@ -2647,6 +2685,24 @@ class CombatEngine:
         rep = TurnReport()
         if cur is None or cur.kind == "pc":
             rep.rejections.append({"reason": "Not a monster's turn."})
+            return rep
+        enc = self.tracker.get_encounter(encounter_id)
+        rnd = int(getattr(enc, "round", 1) or 1)
+        if (cur.awareness or Awareness.ALERT) == Awareness.UNAWARE and rnd <= 1:
+            # SURPRISED. 5e is precise about this and it is worth being precise
+            # too: no move, no action, and no reaction until the turn ends. It
+            # applies to the first round only, so the creature comes out of it
+            # SUSPICIOUS rather than unaware — steel has been drawn and someone
+            # is shouting, even if it still cannot see who. Without that it
+            # would be surprised for the whole fight, which is a statue.
+            self.tracker.update_economy(cur.id, action_used=True, bonus_used=True,
+                                        reaction_used=True, move_left=0)
+            self.tracker.set_awareness(cur.id, Awareness.SUSPICIOUS)
+            rep.events.append({"kind": "skip", "actor": cur.name, "rolls": [],
+                               "notes": ["SURPRISED — caught unaware, and loses "
+                                         "this turn entirely"]})
+            self.tracker.next_turn(encounter_id)
+            rep.turn_over = True
             return rep
         if cur.defeated or (self._conds(cur) & _CANNOT_ACT):
             rep.events.append({"kind": "skip", "actor": cur.name, "rolls": [],
