@@ -954,6 +954,20 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `reveal_from_party` lights the floor each creature is actually standing on.
   `state()` still ships the ground floor's flat, where it has always been, and
   repeats every floor's own inside `levels[]`.
+- **A jump is the one way over what you cannot walk.** Boards grew chasms,
+  ten-foot channels, ledges and stacked terraces and there was no rule for
+  going OVER any of it — a creature could climb at a foot per foot or walk
+  round. `VttEngine.jump` uses the SRD's numbers as written: a running long
+  jump clears the creature's STRENGTH SCORE in feet, a standing one half that,
+  and "running" means it has already moved 10 ft this turn (checked, not
+  assumed). **The squares crossed are not checked and the landing is
+  everything** — that is what a jump IS — so the landing must be somewhere the
+  creature could stand, empty, and no more than a high jump above the take-off:
+  a ten-foot ledge is a CLIMB, and letting a hop reach it would quietly delete
+  the climb rule. Landing lower reports the drop exactly as stepping off does,
+  and the jump costs its own distance in movement, because a jump is movement
+  and not a free way across difficult ground. Strength is read off the stat
+  block or the sheet with the `senses` lazy-lookup pattern and degrades to 10.
 - **A rider has no movement of their own.** `MapToken.mounted_on` names the
   mount (on the RIDER, the same shape as `grappled_by` and for the same reason:
   the carried one is whose movement stops being its own). They share the

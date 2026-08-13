@@ -1198,6 +1198,40 @@ def test_setpieces() -> None:
     eq("nothing stands in solid rock",
        sp.setpieces_for(walled, ["boulder-heap"], seed=1), [])
 
+    # --- jumping a gap ----------------------------------------------------
+    # Boards grew chasms, channels ten feet deep and stacked terraces, and
+    # there was no rule for going OVER any of it: you could climb at a foot per
+    # foot or walk round. The SRD's numbers are unusually concrete, so they are
+    # used as written — a running long jump clears your Strength SCORE in feet.
+    import tempfile as _tf3
+    _jdb = os.path.join(_tf3.mkdtemp(), "jump.db")
+    _jv = VttEngine(database_url=f"sqlite:///{_jdb}")
+    _jv.create_tables()
+    _js = _jv.open_scene("test:jump", kind="combat", archetype="open",
+                         width=16, height=10, seed=3, render_art=False)
+    for _x in range(16):
+        for _y in range(10):
+            _jv.set_terrain(_js.id, [(_x, _y)], "g")
+    _jv.set_terrain(_js.id, [(8, _y) for _y in range(10)], "x")   # a channel
+    _lp = _jv.add_token(_js.id, "Leaper", kind="pc", team="party",
+                        x=7, y=5, speed_ft=30)
+    eq("a standing jump is half a running one",
+       _jv.jump_reach_ft(_lp.id, running=False)["long_ft"] * 2,
+       _jv.jump_reach_ft(_lp.id, running=True)["long_ft"])
+    check("a standing jump will not clear the channel",
+          not _jv.jump(_lp.id, 9, 5)["ok"])
+    _jv.update_token(_lp.id, moved_ft=10)          # ten feet of run-up
+    _leapt = _jv.jump(_lp.id, 9, 5)
+    check("…and a running one does", _leapt.get("ok"), str(_leapt))
+    eq("the jump costs its own distance in movement",
+       _jv.get_token(_lp.id).moved_ft, 20)
+    check("you cannot walk into the channel it cleared",
+          not _jv.move_token(_lp.id, 8, 5).get("ok"))
+    _jv.set_elevation(_js.id, [(9, 5)], 20)
+    _jv.update_token(_lp.id, moved_ft=10)
+    check("a ledge two storeys up has to be climbed, not hopped",
+          not _jv.jump(_lp.id, 9, 5)["ok"])
+
     # --- a monster takes the high ground ----------------------------------
     # The DM prompt tells the LLM to contest height; this is the half of the
     # fight the LLM never touches. The engine decides a BAND and the bridge

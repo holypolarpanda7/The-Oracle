@@ -7316,7 +7316,7 @@ _VTT_HOOK_ACTIONS = {"open", "close", "place", "move", "remove", "effect",
                      "clear", "terrain", "door", "reveal", "ping", "elevation",
                      # A handler with no entry here is silently dropped before
                      # it ever reaches the dispatcher — add both, always.
-                     "blink", "push", "pull", "token",
+                     "blink", "jump", "push", "pull", "token",
                      "grapple", "release", "restrain", "free", "prone",
                      "stand", "swap", "damage",
                      "hide", "search", "unhide", "mount", "dismount",
@@ -7418,6 +7418,16 @@ _VTT_HOOKS_ACTIVE = (
     "                                         cover, which means you cannot be targeted\n"
     "                                         at all and may then Hide. It does not work\n"
     "                                         against anything shooting down from above\n"
+    "    [[VTT: jump | Kara | 12,7]]          LEAP a gap — a chasm, a channel, the\n"
+    "                                         drop between two terraces. The squares\n"
+    "                                         crossed are not checked, only the landing:\n"
+    "                                         a running jump clears the creature's\n"
+    "                                         STRENGTH SCORE in feet (half standing, and\n"
+    "                                         running means it has already moved 10 ft\n"
+    "                                         this turn). It costs that distance in\n"
+    "                                         movement, and landing more than a few feet\n"
+    "                                         higher is a CLIMB, not a jump — the board\n"
+    "                                         says so and names the number\n"
     "    [[VTT: swap | Kara | Sable]]         two creatures change places\n"
     "  open takes a size when the roster doesn't tell the whole story:\n"
     "    [[VTT: open | combat | steppe | The Charge | scale=mounted]]\n"
@@ -7808,6 +7818,21 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                 continue
             if scene is None:
                 continue  # every other verb needs a live board
+
+            if action == "jump":
+                if not positional:
+                    continue
+                tok = vtt_engine.find_token(scene.id, positional[0])
+                sq = _vtt_square(positional[1] if len(positional) > 1
+                                 else kv.get("to"))
+                if not tok or not sq:
+                    continue
+                res = vtt_engine.jump(tok.id, sq[0], sq[1])
+                notes.append(("🦶 " + res["detail"]) if res.get("ok")
+                             else f"🦶 {tok.name} cannot jump there: {res.get('reason')}")
+                if res.get("fall_ft"):
+                    notes.append(f"…and lands {res['fall_ft']} ft below — that is a fall.")
+                continue
 
             if action == "close":
                 vtt_engine.close_scene(scene.id)

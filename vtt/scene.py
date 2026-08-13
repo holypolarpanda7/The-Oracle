@@ -1609,6 +1609,137 @@ class VttEngine:
             out["fall_ft"] = drop
         return out
 
+    def _strength_of(self, t: MapToken) -> int:
+        """A creature's Strength score, best effort — the senses precedent.
+
+        The rules tables are a separate lifecycle from the board, so this
+        degrades rather than refuses: an unknown creature is a 10, which is a
+        ten-foot running jump and the plainest answer there is.
+        """
+        try:
+            if t.monster_slug:
+                from rules.query import RulesLibrary
+                m = RulesLibrary(engine=self.engine).get_monster(t.monster_slug)
+                if m is not None and m.strength:
+                    return int(m.strength)
+            if t.character_id:
+                from sqlmodel import text as _t
+                with Session(self.engine) as s:
+                    row = s.exec(_t("SELECT stats FROM character WHERE id = :i")
+                                 .bindparams(i=int(t.character_id))).first()
+                if row and row[0]:
+                    import json
+                    stats = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                    got = stats.get("strength") or stats.get("STR")
+                    if got:
+                        return int(got)
+        except Exception as e:
+            print(f"[vtt] strength lookup failed for {t.name}: {e}")
+        return 10
+
+    def jump_reach_ft(self, token_id: int, *, running: bool = True) -> dict:
+        """How far and how high this creature can jump, in feet.
+
+        The SRD's numbers, which are unusually concrete: a running long jump
+        clears your STRENGTH SCORE in feet, a standing one half that; a running
+        high jump is 3 + your Strength modifier, a standing one half. Running
+        means ten feet of movement first, which the board checks rather than
+        assumes.
+        """
+        t = self.get_token(token_id)
+        if t is None:
+            return {"long_ft": 0, "high_ft": 0}
+        score = self._strength_of(t)
+        mod = (score - 10) // 2
+        long_ft = score if running else score // 2
+        high_ft = max(1, 3 + mod) if running else max(1, (3 + mod) // 2)
+        return {"long_ft": int(long_ft), "high_ft": int(high_ft),
+                "strength": score, "running": bool(running)}
+
+    def jump(self, token_id: int, x: int, y: int, *,
+             enforce_speed: bool = True) -> dict:
+        """Leap a gap in a straight line. The one way to cross what you cannot walk.
+
+        Boards grew chasms, channels ten feet deep, ledges and stacked
+        terraces, and there was no rule for going OVER any of it — a creature
+        could climb (a foot per foot) or walk round, and that is not what a
+        player does when a channel is in the way.
+
+        The squares CROSSED are not checked, which is the whole point of a
+        jump: what matters is the landing. The landing square must be somewhere
+        this creature could stand, empty, and no higher above the take-off than
+        a high jump reaches — a ten-foot ledge is a CLIMB, not a hop, and
+        pretending otherwise would quietly delete the climb rule. Landing lower
+        is legal and reports the drop exactly as stepping off does.
+
+        Costs movement equal to the distance jumped, because a jump is movement
+        (it is not a free way to cross difficult ground).
+        """
+        t = self.get_token(token_id)
+        if t is None:
+            return {"ok": False, "reason": "no such token"}
+        row = self.get_scene(t.map_id)
+        if row is None or not row.active:
+            return {"ok": False, "reason": "no board is out"}
+        if (t.movement_mode or "walk") == "fly":
+            return {"ok": False, "reason": f"{t.name} is flying — no need to jump"}
+        if not self.grid_of(row, int(t.level or 0)).in_bounds(x, y):
+            return {"ok": False, "reason": "off the board"}
+
+        dx, dy = x - t.x, y - t.y
+        if dx == 0 and dy == 0:
+            return {"ok": False, "reason": "already there"}
+        # A jump is a straight line: along a row, a column or a true diagonal.
+        if dx and dy and abs(dx) != abs(dy):
+            return {"ok": False,
+                    "reason": f"{t.name} can only jump in a straight line"}
+
+        moved = int(t.moved_ft or 0)
+        running = moved >= 10
+        reach = self.jump_reach_ft(token_id, running=running)
+        dist_ft = geo.distance_ft((t.x, t.y), (x, y), row.square_ft)
+        if dist_ft > reach["long_ft"]:
+            how = "running" if running else "standing"
+            return {"ok": False,
+                    "reason": (f"{t.name} can clear {reach['long_ft']} ft with a "
+                               f"{how} jump, and that is {dist_ft} ft"
+                               + ("" if running else
+                                  " — 10 ft of movement first makes it a running jump"))}
+
+        rise = self._height_at(row, (x, y)) - self._height_at(row, (t.x, t.y))
+        if rise > reach["high_ft"]:
+            return {"ok": False,
+                    "reason": (f"{t.name} can jump {reach['high_ft']} ft up and that "
+                               f"landing is {rise} ft higher — it has to be climbed")}
+
+        grid = self.grid_of(row, int(t.level or 0))
+        mode = t.movement_mode or self.board_mode(row)
+        if not grid.passable(x, y, mode=mode):
+            return {"ok": False,
+                    "reason": f"{t.name} cannot land on {x},{y}"}
+        if (x, y) in self._occupied(t.map_id, exclude=t.id,
+                                    level=int(t.level or 0)):
+            return {"ok": False, "reason": f"{x},{y} is occupied"}
+        if enforce_speed and dist_ft > max(0, int(t.speed_ft or 30) - moved):
+            return {"ok": False,
+                    "reason": (f"{t.name} has {max(0, int(t.speed_ft or 30) - moved)} ft "
+                               f"of movement left and the jump is {dist_ft} ft")}
+
+        self._place(t.id, (x, y))
+        self.update_token(t.id, moved_ft=moved + dist_ft)
+        out = {"ok": True, "x": x, "y": y, "distance_ft": dist_ft,
+               "running": running, "cleared": reach["long_ft"],
+               "detail": (f"{t.name} {'takes a run and clears' if running else 'jumps'} "
+                          f"{dist_ft} ft to {x},{y}")}
+        drop = -rise
+        if drop >= 10:
+            out["fall_ft"] = drop
+        self._log(t.map_id, row.session_id, "jump", actor=t.name,
+                  summary=out["detail"],
+                  payload={"token_id": token_id, "to": [x, y], "ft": dist_ft})
+        self._bump(t.map_id)
+        return out
+
     def blink(self, token_id: int, x: int, y: int, *,
               self_range_ft: int = 10, ally_range_ft: int = 5,
               ally_within_ft: int = 30, cost_fraction: float = 0.5,
