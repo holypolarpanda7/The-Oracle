@@ -1674,6 +1674,21 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   "da mage", or every rider written that way is silently dropped. The scan for
   these is cheap — a spell name with a one- or two-letter token in the middle,
   or a capital letter mid-word, is almost always mangled.
+  `scripts/repair_book_names.py` is the tool (audit by default, `--apply` to
+  write), and it needed THREE lessons from the data. The extractor SUBSTITUTES
+  letters as well as inserting spaces — "brgbyshand" for "bigbyshand" — so
+  subsequence matching finds nothing and similarity is the only thing that
+  works. It corrupts the SCHOOL too (Prayer of Healing came back Abjuration),
+  so a spaced-apart row may be matched on its LEVEL alone, with the MARGIN as
+  the discriminator: every true twin scored 0.81-0.93 while its runner-up
+  scored 0.42-0.53. And similarity ALONE is unsafe — "Invisibility" and "See
+  Invisibility" are 0.889 alike and are two different spells — so a merely
+  MIS-SPELLED duplicate ("Protection From Evil And Goon", which trips no
+  spacing heuristic at all) is matched under a stricter rule that also requires
+  the school to agree. Nothing is ever deleted unless the row that stays is
+  proved at least as complete on every field AND longer in description —
+  `rules_*` is not disposable, since the owned-book half only comes back from
+  a full re-parse of the user's PDF library.
 - **A buff spell that adds damage to your ATTACKS did nothing at all.** Spirit
   Shroud, Conjure Minor Elementals, Hunter's Mark, Hex, Divine Favor and
   Elemental Weapon deal no damage themselves — they add dice to your attacks
