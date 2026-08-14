@@ -234,6 +234,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `legendary` (a boss's Legendary Resistance parsed from OCR prose and
   SPENT by the engine until it runs out, and its legendary actions
   reaching the DM's brief at all),
+  `spell_rider` (a buff spell adding its dice to real attacks: scaling with
+  the slot, replaced not stacked, a mark paying out only against its
+  quarry, and ending with the concentration that held it),
   `spell_scaling` (a cantrip growing with the caster and a spell with its
   slot, the two spells a generic rule would wreck, damaged book text
   flagged rather than guessed, and the curated flat damage map),
@@ -1658,6 +1661,28 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   already a string the tracker persists. The per-round action count is NOT in
   this bestiary's parse, so it defaults to 3 and says so rather than pretending
   to have read it.
+- **A buff spell that adds damage to your ATTACKS did nothing at all.** Spirit
+  Shroud, Conjure Minor Elementals, Hunter's Mark, Hex, Divine Favor and
+  Elemental Weapon deal no damage themselves — they add dice to your attacks
+  for the duration, and the engine had no concept of "an active spell that
+  modifies a later attack". Casting one from the action bar spent the slot, set
+  concentration, and changed nothing: the whole point of the spell landed only
+  if the DM remembered it. The machinery was already there and unused —
+  `blessed` proves the shape (a condition on the attacker, read inside
+  `_do_attack`), and a condition already carries STATE (`sapped:4`,
+  `legres:3`). A rider now rides as `rider:<spell>:<dice>[:<type>][:<target>]`
+  on the caster and is added as its OWN typed lump beside Sneak Attack and
+  Smite. **No dice are written in the registry** — `_SPELL_EFFECTS` says only
+  THAT a spell rides and what cannot be derived (an emanation's radius, whether
+  it marks one creature); the numbers come from the spell row via
+  `spell_scaling.rider_dice`, so an upcast scales them and a house rule in the
+  overrides slot changes them. `parse_damage` cannot find these numbers, which
+  is why they were invisible: it wants the damage TYPE adjacent to the dice,
+  and every one of these spells names its type in a separate sentence.
+  Re-casting REPLACES rather than stacks, a marking rider pays out only against
+  its quarry, an emanation rider is checked against the board when there is one
+  and allowed when there is not, and `set_concentration` — already the one
+  place a summon dies — is the one place a rider ends.
 - **A spell GROWS, and neither growth rule reached a die roll.** The engine read
   the structured `damage_at_slot_level` / `damage_at_character_level` rows
   correctly — and only 17 of 430 spells here have them, so almost every spell

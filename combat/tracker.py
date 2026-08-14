@@ -639,6 +639,16 @@ class CombatTracker:
             # casting. Every caller here is a real event (a cast, a drop, a
             # failed save), so there is no redundant set to protect against.
             dismissed = self._dismiss_summons(s, combatant_id, was)
+            # ...and the ONE place a per-attack rider ends, for the same
+            # reason: every way concentration drops routes through here, so a
+            # Spirit Shroud that stopped being concentrated on stops adding
+            # damage without each caller having to remember it.
+            if was:
+                keep = [x for x in (c.conditions or [])
+                        if not str(x).lower().startswith(
+                            f"rider:{str(was).strip().lower()}:")]
+                if len(keep) != len(c.conditions or []):
+                    c.conditions = keep
             s.add(c)
             s.commit()
             s.refresh(c)

@@ -227,3 +227,55 @@ def scaling_note(spell: Any) -> str:
     if sc.upcast_unreadable:
         return "upcast: this spell scales, but the book text is damaged — rule it"
     return ""
+
+
+# "deals an extra 1d8 damage", "deal an extra ld6 Force damage" — the phrasing
+# every per-attack rider spell uses. The type may sit between the dice and the
+# word "damage", or in a whole separate sentence (Spirit Shroud and Conjure
+# Minor Elementals both name it later), which is why `damage.parse_damage`
+# cannot find these: it wants the type adjacent.
+_RIDER_RX = re.compile(
+    r"extra\s+(?P<dice>[0-9lIiOoS]{1,3}\s*[dD]\s*[0-9lIiOoS]{1,3})"
+    r"(?:\s+(?P<type>[A-Za-z]+))?\s+damage", re.I)
+
+#: Words that follow the dice but are not a damage type.
+_NOT_A_TYPE = {"damage", "of", "when", "to", "on", "against", "per", "and"}
+
+
+def rider_dice(spell: Any, *, slot_level: Optional[int] = None,
+               character_level: int = 1) -> Optional[str]:
+    """The per-attack damage a buff spell adds, already grown for the slot.
+
+    Spirit Shroud, Conjure Minor Elementals, Hunter's Mark and their kin do not
+    deal damage themselves — they add dice to YOUR attacks for the duration.
+    Nothing could read that: the number sits in prose with its type in another
+    sentence, so ``parse_damage`` returns nothing and the spell's whole effect
+    was invisible to the engine.
+    """
+    m = _RIDER_RX.search(_dehyphenate(str(getattr(spell, "desc", None) or "")))
+    if not m:
+        return None
+    base = clean_dice(m.group("dice"))
+    if not base:
+        return None
+    return scaled_dice(spell, base, character_level=character_level,
+                       slot_level=slot_level)
+
+
+def rider_type(spell: Any) -> Optional[str]:
+    """The rider's damage type when the text names one adjacent to the dice.
+
+    Returns None when the spell lets the caster choose (Conjure Minor
+    Elementals: "Acid, Cold, Fire, or Lightning (your choice)") — the caller
+    then treats it as untyped, which the damage layer passes through unreduced
+    rather than guessing a resistance interaction.
+    """
+    m = _RIDER_RX.search(_dehyphenate(str(getattr(spell, "desc", None) or "")))
+    if not m:
+        return None
+    word = (m.group("type") or "").strip().lower()
+    if not word or word in _NOT_A_TYPE:
+        return None
+    from .damage import normalize_type
+    return normalize_type(word)
+

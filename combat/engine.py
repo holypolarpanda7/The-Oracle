@@ -191,6 +191,19 @@ _SPELL_EFFECTS: dict[str, dict] = {
     "bane": {"save_condition": "baned", "targets": 3, "upcast_targets": True},
     "faerie fire": {"save_condition": "faerie fire"},
     "bless": {"ally_condition": "blessed", "targets": 3, "upcast_targets": True},
+    # Per-attack RIDERS: spells that deal no damage themselves and instead add
+    # dice to your attacks for the duration. Every one of these did nothing at
+    # all — the engine had no concept of an active spell that modifies a later
+    # attack, so the whole point of the spell landed only if the DM remembered.
+    # No dice are written here on purpose: they are read from the spell's own
+    # row (rules/spell_scaling.rider_dice), so an upcast scales them and a
+    # house rule in the overrides slot changes them.
+    "conjure minor elementals": {"attack_rider": True, "rider_radius_ft": 15},
+    "spirit shroud": {"attack_rider": True, "rider_radius_ft": 10},
+    "hunter's mark": {"attack_rider": True, "rider_marks": True},
+    "hex": {"attack_rider": True, "rider_marks": True},
+    "divine favor": {"attack_rider": True},
+    "elemental weapon": {"attack_rider": True},
     "magic missile": {"missiles": True},
     "misty step": {"teleport": True},
     "cure wounds": {"heal": "d8"},
@@ -1607,6 +1620,23 @@ class CombatEngine:
                                                  expr=f"{ndice}d8"))
                     notes.append(f"Divine Smite +{sm.total} (level-{lv} slot)")
 
+            # Per-attack SPELL riders (Spirit Shroud, Conjure Minor Elementals,
+            # Hunter's Mark...). Its own typed lump like every rider here, so a
+            # resistance to the rider's type applies to it and not to the
+            # weapon. Untyped when the spell lets the caster choose the type at
+            # the moment of the attack — untyped damage passes through the
+            # damage layer unreduced rather than guessing which one they picked.
+            for _spell, _dice, _dtype in self._attack_riders(actor, target):
+                _r = damage_roll(_dice, crit=atk.is_crit, rng=self.rng)
+                total += _r.total
+                parts.append((dmgtypes.Packet(
+                    dice=_dice, type=(_dtype or None), magical=True,
+                    label=_spell.title()), _r.total))
+                rolls.append(self._roll_dict(_spell.title(), _r.detail,
+                                             _r.total, expr=_dice))
+                notes.append(f"{_spell.title()} +{_r.total}"
+                             + (f" {_dtype}" if _dtype else ""))
+
             # Rage — flat bonus on melee damage while raging.
             if (pc_prof and "rage" in pc_prof.features
                     and not prof.get("ranged")
@@ -2412,6 +2442,10 @@ class CombatEngine:
         eff = _SPELL_EFFECTS.get(name_l)
         base_lv = (sp.level if sp else 1) or 1
 
+        if eff and eff.get("attack_rider"):
+            self._apply_attack_rider(actor, sp, eff, slot_spent or base_lv,
+                                     prof, target, ev)
+
         if eff and eff.get("missiles") and target is not None:
             # Magic Missile: auto-hit darts, +1 per slot level above 1st.
             darts = 3 + max(0, (slot_spent or base_lv) - base_lv)
@@ -2626,6 +2660,74 @@ class CombatEngine:
                 return t
         packets = dmgtypes.parse_damage(getattr(sp, "desc", None))
         return packets[0].type if packets else None
+
+    #: A rider rides as ``rider:<spell>:<dice>[:<type>][:<target>]`` on the
+    #: CASTER. A condition is already a string the tracker persists — the same
+    #: place a mastery rider stamps its expiry and a boss counts its Legendary
+    #: Resistances — so an active spell needs no second table.
+    RIDER_PREFIX = "rider:"
+
+    def _apply_attack_rider(self, actor: Combatant, sp, eff: dict,
+                            slot: int, prof, target, ev: dict) -> None:
+        """Record a per-attack damage rider on the caster for the duration."""
+        from rules.spell_scaling import rider_dice, rider_type
+        dice = rider_dice(sp, slot_level=slot,
+                          character_level=(prof.level if prof else 1))
+        if not dice:
+            # The book says it rides and the text did not survive the parse.
+            # Same doctrine as an unreadable upcast: tell the DM, guess nothing.
+            ev["notes"].append(
+                f"{sp.name} adds damage to your attacks, but its dice are "
+                f"unreadable in the book text — rule it")
+            return
+        name_l = (sp.name or "").strip().lower()
+        for raw in list(actor.conditions or []):          # one casting at a time
+            if str(raw).lower().startswith(f"{self.RIDER_PREFIX}{name_l}:"):
+                self.tracker.remove_condition(actor.id, str(raw))
+        dtype = rider_type(sp) or ""
+        mark = ""
+        if eff.get("rider_marks") and target is not None:
+            mark = f":{target.name}"
+        self.tracker.add_condition(
+            actor.id, f"{self.RIDER_PREFIX}{name_l}:{dice}:{dtype}{mark}")
+        where = (f" against a creature within {eff['rider_radius_ft']} ft"
+                 if eff.get("rider_radius_ft") else
+                 f" against {target.name}" if mark else "")
+        ev["notes"].append(f"{sp.name}: your attacks deal +{dice}"
+                           f"{' ' + dtype if dtype else ''} damage{where}")
+
+    def _attack_riders(self, actor: Combatant, target: Combatant
+                       ) -> list[tuple[str, str, str]]:
+        """Active per-attack riders that apply to THIS attack.
+
+        Returns ``(spell, dice, type)``. A rider that marked one creature only
+        pays out against that creature; an emanation rider is checked against
+        the board when there is one and allowed when there is not — the lenient
+        direction ``_material_check`` already errs in.
+        """
+        out: list[tuple[str, str, str]] = []
+        for raw in (actor.conditions or []):
+            s = str(raw)
+            if not s.lower().startswith(self.RIDER_PREFIX):
+                continue
+            parts = s.split(":")
+            if len(parts) < 3:
+                continue
+            spell, dice, dtype = parts[1], parts[2], (parts[3] if len(parts) > 3 else "")
+            marked = parts[4] if len(parts) > 4 else ""
+            if marked and marked.strip().lower() != (target.name or "").strip().lower():
+                continue
+            eff = _SPELL_EFFECTS.get(spell, {})
+            radius = eff.get("rider_radius_ft")
+            if radius and self.spatial is not None:
+                try:
+                    d = self.spatial.distance_ft(actor, target)
+                    if d is not None and d > int(radius):
+                        continue
+                except Exception:
+                    pass
+            out.append((spell, dice, dtype))
+        return out
 
     def _spell_damage(self, sp: Optional[Spell], prof: Optional[PCProfile],
                       slot: Optional[int] = None) -> Optional[str]:
