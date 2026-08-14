@@ -285,6 +285,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
   journal and bonds tabs), `occlusion-shot` (a creature standing behind the
   mill's pillars is drawn hollow, and nobody else is).
+- Narration-streaming guard: `uv run python scripts/stream_smoke.py` (the hook
+  filter and both wire formats, against a synthetic stream — no model needed).
+  Live streaming is OFF; `ORACLE_LLM_STREAM=1` turns it on and it has not been
+  measured against a real model.
+- World stall: `uv run python scripts/shop_smoke.py` (the panel's stock IS the
+  DM's roll; buying goes through the same `[[TRADE]]` resolver).
+- Lore capture: `uv run python scripts/lore_smoke.py`.
+- Puzzle chain: `uv run python scripts/puzzle_smoke.py` (the location gate, the
+  site verb, and that the answer key reaches the DM and never the player).
+- NPC combat AI: `uv run python scripts/ai_arena.py --board <archetype> --bouts 6
+  --rounds 120 --quiet` — it attaches a real board, so fights take the turns
+  real geometry costs; a 40-turn cap reads as "never resolves" and is not.
 - Token-occlusion arithmetic: `node activity-ui/occlusion-check.mjs` — needs no
   preview server and no build (it bundles `boardView.ts` out of src with
   esbuild), because `occludedAt` is pure grid arithmetic over a camera that
@@ -1931,6 +1943,42 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   re-derive it from. The wipe script deletes rows from the world tables only,
   and **refuses to run on a table it doesn't recognise** — classify any new
   subsystem's table there rather than letting it guess.
+- **A band change has to reach the BOARD, and a move you cannot finish still
+  covers ground.** `combat/` thinks in bands and `vtt/` in squares, and
+  `_do_move` used to set the band and stop — so with a spatial provider attached
+  a monster that closed to melee had its swing measured from the square it
+  started on and refused. Every archetype stopped resolving. It pushes the band
+  to the board now (`BoardSpatial.move_to_band`), and a move too long to
+  COMPLETE walks as far as it can (`advance_toward`) instead of being refused:
+  opposed spawn zones are ninety feet apart, so all-or-nothing left every melee
+  creature standing on its spawn square for the whole fight. The AI can also
+  LEAP — `gap_between` is the cheap planner question, `jump_toward` takes the
+  run-up and the leap, and the run-up is what makes it work at all (a standing
+  jump clears one square, which lands you in the channel). `scripts/ai_arena.py`
+  had never attached a board, so every number it ever printed was for a
+  blindfolded engine.
+- **A recorded REASON is recorded history.** `WorldContext.render()` filtered
+  relationship edges by TYPE, so every neutral `[[LORE:]]` — which is most of
+  them, since `record_lore` opens a plain `knows` edge whenever its sentiment
+  cues miss — was written to the database and shown to nobody. The point of
+  writing a feud's origin down is that the next player who asks gets the same
+  story.
+- **A place that declares its puzzle tags is taken at its word.**
+  `_scene_puzzle_tags` unioned a location's own `puzzle_tags` with every word in
+  its name and the player's sentence, so a chamber tagged `sealed-door,
+  mechanism` went looking for puzzles matching "i", "look" and "around" too —
+  and matching is by token overlap, so that noise offers puzzles about nothing.
+- **Streaming shows a PREVIEW, and hooks never reach it.** The reply a table
+  reads is post-processed (hooks pulled, dice rolled and substituted, speech
+  split out), all of which needs it entire. `narration/stream.py` streams the
+  prose around the hooks as it is written — holding at most one character, since
+  a cut can land between the two brackets of `[[` — and the preview is REPLACED
+  by the authoritative blocks, never appended to.
+- **A shop panel prices nothing.** Stock is `shops.roll_stock`, a pure function
+  of (merchant, settlement scale, world week), so the stall and the DM's own
+  context line are the same roll; buying goes through `process_trade_hooks`,
+  the path a narrated deal takes. A second commerce path would let a player buy
+  what the DM never saw for sale.
 - **World persistence** = the graph, not maps. It's append-only: facts are opened/
   closed over in-world days (nothing deleted), and the DM is only ever fed the
   *relevant* subgraph via `get_world_context`, never the whole world.
