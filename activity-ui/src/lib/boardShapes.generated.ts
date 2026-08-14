@@ -360,6 +360,17 @@ export const SKINS: Record<string, SkinShape> = {
   sludge: { substance: "sludge", heightFt: 0, directional: false, outward: false,
     smooth: false,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
     variants: null },
+  "taproom-floor": { substance: "taproom-boards", heightFt: 0, directional: false, outward: false,
+    smooth: false,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
+    variants: null },
+  "taproom-post": { substance: "spar-timber", heightFt: 0, directional: false, outward: false,
+    smooth: false,     skirtFt: 0, skirtInset: 0, body: "", exact: true,
+    variants: [
+      [[0.3, 0.7, 0.3, 0.7, 0, 1], [0, 1, 0.4, 0.6, 0.88, 0.97], [0.24, 0.76, 0.24, 0.76, 0, 0.08]],
+      [[0.3, 0.7, 0.3, 0.7, 0, 1], [0.4, 0.6, 0, 1, 0.88, 0.97], [0.24, 0.76, 0.24, 0.76, 0, 0.08]]] },
+  "taproom-wall": { substance: "plaster-timber", heightFt: 0, directional: false, outward: false,
+    smooth: false,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
+    variants: null },
   "tent-canopy": { substance: "canvas", heightFt: 8, directional: true, outward: false,
     smooth: false,     skirtFt: 0, skirtInset: 0, body: "tent", exact: true,
     variants: [

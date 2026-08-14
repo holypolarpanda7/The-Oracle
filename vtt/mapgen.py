@@ -227,9 +227,21 @@ def _carve_corridor(grid: Grid, a: Square, b: Square, code: str = FLOOR) -> None
 
 def _scatter(grid: Grid, rng: random.Random, code: str, chance: float, *,
              only_on: tuple[str, ...] = (FLOOR,),
+             within: Optional[tuple[int, int, int, int]] = None,
              keep_passable: bool = True, mode: str = "walk") -> None:
-    """Sprinkle a tile across the floor without cutting the map in half."""
+    """Sprinkle a tile across the floor without cutting the map in half.
+
+    ``within`` is an inclusive ``(x0, y0, x1, y1)`` box. A generator that has
+    built ROOMS wants its scatter in one of them — a tavern's casks belong in
+    the store and not through the taproom — and the alternative is a hand-rolled
+    loop that forgets the passability guard, which is how a store full of
+    barrels came back with a third of it bricked up: `_connect_regions` fills
+    any pocket under four squares with solid.
+    """
     for x, y in list(grid.squares()):
+        if within and not (within[0] <= x <= within[2]
+                           and within[1] <= y <= within[3]):
+            continue
         if grid.get(x, y) not in only_on or rng.random() > chance:
             continue
         prev = grid.get(x, y)
@@ -843,36 +855,165 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 
 def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
+    """A taproom, and the thing that stops it being a hall.
+
+    It was one rectangle the size of the whole board with a bar strip, five
+    tables and a fire in it — four hundred squares of which three hundred and
+    twenty-five were bare floor. Painted, that is a barn: nothing stands up
+    anywhere between the walls, so the depth map hands the model a floor and two
+    distant walls and the model paints exactly that.
+
+    Three things fix it, and only one of them is furniture.
+
+    **POSTS.** A low-beamed taproom is a room held up in the MIDDLE, and the
+    board had nothing standing anywhere but its edges. A grid of timber posts is
+    relief the depth map can carry right through the room, it is what makes an
+    interior read as a beamed one rather than as a hall, and mechanically it is
+    the cover an indoor fight has always wanted — something to break line of
+    sight behind without leaving the room. They are laid on a spacing, not
+    scattered: a post holds a beam up, and beams run in lines.
+
+    **BACK ROOMS.** A tavern is a taproom, a kitchen behind the bar and a store
+    off it — so the board is carved rather than filled, and the walls between
+    them are what turns one box into a place with corners to fight round. The
+    doors are real doors, which the fleeing side can shut.
+
+    **SNUGS.** A stub of partition off a wall makes a booth: two squares of
+    three-quarters cover, and a silhouette that is not a straight line.
+    """
     g.fill_rect(0, 0, g.width - 1, g.height - 1, WALL)
-    _room(g, 0, 0, g.width - 1, g.height - 1)
-    # A bar along one wall, tables through the room, a hearth at the back.
-    bar_y = 1 if rng.random() < 0.5 else g.height - 2
-    for x in range(2, g.width - 2):
-        g.set(x, bar_y, "n")
-    for _ in range(rng.randint(3, 6)):
-        tx = rng.randrange(2, g.width - 2)
-        ty = rng.randrange(2, g.height - 2)
-        if g.get(tx, ty) == FLOOR:
-            g.set(tx, ty, "n")
-            if rng.random() < 0.5 and g.in_bounds(tx + 1, ty):
-                g.set(tx + 1, ty, "n")
-    hx, hy = g.width - 2, g.height // 2
-    g.set(hx, hy, "f")
+    # The taproom takes most of the board; the service rooms take a strip along
+    # one side. A tavern with nothing behind the bar is a bar in a field.
+    back = max(3, min(6, g.width // 5)) if g.width >= 16 else 0
+    tap_x1 = g.width - 1 - (back + 1 if back else 0)
+    _room(g, 0, 0, tap_x1, g.height - 1)
+    if back:
+        cut = rng.randrange(g.height // 3, max(g.height // 3 + 1,
+                                               2 * g.height // 3))
+        _room(g, tap_x1, 0, g.width - 1, cut)               # the kitchen
+        _room(g, tap_x1, cut, g.width - 1, g.height - 1)    # the store
+        for y0, y1, name in ((0, cut, "kitchen door"),
+                             (cut, g.height - 1, "store door")):
+            d = _door_on_wall(g, rng, tap_x1, y0, g.width - 1, y1, "west")
+            if d:
+                out.doors.append({"x": d[0], "y": d[1], "state": "closed",
+                                  "name": name, "dc": None})
+        # Casks and sacks in the store, a range and a block in the kitchen.
+        _scatter(g, rng, "o", 0.22, only_on=(FLOOR,),
+                 within=(tap_x1 + 1, cut + 1, g.width - 2, g.height - 2))
+        _scatter(g, rng, "n", 0.22, only_on=(FLOOR,),
+                 within=(tap_x1 + 1, 1, g.width - 2, cut - 1))
+
+    # FIXTURES BEFORE FURNITURE, and a set that says which squares the
+    # furniture may not have. The hearth and the front door each wall
+    # themselves in on three sides, so a table or a post landing on the fourth
+    # sealed them into a pocket — and `_connect_regions` fills every pocket
+    # under four squares with solid, which is how the fire vanished off a board
+    # in five and the way IN off one in a hundred, with nothing in the log to
+    # say either had ever been laid.
+    keep: set[Square] = set()
+
+    # The hearth, in a breast that stands proud of the wall — a fire drawn flat
+    # against a flat wall is a light source, not a fireplace — and an apron of
+    # floor in front of it, which is where anyone standing at the fire stands.
+    hy = max(2, min(g.height - 3, g.height // 2 + rng.randint(-2, 2)))
+    g.set(1, hy, "f")
+    keep.add((1, hy))
+    for dy in (-1, 1):
+        if g.in_bounds(1, hy + dy):
+            g.set(1, hy + dy, WALL)
+    for ax in range(2, min(5, tap_x1)):
+        g.set(ax, hy, FLOOR)
+        keep.add((ax, hy))
     out.effects.append({"kind": "light", "name": "hearth", "shape": "sphere",
-                        "x": hx, "y": hy, "radius_ft": 20, "color": "#ff8c42"})
-    d = _door_on_wall(g, rng, 0, 0, g.width - 1, g.height - 1, "west")
+                        "x": 1, "y": hy, "radius_ft": 20, "color": "#ff8c42"})
+
+    # The bar, with a GAP in it: a run of counter a creature cannot get behind
+    # is a wall, and the whole point of a bar in a brawl is that someone is
+    # behind it.
+    bar_y = 1 if rng.random() < 0.5 else g.height - 2
+    gap = rng.randrange(3, max(4, tap_x1 - 2))
+    for x in range(2, tap_x1 - 1):
+        if x != gap:
+            g.set(x, bar_y, "n")
+    behind = bar_y - 1 if bar_y == 1 else bar_y + 1
+    for x in range(2, tap_x1 - 1):
+        if g.in_bounds(x, behind) and g.get(x, behind) == FLOOR \
+                and (x, behind) not in keep and rng.random() < 0.3:
+            g.set(x, behind, "o")                            # casks on the back shelf
+
+    # The way IN, with its own apron for the same reason the hearth has one.
+    d = _door_on_wall(g, rng, 0, 0, tap_x1, g.height - 1,
+                      "north" if bar_y != 1 else "south")
     if d:
         g.set(d[0], d[1], "/")
+        keep.add(d)
+        step = 1 if d[1] == 0 else -1
+        for i in range(1, 4):
+            sq = (d[0], d[1] + step * i)
+            if g.in_bounds(*sq) and 0 < sq[1] < g.height - 1:
+                g.set(*sq, FLOOR)
+                keep.add(sq)
         out.doors.append({"x": d[0], "y": d[1], "state": "open",
                           "name": "tavern door", "dc": None})
+
+    # POSTS on a spacing, clear of the bar and of the walls. Impassable, so
+    # they are laid on a lattice a creature always has a way through.
+    step_x = 4 if tap_x1 >= 14 else 3
+    for px in range(3, tap_x1 - 1, step_x):
+        for py in range(3, g.height - 2, 4):
+            if g.get(px, py) == FLOOR and (px, py) not in keep \
+                    and abs(py - bar_y) > 1:
+                g.set(px, py, "O")
+
+    # Tables where the posts are not: a table and the bench beside it, which is
+    # what a table is for and what makes a cluster rather than a lone square.
+    for _ in range(rng.randint(5, 8)):
+        tx = rng.randrange(2, max(3, tap_x1 - 1))
+        ty = rng.randrange(2, g.height - 2)
+        if g.get(tx, ty) != FLOOR or (tx, ty) in keep:
+            continue
+        g.set(tx, ty, "n")
+        for dx, dy in rng.sample([(1, 0), (-1, 0), (0, 1), (0, -1)], 2):
+            sq = (tx + dx, ty + dy)
+            if g.in_bounds(*sq) and g.get(*sq) == FLOOR and sq not in keep:
+                # A BENCH, and it is `n` rather than `w`: both screen three feet,
+                # and `w` is labelled "low wall" on the board — a bench with a
+                # wall's name on it is the picture and the grid disagreeing in
+                # the one place the label exists to stop them.
+                g.set(*sq, "n")
+                break
+
+    # A SNUG: a partition off the long wall, and the booth it makes.
+    if tap_x1 >= 10 and g.height >= 10 and rng.random() < 0.7:
+        sy = rng.randrange(3, g.height - 4)
+        sx = 1 if rng.random() < 0.5 else tap_x1 - 3
+        for i in range(rng.randint(2, 3)):
+            sq = (sx + i, sy)
+            if g.in_bounds(*sq) and sq not in keep and g.get(*sq) in (FLOOR, "n"):
+                g.set(*sq, WALL)
     out.lighting = "dim"
-    out.description = "a low-beamed taproom, tables and benches, a fire burning in the hearth"
+    out.description = ("a low-beamed taproom, its ceiling carried on timber "
+                       "posts, tables and benches between them, a fire burning "
+                       "in the hearth")
+    if back:
+        out.description += ", a kitchen and a store behind the bar"
     # A GALLERY over the taproom. The classic tavern brawl is fought up and
     # down the stairs, and every tavern this generator has ever made was one
     # flat room — the machinery for a real storey has existed since floors went
-    # in and no generator used it.
-    inner = [(x, y) for x, y in g.squares() if g.get(x, y) == FLOOR]
-    if inner and g.width >= 14 and g.height >= 12:
+    # in and no generator used it. Only over the TAPROOM: a gallery over the
+    # kitchen is a floor nobody can see from the room the fight is in.
+    # Connect BEFORE the gallery, not after. `_connect_regions` carves
+    # corridors as plain floor and fills small pockets as solid, so running it
+    # last quietly paved over the stair square it had no idea was a stair.
+    _connect_regions(g, rng)
+    # The taproom's inside, which excludes its wall ring — the front door sits
+    # IN that ring, and counting it dragged the gallery's extent out to the
+    # board's edge and made the run a row deeper than the room.
+    inner = [(x, y) for x, y in g.squares()
+             if 0 < x <= tap_x1 - 1 and 0 < y < g.height - 1
+             and g.get(x, y) not in (WALL, VOID)]
+    if inner and tap_x1 >= 13 and g.height >= 12:
         xs = [x for x, _y in inner]
         ys = [y for _x, y in inner]
         x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
@@ -882,12 +1023,21 @@ def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         walk = [(x, y) for x, y in inner if gy0 <= y <= gy0 + depth]
         level = _storey(out, g, "Gallery", 10, walk)
         if level:
-            # The stair stands at one end of the run, on the taproom floor.
-            foot = min(walk, key=lambda sq: (sq[0], sq[1]))
-            below = (foot[0], foot[1] + depth + 1 if north else foot[1] - 1)
-            if g.in_bounds(*below) and g.get(*below) == FLOOR:
-                g.set(*below, "u")
-                _stair(out, level, below, foot)
+            # The stair stands at one end of the run, on the taproom floor —
+            # and the first candidate is not good enough. The taproom's edges
+            # now carry posts, tables and a hearth breast, so taking the
+            # left-most square and giving up if the square below it is occupied
+            # left a gallery with no way onto it on three boards in five.
+            for foot in sorted(walk, key=lambda sq: (sq[0], sq[1])):
+                below = (foot[0], foot[1] + depth + 1 if north else foot[1] - 1)
+                # A post or a table in the way is MOVED. Refusing instead left
+                # a gallery with no way onto it, and a storey nobody can reach
+                # is worse than a taproom one post short.
+                if g.in_bounds(*below) and g.get(*below) not in (WALL, VOID) \
+                        and below not in keep:
+                    g.set(*below, "u")
+                    _stair(out, level, below, foot)
+                    break
             out.description += ", a gallery running along one side above it"
 
 

@@ -30,9 +30,11 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 from dataclasses import dataclass
 from typing import Optional
 
+from . import skins
 from .mapgen import GeneratedMap
 from .terrain import Grid
 
@@ -479,6 +481,89 @@ def standing_fraction(grid: Grid) -> float:
                if c != " " and tile_height_ft(c) > 0) / total
 
 
+#: Denoise for a BUILT board's ground-only init. See `_ground_init`.
+#:
+#: High on purpose, and MEASURED — four arms on the street, the taproom, the
+#: crypt and the mountain pass:
+#:
+#: * 1.00 (no init, what a built board used to get): the street is planked, and
+#:   the model paints a ROOM around the diorama — the pass came back standing on
+#:   a wooden table against green wallpaper;
+#: * 0.90: the street is paved stone, the invented surround is gone, the pass
+#:   stands on a plain plinth, the crypt keeps its painting;
+#: * 0.84: colours start sliding toward the init's flat tints — the taproom's
+#:   floor goes mustard;
+#: * 0.72: exactly what ISO_DENOISE_FLAT warns about — grey walls, flat fill, no
+#:   painted detail anywhere. The old finding holds; it is the strength that was
+#:   wrong, not the idea.
+#:
+#: Tunable through ORACLE_ISO_GROUND_DENOISE. **Name it in WSLENV or the arm is
+#: a lie**: the probe runs under the WINDOWS interpreter, an env var does not
+#: cross by default, and three "different" arms came back BIT-IDENTICAL because
+#: every one of them had quietly used this default. A pixel diff of exactly 0.00
+#: between two arms is never a result — it means they were the same run.
+GROUND_INIT_DENOISE = float(os.environ.get("ORACLE_ISO_GROUND_DENOISE") or 0.90)
+
+#: What a standing square is painted in the ground-only init: a mid grey with
+#: no hue at all, so the model takes no colour cue from it. NOT black — black
+#: is a value the model follows, and the walls would come back in shadow.
+_GROUND_INIT_NEUTRAL = (128, 128, 128)
+
+
+def _ground_init(gen: GeneratedMap, look: str, store, skin_of, depth_kw):
+    """The terrain image with everything that STANDS UP painted out.
+
+    A built board is handed no init image at all — measured, twice, and for a
+    good reason: given the whole terrain image it stops painting and starts
+    tinting. But the rule is one number for the whole picture, and it takes the
+    FLOOR down with the walls. A street's roadway is nearly half the frame, its
+    material is a fact the grid holds (`skins.cobbles`), and the only channel
+    left to carry it is the prompt — which loses, every time, to whatever the
+    model thinks a strip of ground between two rows of houses is made of. It
+    came back planked.
+
+    Depth cannot help: cobbles have no relief, so there is no silhouette to hand
+    over, and the shape-is-the-sentence fix that worked everywhere else has
+    nothing to work with here.
+
+    So the ground gets its own channel and nothing else does. Every square that
+    stands up — wall, post, crate, tree, landmark — is painted flat neutral
+    grey, which carries no composition and no colour, and the model goes on
+    taking all of that from the depth map exactly as before. What survives is
+    the one thing depth could never say: what the floor is made of, and where
+    the floor is.
+
+    **What it bought, and what it did not.** The street is paved instead of
+    planked, and every built board stopped having a ROOM painted around it — a
+    diorama on a bare canvas reads to the model as a diorama on a TABLE, and it
+    obliged with wallpaper and floorboards behind the mountain pass. The crypt
+    pays a little of its painted detail for that, which is the trade the earlier
+    full-init experiment lost on badly and this one wins on narrowly.
+
+    It did NOT fix a taproom. A tavern now declares oak boards
+    (`skins.taproom-floor`) and the painting still comes back pale flagstone:
+    the model's prior for an isometric room interior is stone, and the only
+    lever strong enough to overcome it is a denoise that destroys the painting.
+    Its posts read as CANDLES for the same reason, and thickening them to two
+    feet with a bracket at the head — the shape-is-the-sentence fix that worked
+    on cliffs and trees — changed nothing measurable. Both are recorded rather
+    than guessed at again. The geometry board draws them correctly, which is the
+    surface a player actually plays on.
+    """
+    from . import isocam
+    from .terrain import tile_height_ft
+
+    def colour(code: str, sk: str) -> tuple[int, int, int]:
+        if code.startswith("decor:") or code.startswith("setpiece"):
+            return _GROUND_INIT_NEUTRAL
+        sh = skins.skin(sk) if sk else None
+        if tile_height_ft(code) > 0 or (sh is not None and sh.height_ft):
+            return _GROUND_INIT_NEUTRAL
+        return material_colour(code, look, store, skin=sk)
+
+    return isocam.terrain_image(colour_of=colour, **depth_kw)
+
+
 def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
     """Denoise for this board; 1.0 means "no init image, depth alone".
 
@@ -564,7 +649,11 @@ def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
 #: watchtower is four raked legs under a platform, and a hull's stair-stepped
 #: outline is cut into a continuous diagonal. Every board's silhouette changed,
 #: so every painting conditioned on the old one is stale.
-ISOBOARD_REV = 27
+#: Rev 28: a built board gets a GROUND-ONLY init image (see `_ground_init`)
+#: instead of no init at all, so its floor material finally has a channel; and
+#: a taproom declares its own — boards, plaster-and-timber walls, square oak
+#: posts. Every built board's floor changes, so their paintings are stale.
+ISOBOARD_REV = 28
 
 
 #: Retained for callers that still ask, and for the gallery's reporting. The
@@ -799,9 +888,14 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
     # the whole board, so without it the model invents terrain the grid does not
     # have. See isocam.terrain_image.
     look = board_look(biome or "", gen.archetype)
-    terrain = isocam.terrain_image(
-        colour_of=lambda c, sk: material_colour(c, look, store, skin=sk),
-        **depth_kw)
+    denoise = iso_denoise_for(gen.grid, skinned=bool(present))
+    if denoise >= 1.0:
+        terrain = _ground_init(gen, look, store, _skin_of, depth_kw)
+        denoise = GROUND_INIT_DENOISE
+    else:
+        terrain = isocam.terrain_image(
+            colour_of=lambda c, sk: material_colour(c, look, store, skin=sk),
+            **depth_kw)
     if not depth:
         return BattlemapArt(image_id=None, prompt="", caption=subject, offline=True)
 
@@ -822,7 +916,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
             control_image=depth,
             controlnet=controlnet, controlnet_strength=controlnet_strength,
             init_image=terrain,
-            init_denoise=iso_denoise_for(gen.grid, skinned=bool(present)),
+            init_denoise=denoise,
             negative_extra=", ".join(p for p in (
                 gen.grid.absent_terrain_negative(), _ISO_NEGATIVE) if p),
         )

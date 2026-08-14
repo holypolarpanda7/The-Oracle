@@ -363,6 +363,28 @@ _BOULDER = _v(
 #: ceiling. ``smooth`` makes neighbouring squares share an arrangement, so a run
 #: of them is a terrace with one ridge line rather than a row of separate huts.
 _ROOF_LOW, _ROOF_HIGH = 0.62, 0.70
+#: A taproom's post: a SQUARE oak stick with a brace at its head, not a column.
+#:
+#: `O` is drawn as an octagonal prism, which is a stone pillar, and painted as
+#: one — the first taproom to grow posts came back with a dozen candles standing
+#: on the floor. A post is square in section, chamfered, and carries a brace out
+#: to the beam it holds, and the brace is the whole tell: a stick with nothing
+#: on top of it is a candle, and a stick with a bracket is carpentry.
+#: THICK, and that is the whole of the second attempt. A slim shaft with a
+#: bright head is a CANDLE, and a taproom full of them is what came back — the
+#: model reads a thin vertical stick in a lit room as a candlestand, at every
+#: denoise. A post is two feet through, sits on a plinth, and carries a bracket
+#: that runs the full width of its square at the head, which is a shape no
+#: candle has.
+_POST = _v(
+    ((0.30, 0.70, 0.30, 0.70, 0.0, 1.0),
+     (0.00, 1.00, 0.40, 0.60, 0.88, 0.97),
+     (0.24, 0.76, 0.24, 0.76, 0.0, 0.08)),
+    ((0.30, 0.70, 0.30, 0.70, 0.0, 1.0),
+     (0.40, 0.60, 0.00, 1.00, 0.88, 0.97),
+     (0.24, 0.76, 0.24, 0.76, 0.0, 0.08)),
+)
+
 _TOWNHOUSE = _v(
     # Gabled along x: the ridge runs east-west.
     ((0.0, 1.0, 0.0, 1.0, 0.0, _ROOF_HIGH),
@@ -917,6 +939,29 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "the gaps between them",
          words="the roadway is worn granite cobbles, rutted and greasy with "
                "use, NOT planking and NOT floorboards"),
+    # A TAPROOM, and the three things a room the model already knows still gets
+    # wrong. The floor is the reason this set exists: with the ground-only init
+    # (see art._ground_init) a built board's floor finally has a channel, and a
+    # channel carries whatever the grid declares — so a tavern declaring nothing
+    # came back paved in dungeon flagstone, which is worse than the planking it
+    # replaced, because a taproom floor really is boards.
+    Skin("taproom-floor", "taproom-boards",
+         "close-up of a worn oak plank floor, wide dark boards running one way, "
+         "warm mid brown, scuffed and stained, black gaps between the boards",
+         words="the floor is wide oak boards, dark with age and spilled ale, "
+               "NOT flagstones and NOT paving"),
+    Skin("taproom-wall", "plaster-timber",
+         "close-up of a timber-framed wall, white lime plaster between dark "
+         "oak beams",
+         words="the walls are lime plaster between dark oak studs, low and "
+               "smoke-stained, a shelf and a hook here and there"),
+    Skin("taproom-post", "spar-timber",
+         "a flat expanse of oiled timber, straight close grain all running one "
+         "way, no corners and no edges",
+         words="square oak posts carry the ceiling beams, chamfered and dark "
+               "with smoke, a brace out to the beam at the head of each — they "
+               "are TIMBER POSTS, not stone columns and not candles",
+         variants=_POST, exact=True),
     # What a watchtower is BUILT of, and the DM's narration decides which — a
     # crossing in deep forest gets a timber tower and a mountain road a stone
     # one. See building_material: the board reads it off the biome the DM
@@ -1142,6 +1187,8 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
                       ",": "ruin-floor", ".": "ruin-floor", "w": "ruin-stub"},
     "camp":          {"#": "palisade"},
     "street":        {"#": "townhouse", "=": "cobbles", ".": "cobbles"},
+    "tavern":        {"#": "taproom-wall", ".": "taproom-floor",
+                      "O": "taproom-post"},
     # A sea ship and a skyship are not the same vessel, and sharing one deck
     # skin was most of why they came back looking identical. A caravel's deck
     # is wet, tarred and salt-bleached and its hull sits IN the water; a
