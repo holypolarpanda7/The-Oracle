@@ -113,6 +113,13 @@ def bout(tracker, vtt, engine, bridge, *, board: str, seed: int,
                            render_art=False)
     vtt.sync_from_encounter(scene.id, enc.id)
     bridge.sync_bands(vtt, scene.id, tracker=tracker)
+    # THE BOARD, attached. Without this the harness measured an AI that could
+    # not see the room it was standing in — reach and weapon ranges fell back
+    # to the band model, `can_see` never answered, and nothing could ever find
+    # a gap to jump. The backend has attached one per exchange since the bridge
+    # was built (`_attach_spatial`); the arena simply never did, so every
+    # number it printed was for a blindfolded engine.
+    engine.spatial = bridge.BoardSpatial(vtt, scene.id)
 
     stat = Counter()
     heights: list[int] = []
@@ -152,6 +159,11 @@ def bout(tracker, vtt, engine, bridge, *, board: str, seed: int,
                 moved_any += 1
         for ev in rep.events:
             stat[ev.get("kind", "?")] += 1
+            # A LEAP is a move, and it is the move worth counting separately:
+            # the board grew chasms and channels long before anything without a
+            # player behind it would cross one.
+            if ev.get("jumped"):
+                stat["jumped"] += 1
         after = {c.id: c.current_hp for c in tracker.order(enc.id)}
         dealt = sum(max(0, before.get(i, 0) - after.get(i, 0)) for i in before)
         stat["damage"] += dealt
@@ -178,6 +190,7 @@ def bout(tracker, vtt, engine, bridge, *, board: str, seed: int,
         "board": board, "seed": seed, "turns": turns,
         "damage": stat["damage"], "attacks": stat["attack"],
         "moves": stat["move"], "moved_any": moved_any,
+        "jumped": stat["jumped"],
         "bonus": stat["bonus_used"], "reaction": stat["reaction_used"],
         "refused": stat["refused"],
         "high_ground_board": high_ground,
@@ -222,6 +235,8 @@ def main() -> int:
           f"/{n}   {D}(a fight that never ends is an AI that never closes){OFF}")
     print(f"  bonus actions      {avg('bonus'):.1f}")
     print(f"  reactions          {avg('reaction'):.1f}")
+    print(f"  leaps taken        {avg('jumped'):.1f}   "
+          f"{D}(a gap crossed instead of walked round){OFF}")
     print(f"  intents REFUSED    {avg('refused'):.1f}   "
           f"{D}(the AI tried and the engine said no){OFF}")
     print(f"  avg height held    {avg('avg_height'):.1f} ft"

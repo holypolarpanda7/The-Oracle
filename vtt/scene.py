@@ -1657,7 +1657,9 @@ class VttEngine:
                 "strength": score, "running": bool(running)}
 
     def jump(self, token_id: int, x: int, y: int, *,
-             enforce_speed: bool = True) -> dict:
+             enforce_speed: bool = True, dry_run: bool = False,
+             frm: Optional[Square] = None,
+             moved_ft: Optional[int] = None) -> dict:
         """Leap a gap in a straight line. The one way to cross what you cannot walk.
 
         Boards grew chasms, channels ten feet deep, ledges and stacked
@@ -1674,6 +1676,14 @@ class VttEngine:
 
         Costs movement equal to the distance jumped, because a jump is movement
         (it is not a free way to cross difficult ground).
+
+        ``frm`` and ``moved_ft`` ask the question from a square the creature is
+        not standing on yet, and are only legal with ``dry_run``. That is what a
+        planner needs: whether a leap is worth taking depends on where you take
+        off from and how much of a run you had, so choosing one means asking
+        about a fan of take-offs BEFORE walking to any of them. Answering it by
+        re-deriving the rules on the planner's side is how two copies of a rule
+        start disagreeing.
         """
         t = self.get_token(token_id)
         if t is None:
@@ -1686,7 +1696,8 @@ class VttEngine:
         if not self.grid_of(row, int(t.level or 0)).in_bounds(x, y):
             return {"ok": False, "reason": "off the board"}
 
-        dx, dy = x - t.x, y - t.y
+        ox, oy = (frm if (frm and dry_run) else (t.x, t.y))
+        dx, dy = x - ox, y - oy
         if dx == 0 and dy == 0:
             return {"ok": False, "reason": "already there"}
         # A jump is a straight line: along a row, a column or a true diagonal.
@@ -1694,10 +1705,11 @@ class VttEngine:
             return {"ok": False,
                     "reason": f"{t.name} can only jump in a straight line"}
 
-        moved = int(t.moved_ft or 0)
+        moved = int(moved_ft if (moved_ft is not None and dry_run)
+                    else (t.moved_ft or 0))
         running = moved >= 10
         reach = self.jump_reach_ft(token_id, running=running)
-        dist_ft = geo.distance_ft((t.x, t.y), (x, y), row.square_ft)
+        dist_ft = geo.distance_ft((ox, oy), (x, y), row.square_ft)
         if dist_ft > reach["long_ft"]:
             how = "running" if running else "standing"
             return {"ok": False,
@@ -1706,7 +1718,7 @@ class VttEngine:
                                + ("" if running else
                                   " — 10 ft of movement first makes it a running jump"))}
 
-        rise = self._height_at(row, (x, y)) - self._height_at(row, (t.x, t.y))
+        rise = self._height_at(row, (x, y)) - self._height_at(row, (ox, oy))
         if rise > reach["high_ft"]:
             return {"ok": False,
                     "reason": (f"{t.name} can jump {reach['high_ft']} ft up and that "
@@ -1724,6 +1736,16 @@ class VttEngine:
             return {"ok": False,
                     "reason": (f"{t.name} has {max(0, int(t.speed_ft or 30) - moved)} ft "
                                f"of movement left and the jump is {dist_ft} ft")}
+
+        # `dry_run` runs every check above and lands nobody. Anything CHOOSING
+        # a jump has to be able to ask whether one is legal before committing —
+        # the monster planner tries a fan of landings and takes the best — and
+        # the alternative is a second copy of these rules somewhere that would
+        # drift from them.
+        if dry_run:
+            return {"ok": True, "x": x, "y": y, "distance_ft": dist_ft,
+                    "running": running, "cleared": reach["long_ft"],
+                    "dry_run": True}
 
         self._place(t.id, (x, y))
         self.update_token(t.id, moved_ft=moved + dist_ft)

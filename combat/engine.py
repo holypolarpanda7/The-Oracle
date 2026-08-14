@@ -2061,6 +2061,23 @@ class CombatEngine:
                 "reason": f"Unknown position '{band_raw}' — use 'melee with <name>', 'near', or 'far'."})
             return
         if cost > fresh.move_left:
+            # Too far to ARRIVE — but on a board you still walk. Refusing
+            # outright is right for a band model, where there is no half a
+            # band, and wrong the moment squares exist: opposed spawn zones are
+            # ninety feet apart and a walking creature needs three turns to
+            # cross that, so every melee creature in a fight stood on its spawn
+            # square refusing the same move forty times over.
+            walker = (getattr(self.spatial, "advance_toward", None)
+                      if (self.spatial and target_c) else None)
+            got = walker(fresh, target_c) if walker else None
+            if got:
+                self.tracker.update_economy(actor.id, move_left=0)
+                rep.events.append({
+                    "kind": "move", "actor": actor.name, "steps": fresh.move_left,
+                    "rolls": [],
+                    "notes": [f"covers {got} ft toward {target_c.name} — as far "
+                              f"as this turn goes"]})
+                return
             need_dash = (not fresh.action_used
                          and cost <= fresh.move_left + 1)
             hint = ("Dash (using the action) would get them there"
@@ -2096,6 +2113,19 @@ class CombatEngine:
 
         self.tracker.set_position(actor.id, new_pos)
         self.tracker.update_economy(actor.id, move_left=fresh.move_left - cost)
+        # And tell the BOARD, now rather than at the end of the turn. A band is
+        # this engine's whole idea of position; a board has squares, and every
+        # spatial answer for the REST of this turn — reach, weapon range, cover,
+        # line of sight — comes off those squares. Without this a creature that
+        # closed to melee and swung had the swing measured from the square it
+        # started on and refused, which is most of a turn thrown away and reads
+        # at the table as the monsters refusing to fight.
+        mover = getattr(self.spatial, "move_to_band", None) if self.spatial else None
+        if mover is not None:
+            try:
+                mover(actor, new_pos)
+            except Exception as e:
+                ev["notes"].append(f"(board did not follow: {e})")
         ev["steps"] = cost
         rep.events.append(ev)
 
@@ -2187,6 +2217,71 @@ class CombatEngine:
         ev["notes"].append(
             f"searches and finds {', '.join(found)}" if found
             else "searches and finds nothing")
+        rep.events.append(ev)
+
+    def _do_jump(self, encounter_id, actor, intent, profiles, rep):
+        """Leap toward a creature, and let the BOARD choose where you land.
+
+        The same shape as Search: the engine knows a creature wants to be over
+        there, and only the board knows there is a channel in the way, how far
+        this one can clear and which square it can stand on when it comes down.
+
+        A jump is MOVEMENT, not an action — so it costs a step of the engine's
+        coarse economy and nothing else, and it provokes exactly as leaving a
+        reach always did (the board's own move rules handle that half). With no
+        board it is refused rather than narrated: a jump nobody can measure is
+        a jump over nothing.
+        """
+        fresh = self.tracker.get_combatant(actor.id) or actor
+        if fresh.move_left <= 0:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{actor.name} has no movement left to jump."})
+            return
+        leap = getattr(self.spatial, "jump_toward", None) if self.spatial else None
+        tgt = self._find(encounter_id, intent.get("target") or "")
+        if leap is None or tgt is None:
+            rep.rejections.append({
+                "intent": intent,
+                "reason": f"{actor.name} has nothing to jump over here."})
+            return
+        got = leap(fresh, tgt)
+        if not got or not got.get("ok"):
+            # No leap worth taking after all. Closing on foot is what this
+            # creature would have done without the idea, so it does that rather
+            # than throwing the turn away — a refusal here costs the move AND
+            # leaves the attack that follows out of reach.
+            walker = getattr(self.spatial, "advance_toward", None)
+            covered = walker(fresh, tgt) if walker else None
+            if not covered:
+                rep.rejections.append({
+                    "intent": intent,
+                    "reason": (got or {}).get("reason")
+                              or f"{actor.name} cannot make that leap."})
+                return
+            self.tracker.update_economy(actor.id, move_left=fresh.move_left - 1)
+            rep.events.append({
+                "kind": "move", "actor": actor.name, "steps": 1, "rolls": [],
+                "notes": [f"finds no way to leap it and covers {covered} ft "
+                          f"toward {tgt.name} instead"]})
+            return
+        self.tracker.update_economy(actor.id, move_left=fresh.move_left - 1)
+        # No band on this event ON PURPOSE. A `to` would send the caller off to
+        # `apply_band_move`, which re-picks a square for the band and would put
+        # the creature back down wherever the band wanted — undoing the leap it
+        # was just told about. The board has already placed it and re-synced the
+        # bands from where everyone actually stands.
+        ev = {"kind": "move", "actor": actor.name, "jumped": bool(got.get("jumped")),
+              "steps": 1, "rolls": [], "notes": []}
+        if got.get("jumped"):
+            ev["notes"].append(
+                f"leaps {got['distance_ft']} ft rather than going round")
+        else:
+            ev["notes"].append(
+                f"crosses {got.get('walked_ft', 0)} ft toward {tgt.name}, "
+                f"finding nothing worth leaping")
+        if got.get("fall_ft"):
+            ev["notes"].append(f"and drops {got['fall_ft']} ft on landing")
         rep.events.append(ev)
 
     def _do_dodge(self, encounter_id, actor, intent, profiles, rep):
@@ -2878,6 +2973,21 @@ class CombatEngine:
                      "arg": "ranged"}]
         if in_reach and has_melee:
             return [{"verb": "attack", "actor": me, "target": tgt.name}]
+
+        # A GAP between it and what it wants. Boards grew chasms, ten-foot
+        # channels, terraces and ledges, and a creature with no player behind it
+        # walked round every one of them — on the archetypes built to make that
+        # expensive. Only the board knows there is a channel there at all, so
+        # only the board is asked; the plan spends its movement on the leap and
+        # then swings, and the jump REPLACES the close-the-distance move rather
+        # than preceding it, because a band move afterwards would put the
+        # creature back down wherever the band wanted.
+        gap = getattr(self.spatial, "gap_between", None) if self.spatial else None
+        if gap is not None and not in_reach and gap(cur, tgt):
+            return [{"verb": "jump", "actor": me, "target": tgt.name},
+                    {"verb": "attack", "actor": me, "target": tgt.name,
+                     **({"arg": "ranged"} if has_ranged else {})}]
+
         if has_ranged:
             # Shoot, and use the move to stand somewhere better while doing it.
             return [{"verb": "reposition", "actor": me},
@@ -2887,9 +2997,24 @@ class CombatEngine:
             return [{"verb": "move", "actor": me,
                      "arg": f"melee with {tgt.name}"},
                     {"verb": "attack", "actor": me, "target": tgt.name}]
+        # Too far to close and swing: Dash, and spend the movement getting
+        # there. Two things about this line were wrong and both only showed up
+        # once the arena started attaching a board.
+        #
+        # It closed to the "near" BAND, and with a board out `_steps_between`
+        # measures real feet while `_do_move` still costs near/far off the band
+        # — so a creature the board put sixty feet away was told it was
+        # "already near" and stood still for the whole fight. On a board the
+        # only position worth naming is the one that means something: melee
+        # with the creature it wants to hit.
+        #
+        # And it ended with a Dodge, which Dash had already made impossible —
+        # Dash spends the ACTION. That refusal fired on nearly every turn a
+        # creature spent closing. Dashing and covering the ground IS the turn;
+        # there is nothing left over to dodge with.
+        close = (f"melee with {tgt.name}" if self.spatial is not None else "near")
         return [{"verb": "dash", "actor": me},
-                {"verb": "move", "actor": me, "arg": "near"},
-                {"verb": "dodge", "actor": me}]
+                {"verb": "move", "actor": me, "arg": close}]
 
     def run_monster_turn(self, encounter_id: int,
                          intents: Optional[list[dict]] = None,

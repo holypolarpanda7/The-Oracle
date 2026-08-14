@@ -325,7 +325,20 @@ class BoardSpatial:
                         if t.combatant_id}
 
     def _tok(self, c):
-        return self._tokens.get(getattr(c, "id", None))
+        """This creature's token, as it stands RIGHT NOW.
+
+        The snapshot taken in ``__init__`` says which token belongs to which
+        combatant, which never changes during a fight — and it also carried
+        positions, which change constantly. A provider is asked mid-turn, and
+        things move mid-turn: ``apply_band_move`` walks a creature, ``push``
+        shoves one, ``jump_toward`` leaps one, and every reach check made after
+        that was answered from where the creature used to be. So the row is
+        re-read and only the MAPPING is cached.
+        """
+        tok = self._tokens.get(getattr(c, "id", None))
+        if tok is None:
+            return None
+        return self.vtt.get_token(tok.id) or tok
 
     def distance_ft(self, a, b) -> Optional[int]:
         ta, tb = self._tok(a), self._tok(b)
@@ -419,6 +432,245 @@ class BoardSpatial:
         if tok is None:
             return None
         return self.vtt.search(self.map_id, tok.name)
+
+    def _walk_costs_to(self, ta, tb):
+        """Cost from every square to ``tb``'s square, for a creature like ``ta``.
+
+        Grown from the TARGET outward rather than searched per candidate: terrain
+        costs the same in both directions, so one Dijkstra answers "how far from
+        here to it" for the whole board at once — and the alternative is a path
+        search per square, of which the jump search wants dozens.
+        """
+        row = self.vtt.get_scene(self.map_id)
+        lvl = int(ta.level or 0)
+        grid = self.vtt.grid_of(row, lvl)
+        blocked = self.vtt._occupied(self.map_id, exclude=ta.id, level=lvl,
+                                     ignore_teams=(ta.team,) if ta.team else ())
+        return geo.reachable_costs(
+            grid, (tb.x, tb.y), max(int(ta.speed_ft or 30) * 4, 160),
+            size=size_squares(ta.size), mode=ta.movement_mode, blocked=blocked,
+            extra_cost=self.vtt._effect_cost_fn(self.map_id, ta.movement_mode, row),
+            square_ft=max(1, int(row.square_ft or 5)))
+
+    def move_to_band(self, actor, band: str) -> Optional[bool]:
+        """Walk this creature to a square that MEANS that band, now.
+
+        The engine changes a band and the board has to hear about it, or the
+        rest of the turn is measured from where the creature used to be. That
+        is not hypothetical: with a provider attached, a monster that closed to
+        melee and swung had its swing checked against its ORIGINAL square and
+        refused, every time. Fights on every archetype stopped resolving — the
+        arena had been reporting them as fine only because it never attached a
+        provider at all.
+
+        The end-of-turn ``sync_after_turn`` still runs and still has work to do
+        (cover, auras, bands the DM changed in narration); this is the same
+        translation applied at the moment it actually matters.
+        """
+        cid = getattr(actor, "id", None)
+        if cid is None or self._tok(actor) is None:
+            return None
+        return apply_band_move(self.vtt, self.map_id, cid, band,
+                               tracker=self.vtt.tracker)
+
+    def _closest_reachable(self, ta, tb, to_target) -> tuple[tuple[int, int], dict]:
+        """The square this creature can WALK to that gets nearest the target.
+
+        Shared by the run-up and by ``advance_toward``, because they are asking
+        the same question. Ranks by walking cost to the target where a route
+        exists and by straight-line distance where none does — a route always
+        beats no route, and without that second case nothing on the far side of
+        a chasm is comparable to anything at all.
+        """
+        row = self.vtt.get_scene(self.map_id)
+        sq_ft = max(1, int(row.square_ft or 5)) if row else 5
+
+        def score(sq) -> tuple[int, float]:
+            got = to_target.get(sq)
+            if got is not None:
+                return (0, float(got))
+            return (1, float(geo.distance_ft(sq, (tb.x, tb.y), sq_ft)))
+
+        opts = self.vtt.movement_options(ta.id) or {}
+        reach_sqs = {(s["x"], s["y"]): int(s["cost"])
+                     for s in opts.get("squares") or []}
+        reach_sqs[(ta.x, ta.y)] = 0
+        best = min(reach_sqs, key=lambda s: (score(s), reach_sqs[s]))
+        return best, reach_sqs
+
+    def advance_toward(self, actor, target) -> Optional[int]:
+        """Cover as much ground toward that creature as the movement allows.
+
+        A move the engine cannot COMPLETE was refused outright, which is right
+        for a band model — there is no half a band — and wrong on a board, where
+        walking most of the way is exactly what a player does. Opposed spawn
+        zones on a 30x22 board are ninety feet apart and a walking creature
+        needs three turns to cross that, so every melee creature in the roster
+        stood on its spawn square for the whole fight, refusing the same
+        unreachable move forty times. Measured: 0 of 6 bouts resolved.
+
+        Returns the feet covered, or None when there is no board answer.
+        """
+        ta, tb = self._tok(actor), self._tok(target)
+        if ta is None or tb is None:
+            return None
+        row = self.vtt.get_scene(self.map_id)
+        if row is None or not row.active or int(tb.level or 0) != int(ta.level or 0):
+            return None
+        step, _ = self._closest_reachable(ta, tb, self._walk_costs_to(ta, tb))
+        if step == (ta.x, ta.y):
+            return 0
+        got = self.vtt.move_token(ta.id, step[0], step[1])
+        if not got.get("ok"):
+            return None
+        sync_bands(self.vtt, self.map_id, tracker=self.vtt.tracker)
+        return int(got.get("cost_ft") or 0)
+
+    def gap_between(self, actor, target) -> Optional[bool]:
+        """Is there something between these two that walking has to go ROUND?
+
+        The cheap half of the jump question, and the only half the PLANNER needs:
+        deciding to try a leap does not require knowing where it lands. True when
+        there is no walking route at all — the chasm case — or when the route is
+        more than twice the straight line, which is what a channel or a terrace
+        face does to a path.
+
+        **Twice, not half again.** At 1.5x this fired on a ruins board every
+        turn, because broken walls make every path wander a little; the plan
+        then replaced closing-and-swinging with a leap that mostly did not
+        exist, and the turn went nowhere. A threshold that fires when there is
+        nothing to jump is worse than one that misses a jump there was.
+        """
+        ta, tb = self._tok(actor), self._tok(target)
+        if ta is None or tb is None or (ta.movement_mode or "walk") == "fly":
+            return None
+        row = self.vtt.get_scene(self.map_id)
+        if row is None or not row.active or int(tb.level or 0) != int(ta.level or 0):
+            return None
+        walk = self._walk_costs_to(ta, tb).get((ta.x, ta.y))
+        straight = geo.distance_ft((ta.x, ta.y), (tb.x, tb.y),
+                                   max(1, int(row.square_ft or 5)))
+        return walk is None or walk > straight * 2.0 + 10
+
+    def jump_toward(self, actor, target) -> Optional[dict]:
+        """Take a run at whatever is in the way, and leap it. Always commits.
+
+        The board has been able to jump since ``VttEngine.jump`` went in, and
+        nothing without a player behind it ever did — so a monster met a chasm, a
+        ten-foot channel or a terrace face and walked round it, every time, on
+        boards deliberately built to make that expensive.
+
+        The engine cannot choose the square: it thinks in BANDS and has never
+        known a square exists. So the whole decision lives here, like ``push``
+        and ``search``, and the engine only ever says "jump toward that one".
+
+        **The RUN-UP is the part that makes it work at all.** A standing jump
+        clears half your Strength score — five feet for most creatures, which is
+        one square, which lands you in the channel. The SRD's running jump needs
+        ten feet of movement first, and a turn's plan begins with nobody having
+        moved, so a leap decided from a standstill is always the useless one. So
+        this walks to the take-off first: the reachable square that gets closest
+        to the target on foot, which on a board with a gap in it IS the lip of
+        the gap. That walk is real movement through ``move_token`` — it pays for
+        difficult ground and provokes exactly as it always did — and it is worth
+        making even if no jump turns out to be worth taking, because walking
+        toward the target is what the creature would have done anyway.
+
+        Scoring is FEET where a route exists and straight-line distance where
+        none does, with a route always beating no route. That second case is the
+        chasm, and it is the reason the method exists: nothing on the far side
+        has a walking cost at all, so a cost comparison alone would never take
+        the leap that is the only way across.
+        """
+        ta, tb = self._tok(actor), self._tok(target)
+        if ta is None or tb is None or (ta.movement_mode or "walk") == "fly":
+            return None
+        row = self.vtt.get_scene(self.map_id)
+        if row is None or not row.active:
+            return None
+        lvl = int(ta.level or 0)
+        if int(tb.level or 0) != lvl:
+            return None                      # a storey away is a stair, not a hop
+        sq_ft = max(1, int(row.square_ft or 5))
+        to_target = self._walk_costs_to(ta, tb)
+
+        def score(sq) -> tuple[int, float]:
+            """Lower is better. A square with a route always beats one without."""
+            got = to_target.get(sq)
+            if got is not None:
+                return (0, float(got))
+            return (1, float(geo.distance_ft(sq, (tb.x, tb.y), sq_ft)))
+
+        # The take-off and the landing are ONE choice, not two. Walking as close
+        # as possible and jumping from there is the obvious algorithm and it is
+        # wrong every time: the run-up spends the entire movement budget, and a
+        # jump costs its own distance in movement, so the creature arrives at
+        # the lip of the channel with nothing left to cross it with. So the fan
+        # of take-offs is scored WITH its landings, against a budget both share.
+        here = (ta.x, ta.y)
+        _, reach_sqs = self._closest_reachable(ta, tb, to_target)
+        budget = max(0, int(ta.speed_ft or 30) - int(ta.moved_ft or 0))
+        # Only the most promising take-offs are tried: the search is a fan of up
+        # to thirty-two landings per square, and a whole reachable set is a
+        # thousand probes for a decision worth a handful.
+        offs = sorted(reach_sqs, key=lambda s: (score(s), reach_sqs[s]))[:8]
+
+        best: Optional[tuple[tuple[int, float], tuple[int, int], dict]] = None
+        base = min(score(s) for s in reach_sqs)
+        for off in offs:
+            cost = reach_sqs[off]
+            left = budget - cost
+            if left <= 0:
+                continue
+            reach = self.vtt.jump_reach_ft(ta.id, running=cost >= 10)
+            span = max(0, min(int(reach.get("long_ft") or 0), left) // sq_ft)
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                           (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                for n in range(1, span + 1):
+                    land = (off[0] + dx * n, off[1] + dy * n)
+                    s = score(land)
+                    # Must be a real improvement on the best WALK: a route where
+                    # there was none, or a square's worth of feet saved. A
+                    # monster that hops for no gain reads as a bug, not tactics.
+                    if s[0] == base[0] and s[1] > base[1] - sq_ft:
+                        continue
+                    if s > base or (best is not None and s >= best[0]):
+                        continue
+                    probe = self.vtt.jump(ta.id, land[0], land[1], dry_run=True,
+                                          frm=off, moved_ft=cost)
+                    if not probe.get("ok"):
+                        continue
+                    best = (s, off, {"x": land[0], "y": land[1],
+                                     "distance_ft": int(probe["distance_ft"])})
+
+        # No leap worth taking — but walking toward the target is what this
+        # creature would have done anyway, so it does that rather than nothing.
+        target_sq = offs[0] if best is None else best[1]
+        walked = 0
+        if target_sq != here:
+            got = self.vtt.move_token(ta.id, target_sq[0], target_sq[1])
+            if got.get("ok"):
+                walked = int(got.get("cost_ft") or 0)
+            elif best is not None:
+                best = None
+        if best is None:
+            if walked:
+                sync_bands(self.vtt, self.map_id, tracker=self.vtt.tracker)
+                return {"ok": True, "jumped": False, "walked_ft": walked}
+            return None
+        got = self.vtt.jump(ta.id, best[2]["x"], best[2]["y"])
+        if not got.get("ok"):
+            if walked:
+                sync_bands(self.vtt, self.map_id, tracker=self.vtt.tracker)
+                return {"ok": True, "jumped": False, "walked_ft": walked}
+            return None
+        got["jumped"] = True
+        got["walked_ft"] = walked
+        # The board just moved somebody, so the board says where everyone now
+        # stands — otherwise the attack after the leap is checked against the
+        # band the creature had before it.
+        sync_bands(self.vtt, self.map_id, tracker=self.vtt.tracker)
+        return got
 
     def can_see(self, a, b) -> Optional[bool]:
         """Can ``a`` perceive ``b``? ``None`` when the board can't say.
