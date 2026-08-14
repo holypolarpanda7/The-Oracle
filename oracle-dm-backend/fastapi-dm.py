@@ -3274,9 +3274,16 @@ def _scene_puzzle_tags(ctx_obj, message: str) -> list[str]:
         is_site = True
     if not is_site:
         return []
-    tags = {_PUZZLE_TAG_SYNONYMS.get(t, t) for t in tokens}
-    tags.update(explicit)
-    return list(tags)
+    # Explicit tags WIN, rather than joining the pile. The docstring has said so
+    # since the gate was built and the code unioned them with every word in the
+    # room's name and the player's sentence, so a chamber the DM had carefully
+    # tagged `sealed-door, mechanism` went looking for puzzles matching "i",
+    # "look", "around" and "place" as well. Those match by token overlap, so the
+    # noise does not merely rank badly — it offers puzzles that have nothing to
+    # do with the room. A place that says what it is gets taken at its word.
+    if explicit:
+        return list(dict.fromkeys(explicit))
+    return list({_PUZZLE_TAG_SYNONYMS.get(t, t) for t in tokens})
 
 
 def _format_active_puzzle_block(ap: dict) -> str:
