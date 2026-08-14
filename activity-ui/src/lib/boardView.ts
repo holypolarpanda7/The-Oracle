@@ -41,10 +41,15 @@ export type {
   BoxPart, Part, PolyPart, SkinShape, SolidPart,
 } from "./boardShapes.generated";
 import {
-  COVER_HEIGHT_FT as _COVER, HEIGHT_JITTER as _JITTER, SKINS as _SKINS,
+  COVER_HEIGHT_FT as _COVER, HEIGHT_JITTER as _JITTER,
+  HOLE_CODES as _HOLES, SKINS as _SKINS,
   TILE_HEIGHT_FT as _HEIGHT, WALL_THICKNESS as _THICK, isSolid as _isSolid,
 } from "./boardShapes.generated";
 import type { Part } from "./boardShapes.generated";
+// The camera, for the one question that needs it here: which way a view ray
+// travels. Not a renderer import — isocam is arithmetic, and both renderers
+// already sit on top of it.
+import { RAY_RISE, RAY_X, RAY_Z, VERTICAL_SQUEEZE } from "./isocam";
 
 /** A stable 32-bit hash of a square. Mirrors `_hash` in vtt/isocam.py.
  *
@@ -464,6 +469,95 @@ export function exposedRock(isOpen: (x: number, z: number) => boolean,
   if (wallParts(isOpen, x, z).length) return true;
   return isOpen(x - 1, z - 1) || isOpen(x + 1, z - 1)
       || isOpen(x - 1, z + 1) || isOpen(x + 1, z + 1);
+}
+
+/** How tall the thing standing on this square is DRAWN, in feet above the
+ *  storey's own floor — the ground's elevation plus whatever stands on it.
+ *
+ *  The same arithmetic the geometry is built from, jitter included, so the
+ *  answer cannot disagree with what the player is looking at. A HOLE reports
+ *  minus infinity rather than zero: nothing is drawn there at all, and a chasm
+ *  is not a low wall — a creature down in a channel must not be hidden by the
+ *  empty square in front of it.
+ *
+ *  A landmark's mesh counts at its declared height. Its stamped tiles are
+ *  already in the answer, but a 40-ft gate tower stamps 10-ft masonry, and
+ *  what stands between the camera and the creature is the tower. */
+function drawnTopFt(scene: VttScene, x: number, z: number): number {
+  const row = (scene.terrain ?? [])[z];
+  const elev = scene.elevation?.[`${x},${z}`] ?? 0;
+  let top = -Infinity;
+  if (row !== undefined && x >= 0 && x < row.length) {
+    const code = row[x];
+    if (!_HOLES.has(code)) {
+      const skin = skinAt(scene, code, x, z);
+      top = elev + (_SKINS[skin]?.heightFt || _HEIGHT[code] || 0)
+        * skinHeightScale(skin, code, x, z);
+    }
+  }
+  for (const sp of scene.setpieces ?? []) {
+    if (x >= sp.x && z >= sp.y && x < sp.x + sp.w && z < sp.y + sp.d) {
+      top = Math.max(top, elev + (sp.height_ft || 0));
+    }
+  }
+  return top;
+}
+
+/** How high the ray may climb before nothing on any board could still be in
+ *  the way, in feet. The tallest landmark in the catalogue is a 60-ft giant,
+ *  and past that the march is walking the board for no reason. */
+const MAX_OCCLUDER_FT = 64;
+
+/** Is something opaque standing between this creature and the camera?
+ *
+ *  Pure grid arithmetic, and deliberately: the board is drawn FROM tile codes,
+ *  so "is that wall in front of me" is a fact about the grid, exactly as cover
+ *  and sight are. It is also the only way to answer it for the painted board,
+ *  where the geometry draws no colour at all and there is no picture to read —
+ *  and it costs no depth-buffer readback, which would stall the GPU every frame
+ *  on a webview that can barely afford the draw calls it already makes.
+ *
+ *  The camera never moves and never turns, so the ray from a creature back to
+ *  the lens is ONE fixed direction (`RAY_X`/`RAY_Z`/`RAY_RISE`): march it over
+ *  the squares it crosses and ask each how tall it is drawn.
+ *
+ *  Two decisions worth keeping:
+ *
+ *  * The point tested is the creature's CHEST, not its feet. A wall that hides
+ *    the boots hides nothing worth marking, and at this pitch a ten-foot wall
+ *    one square in front leaves exactly the head showing — which is precisely
+ *    the case a silhouette is for.
+ *  * The ray runs along the grid DIAGONAL (the yaw is 45 degrees), so the
+ *    squares it crosses are the diagonal ones. A pillar beside that line covers
+ *    half the figure, and half a figure is still a figure you can find, so it
+ *    is not called occluded.
+ *
+ *  A square is treated as a full column even where the thing on it is drawn
+ *  narrow — a pillar is a third of its square wide. That is deliberate and
+ *  cheap: the ray gains only about four feet crossing a square, so the answer
+ *  differs from the exact silhouette over a band a few inches tall, and
+ *  rebuilding every skin's shape here to close it would be a second copy of the
+ *  geometry, which is the one thing the generated shape table exists to
+ *  prevent. */
+export function occludedAt(scene: VttScene, x: number, z: number,
+                           squares: number, footFt: number): boolean {
+  const sqFt = scene.square_ft || 5;
+  // A token's DOM box is as tall in pixels as its footprint is wide, so the
+  // figure it draws stands this tall in the world. See VERTICAL_SQUEEZE.
+  const chestFt = footFt + (squares * sqFt) / VERTICAL_SQUEEZE / 2;
+  // From the middle of the creature's footprint, in squares.
+  const fromX = x + squares / 2;
+  const fromZ = z + squares / 2;
+  const step = 0.5;
+  for (let run = step; run * sqFt * RAY_RISE <= MAX_OCCLUDER_FT; run += step) {
+    const sx = Math.floor(fromX + RAY_X * run);
+    const sz = Math.floor(fromZ + RAY_Z * run);
+    if (sx >= scene.width || sz >= scene.height) return false;   // off the board
+    // Its own square is not in its own way, whatever is drawn there.
+    if (sx >= x && sz >= z && sx < x + squares && sz < z + squares) continue;
+    if (drawnTopFt(scene, sx, sz) > chestFt + run * sqFt * RAY_RISE) return true;
+  }
+  return false;
 }
 
 /** Everything a renderer needs to draw one frame. */

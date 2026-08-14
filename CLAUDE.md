@@ -283,7 +283,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
   at desktop and phone: status bar, "here & now" rail, narration column, roll
   card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
-  journal and bonds tabs).
+  journal and bonds tabs), `occlusion-shot` (a creature standing behind the
+  mill's pillars is drawn hollow, and nobody else is).
+- Token-occlusion arithmetic: `node activity-ui/occlusion-check.mjs` — needs no
+  preview server and no build (it bundles `boardView.ts` out of src with
+  esbuild), because `occludedAt` is pure grid arithmetic over a camera that
+  never moves. The LOOK still needs a browser; that is `occlusion-shot`.
 
 ## Key facts & constraints
 - **D&D Beyond has NO public write API.** You cannot create/store a character on a
@@ -394,6 +399,22 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `vttPaint.ts` and `canvasBoardView.ts` are a deliberate fallback for a
   webview with no usable WebGL, and retire together once the isometric board
   reaches parity.
+- **Being DOM is also why OCCLUSION has to be computed.** An element over a
+  canvas is in front of the room by construction, so no depth test will ever put
+  a creature behind a wall — "behind" is a thing somebody has to SAY.
+  `boardView.occludedAt` marches the view ray over the grid: the camera is
+  orthographic and never turns, so the ray back to the lens is one fixed
+  direction that climbs `RAY_RISE` (tan of the pitch) per foot it crosses the
+  floor, and a square's drawn height is the same arithmetic the geometry is
+  built from. Grid, not picture — the same rule as cover and sight, and the only
+  answer available on a painted board, where the geometry draws no colour at all
+  and a depth-buffer readback would stall the frame besides. The point tested is
+  the creature's CHEST: a wall that hides the boots is not worth marking, and at
+  this pitch a ten-foot wall one square in front leaves exactly the head
+  showing. An occluded token is drawn HOLLOW — bright rim, quiet inside — never
+  hidden, because a token that vanished would be indistinguishable from a bug.
+  The flat canvas reports `false` and always will; nothing on it can stand in
+  front of anything.
 - **Python owns the board's SHAPES; the TypeScript is generated.** Once objects
   stopped being plain boxes, their shapes became as load-bearing as the camera:
   `vtt/isocam.py` rasterizes them into the depth map the painted layer is

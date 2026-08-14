@@ -16,12 +16,17 @@
  *  cover badges, targeting states, click handling — arrives here working, with
  *  no second implementation to keep in step.
  *
+ *  Being DOM is also the whole of why occlusion has to be computed rather than
+ *  drawn: an element over a canvas is in front of everything by construction,
+ *  so a creature behind a wall needs somebody to SAY so. `screenOf` marches a
+ *  view ray over the grid and reports it — see `occludedAt` in boardView.ts.
+ *
  *  ## What is deliberately not here yet
  *
- *  Props, fog, light tint, effects and stair markers are the next phase; the
- *  painted overlay is the one after. The board is playable without any of them,
- *  which is the point of building it in this order — geometry first, and
- *  everything else layered onto a thing that already works offline.
+ *  Nothing structural. Props, fog, light tint, effects, stair markers and the
+ *  painted overlay all landed after the geometry, which is the point of having
+ *  built it in that order — everything is layered onto a thing that already
+ *  works offline, and turning any of it off leaves a playable board.
  *
  *  Lighting is form only. One directional light and some ambient exist so a
  *  wall reads as solid; the board's *mechanical* light level comes from
@@ -35,7 +40,7 @@ import {
   CELL, DECOR_KINDS, DECOR_TINT, HOLE_CODES, OBJECT_VARIANTS, SKINS,
   SKIRT_FT, SKIRT_INSET,
   STRUCTURE_CODES, exposedRock, hullFootprint, isSetpieceSkin, isSolid, materialSlot,
-  outAxis, outCorner, runAxis, setpieceYaw,
+  outAxis, outCorner, occludedAt, runAxis, setpieceYaw,
   sameBody,
   skinAt, skinHeightScale, variantSmooth,
   rotatePart,
@@ -60,25 +65,19 @@ const CAMERA_DISTANCE = 500;
  *  built thing. Cheap: four quads and a smaller top face per block. */
 const BEVEL = 0.06;
 
-/** Whether the painted layer is laid over the board yet.
+/** Whether the painted layer is laid over the board.
  *
- *  OFF, and deliberately. The server side works — vtt/isocam.py rasterizes the
- *  depth map, the depth ControlNet paints a room that lands on the geometry,
- *  and scripts/iso_gallery.py shows the results. What is not proven is this
- *  file's half: the screen-space backdrop pass draws nothing in the browser,
- *  and because a board WITH a painting switches its geometry to depth-only, the
- *  failure is not "no picture" but "no board" — which is far worse than never
- *  having wired it.
+ *  ON. It was off for a while, and the reason is worth keeping: the painting
+ *  was a screen-space quad rendered by a second WebGL camera, and that pass
+ *  never drew — a correct rectangle, a loaded texture, no stencil, and not even
+ *  a plain red quad appeared. Because a board WITH a painting switches its
+ *  geometry to depth-only, the failure was not "no picture" but "no board".
  *
- *  Turning it off restores the geometry board, which is good, terrain-accurate
- *  and offline-safe. Suspects for whoever picks this up, in order: the
- *  screen-space ortho camera (frustum is left=0/right=w/top=0/bottom=h, an
- *  intentionally inverted Y, which is easy to get wrong), then the stencil mask
- *  that clips the painting to the board silhouette. The stencil was ruled out
- *  by disabling it — the painting did not appear either way — so the camera or
- *  the quad placement is the likelier fault.
- *
- *  It needs a browser and a devtools frame capture, not another guess. */
+ *  The fix was to stop rendering it: the painting is a DOM image BEHIND an
+ *  alpha canvas (see `backdropRect` and `VttOverlay`), which needs no second
+ *  camera and no stencil, since it already carries its own alpha. Turning this
+ *  off still restores the plain geometry board, which stays good,
+ *  terrain-accurate and offline-safe. */
 const PAINTED_BACKDROP = true;
 
 /** Depth is a sort key for `z-index`, not a distance. Scaled up so that two
@@ -1109,8 +1108,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const k = CELL * view.scale;
       // The square's own elevation PLUS whatever the creature is doing on top
       // of it: a wyvern hovering over a ledge is above both.
-      const wy = baseUnits(scene, level)
-        + heightUnits(scene, elevFt(scene, x, y) + elevationFt);
+      const footFt = elevFt(scene, x, y) + elevationFt;
+      const wy = baseUnits(scene, level) + heightUnits(scene, footFt);
       const p = project(x + squares / 2, wy, y + squares / 2);
       const size = k * squares;
       return {
@@ -1121,7 +1120,11 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         top: view.oy + k * p.y - size,
         size,
         depth: p.depth * DEPTH_STEPS,
-        occluded: false,   // phase 5
+        // Marched over the grid, not read off the picture — the geometry draws
+        // no colour once a painting lands, so there is nothing to read. Heights
+        // are relative to this STOREY: only one floor is ever drawn, so an
+        // upper gallery is not standing in the hall's way.
+        occluded: occludedAt(scene, x, y, squares, footFt),
       };
     },
 

@@ -179,6 +179,35 @@
 .play .vtt-token.ghost { opacity: 0.5; }
 .play .vtt-token.ghost .vtt-disc { border-style: dashed; }
 
+/* Something opaque stands between this creature and the camera.
+   A token is a DOM element over the canvas, so it is in front of the room by
+   construction and no depth test will ever put it behind a wall — "behind" has
+   to be DRAWN. The portrait drops back to a flat silhouette in the team's
+   colour and the rim stays bright, which is what every isometric game does with
+   the figure it must not let you lose. Hiding it was never an option: a token
+   that simply vanished would be indistinguishable from a bug, the same reason
+   an illegal target keeps its place wearing its reason. */
+.play .vtt-token.occluded .vtt-disc {
+  border-style: dotted;
+  background: rgba(6, 9, 17, 0.92);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tok, var(--edge)) 45%, transparent),
+              inset 0 0 12px rgba(0, 0, 0, 0.85);
+}
+/* The rim stays bright and everything INSIDE it goes quiet — a hollow token
+   reads as a creature you are seeing the position of rather than the creature.
+   The fill is dimmed here rather than on the disc, because a filter on the disc
+   would take the rim down with it. */
+.play .vtt-token.occluded .vtt-disc > img,
+.play .vtt-token.occluded .vtt-hp,
+.play .vtt-token.occluded .vtt-mono { opacity: 0.42; filter: saturate(0.25); }
+/* Whoever is acting stays fully drawn. Dimming the creature whose turn it is —
+   the one the player is steering — is the one moment this costs more than it
+   buys. */
+.play .vtt-token.occluded.active .vtt-disc { border-style: solid; }
+.play .vtt-token.occluded.active .vtt-disc > img,
+.play .vtt-token.occluded.active .vtt-hp,
+.play .vtt-token.occluded.active .vtt-mono { opacity: 1; filter: none; }
+
 .play .vtt-name {
   position: absolute; bottom: -3px; left: 50%; transform: translateX(-50%);
   max-width: 150%; padding: 0 4px;

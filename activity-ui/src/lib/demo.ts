@@ -402,8 +402,13 @@ function demoVtt(stage: number): VttScene {
         speed_ft: 25, reach_ft: 5, moved_ft: 0, movement_mode: "walk",
         elevation_ft: 0, hidden: false, prone: false, defeated: false,
         color: "#4fa3ff" },
+      // BEHIND the mill's pillars, and deliberately: this is the only board a
+      // browser can draw with no backend, and nothing on it ever stood between
+      // a creature and the camera — so the silhouette a token wears when it is
+      // occluded was unreachable offline. It also makes the half cover this
+      // goblin has claimed since stage 2 true: it used to stand in open water.
       { id: 14, name: "Goblin Skulker", kind: "monster", team: "foe",
-        x: 14, y: 4, size: "small", squares: 1, combatant_id: 5,
+        x: 5, y: 4, size: "small", squares: 1, combatant_id: 5,
         speed_ft: 30, reach_ft: 5, moved_ft: 0, movement_mode: "walk",
         elevation_ft: 0, hidden: false, prone: false, defeated: false,
         color: "#ff5a5a" },
@@ -417,8 +422,8 @@ function demoVtt(stage: number): VttScene {
       ...(stage >= 2
         ? [{
             id: 2, name: "Faerie Fire", kind: "area", shape: "cube",
-            x: 14, y: 4, radius_ft: 0, length_ft: 20, width_ft: 5,
-            direction_deg: 0, squares: ring(14, 4, 2), color: "#7fd7ff",
+            x: 5, y: 4, radius_ft: 0, length_ft: 20, width_ft: 5,
+            direction_deg: 0, squares: ring(5, 4, 2), color: "#7fd7ff",
             opacity: 0.28, difficult_terrain: false, blocks_sight: false,
             concentration: true, source_token_id: 11, expires_round: 12,
           } as VttEffect]

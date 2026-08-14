@@ -57,6 +57,31 @@ export const RIGHT: readonly [number, number, number] = [COS_Y, 0, -SIN_Y];
 export const UP: readonly [number, number, number] = [-SIN_Y * SIN_P, COS_P, -COS_Y * SIN_P];
 export const FORWARD: readonly [number, number, number] = [-SIN_Y * COS_P, -SIN_P, -COS_Y * COS_P];
 
+/** The ray from any point back TOWARD the camera, per unit of HORIZONTAL
+ *  travel: how far it moves across the floor in x and z, and how far it climbs.
+ *
+ *  A constant, because the camera never moves and never turns — which is what
+ *  makes "is a wall standing in front of this creature" a march over the grid
+ *  rather than a depth-buffer readback. `RAY_RISE` is tan(pitch): at 40 degrees
+ *  the ray gains 0.84 units of height for every unit it crosses the floor, so a
+ *  ten-foot wall hides a figure one square behind it and nothing two squares
+ *  behind it. See `occludedAt` in boardView.ts, the only caller.
+ *
+ *  Not mirrored in vtt/isocam.py, and it should not be: the server rasterizes a
+ *  depth map of the ROOM, and creatures are not in it. */
+const RAY_RUN = Math.hypot(FORWARD[0], FORWARD[2]);
+export const RAY_X = -FORWARD[0] / RAY_RUN;
+export const RAY_Z = -FORWARD[2] / RAY_RUN;
+export const RAY_RISE = -FORWARD[1] / RAY_RUN;
+
+/** A world unit of HEIGHT is this many units of screen — cos(pitch).
+ *
+ *  The other half of the same foreshortening: a token's DOM box is as tall in
+ *  pixels as its footprint is wide, so the creature it draws stands
+ *  `1 / VERTICAL_SQUEEZE` world units tall. Anything asking how much of a
+ *  figure a wall hides needs that number. */
+export const VERTICAL_SQUEEZE = COS_P;
+
 /** Breathing room around the board in the CANONICAL framing, in squares.
  *
  *  The painted layer is baked to the projected bounding box plus this margin,
