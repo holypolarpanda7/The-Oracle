@@ -57,8 +57,15 @@ _UPCAST_RX = re.compile(
     r"(?P<kind>damage|healing|hit points)?[^.]{0,40}?"
     r"(?:incre\W{0,3}ases?\s+by|\+)\s*"
     r"(?P<dice>[0-9lIiOoS]{1,3}\s*[dD]\s*[0-9lIiOoS]{1,3})"
-    r"[^.]{0,40}?for\s+each\s+(?:spell\s+)?slot\s+level\s+above\s+"
+    r"[^.]{0,40}?for\s+(?:each|every)\s+"
+    r"(?:(?P<per>\d{1,2}|two|three|four)\s+)?"
+    r"(?:spell\s+)?slot\s+levels?\s+above\s+"
     r"(?P<from>\d{1,2})", re.I)
+
+#: "for every TWO slot levels above 3rd" — a step of more than one. Spirit
+#: Shroud is written this way and did not scale at all, because the pattern
+#: only ever admitted "for each slot level".
+_PER_WORDS = {"two": 2, "three": 3, "four": 4}
 
 _DICE_SPLIT = re.compile(r"^\s*(\d+)\s*[dD]\s*(\d+)\s*$")
 
@@ -74,9 +81,11 @@ class Scaling:
     """What a spell's own text says about growing."""
     #: character level -> the whole dice expression at that tier ({5: "2d6"}).
     cantrip_tiers: Dict[int, str] = field(default_factory=dict)
-    #: extra dice per slot level above ``upcast_from`` ("1d6").
+    #: extra dice per step above ``upcast_from`` ("1d6").
     upcast_dice: Optional[str] = None
     upcast_from: Optional[int] = None
+    #: Slot levels PER step — 1 for "each slot level", 2 for "every two".
+    upcast_per: int = 1
     #: "damage" or "healing" — a cure scales its healing, not its damage.
     upcast_kind: str = "damage"
     #: The spell states an upcast rule whose dice the extractor destroyed.
@@ -130,6 +139,9 @@ def parse_scaling(spell: Any) -> Scaling:
         if dice:
             out.upcast_dice = dice
             out.upcast_from = int(m.group("from"))
+            per_raw = (m.group("per") or "1").strip().lower()
+            out.upcast_per = max(1, _PER_WORDS.get(per_raw)
+                                 or (int(per_raw) if per_raw.isdigit() else 1))
             # The `kind` group is optional and can match EMPTY at the start of
             # the sentence, so it cannot be trusted on its own — "The healing
             # increases by 2d8" came back as damage. Read the sentence the
@@ -194,7 +206,7 @@ def scaled_dice(spell: Any, base: Optional[str], *,
                 best = sc.cantrip_tiers[tier]
         return best or base
     if sc.upcast_dice and sc.upcast_from is not None and slot_level is not None:
-        steps = int(slot_level) - int(sc.upcast_from)
+        steps = (int(slot_level) - int(sc.upcast_from)) // max(1, sc.upcast_per)
         if steps > 0:
             return _add_dice(base, sc.upcast_dice, steps)
     return base
@@ -208,7 +220,9 @@ def scaling_note(spell: Any) -> str:
         return f"scales: {parts}"
     if sc.upcast_dice and sc.upcast_from is not None:
         what = "healing" if sc.upcast_kind == "healing" else "damage"
-        return (f"upcast: +{sc.upcast_dice} {what} per slot level above "
+        every = ("slot level" if sc.upcast_per == 1
+                 else f"{sc.upcast_per} slot levels")
+        return (f"upcast: +{sc.upcast_dice} {what} per {every} above "
                 f"{sc.upcast_from}")
     if sc.upcast_unreadable:
         return "upcast: this spell scales, but the book text is damaged — rule it"

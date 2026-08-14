@@ -110,6 +110,40 @@ if cw is not None:
           parse_scaling(cw).upcast_kind)
 
 # ---------------------------------------------------------------------------
+# 4b. "for every TWO slot levels" — a step wider than one
+# ---------------------------------------------------------------------------
+# Synthetic on purpose: this is the PARSER's arithmetic, so the test needs no
+# book text to state it. A spell written this way used to parse as no scaling
+# at all, which is a silent 4x understatement at the top slot.
+class _Every2:
+    level = 3
+    higher_level = "+1d8 for every two slot levels above 3rd."
+    desc = "Any attack you make deals an extra 1d8 damage."
+
+
+sc = parse_scaling(_Every2())
+check("a two-level step is read as a step of two",
+      sc.upcast_dice == "1d8" and sc.upcast_from == 3 and sc.upcast_per == 2,
+      f"{sc.upcast_dice} per {sc.upcast_per} above {sc.upcast_from}")
+got = [scaled_dice(_Every2(), "1d8", slot_level=n) for n in range(3, 10)]
+check("it only steps on every second slot",
+      got == ["1d8", "1d8", "2d8", "2d8", "3d8", "3d8", "4d8"], str(got))
+check("...and the note says how wide the step is",
+      "2 slot levels" in scaling_note(_Every2()), scaling_note(_Every2()))
+
+
+class _Every1:
+    level = 3
+    higher_level = None
+    desc = "The damage increases by 1d6 for each spell slot level above 3."
+
+
+check("a one-level step is unchanged by the wider pattern",
+      parse_scaling(_Every1()).upcast_per == 1
+      and scaled_dice(_Every1(), "8d6", slot_level=5) == "10d6",
+      str(scaled_dice(_Every1(), "8d6", slot_level=5)))
+
+# ---------------------------------------------------------------------------
 # 5. damaged book text is FLAGGED, never guessed
 # ---------------------------------------------------------------------------
 cc = lib.get_spell("Cone of Cold")
