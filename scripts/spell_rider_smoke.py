@@ -84,6 +84,28 @@ if hm is not None:
           and rider_dice(hm, slot_level=5) == "1d6",
           f"{rider_dice(hm)} {rider_type(hm)}")
 
+hexs = lib.get_spell("Hex")
+check("Hex is findable by its real name and rides",
+      hexs is not None and rider_dice(hexs) == "1d6"
+      and rider_type(hexs) == "necrotic",
+      f"{rider_dice(hexs) if hexs else None} {rider_type(hexs) if hexs else ''}")
+df = lib.get_spell("Divine Favor")
+check("Divine Favor rides after its entry was un-bled",
+      df is not None and rider_dice(df) == "1d4" and rider_type(df) == "radiant",
+      f"{rider_dice(df) if df else None} {rider_type(df) if df else ''}")
+
+# The extractor splits words mid-token ("dam age"), and 13 spells write the
+# damage word that way — a pattern that only accepts "damage" drops them all.
+class _Split:
+    level = 1
+    higher_level = None
+    desc = "your att acks deal an extra ld4 Radiant dam age on a hit."
+
+
+check("a rider survives the extractor splitting 'damage'",
+      rider_dice(_Split()) == "1d4" and rider_type(_Split()) == "radiant",
+      f"{rider_dice(_Split())} {rider_type(_Split())}")
+
 fb = lib.get_spell("Fireball")
 check("an ordinary damage spell is not a rider",
       fb is None or rider_dice(fb) is None, str(rider_dice(fb) if fb else None))

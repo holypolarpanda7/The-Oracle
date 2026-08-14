@@ -73,7 +73,7 @@ _DICE_SPLIT = re.compile(r"^\s*(\d+)\s*[dD]\s*(\d+)\s*$")
 #: themselves did not survive the PDF ("i<18" for "1d8"), that is a gap the
 #: DM has to be told about rather than a number to guess.
 _DICE_PROMISED_RX = re.compile(
-    r"(?:damage|healing|hit points)\s+incre\w*\s+by", re.I)
+    r"(?:dam\s*age|da\s*mage|healing|hit points)\s+incre\w*\s+by", re.I)
 
 
 @dataclass
@@ -234,9 +234,14 @@ def scaling_note(spell: Any) -> str:
 # word "damage", or in a whole separate sentence (Spirit Shroud and Conjure
 # Minor Elementals both name it later), which is why `damage.parse_damage`
 # cannot find these: it wants the type adjacent.
+#: The extractor also splits words in the MIDDLE — "dam age", "da mage" — and
+#: 13 spells write the word that way. A pattern that only accepts "damage"
+#: silently drops every one of them.
+_DAMAGE_WORD = r"(?:dam\s*age|da\s*mage)"
+
 _RIDER_RX = re.compile(
     r"extra\s+(?P<dice>[0-9lIiOoS]{1,3}\s*[dD]\s*[0-9lIiOoS]{1,3})"
-    r"(?:\s+(?P<type>[A-Za-z]+))?\s+damage", re.I)
+    r"(?:\s+(?P<type>[A-Za-z]+))?\s+" + _DAMAGE_WORD, re.I)
 
 #: Words that follow the dice but are not a damage type.
 _NOT_A_TYPE = {"damage", "of", "when", "to", "on", "against", "per", "and"}

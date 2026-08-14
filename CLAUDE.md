@@ -1661,6 +1661,19 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   already a string the tracker persists. The per-round action count is NOT in
   this bestiary's parse, so it defaults to 3 and says so rather than pretending
   to have read it.
+- **The extractor splits WORDS, and it splits spell NAMES — 20 spells were
+  uncastable because nothing could find them.** The PDF pass writes "dam age"
+  for damage (13 spells) and "He X" for Hex, "Witc H B O Lt" for Witch Bolt,
+  "Chrom At Ic Orb" for Chromatic Orb. A player cannot cast a spell whose name
+  the game does not recognise, and `get_spell("Hex")` returned None. Six of the
+  twenty also exist correctly named — those mangled rows are DUPLICATES from a
+  second parse pass and are deliberately left alone, since renaming one would
+  put two spells of the same name in front of the player; the other fourteen
+  are renamed in the gitignored overrides slot. Any pattern that reads book
+  prose has to tolerate the split word: `_DAMAGE_WORD` accepts "dam age" and
+  "da mage", or every rider written that way is silently dropped. The scan for
+  these is cheap — a spell name with a one- or two-letter token in the middle,
+  or a capital letter mid-word, is almost always mangled.
 - **A buff spell that adds damage to your ATTACKS did nothing at all.** Spirit
   Shroud, Conjure Minor Elementals, Hunter's Mark, Hex, Divine Favor and
   Elemental Weapon deal no damage themselves — they add dice to your attacks
