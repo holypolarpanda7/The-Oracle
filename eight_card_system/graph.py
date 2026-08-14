@@ -312,8 +312,16 @@ class WorldContext:
             ledger = attrs.get("ledger")
             typed = r.rel_type in (RelationType.ALLIED_WITH, RelationType.HOSTILE_TO,
                                    RelationType.MEMBER_OF, RelationType.OWNS)
-            if not ledger and not typed:
-                continue  # skip bare knows/trust edges with no recorded history
+            # A recorded REASON is recorded history, and it was being thrown
+            # away. The filter meant to skip bare `knows` edges that carry
+            # nothing, and tested the edge's TYPE instead of its contents — so
+            # every `[[LORE: A | B | why]]` that landed on a `knows` edge (which
+            # is what `record_lore` opens whenever the sentiment cues do not
+            # fire, and they do not fire on most sentences) was written to the
+            # database and shown to nobody. The whole point of recording the
+            # origin of a feud is that the DM tells the same story next time.
+            if not ledger and not typed and not (r.attributes or {}).get("reason"):
+                continue  # a bare knows/trust edge with no recorded history
             if ledger:
                 src_ent = by_id.get(r.src_id)
                 axes = _rel.get_axes(src_ent) if src_ent is not None else {"m": 0, "e": 0}
@@ -708,16 +716,29 @@ class WorldGraph:
     # Tiny sentiment cues to pick an edge type when the pair has none yet. Matched
     # as WHOLE WORDS (via a prefix check on each token) so short cues don't fire
     # on unrelated words ("war" in "toward", "kin" in "king").
+    # Whole-word cues, never substrings — "war" lives inside "toward" and "kin"
+    # inside "king", and matching loosely put feuds between people who had none.
+    #
+    # The second half of each list is what a hundred real recorded reasons
+    # actually said: a grudge is much more often "they burned the orchard" or
+    # "he sold her to the guild" than it is the word "enmity". A miss is not
+    # fatal — the edge opens as `knows` and still carries its reason — but the
+    # typed edge is what the relationship ledger and the temperature word read.
     _LORE_HOSTILE_CUES = (
         "hate", "hated", "war", "wars", "betray", "betrayed", "wrong", "wronged",
         "enemy", "enemies", "enmity", "feud", "grudge", "curse", "cursed", "slew",
         "slain", "killed", "vengeance", "revenge", "rival", "spite", "broke",
         "wounded", "stole",
+        "burned", "burnt", "razed", "sacked", "raided", "murdered", "murder",
+        "hanged", "exiled", "banished", "cheated", "robbed", "ruined", "drove",
+        "blamed", "blood", "debt", "usurped", "poisoned", "maimed", "abandoned",
     )
     _LORE_ALLIED_CUES = (
         "ally", "allied", "love", "loved", "friend", "friends", "oath", "pact",
         "bond", "bonded", "saved", "swore", "loyal", "loyalty", "wed", "married",
         "kindred", "brother", "sister",
+        "rescued", "sheltered", "healed", "raised", "fostered", "taught",
+        "mentor", "spared", "ransomed", "gave", "gift", "vouched", "shielded",
     )
 
     @staticmethod
