@@ -231,6 +231,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   half — main/off-hand weapon choice, versatile dice, two-weapon fighting),
   `forge`
   (tempering needs a smith),
+  `spell_scaling` (a cantrip growing with the caster and a spell with its
+  slot, the two spells a generic rule would wreck, damaged book text
+  flagged rather than guessed, and the curated flat damage map),
   `subclass_engine` (the five things a subclass tells the ENGINE: a widened
   crit range measured over thousands of rolls, a subclass-granted Extra
   Attack, an Unarmored Defense it sets itself, third-caster spell slots,
@@ -1633,6 +1636,30 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   no separator at all, and matches condition names tolerantly because the
   source contains `Petrifed`. 363 of 366 rows with defence data now parse; the
   three that don't are genuinely garbage (`'Damag'`, `'fre'`).
+- **A spell GROWS, and neither growth rule reached a die roll.** The engine read
+  the structured `damage_at_slot_level` / `damage_at_character_level` rows
+  correctly — and only 17 of 430 spells here have them, so almost every spell
+  took the description-parse branch, which returned the BASE dice forever. A
+  level-17 Fire Bolt rolled 1d10 instead of 4d10, a quarter of its damage on the
+  most-used attack in the game, and upcasting did nothing at all.
+  `Spell.higher_level`, a column that states the upcast rule in words, was read
+  by NOTHING. `rules/spell_scaling.py` takes the rule from the spell's own
+  prose. **Read the stated TABLE, never a general "one more die per tier"**:
+  Eldritch Blast scales BEAMS ("two beams at level 5") and Magic Missile scales
+  DARTS, so a generic rule turns four 1d10 beams into one 4d10 hit. Both state
+  no dice table and are correctly left alone.
+  **The PDF's soft hyphens are load-bearing**: "increases" arrives as
+  "in-<soft hyphen> creases", and Fireball's entire upcast rule was invisible
+  until the text was de-hyphenated first. Where the dice themselves did not
+  survive extraction ("i<18" for "1d8", 8 spells) the rule is FLAGGED for the DM
+  rather than guessed — a wrong number in a damage roll is worse than none.
+- **A curated override's damage map is a different SHAPE, and the engine dealt
+  nothing for it.** `format_spell_brief` already knew a hand-curated spell
+  stores a flat `{"2": "2d10 force"}` rather than the SRD's nested rows; the
+  engine did not, fell past both branches and returned None — so all 17
+  hand-curated book spells dealt ZERO damage in combat. The flat map is read
+  now, and scaled from `higher_level` only when it has a SINGLE row, because a
+  multi-row map already IS the scaling and would double-count.
 - **Spell damage is DERIVED from the description, because 17 of 430 rows have
   it.** Every spell in this project came from the owned-book PDF parse, not the
   SRD JSON, so `Spell.damage` is null almost everywhere and the engine's spell
