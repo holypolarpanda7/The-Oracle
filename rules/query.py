@@ -491,6 +491,17 @@ def format_spell_brief(sp: Spell) -> str:
         if len(desc) > 300:
             desc = desc[:300].rsplit(" ", 1)[0] + "…"
         bits.append(desc)
+    # How the spell GROWS. The description states it, but 300 characters of
+    # prose routinely cut off before the "Using a Higher-Level Spell Slot"
+    # sentence — so the one line that decides how much a spell actually does
+    # was the line most likely to be truncated away.
+    try:
+        from .spell_scaling import scaling_note
+        note = scaling_note(sp)
+        if note:
+            bits.append(note[:1].upper() + note[1:])
+    except Exception:
+        pass
     return "\n".join(bits)
 
 

@@ -2584,8 +2584,21 @@ class CombatEngine:
             # No structured row: read the dice out of the description, the
             # same place the type comes from. Without this the engine rolled
             # to hit with a Fire Bolt and then dealt nothing at all.
+            #
+            # ...and then GROW them. Only 17 of 430 spells here carry the
+            # structured rows above, so this branch is what almost every spell
+            # actually takes — and it used to return the base dice forever. A
+            # level-17 Fire Bolt dealt 1d10 instead of 4d10, and upcasting did
+            # nothing at all. The rule comes from the spell's own prose.
             packets = dmgtypes.parse_damage(getattr(sp, "desc", None))
-            return packets[0].dice if packets else None
+            base = packets[0].dice if packets else None
+            try:
+                from rules.spell_scaling import scaled_dice
+                return scaled_dice(sp, base,
+                                   character_level=(prof.level if prof else 1),
+                                   slot_level=slot)
+            except Exception:
+                return base
         lvl = prof.level if prof else 1
         slots = sp.damage.get("damage_at_slot_level") or {}
         chars = sp.damage.get("damage_at_character_level") or {}
@@ -2603,6 +2616,33 @@ class CombatEngine:
             eligible = [int(k) for k in chars.keys() if int(k) <= max(1, lvl)]
             key = str(max(eligible)) if eligible else min(chars.keys(), key=lambda k: int(k))
             return chars[key]
+        # A curated override stores a FLAT {slot level: "2d10 force"} map rather
+        # than the SRD's nested rows. Unrecognised, this returned None and the
+        # spell dealt no damage whatsoever — which is what every one of the
+        # hand-curated book spells was doing. `format_spell_brief` already knew
+        # this shape; the engine did not.
+        flat = {k: v for k, v in sp.damage.items() if str(k).isdigit()}
+        if flat:
+            if slot is None:
+                key = min(flat, key=lambda k: int(k))
+            else:
+                eligible = [int(k) for k in flat if int(k) <= int(slot)]
+                key = str(max(eligible)) if eligible \
+                    else min(flat, key=lambda k: int(k))
+            packets = dmgtypes.parse_damage(str(flat[key]))
+            dice = packets[0].dice if packets else None
+            # A single-row map states only the base; its growth lives in the
+            # `higher_level` column. Applied to a MULTI-row map this would
+            # double-count, because there the rows already are the scaling.
+            if dice and len(flat) == 1:
+                try:
+                    from rules.spell_scaling import scaled_dice
+                    return scaled_dice(sp, dice,
+                                       character_level=(prof.level if prof else 1),
+                                       slot_level=slot)
+                except Exception:
+                    return dice
+            return dice
         return None
 
     def _do_improvise(self, encounter_id, actor, intent, profiles, rep):
