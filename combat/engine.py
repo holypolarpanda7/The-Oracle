@@ -1296,6 +1296,7 @@ class CombatEngine:
             res = saving_throw(mod, dc=int(sv.get("dc") or 10),
                                label=f"{(sv.get('ability') or '?').upper()} save "
                                      f"({fresh.name})", rng=self.rng)
+            self._legendary_rescue(fresh, res)
             ev = {"kind": "save", "actor": fresh.name,
                   "condition": sv.get("condition"),
                   "success": bool(res.success),
@@ -1709,6 +1710,54 @@ class CombatEngine:
         if rolled is not None and took is not None and rolled != took:
             notes.append(f"{rolled} rolled → {took} taken")
 
+    def _legendary_rescue(self, c: Combatant, save,
+                          notes: Optional[list] = None) -> bool:
+        """A boss spends a Legendary Resistance to turn a failed save into a
+        success. 21 monsters here have it and nothing read it, so every
+        save-or-suck landed first try — Hold Monster simply worked on a dragon.
+
+        Uses are tracked as a ``legres:<spent>`` condition, the same way a
+        mastery rider stamps its expiry round: a condition is already a string
+        the tracker persists, and a second table for one counter would be the
+        more complex answer.
+        """
+        if save is None or getattr(save, "success", None) is not False:
+            return False
+        mon = self._monster(c)
+        if mon is None:
+            return False
+        try:
+            from rules import legendary as _lg
+            total = _lg.resistance_uses(mon)
+        except Exception:
+            return False
+        if total <= 0:
+            return False
+        spent = 0
+        current = None
+        for raw in (c.conditions or []):
+            s = str(raw)
+            if s.lower().startswith("legres:"):
+                current = s
+                try:
+                    spent = int(s.rsplit(":", 1)[1])
+                except (ValueError, IndexError):
+                    spent = 0
+        if spent >= total:
+            return False
+        spent += 1
+        if current:
+            self.tracker.remove_condition(c.id, current)
+        self.tracker.add_condition(c.id, f"legres:{spent}")
+        save.success = True
+        left = total - spent
+        save.detail = (getattr(save, "detail", "") or "") + \
+            f" — Legendary Resistance ({left} of {total} left)"
+        if notes is not None:
+            notes.append(f"{c.name} spends a Legendary Resistance "
+                         f"({left} of {total} left)")
+        return True
+
     def _live_rider(self, c: Combatant, prefix: str, rnd: int) -> Optional[str]:
         """A time-limited mastery rider on this creature, if it hasn't lapsed.
 
@@ -1799,6 +1848,7 @@ class CombatEngine:
             sv = saving_throw(t_mod, dc=dc,
                               label=f"{target.name} Con save (Topple)",
                               rng=self.rng)
+            self._legendary_rescue(target, sv, notes)
             rolls.append(self._roll_dict(f"Topple — {target.name}", sv.detail,
                                          sv.total, dc=dc, success=bool(sv.success)))
             if not sv.success and not self._immune_to(target, "prone", profiles):
@@ -2466,6 +2516,7 @@ class CombatEngine:
                 save = saving_throw(t_mod, dc=dc,
                                     label=f"{sp.dc_type.upper()} save ({tgt.name})",
                                     rng=self.rng)
+                self._legendary_rescue(tgt, save, ev.get("notes"))
                 ev["rolls"].append(self._roll_dict(
                     f"{sp.dc_type.upper()} save — {tgt.name}", save.detail,
                     save.total, dc=dc, success=bool(save.success)))
@@ -2835,6 +2886,7 @@ class CombatEngine:
                 hname = hz.get("name", "a hazard")
                 save = saving_throw(mod, dc=dc, label=f"{hname} save ({c.name})",
                                     rng=self.rng)
+                self._legendary_rescue(c, save)
                 ev = {"kind": "environment", "actor": c.name, "hazard": hname,
                       "success": bool(save.success), "notes": [],
                       "rolls": [self._roll_dict(f"{hname} — {c.name}", save.detail,

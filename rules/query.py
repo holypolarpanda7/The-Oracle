@@ -449,6 +449,16 @@ def format_monster_brief(m: Monster) -> str:
             desc = (a.get("desc") or "").strip()
             atk = f": {desc[:160]}" if desc else ""
         lines.append(f"- {a.get('name','Action')}{atk}")
+    # What makes a boss a boss. 59 monsters carry legendary actions and this
+    # brief never printed them, so a CR 14 dragon reached the DM looking like a
+    # big animal with a bite attack.
+    try:
+        from .legendary import brief as _legendary_brief
+        extra = _legendary_brief(m)
+        if extra:
+            lines.append(extra)
+    except Exception:
+        pass
     return "\n".join(lines)
 
 

@@ -231,6 +231,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   half — main/off-hand weapon choice, versatile dice, two-weapon fighting),
   `forge`
   (tempering needs a smith),
+  `legendary` (a boss's Legendary Resistance parsed from OCR prose and
+  SPENT by the engine until it runs out, and its legendary actions
+  reaching the DM's brief at all),
   `spell_scaling` (a cantrip growing with the caster and a spell with its
   slot, the two spells a generic rule would wreck, damaged book text
   flagged rather than guessed, and the curated flat damage map),
@@ -1636,6 +1639,25 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   no separator at all, and matches condition names tolerantly because the
   source contains `Petrifed`. 363 of 366 rows with defence data now parse; the
   three that don't are genuinely garbage (`'Damag'`, `'fre'`).
+- **A boss was not a boss: legendary actions and Legendary Resistance were both
+  invisible.** 59 monsters carry `legendary_actions` and the combat engine
+  contained NO reference to the column — and `format_monster_brief` never
+  printed it either, so a CR 14 dragon both fought like a brute and gave the DM
+  nothing to run one with. Legendary RESISTANCE was worse because it changes
+  outcomes rather than flavour: it lives as a sentence inside
+  `special_abilities` ("Legendary Resistance (3/Day, or 4/Day in Lair)") and
+  nothing read it, so every save-or-suck landed first try — Hold Monster simply
+  worked on an ancient dragon. `rules/legendary.py` parses both out of the stat
+  block's own OCR-damaged prose (the extractor writes "1f" for "If" and strips
+  the space out of "3/Day,or"). The two halves are split ON PURPOSE:
+  **resistance is ENFORCED** — `_legendary_rescue` turns a failed save into a
+  success and spends a use, because that is arithmetic — while **actions are
+  SURFACED**, because they are narrative options taken between other creatures'
+  turns and the DM spends them through the ordinary hooks. Uses are tracked as
+  a `legres:<spent>` condition, the mastery-rider precedent: a condition is
+  already a string the tracker persists. The per-round action count is NOT in
+  this bestiary's parse, so it defaults to 3 and says so rather than pretending
+  to have read it.
 - **A spell GROWS, and neither growth rule reached a die roll.** The engine read
   the structured `damage_at_slot_level` / `damage_at_character_level` rows
   correctly — and only 17 of 430 spells here have them, so almost every spell
