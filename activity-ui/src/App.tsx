@@ -4,7 +4,7 @@ import type {
   ActionBarData, Ally, ArenaState, BarAction, CCPayload, CharacterSummary,
   CombatState, LevelUpData, LexEntry,
   ChronicleData, Locale, RepData, RouteRow, ServerEvent, SheetData, VttArea,
-  VttOptions, VttScene, VttTargets,
+  VttOptions, VttScene, VttTargets, WorldShop,
 } from "./lib/types";
 import { Block, isTyped, makeOracleBlock, makeSpeechBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
@@ -14,6 +14,7 @@ import { Arena, ArenaResult, Quartermaster } from "./components/Arena";
 import { LevelUpOverlay } from "./components/LevelUp";
 import { ReprepareOverlay } from "./components/Reprepare";
 import { PlaySurface } from "./components/PlaySurface";
+import { Stall } from "./components/Stall";
 import { Chronicle } from "./components/Chronicle";
 import { ItemInspector, type ItemView } from "./components/ItemInspector";
 import { levelChime, rollThunk } from "./lib/sound";
@@ -45,6 +46,10 @@ export default function App({ session }: { session: Session }) {
   // finished with, and it is thrown away rather than kept (see the
   // narration_delta case).
   const [draft, setDraft] = useState("");
+  // Somebody here sells something. Asked for whenever the scene changes, so
+  // the button only exists where a stall does; null closes it.
+  const [shop, setShop] = useState<WorldShop | null>(null);
+  const [stallOpen, setStallOpen] = useState(false);
   const [sheet, setSheet] = useState<SheetData | null>(null);
   const [locale, setLocale] = useState<Locale | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -237,6 +242,12 @@ export default function App({ session }: { session: Session }) {
           break;
         case "locale":
           setLocale(ev.locale);
+          // Who is standing here decides whether there is anything to buy.
+          connRef.current?.send({ t: "shop" });
+          break;
+        case "shop":
+          setShop(ev.shop);
+          if (!ev.shop) setStallOpen(false);
           break;
         case "suggest":
           setSuggestions(ev.actions);
@@ -538,9 +549,18 @@ export default function App({ session }: { session: Session }) {
                     swap_out, swap_in, ability_increases, feat, feat_choices })}
               />
             )}
+            {stallOpen && shop && (
+              <Stall
+                shop={shop}
+                onBuy={(item) => connRef.current?.send({ t: "shop_buy", item })}
+                onClose={() => setStallOpen(false)}
+              />
+            )}
             <PlaySurface
               blocks={blocks}
               draft={draft}
+              hasStall={!!shop}
+              onOpenStall={() => setStallOpen(true)}
               sheet={sheet}
               locale={locale}
               suggestions={suggestions}

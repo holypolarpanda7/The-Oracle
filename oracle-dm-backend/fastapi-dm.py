@@ -19968,6 +19968,97 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
     }
 
 
+def _shop_slice(session_id: str, user_id: str):
+    """The world slice a shop question is asked against, and who is asking.
+
+    Returns ``(ctx, character_id)`` — or ``(None, None)`` when there is no PC.
+    Built through the ordinary ``get_world_context`` so a stall can never show
+    a merchant the DM's own context does not have standing here.
+    """
+    char_id = _activity_char_id(session_id, user_id)
+    if not char_id:
+        return None, None
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if char is None:
+            return None, None
+        pc_name = char.name
+    try:
+        pc_ent = world.find_pc(str(user_id), pc_name)
+    except Exception:
+        pc_ent = None
+    pc_slug = pc_ent.slug if pc_ent is not None else slugify(pc_name)
+    try:
+        return world.get_world_context(pc_slug, "looks over what is for sale"), char_id
+    except Exception as e:
+        print(f"[shop] world slice failed: {e}")
+        return None, None
+
+
+def _activity_shop(session_id: str, user_id: str) -> Optional[dict]:
+    """Every stall standing in this scene, what it has THIS WEEK, and the purse.
+
+    A browsable version of what the DM has always been told. Stock is not
+    stored anywhere: ``shops.roll_stock`` is a pure function of (merchant,
+    settlement scale, world week), so the panel and the DM's own context line
+    are the same roll, and a stall that rotates on the seventh day rotates for
+    both at once. Nothing here is a second source of truth — if it were, a
+    player could buy something the DM had never seen for sale.
+
+    ``None`` when nobody here sells anything, which is what closes the panel.
+    """
+    from eight_card_system import shops
+
+    ctx, char_id = _shop_slice(session_id, user_id)
+    if ctx is None:
+        return None
+    day = world.current_day()
+    stalls: list[dict] = []
+    for e in (ctx.entities or []):
+        if getattr(e, "type", "") != "npc":
+            continue
+        role = str((e.attributes or {}).get("role", "")).strip().lower()
+        if role not in shops.MERCHANT_ROLES:
+            continue
+        try:
+            stock = shops.roll_stock(e.slug, role, ctx.merchant_scale(e), day)
+        except Exception as ex:
+            print(f"[shop] stock roll failed for {e.slug}: {ex}")
+            continue
+        if not stock:
+            continue
+        stalls.append({
+            "slug": e.slug, "name": e.name, "role": role,
+            "stock": [{"name": i["name"], "price_gp": float(i["price_gp"])}
+                      for i in stock],
+        })
+    if not stalls:
+        return None
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        purse = _purse_of(char) if char else {}
+    return {"stalls": stalls, "purse": purse,
+            "purse_text": format_purse(purse) if purse else ""}
+
+
+def _activity_shop_buy(session_id: str, user_id: str, item: str) -> list[str]:
+    """Buy one thing from a stall — through the SAME path a narrated deal takes.
+
+    `process_trade_hooks` already cross-checks the item against a present
+    merchant's actual stock, prices it from that stock, refuses a purse that
+    cannot cover it and logs the world event. A "buy" button that did its own
+    version of that would be a second set of commerce rules to keep in step,
+    which is the mistake the action bar was built to avoid: it is a third
+    source of INTENT into one resolver, never a second resolver.
+    """
+    ctx, _char_id = _shop_slice(session_id, user_id)
+    if ctx is None or not (item or "").strip():
+        return []
+    return process_trade_hooks(
+        [{"action": "buy", "item": item.strip(), "amount": 0.0}],
+        session_id, ctx)
+
+
 def _activity_locale(session_id: str, user_id: str) -> Optional[dict]:
     """The "here and now" strip: where the PC stands, the world clock, the
     weather they are standing in, and who else is present.
@@ -23153,6 +23244,45 @@ async def activity_ws(ws: WebSocket, channel: str):
                 except Exception as e:
                     print(f"[activity] action bar failed: {e}")
                     await ws.send_json({"t": "actions", "data": None})
+                continue
+
+            # ---- the stall: what the people standing here actually sell ----
+            # Browsing is per PLAYER (their purse, their socket); BUYING is a
+            # world event, so its note goes to the table the way a narrated deal
+            # always has.
+            if msg.get("t") == "shop":
+                try:
+                    await ws.send_json({"t": "shop", "shop": await asyncio.to_thread(
+                        _activity_shop, session_id, user_id)})
+                except Exception as e:
+                    print(f"[activity] shop failed: {e}")
+                    await ws.send_json({"t": "shop", "shop": None})
+                continue
+            if msg.get("t") == "shop_buy":
+                try:
+                    notes = await asyncio.to_thread(
+                        _activity_shop_buy, session_id, user_id,
+                        str(msg.get("item") or ""))
+                except Exception as e:
+                    print(f"[activity] shop buy failed: {e}")
+                    notes = []
+                for note in notes:
+                    await _activity_broadcast(session_id,
+                                              {"t": "narration", "text": note},
+                                              fallback=ws)
+                if not notes:
+                    await ws.send_json({
+                        "t": "narration",
+                        "text": "*(Nobody here has that to sell.)*"})
+                try:
+                    await ws.send_json({"t": "shop", "shop": await asyncio.to_thread(
+                        _activity_shop, session_id, user_id)})
+                    sheet = await asyncio.to_thread(
+                        _activity_sheet, session_id, user_id)
+                    if sheet:
+                        await ws.send_json({"t": "sheet", "sheet": sheet})
+                except Exception as e:
+                    print(f"[activity] shop refresh failed: {e}")
                 continue
 
             # ---- the action bar: an act CHOSEN on the board, not typed ----

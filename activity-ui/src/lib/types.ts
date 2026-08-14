@@ -809,12 +809,29 @@ export interface ArenaState {
   shop?: ArenaShop | null;
 }
 
+/** A stall in the WORLD (not the arena's Quartermaster): the merchants the
+ *  world slice has standing here and what they have this week. Stock is rolled
+ *  by the server from (merchant, settlement scale, world week) and is the same
+ *  roll the DM's own context line carries — the client never prices anything. */
+export interface WorldStall {
+  slug: string;
+  name: string;
+  role: string;
+  stock: { name: string; price_gp: number }[];
+}
+export interface WorldShop {
+  stalls: WorldStall[];
+  purse: Record<string, number>;
+  purse_text: string;
+}
+
 export type ServerEvent =
   | { t: "hello"; channel: string; characters: CharacterSummary[] }
   | { t: "arena"; state: ArenaState }
   | { t: "lexicon"; entries: LexEntry[] }
   | { t: "player"; text: string; who?: string; secret?: boolean }
   | { t: "narration"; text: string; secret?: boolean }
+  | { t: "shop"; shop: WorldShop | null }
   // The DM writing, live. A PREVIEW: hook-free (see narration/stream.py) but
   // not the authoritative text — dice are still unrolled and speech is not yet
   // split out — so `narration_end` discards it and the real blocks follow.
@@ -904,6 +921,8 @@ export type ClientEvent =
       range_ft?: number | null }
   /** Ask for a fresh action bar (it is also pushed after every turn). */
   | { t: "actions" }
+  | { t: "shop" }
+  | { t: "shop_buy"; item: string }
   /** Take an act chosen on the bar. The server re-derives it from its own
    *  catalogue and re-checks the aim — this is a request, not an instruction. */
   | { t: "board_action"; action_id: string; target_token_id?: number;

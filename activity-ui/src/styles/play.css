@@ -1234,3 +1234,66 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
 .play .rt-danger.moderate { color: var(--ember); }
 .play .rt-danger.high { color: var(--crimson); }
 .play .rt-blurb { font-size: 0.8rem; font-style: italic; line-height: 1.4; color: #c7d2d8; }
+
+/* ---------- the stall ----------
+   A merchant's wares in the world, not the arena's Quartermaster. It is a
+   panel rather than a screen on purpose: buying is a thing you do in the
+   middle of a scene, and taking the narration away to do it would make a
+   two-copper flask of oil feel like leaving the room. */
+.play .who .wares {
+  float: right;
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold); background: rgba(8, 12, 24, 0.7);
+  border: 1px solid color-mix(in srgb, var(--gold) 45%, var(--edge));
+  border-radius: 4px; padding: 2px 8px; cursor: pointer;
+}
+.play .who .wares:hover { background: rgba(230, 188, 100, 0.14); }
+
+.stall-wrap {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(4, 6, 12, 0.72);
+  display: grid; place-items: center; padding: 20px;
+}
+.stall {
+  width: min(560px, 100%); max-height: min(76vh, 720px); overflow: auto;
+  background: linear-gradient(180deg, rgba(18, 22, 38, 0.98), rgba(9, 12, 22, 0.98));
+  border: 1px solid color-mix(in srgb, var(--gold) 35%, var(--edge));
+  border-radius: 10px; padding: 14px 16px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.7);
+}
+.stall-head {
+  display: flex; align-items: baseline; gap: 10px;
+  border-bottom: 1px solid var(--edge); padding-bottom: 8px; margin-bottom: 10px;
+}
+.stall-title { font-family: var(--display); font-size: 1.05rem; color: var(--gold); }
+.stall-purse {
+  margin-left: auto; font-family: var(--mono); font-size: 0.68rem;
+  color: var(--gold-dim);
+}
+.stall-x {
+  background: none; border: none; color: var(--text); opacity: 0.6;
+  cursor: pointer; font-size: 0.9rem; line-height: 1;
+}
+.stall-x:hover { opacity: 1; }
+.stall-who + .stall-who { margin-top: 12px; }
+.stall-name { font-family: var(--display); font-size: 0.86rem; color: var(--text); }
+.stall-role { color: var(--gold-dim); font-family: var(--mono); font-size: 0.62rem; }
+.stall-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.stall-list li {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 2px; border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.stall-item { flex: 1; font-size: 0.8rem; }
+.stall-price {
+  font-family: var(--mono); font-size: 0.68rem; color: var(--gold-dim);
+  min-width: 62px; text-align: right;
+}
+.stall-buy {
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.06em;
+  text-transform: uppercase; cursor: pointer;
+  color: var(--text); background: rgba(230, 188, 100, 0.1);
+  border: 1px solid color-mix(in srgb, var(--gold) 40%, var(--edge));
+  border-radius: 4px; padding: 3px 9px;
+}
+.stall-buy:hover { background: rgba(230, 188, 100, 0.22); }

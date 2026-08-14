@@ -182,6 +182,9 @@ function LocaleRail({ locale, onInspect }: {
 
 export interface PlayProps {
   blocks: Block[];
+  /** Somebody here sells something — the button only exists where a stall does. */
+  hasStall?: boolean;
+  onOpenStall?: () => void;
   /** The DM writing, live — a preview held apart from `blocks` because the
    *  server has not finished with it (see narration_delta). Empty when there
    *  is nothing in flight. */
@@ -330,7 +333,15 @@ export function PlaySurface(p: PlayProps) {
 
           <div className="scroll">
             <div className="txt" ref={txtRef} onClick={p.onSkip} title="Click to reveal instantly">
-              <div className="who">The Oracle Speaks</div>
+              <div className="who">
+                The Oracle Speaks
+                {p.hasStall && (
+                  <button className="wares" onClick={(e) => {
+                    e.stopPropagation();
+                    p.onOpenStall?.();
+                  }}>Wares</button>
+                )}
+              </div>
               {p.blocks.length
                 ? revealed.map((b, i) => renderBlock(b, i, p.onBlockDone))
                 : (!p.draft &&
