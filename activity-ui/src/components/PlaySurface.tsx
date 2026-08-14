@@ -182,6 +182,10 @@ function LocaleRail({ locale, onInspect }: {
 
 export interface PlayProps {
   blocks: Block[];
+  /** The DM writing, live — a preview held apart from `blocks` because the
+   *  server has not finished with it (see narration_delta). Empty when there
+   *  is nothing in flight. */
+  draft?: string;
   sheet: SheetData | null;
   /** Place / world clock / weather / who's here — null until the first push. */
   locale: Locale | null;
@@ -329,7 +333,12 @@ export function PlaySurface(p: PlayProps) {
               <div className="who">The Oracle Speaks</div>
               {p.blocks.length
                 ? revealed.map((b, i) => renderBlock(b, i, p.onBlockDone))
-                : <p className="awaiting">The tale awaits your first deed…</p>}
+                : (!p.draft &&
+                   <p className="awaiting">The tale awaits your first deed…</p>)}
+              {/* The live preview. Deliberately plain — no lexicon
+                  highlighting, no typewriter of its own: it IS the typewriter,
+                  and the finished block that replaces it does the rest. */}
+              {p.draft ? <p className="drafting">{p.draft}</p> : null}
             </div>
           </div>
 

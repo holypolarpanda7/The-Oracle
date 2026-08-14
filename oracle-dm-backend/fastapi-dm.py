@@ -1300,6 +1300,19 @@ import contextvars as _contextvars
 _ACTIVITY_ROLLS: _contextvars.ContextVar = _contextvars.ContextVar(
     "activity_rolls", default=None)
 
+# Live narration, same idea one step earlier: when set, the DM call streams and
+# pushes hook-free text here AS THE MODEL WRITES IT, so a table watches the
+# scene arrive instead of waiting out the whole generation. The sink is a plain
+# callable taking a string; only the main narration call ever fills it (a
+# `model_override` marks the extractor's side-call, which nobody watches).
+#
+# What reaches it is a PREVIEW and is replaced, not appended to, by the real
+# narration events at the end of the turn — the authoritative text has had its
+# dice rolled and substituted, its speech split out and its hooks applied, none
+# of which can happen until the reply is whole. See narration/stream.py.
+_ACTIVITY_STREAM: _contextvars.ContextVar = _contextvars.ContextVar(
+    "activity_stream", default=None)
+
 
 #: A raw dice expression, so a named check can be told apart from "2d6+3".
 _DICE_EXPR_RE = re.compile(r"^\d*d\d+([+-]\d+)?([+-]\d+)?$", re.I)
@@ -9744,6 +9757,61 @@ def _strip_cjk_drift(text: str) -> str:
     return salvaged
 
 
+#: Stream the DM's narration to the Activity as it is written.
+#:
+#: OFF by default, and honestly: the machinery below is proven offline
+#: (`scripts/stream_smoke.py` puts a synthetic stream through the hook guard and
+#: both wire readers, cut at every character boundary) and the LIVE half — a
+#: real model, a held connection, the drain task pumping a socket — has not been
+#: measured against a model, because none was reachable when it was written.
+#:
+#: Turning it on cannot change what a table ends up reading: the preview is
+#: REPLACED by the authoritative narration events at the end of every turn, and
+#: a stream that fails falls through to the ordinary blocking request. What it
+#: risks is a held connection per turn and an unproven code path in the hottest
+#: part of the app, which is why it waits for somebody with a model in front of
+#: them. Set ORACLE_LLM_STREAM=1 to try it.
+LLM_STREAM = os.getenv("ORACLE_LLM_STREAM", "").strip().lower() in ("1", "true", "yes")
+
+
+def _stream_openai_compat(payload: dict, headers: dict, sink,
+                          *, timeout_seconds: int = 60) -> Optional[str]:
+    """One streamed chat call. Returns the whole reply, or None to fall back.
+
+    The sink is fed hook-free text as it arrives; the RETURN value is the raw
+    reply with everything in it, because every caller downstream — the hook
+    extractors, the dice substitution, the segment splitter — needs exactly what
+    the model wrote.
+    """
+    from narration.stream import HookGuard, iter_ollama_deltas, iter_sse_deltas
+
+    payload = {**payload, "stream": True}
+    native = LLM_BASE_URL.rstrip("/").endswith("/api/chat")
+    try:
+        resp = requests.post(LLM_BASE_URL, headers=headers, json=payload,
+                             timeout=timeout_seconds, stream=True)
+        if resp.status_code != 200:
+            print(f"[LLM stream] HTTP {resp.status_code}")
+            return None
+        guard = HookGuard()
+        whole: list[str] = []
+        reader = iter_ollama_deltas if native else iter_sse_deltas
+        for piece in reader(resp.iter_lines()):
+            whole.append(piece)
+            shown = guard.feed(piece)
+            if shown:
+                try:
+                    sink(shown)
+                except Exception as e:      # a dead socket must not kill a turn
+                    print(f"[LLM stream] sink failed: {e}")
+                    sink = lambda _s: None  # noqa: E731
+        guard.close()
+        return "".join(whole) or None
+    except requests.RequestException as e:
+        print(f"[LLM stream] request error: {e}")
+        return None
+
+
 def call_openrouter_chat(
     messages: List[Dict[str, str]],
     *,
@@ -9849,6 +9917,22 @@ def call_openrouter_chat(
                         # Non-retryable (or exhausted): drop native for the rest
                         # of this call and fall through to the compat path below.
                         try_native = False
+
+            # Someone is watching this one arrive. Streaming is used ONLY when a
+            # sink is armed and this is the narration call — the extractor's
+            # side-call (which is what `model_override` marks) has no audience,
+            # and a stream costs a held connection for the whole generation.
+            sink = None if model_override else _ACTIVITY_STREAM.get()
+            if sink is not None and LLM_STREAM:
+                got = _stream_openai_compat(
+                    dict(payload), headers, sink,
+                    timeout_seconds=timeout_seconds)
+                if got is not None:
+                    return _strip_cjk_drift(got)
+                # A stream that failed is not a failed TURN: fall through to the
+                # ordinary blocking request below and the player simply waits,
+                # which is what they did before any of this existed.
+                print(f"[LLM stream] {model}: falling back to a blocking call")
 
             try:
                 resp = requests.post(
@@ -18665,6 +18749,7 @@ async def character_portrait_look_delete(character_id: int, req: PortraitLookDel
 # meaningful names as the text types out.
 
 import asyncio
+import queue
 
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -23125,6 +23210,49 @@ async def activity_ws(ws: WebSocket, channel: str):
 
             rolls: list[dict] = []
             token = _ACTIVITY_ROLLS.set(rolls)
+            # Live narration. The DM call runs in a worker THREAD, so the sink
+            # is a thread-safe queue and a task on the loop drains it — a
+            # coroutine cannot be awaited from over there, and calling
+            # `send_json` from the worker would touch the socket off-loop.
+            deltas: "queue.Queue[Optional[str]]" = queue.Queue()
+            stream_token = None
+            drain = None
+            if LLM_STREAM:
+                stream_token = _ACTIVITY_STREAM.set(deltas.put_nowait)
+
+                async def _drain() -> None:
+                    while True:
+                        piece = await asyncio.to_thread(deltas.get)
+                        if piece is None:
+                            return
+                        try:
+                            await _activity_broadcast(
+                                session_id,
+                                {"t": "narration_delta", "text": piece},
+                                fallback=ws)
+                        except Exception:
+                            return
+                drain = asyncio.create_task(_drain())
+            async def _end_stream() -> None:
+                """Stop the preview, whatever happened to the turn.
+
+                Always sent when one was started, and always BEFORE the real
+                narration — the client throws the preview away rather than
+                keeping it, because the authoritative text differs from what was
+                streamed (dice resolved inline, speech split into its own cards)
+                and two versions of the same paragraph is worse than a wait.
+                """
+                if stream_token is not None:
+                    _ACTIVITY_STREAM.reset(stream_token)
+                if drain is not None:
+                    deltas.put_nowait(None)
+                    try:
+                        await asyncio.wait_for(drain, timeout=5)
+                    except Exception:
+                        drain.cancel()
+                    await _activity_broadcast(session_id,
+                                              {"t": "narration_end"}, fallback=ws)
+
             try:
                 bt = BackgroundTasks()
                 req = ChatRequest(session_id=session_id, user_id=user_id,
@@ -23134,17 +23262,20 @@ async def activity_ws(ws: WebSocket, channel: str):
                 # (contextvars propagate, so the roll collector works).
                 resp = await asyncio.to_thread(chat_endpoint, req, bt)
             except HTTPException as e:
+                await _end_stream()
                 await ws.send_json({"t": "narration", "text": f"⚠ {e.detail}"})
                 await ws.send_json({"t": "busy", "on": False})
                 _ACTIVITY_ROLLS.reset(token)
                 continue
             except Exception as e:
                 print(f"[activity] chat failed: {e}")
+                await _end_stream()
                 await ws.send_json({"t": "narration",
                                     "text": "⚠ The Oracle's vision clouds. Try again."})
                 await ws.send_json({"t": "busy", "on": False})
                 _ACTIVITY_ROLLS.reset(token)
                 continue
+            await _end_stream()
             _ACTIVITY_ROLLS.reset(token)
 
             # Relay the DM's scene music cue to the bot (voice channel = channel).

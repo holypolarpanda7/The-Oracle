@@ -815,6 +815,11 @@ export type ServerEvent =
   | { t: "lexicon"; entries: LexEntry[] }
   | { t: "player"; text: string; who?: string; secret?: boolean }
   | { t: "narration"; text: string; secret?: boolean }
+  // The DM writing, live. A PREVIEW: hook-free (see narration/stream.py) but
+  // not the authoritative text — dice are still unrolled and speech is not yet
+  // split out — so `narration_end` discards it and the real blocks follow.
+  | { t: "narration_delta"; text: string }
+  | { t: "narration_end" }
   | { t: "speech"; text: string; who?: string; portrait?: string;
       script?: Script; secret?: boolean }
   | { t: "whisper"; text: string }

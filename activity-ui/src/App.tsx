@@ -41,6 +41,10 @@ export default function App({ session }: { session: Session }) {
   const arenaSlotRef = useRef<number | null>(null);
   const [characters, setCharacters] = useState<CharacterSummary[]>([]);
   const [blocks, setBlocks] = useState<Block[]>([]);
+  // The DM writing, live. Not a Block: it is a preview the server has not
+  // finished with, and it is thrown away rather than kept (see the
+  // narration_delta case).
+  const [draft, setDraft] = useState("");
   const [sheet, setSheet] = useState<SheetData | null>(null);
   const [locale, setLocale] = useState<Locale | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -194,11 +198,27 @@ export default function App({ session }: { session: Session }) {
           lexRef.current = ev.entries;
           break;
         case "player":
+          // A new turn starts clean. A preview whose `narration_end` never
+          // arrived (a socket that dropped mid-generation) must not sit under
+          // the next reply.
+          setDraft("");
           setBlocks((b) => [...b, { kind: "player", text: ev.text, who: ev.who,
                                     secret: ev.secret }]);
           break;
         case "narration":
           setBlocks((b) => [...b, makeOracleBlock(ev.text, lexRef.current, ev.secret)]);
+          break;
+        // The DM writing, live. Held apart from `blocks` on purpose: it is a
+        // preview of text the server has not finished with — the dice in it are
+        // still hooks and its dialogue has not been split into speech cards —
+        // so it is DISCARDED on `narration_end` and the authoritative blocks
+        // arrive behind it. Appending it would leave the same paragraph on
+        // screen twice, once wrong.
+        case "narration_delta":
+          setDraft((d) => d + ev.text);
+          break;
+        case "narration_end":
+          setDraft("");
           break;
         case "speech":
           setBlocks((b) => [...b, makeSpeechBlock(ev.text, lexRef.current, ev.who,
@@ -520,6 +540,7 @@ export default function App({ session }: { session: Session }) {
             )}
             <PlaySurface
               blocks={blocks}
+              draft={draft}
               sheet={sheet}
               locale={locale}
               suggestions={suggestions}

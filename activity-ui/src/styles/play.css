@@ -342,6 +342,22 @@
   line-height: 1.62; max-width: 68ch; }
 .play .scroll p.player { color: #6a4c1c; font-style: italic; }
 .play .scroll p.awaiting { color: #7a5e2a; font-style: italic; }
+
+/* The DM writing, live. Dimmer than finished prose and carrying a cursor,
+   because it is a PREVIEW: the server has not resolved its dice or split its
+   dialogue yet, and it is replaced rather than kept. Reading as
+   not-quite-settled is the honest look for text that is about to change. */
+.play .scroll p.drafting {
+  color: color-mix(in srgb, var(--text) 72%, transparent);
+  white-space: pre-wrap;
+}
+.play .scroll p.drafting::after {
+  content: "▍";
+  margin-left: 1px;
+  color: var(--gold-dim);
+  animation: oracle-writing 1s steps(1) infinite;
+}
+@keyframes oracle-writing { 50% { opacity: 0; } }
 /* Spoken lines read differently from description — the cheapest, largest
    legibility win in a wall of prose. */
 .play .scroll .hl-speech, .play .scroll .in-speech { font-style: italic; color: #5c3f14; }
