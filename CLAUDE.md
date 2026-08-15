@@ -737,6 +737,24 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   experiment is measured: **`--force` is not optional**, since the art cache is
   keyed on the layout and knows nothing about denoise or negatives, so a second
   arm is otherwise served the first arm's picture.
+- **A landmark may be one the DM INVENTED, and the name is its identity.** The
+  catalogue is a fixed list of meshes so a model cannot ask for one nobody
+  shipped — a guarantee about MESHES, which says nothing about a thing the board
+  can already draw. A `landmark=` phrase the catalogue does not know becomes a
+  piece with `source=None` stamping `A` (a worked object, half cover, four feet,
+  breakable) at 2x2, so the DM's own gilded sow stands in the tavern named for
+  it. Four rules keep it honest: a description of the ROOM is refused (the same
+  resolver is fed loose place text, and invention is enabled only for an
+  explicit `landmark=`); a SPECIFIC description beats a loose catalogue keyword,
+  judged by how much of the phrase the matched names cover, or "a life-size
+  statue of a pig" resolves to the colossal seated guardian; the placed record
+  carries the NAME, because the ad-hoc register is in memory and a board
+  outlives the process that drew it; and two squares rather than one, because a
+  single square of a 24x18 board is a four-hundredth of the frame. `SetPiece.
+  words` now actually reaches the prompt — it claimed to for months and nothing
+  joined it — and a landmark gets a REGION of its own squares, which is the one
+  case regional prompting is good at: a contiguous block fighting no strong
+  wrong prior.
 - **A landmark the DM ASKED for sweeps the scatter under it.** Only
   `terrain.DECOR_CODES` — the set a generator scatters *without* touching
   connectivity — so a sweep can never open a way through anything and a wall is
