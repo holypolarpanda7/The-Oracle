@@ -1199,7 +1199,18 @@ _ISO_NEGATIVE = (
     # inside it.
     "people, person, figure, character, adventurer, creature, monster, "
     "miniature, text, label, caption, watermark, border, frame, user interface, "
-    "grid lines, arrows, top-down, overhead, floorplan, blueprint"
+    "grid lines, arrows, top-down, overhead, floorplan, blueprint, "
+    # CANDLES, and this is a real exception to "naming a thing to forbid it is
+    # still naming it" rather than a contradiction of it. That lesson was
+    # measured on the mountain pass, where the negative was a broad CATEGORY
+    # (no houses, no doors, no village) on a board whose silhouette genuinely
+    # looked like a village — and the model just built the village out of
+    # something else. This is one specific object the model MISREADS: a
+    # taproom's posts came back as lit candles at every shape and every prompt
+    # weight, including the post clause at 1.6 leading the prompt. Forbidding
+    # the misreading works where forbidding the subject did not. Measured: same
+    # board, same seed, one clause — flames gone, posts stay.
+    "candles, candlestick, candelabra"
 )
 
 

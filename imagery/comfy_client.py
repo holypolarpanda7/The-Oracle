@@ -384,15 +384,20 @@ class ComfyClient:
         link's inputs. (The simpler ControlNetApply only handles the positive
         and would quietly drop the negative.)
 
-        **A union ControlNet must be TOLD what it is being fed.** One model
-        answers to depth, segmentation, canny, tile and the rest, and it picks
-        by an explicit type — not by looking at the image. Left unset it falls
-        back to "auto", and the widely-reported result is mush that looks like
-        a weak render rather than like a misconfiguration. So a condition
-        carrying ``union_type`` gets a ``SetUnionControlNetType`` between the
-        loader and the apply. The type strings are ComfyUI's own
-        (``comfy/cldm/control_types.py``): ``depth`` and ``segment``, not
-        ``seg``.
+        **A union ControlNet can be told what it is being fed, and on this rig
+        telling it DESTROYS the render.** The received wisdom is that a union
+        model picks its condition by an explicit type and that leaving it on
+        "auto" gives mush. Measured here, with xinsir ControlNet-Union ProMax on
+        ComfyUI 0.27, it is exactly the other way round: with
+        ``SetUnionControlNetType`` the sampler diverges into rainbow noise at
+        every type (``depth`` and ``segment`` both) and every strength, and
+        without it the model renders cleanly. Six renders, one variable — the
+        presence of that node.
+
+        So the wiring stays (a different model or a fixed ComfyUI may want it)
+        and nothing sets ``union_type`` today. The type strings, when something
+        does, are ComfyUI's own from ``comfy/cldm/control_types.py``: ``depth``
+        and ``segment``, never ``seg``.
         """
         conds = self._controlnet_conditions()
         if not conds:
@@ -406,7 +411,14 @@ class ComfyClient:
         if not (pos and neg):
             return
         for i, c in enumerate(conds):
-            base = 70 + i * 10
+            # 300 up, and the range matters. The first link used to sit at 70
+            # and the SECOND landed on 80/81 — which `_apply_init_image` already
+            # owns, so its LoadImage overwrote the init's VAEEncode and the
+            # sampler's latent_image silently became an IMAGE. Every seg render
+            # failed validation. Ids in use elsewhere: 3-9 (the base graph),
+            # 80/81 (init), 85-87 (model layers), 90+ (IPAdapter), 200+
+            # (regions).
+            base = 300 + i * 10
             loader, img, apply_ = str(base), str(base + 1), str(base + 2)
             g[loader] = {"class_type": "ControlNetLoader",
                          "inputs": {"control_net_name": c["name"]}}

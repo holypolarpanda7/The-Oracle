@@ -402,18 +402,27 @@ class ImageryConfig:
     isoboard_controlnet: str = ""
     isoboard_controlnet_strength: float = 0.55
     # Which condition the board's ControlNet is being handed, when it is a
-    # UNION model (one net answering to depth, segmentation, canny, tile…).
-    # ComfyUI's own strings — see comfy/cldm/control_types.py — so "depth" and
-    # "segment", never "seg". Empty for a single-purpose net, where the
-    # question does not arise, and leaving it empty on a union net means "auto",
-    # which is the widely-reported way to get mush that looks like a weak render
-    # rather than like a misconfiguration.
+    # UNION model. ComfyUI's own strings — see comfy/cldm/control_types.py —
+    # so "depth" and "segment", never "seg".
+    #
+    # LEAVE THIS EMPTY. Measured 2026-08-15 with xinsir ControlNet-Union ProMax
+    # on ComfyUI 0.27: setting it makes the sampler diverge into rainbow noise
+    # at every type and every strength (six renders, one variable). Leaving it
+    # empty renders cleanly — the opposite of the received wisdom.
     isoboard_controlnet_union_type: str = ""
     # A SECOND conditioning image for the board: what each square IS, painted
     # in ADE20K class colours (see vtt/segmap.py). Depth says where a thing is
     # and how tall; only this says whether the two-foot shaft is a timber post
     # or a candle. Needs a net that can take `segment` — the union model can.
     # Empty = off, and the board conditions on depth alone exactly as before.
+    #
+    # It stays empty for now, and the reason is the CARRIER rather than the
+    # idea. The only SDXL net that can take `segment` is the union model, and
+    # measured on this rig it has two disqualifying modes: typed, it produces
+    # noise; untyped, it ignores the depth conditioning and paints a handsome
+    # tavern that is not THIS tavern — which is the one failure the whole
+    # grid-is-truth doctrine exists to prevent. The seg map itself is built,
+    # guarded and correct; it is waiting for a net that will carry it.
     isoboard_seg_controlnet: str = ""
     isoboard_seg_strength: float = 0.45
     # Bind each skin's own sentence to the squares wearing it, instead of
