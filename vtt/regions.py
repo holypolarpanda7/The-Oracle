@@ -122,6 +122,66 @@ def regions_for(gen: GeneratedMap, *, strength: float = REGION_STRENGTH,
     return out, rest
 
 
+def setpiece_regions(gen: GeneratedMap, *, strength: float = REGION_STRENGTH,
+                     **depth_kw) -> list[dict]:
+    """A region for every LANDMARK on the board, carrying its own description.
+
+    The case regional prompting is actually good at, and the mirror of where it
+    is weak. A skin's squares are scattered across the board — eleven posts, a
+    hundred floor tiles — and a mask of scattered single squares is a scattering
+    of latent cells. A landmark is one CONTIGUOUS block that somebody chose to
+    put there, and it is fighting no strong wrong prior: the model has no
+    opinion about what belongs on that square until it is told.
+
+    It is also the only channel a DM-described feature has. A gilded sow is one
+    stamp of worked stone until something says what it is, and saying it in the
+    shared prompt puts it in a paragraph about a room.
+    """
+    from . import setpieces as _sp
+
+    out: list[dict] = []
+    for inst in (getattr(gen, "setpieces", None) or []):
+        pc = _sp.piece(str(inst.get("slug") or ""))
+        words = (pc.words if pc else "").strip()
+        if not words:
+            continue
+        x0, y0 = int(inst.get("x") or 0), int(inst.get("y") or 0)
+        turned = _sp.turned_tiles(pc, int(inst.get("yaw") or 0)) if hasattr(
+            _sp, "turned_tiles") else pc.tiles
+        squares = {(x0 + dx, y0 + dy)
+                   for dy, row in enumerate(turned)
+                   for dx, _c in enumerate(row)}
+        if not squares:
+            continue
+        mask = _mask_of(squares, **depth_kw)
+        if mask:
+            out.append({"words": words, "mask": mask, "strength": float(strength)})
+    return out
+
+
+def _mask_of(squares: set, **depth_kw) -> bytes:
+    """A black-and-white PNG of an arbitrary set of squares.
+
+    ``terrain_image``'s colour callback is per (code, skin) and knows nothing
+    about WHERE it is, so a set of squares needs the coordinates threaded in —
+    which the rasterizer does supply, one level down, as the square it is
+    drawing. Rather than change that signature for one caller, the mask is
+    drawn by asking for a board where only those squares carry a code at all.
+    """
+    from . import isocam
+
+    rows = list(depth_kw.get("rows") or [])
+    if not rows:
+        return b""
+    keep = []
+    for y, row in enumerate(rows):
+        keep.append("".join(c if (x, y) in squares else " "
+                            for x, c in enumerate(row)))
+    kw = {**depth_kw, "rows": keep}
+    return isocam.terrain_image(
+        colour_of=lambda _c, _s: (255, 255, 255), _flat=True, **kw)
+
+
 def global_words(present: list[str], regioned: list[dict],
                  leftover: list[str]) -> str:
     """What the SHARED prompt should still say about materials.

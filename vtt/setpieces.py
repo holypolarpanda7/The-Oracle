@@ -63,6 +63,7 @@ every entry — footprint, tiles, height — is authored and exact.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 import re
@@ -815,6 +816,135 @@ def landmark_for(text: Optional[str], *, limit: int = 3) -> list[str]:
     return out
 
 
+#: Landmarks the DM invented, by slug. Ad-hoc pieces the catalogue does not
+#: have — see :func:`named_feature`. Process-local and deliberately not
+#: persisted: once a piece is PLACED the board's own row carries its name, its
+#: words and its square, so this only has to live long enough to lay it down.
+_ADHOC: dict[str, "SetPiece"] = {}
+
+
+def piece(slug: str, name: str = "") -> Optional["SetPiece"]:
+    """A landmark by slug — from the catalogue, or one the DM described.
+
+    ``name`` rebuilds an invented piece this process has never seen. The
+    register is in memory and a board outlives the process that drew it, so a
+    row read back tomorrow hands its stored name here and gets the same piece:
+    :func:`named_feature` is deterministic, so the phrase IS the identity.
+    """
+    got = CATALOGUE.get(slug) or _ADHOC.get(slug)
+    if got is None and name:
+        made = named_feature(name)
+        if made is not None and made.slug == slug:
+            return made
+    return got
+
+
+#: How tall a described feature stands, in feet, and how many squares it takes.
+#:
+#: TWO squares across, and the reason is the word LANDMARK. The prompt asks the
+#: DM for "something big enough that the fight happens around it", and one
+#: square of a twenty-four by eighteen board is a four-hundredth of the frame —
+#: rendered, a one-square feature is a smudge you would have to be told about.
+#: Ten feet of gilded sow on a plinth is a thing a room is named for; five feet
+#: of it is furniture, and furniture is what ``decor`` and the tile codes are
+#: already for.
+FEATURE_HEIGHT_FT = 9.0
+FEATURE_SQUARES = 2
+
+#: Words that make a phrase a description of the ROOM rather than of a thing
+#: standing in it. "a smoky taproom" is not a feature; "a gilded sow" is.
+_NOT_A_FEATURE = {
+    "room", "chamber", "hall", "cave", "cavern", "street", "road", "clearing",
+    "forest", "wood", "woods", "swamp", "marsh", "field", "meadow", "deck",
+    "ship", "sewer", "tunnel", "mine", "crypt", "tomb", "dungeon", "tavern",
+    "taproom", "inn", "camp", "ruins", "bridge", "pass", "reef", "sky",
+    "island", "islands", "arena", "pit", "yard", "square", "market",
+    "chapel", "church", "shrine", "temple", "keep", "castle", "fort", "barn",
+    "mill", "cellar", "vault", "den", "lair", "nest", "courtyard", "garden",
+    "grove", "shore", "beach", "path", "track", "stair", "stairs", "landing",
+    "gallery", "kitchen", "store", "storeroom", "corridor", "passage", "bar",
+    "cabin", "hold", "galley", "quarters", "warren", "burrow", "grotto",
+}
+
+
+def describes_its_own(text: Optional[str], matched: Sequence[str]) -> bool:
+    """Is the DM describing a thing of their OWN rather than naming a catalogue one?
+
+    The catalogue matches on word boundaries, so any phrase containing "statue"
+    resolves to `great-statue` — which is one specific colossal seated guardian
+    with a human face. Handed "a gilded sow, a life-size statue of a pig in gold
+    leaf", that is emphatically the wrong object, and the DM has said so in nine
+    other words.
+
+    So the test is COVERAGE: a catalogue name is one or two words, and if the
+    matched names account for most of what was written then the DM named a
+    catalogue piece. If the phrase is mostly words the catalogue never claimed,
+    they described something else and the description is the point.
+
+    Nothing matched at all is the easy case and also true here.
+    """
+    words = [w for w in re.split(r"[^a-z]+", (text or "").lower()) if w
+             and w not in _FILLER]
+    if not words:
+        return False
+    covered = 0
+    for slug in matched or ():
+        pc = piece(slug)
+        if pc is None:
+            continue
+        covered += len([w for w in re.split(r"[^a-z]+", pc.name.lower())
+                        if w and w not in _FILLER])
+    return covered < len(words) / 2
+
+
+#: Words that carry no naming weight, so a phrase is judged on its nouns.
+_FILLER = {"a", "an", "the", "of", "in", "on", "at", "with", "and", "its",
+           "his", "her", "their", "it", "is", "that", "this", "some", "one"}
+
+
+def named_feature(text: Optional[str]) -> Optional["SetPiece"]:
+    """A one-square landmark the DM described and the catalogue does not have.
+
+    The catalogue exists so a model cannot ask for a mesh nobody shipped. That
+    guarantee is about MESHES, and it says nothing about a thing the board can
+    already draw: one square of worked stone with a name on it. So a phrase that
+    matches no catalogue entry becomes a piece with no mesh — the same
+    ``source=None`` a stepped pyramid uses — stamping ``A``, which is already
+    the tile for a worked object standing on a floor that screens four feet and
+    can be broken.
+
+    This exists because of an accident worth keeping. A board whose only prompt
+    was its own name, The Gilded Sow, came back with golden pigs standing in it:
+    the model draws a described thing readily, and the board had no way to MEAN
+    one. Now the DM can say what stands in the room and the code decides where,
+    how big, and what it does to a fight — the same division of labour every
+    other landmark keeps.
+
+    Returns None for anything that reads as a description of the ROOM rather
+    than of a thing in it, because ``landmark=`` is also fed loose place text
+    and "a smoky taproom" must not become a statue of one.
+    """
+    phrase = " ".join((text or "").strip().split())
+    if not (3 <= len(phrase) <= 80):
+        return None
+    words = [w for w in re.split(r"[^a-z]+", phrase.lower()) if w]
+    if not words or set(words) & _NOT_A_FEATURE:
+        return None
+    slug = "feature-" + hashlib.sha1(phrase.lower().encode()).hexdigest()[:10]
+    got = _ADHOC.get(slug)
+    if got is not None:
+        return got
+    made = SetPiece(
+        slug=slug, name=phrase, source=None,
+        tiles=("A" * FEATURE_SQUARES,) * FEATURE_SQUARES,
+        height_ft=FEATURE_HEIGHT_FT,
+        words=f"{phrase} stands in the room, a single object on its own square",
+        turns=(0, 90, 180, 270),
+    )
+    _ADHOC[slug] = made
+    return made
+
+
 def landmark_vocabulary() -> list[tuple[str, str]]:
     """``(slug, name)`` for every landmark the board can stand.
 
@@ -973,7 +1103,9 @@ class Placed:
         which is the :mod:`vtt.hull` argument arriving at the same place from
         the other direction.
         """
-        p = CATALOGUE[self.slug]
+        p = piece(self.slug)
+        if p is None:
+            return {}
         # No mesh means the board's own geometry draws it from the tiles this
         # piece stamped, which is what it has always done. That covers BOTH
         # a piece authored without one (the pyramid) and a piece whose pack
@@ -1172,7 +1304,7 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
     taken: set[tuple[int, int]] = set()
     sweep = set(clear)
     for slug in slugs:
-        p = CATALOGUE.get(slug)
+        p = piece(slug)
         if p is None:
             continue
         may_clear = slug in sweep

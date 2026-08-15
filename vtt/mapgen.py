@@ -2003,7 +2003,7 @@ def setpiece_area_for(archetype: str,
     best = 0
     for slug in list(asked) + list(_SETPIECES.get(
             (archetype or "").strip().lower()) or ()):
-        piece = _sp.CATALOGUE.get(slug)
+        piece = _sp.piece(slug)
         if piece is not None:
             best = max(best, piece.width * piece.depth)
     return best
@@ -2027,7 +2027,7 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap,
     """
     from . import setpieces as _sp
 
-    asked = [s for s in dict.fromkeys(asked) if s in _sp.CATALOGUE]
+    asked = [s for s in dict.fromkeys(asked) if _sp.piece(s) is not None]
     pool = [s for s in (_SETPIECES.get(out.archetype) or ())
             if s not in asked]
     if not asked and not pool:
@@ -2038,14 +2038,14 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap,
     # decision disagreeing. The asked-for pieces raise the ceiling; everything
     # after them still spends against it.
     for slug in asked:
-        piece = _sp.CATALOGUE[slug]
-        budget = max(budget, piece.width * piece.depth)
+        pc = _sp.piece(slug)
+        budget = max(budget, pc.width * pc.depth)
     if budget < 1:
         return
     want: list[str] = list(asked)
-    spent = sum(_sp.CATALOGUE[s].width * _sp.CATALOGUE[s].depth for s in asked)
+    spent = sum(_sp.piece(s).width * _sp.piece(s).depth for s in asked)
     for slug in pool:
-        piece = _sp.CATALOGUE.get(slug)
+        piece = _sp.piece(slug)
         if piece is None:
             continue
         cost = piece.width * piece.depth
@@ -2065,8 +2065,18 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap,
         return
     for placed in _sp.setpieces_for(grid, want, seed=out.seed, mode=out.mode,
                                     clear=asked):
-        out.setpieces.append({"slug": placed.slug, "x": placed.x,
-                              "y": placed.y, "yaw": placed.yaw})
+        rec = {"slug": placed.slug, "x": placed.x,
+               "y": placed.y, "yaw": placed.yaw}
+        # A piece the DM INVENTED carries its name in the record, and it has to:
+        # the ad-hoc register is process-local, so a board read back in a fresh
+        # process would find the slug unknown and quietly drop the landmark it
+        # was built around. The name is the whole seed — `named_feature` is
+        # deterministic, so the same phrase rebuilds the same piece — which is
+        # why nothing else about it needs storing.
+        pc = _sp.piece(placed.slug)
+        if pc is not None and placed.slug.startswith("feature-"):
+            rec["name"] = pc.name
+        out.setpieces.append(rec)
         out.skins.update(placed.skins)
         out.elevation.update(placed.elevation)
 

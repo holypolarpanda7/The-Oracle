@@ -737,7 +737,7 @@ def _setpiece_instances(gen) -> list[dict]:
     out = []
     for p in gen.setpieces:
         slug = str(p.get("slug") or "")
-        if slug in _sp.CATALOGUE:
+        if _sp.piece(slug, str(p.get("name") or "")) is not None:
             out.append(_sp.Placed(slug=slug, x=int(p.get("x") or 0),
                                   y=int(p.get("y") or 0),
                                   yaw=int(p.get("yaw") or 0)).instance())
@@ -867,16 +867,45 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
     # what a material used to say. See vtt/regions.py.
     region_conds: list[dict] = []
     material_words = _skins.words_for(present)
+    # What the LANDMARKS on this board are, in words. `SetPiece.words` has said
+    # since it was written that it is "joined into the iso prompt exactly as
+    # Skin.words is", and nothing joined it — so every ziggurat, statue and
+    # fallen arch reached the painter as a silhouette with no name on it. It is
+    # also the whole channel a DM-described feature has: a gilded sow is one
+    # square of worked stone until somebody says what it is.
+    def _landmark_words() -> str:
+        from . import setpieces as _sp
+        said: list[str] = []
+        for inst in (getattr(gen, "setpieces", None) or []):
+            pc = _sp.piece(str(inst.get("slug") or ""),
+                           str(inst.get("name") or ""))
+            w = (pc.words if pc else "").strip()
+            if w and w not in said:
+                said.append(w)
+        return ", ".join(said)
+
+    landmark_words = _landmark_words()
     if regional and present:
         from . import regions as _regions
         region_conds, leftover = _regions.regions_for(
             gen, **conditioning_kwargs(gen, skin_of=_skin_of))
         if region_conds:
             material_words = _regions.global_words(present, region_conds, leftover)
+    # A LANDMARK gets a region whether or not the material regions are on, and
+    # that is the asymmetry regional prompting actually deserves: a skin's
+    # squares are scattered and a landmark's are one contiguous block somebody
+    # chose to put there. It is also the only channel a described feature has.
+    if landmark_words:
+        from . import regions as _regions
+        region_conds = list(region_conds) + _regions.setpiece_regions(
+            gen, **conditioning_kwargs(gen, skin_of=_skin_of))
     subject, look, context = build_map_prompt(
         gen, name=name, biome=biome, lighting=lighting,
         extra=", ".join(p for p in (
             extra,
+            # A named landmark leads, and weighs more than the materials: it is
+            # the one thing in the room somebody chose to put there.
+            f"({landmark_words}:1.45)" if landmark_words else "",
             f"({material_words}:1.35)" if material_words else "",
             _void_reads_as(gen.grid, lighting, gen.mode)) if p),
         conditions=conditions)
@@ -893,6 +922,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
             f"cn={controlnet}@{controlnet_strength}" if controlnet else "",
             f"u={controlnet_union_type}" if controlnet_union_type else "",
             f"seg={seg_controlnet}@{seg_strength}" if seg_controlnet else "",
+            f"lm={landmark_words}" if landmark_words else "",
             f"reg={len(region_conds)}" if region_conds else "") if p))
 
     if not worth_painting(gen.grid):

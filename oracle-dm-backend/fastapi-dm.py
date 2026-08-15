@@ -7661,7 +7661,14 @@ _VTT_HOOKS_IDLE = (
     "    [[VTT: open | combat | jungle | The Sunken Shrine | landmark=a stepped ziggurat]]\n"
     "The board can stand: " + _vtt_landmark_names() + ".\n"
     "Ask in plain words; the code chooses the footprint, where it stands, and grows the\n"
-    "board to hold it. Anything smaller you describe is scenery — narrate it freely.\n"
+    "board to hold it.\n"
+    "You may also name ONE THING OF YOUR OWN that is not on that list — a statue, an\n"
+    "idol, a fountain, a great cauldron, whatever the place is named for — and the board\n"
+    "will stand it on a square as worked stone that gives half cover and can be broken:\n"
+    "    [[VTT: open | social | the taproom | The Gilded Sow | landmark=a gilded sow, "
+    "a life-size statue of a pig in gold leaf]]\n"
+    "Describe the THING, never the room: \"a smoky taproom\" is the room and will be\n"
+    "ignored. Anything smaller is scenery — narrate it freely.\n"
 )
 
 _VTT_HOOKS_ACTIVE = (
@@ -8101,9 +8108,9 @@ def process_vtt_hooks(session_id: str, ops: list[dict], ctx_obj=None,
                     # for and the board could not fit is the one failure they
                     # cannot see from the narration, and the board's own legend
                     # is only read when there is something to read.
-                    stood = [vtt_setpieces.CATALOGUE[p["slug"]].name
+                    stood = [vtt_setpieces.piece(p["slug"]).name
                              for p in (scene.setpieces or [])
-                             if p.get("slug") in vtt_setpieces.CATALOGUE]
+                             if vtt_setpieces.piece(p.get("slug") or "")]
                     if stood:
                         note += f", with {', '.join(stood)}"
                     notes.append(note + ".")

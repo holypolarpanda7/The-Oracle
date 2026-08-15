@@ -95,12 +95,19 @@ DEFAULT_SIZE: dict[str, tuple[int, int]] = {
     SceneKind.SOCIAL: (16, 12),
 }
 
-def _landmarks_from(asked: Optional[str | Sequence[str]]) -> list[str]:
+def _landmarks_from(asked: Optional[str | Sequence[str]],
+                    *, invent: bool = False) -> list[str]:
     """Catalogue slugs out of whatever a caller passed for ``landmarks``.
 
     A string is DM language and goes through the resolver; a list may be either
     slugs or phrases, and each element goes through the same door, so a caller
     never has to know which it is holding.
+
+    ``invent`` lets a phrase the catalogue does not know become a one-square
+    named feature (:func:`vtt.setpieces.named_feature`) instead of being
+    dropped. Only ever true for a landmark the DM asked for OUTRIGHT — the same
+    resolver is also fed the place text as a fallback, and a room described as
+    "a smoky taproom" must not grow a statue of one.
     """
     from . import setpieces as _sp
 
@@ -109,7 +116,12 @@ def _landmarks_from(asked: Optional[str | Sequence[str]]) -> list[str]:
     parts = [asked] if isinstance(asked, str) else list(asked)
     out: list[str] = []
     for part in parts:
-        for slug in _sp.landmark_for(str(part)):
+        found = _sp.landmark_for(str(part))
+        if invent and _sp.describes_its_own(str(part), found):
+            made = _sp.named_feature(str(part))
+            if made is not None:
+                found = [made.slug]
+        for slug in found:
             if slug not in out:
                 out.append(slug)
     return out
@@ -218,7 +230,9 @@ class VttEngine:
         """
         kind = kind if kind in SceneKind.ALL else SceneKind.COMBAT
         arch = archetype_for(archetype or place_hint or "", default="open")
-        marks = _landmarks_from(landmarks)
+        # A landmark the DM ASKED for may be one it described rather than one
+        # from the catalogue; the place text, read as a fallback, may not.
+        marks = _landmarks_from(landmarks, invent=True)
         if not marks:
             marks = _landmarks_from(archetype or place_hint or "")
         # The scene KIND sets the floor; the fight standing on it decides the
@@ -908,7 +922,9 @@ class VttEngine:
             if not isinstance(rec, dict):
                 continue
             slug = str(rec.get("slug") or "")
-            if slug not in sp.CATALOGUE:
+            # The stored name rebuilds a piece the DM invented in an earlier
+            # process — see setpieces.piece.
+            if sp.piece(slug, str(rec.get("name") or "")) is None:
                 continue
             out.append(sp.Placed(slug=slug, x=int(rec.get("x") or 0),
                                  y=int(rec.get("y") or 0),
