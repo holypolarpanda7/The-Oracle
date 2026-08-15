@@ -306,10 +306,10 @@ def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False,
             seg_str = float(arm["seg_strength"])
         if arm.get("regional"):
             regional = True
-    print(f"  {D}arm: depth={cn or '-'}"
+    print(f"  arm: depth={cn or '-'}"
           f"{' union=' + union if union else ''}"
           f"{' +seg@' + str(seg_str) if seg_cn else ''}"
-          f"{' +regional' if regional else ''}{OFF}")
+          f"{' +regional' if regional else ''}")
     if not cn:
         print("  no isoboard_controlnet configured — nothing to paint.")
         return

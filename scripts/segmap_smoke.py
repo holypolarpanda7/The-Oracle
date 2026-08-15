@@ -152,6 +152,27 @@ check(g[second]["inputs"]["positive"] == [first, 0]
 check(g[ks]["inputs"]["positive"] == [second, 0],
       "and the sampler reads the end of the chain")
 
+# The case that actually broke, and only in the real render: an init image AND
+# two ControlNets. The second link used to be assigned node 80/81, which
+# `_apply_init_image` already owns, so its LoadImage overwrote the init's
+# VAEEncode and the sampler's latent_image silently became an IMAGE. Every
+# segmentation render failed validation, and no graph test caught it because
+# none of them had an init image in it.
+cinit = ComfyClient(base_url="x", controlnet="union.safetensors", init_denoise=0.9)
+cinit.controlnet_union_type = "depth"
+cinit._control_image_name = "depth.png"
+cinit._init_image_name = "init.png"
+cinit._extra_controls = [{"name": "union.safetensors", "image": "seg.png",
+                          "union_type": "segment", "strength": 0.45}]
+cinit._region_conds = [{"words": "oak boards", "mask": "m.png", "strength": 0.85}]
+gi = cinit._build_graph("x", "y", 1024, 768, 1, 30)
+ksi = next(n for n, v in gi.items() if v["class_type"] == "KSampler")
+lat = gi[ksi]["inputs"]["latent_image"]
+check(gi[lat[0]]["class_type"] == "VAEEncode",
+      "with an init image AND two nets AND a region, nothing collides",
+      f"latent_image <- {lat} = {gi[lat[0]]['class_type']}")
+check(len(gi) == len(set(gi)), "and every node id is unique")
+
 c2 = ComfyClient(base_url="x", controlnet="depth-only.safetensors")
 c2._control_image_name = "depth.png"
 g2 = c2._build_graph("x", "y", 512, 512, 1, 20)
