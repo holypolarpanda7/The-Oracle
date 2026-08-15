@@ -194,6 +194,19 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    A refusal always names what would fix it; something merely unwise (an engine
    in a fixed hall) is a NOTE, because advice that blocks is a builder nobody
    uses twice. The screen is `BastionBuilder.tsx`.
+   **HOW MANY facilities is the LEVEL talking, not the purse** — the tier
+   levels (5/9/13/17) sat in `catalog.FACILITY_TIER_LEVELS` unchecked, so a
+   rich level-5 character could buy the whole book and a poor level-17 one was
+   entitled to nothing. `special_allowance`/`basic_allowance` decide, per-tier
+   counts are config. **A stronghold is never finished**: the second visit is
+   the first with the slots spent (`plan(held_special=…)`,
+   `check(extending=True)`, which skips only what was settled at raising).
+   **BASIC facilities are the expressive half** — `facility_type="basic"` was
+   in the table from the start and nothing ever created one, so every bastion
+   was workshops with nowhere to sleep. A room is a KIND the rules price and a
+   NAME that is wholly the player's; the only refusal on that half is a room
+   left unnamed. Those names reach the place's description (APPENDED) and a
+   vessel board's compartments via `_bastion_rooms`.
 
 ## Running
 - Backend: `uv run python oracle-dm-backend/fastapi-dm.py`
