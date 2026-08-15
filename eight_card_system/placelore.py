@@ -147,6 +147,12 @@ _KIND_SURFACE = {
     "inn": "interior", "market": "interior", "temple": "interior",
     "shrine": "interior", "shop": "interior", "hall": "interior",
     "keep": "interior", "house": "interior",
+    # A VESSEL presents its own built surface, exactly as a tavern does: the
+    # terrain is still the country it stands in or flies over, and the biome is
+    # what you are actually looking at. Without this a bastion airship's
+    # establishing shot inherited the farmland underneath it and described
+    # ploughed fields and drystone walls around a flying brass hall.
+    "vessel": "interior", "ship": "interior", "airship": "interior",
     # the underground
     "dungeon": "dungeon", "crypt": "dungeon", "tomb": "dungeon",
     "ruin": "dungeon", "cave": "underdark", "cavern": "underdark",

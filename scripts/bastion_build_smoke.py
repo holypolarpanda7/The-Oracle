@@ -171,7 +171,42 @@ check(bool(res["bastion"].get("place_slug")),
       "new idea",
       f"{res['bastion'].get('place_slug')}")
 
-print("\n\033[1m5. and only one\033[0m")
+print("\n\033[1m5. the player's words reach the things that DRAW\033[0m")
+# The point of writing a description at all. Before this the words went to the
+# Bastion row and to lore — prose for the DM, read by nothing that renders —
+# so a brass hall under a whale-shaped envelope was drawn as a generic room.
+from eight_card_system import placelore                         # noqa: E402
+slug = res["bastion"]["place_slug"]
+ent = m.world.get_entity(slug)
+attrs = (getattr(ent, "attributes", None) or {})
+check("whale-shaped" in str(attrs.get("description") or ""),
+      "the look is on the PLACE, where placelore reads one",
+      "attributes['description'] -> PlaceCharacter.description")
+check("gold leaf" in " ".join(str(x) for x in (attrs.get("motifs") or [])),
+      "and what it is known for is a MOTIF, which is what that field is")
+ch = placelore.character_of(m.world, slug)
+check(ch is not None and "whale-shaped" in ch.scene_look(),
+      "so the establishing render is of the thing they imagined",
+      f"{(ch.scene_look() if ch else '')[:90]}…")
+
+check("ploughed" not in ch.scene_look() and "hedgerow" not in ch.scene_look(),
+      "and it is not described as the farmland it happens to be flying over",
+      "a vessel presents its own surface — the tavern-in-farmland rule, one "
+      "level up")
+
+req = m._place_scene_request(ent)
+check(req and "whale-shaped" in str(req.get("look") or ""),
+      "…all the way into the arrival image request")
+
+from vtt.mapgen import style_for                                # noqa: E402
+check(style_for(m._place_look_words(slug)) == "steampunk",
+      "and a BRASS hall builds a brass ship, rather than whatever the seed said",
+      "the style was rolled: five times in ten a described steam contraption "
+      "came out timber, and every material downstream followed it")
+check(style_for("the deck of a ship") == "",
+      "a vessel nobody described still lets the seed decide")
+
+print("\n\033[1m6. and only one\033[0m")
 again = m._activity_bastion_build(SESSION, USER, {
     "kind": "keep", "name": "Second Hall", "facilities": []})
 check(not again.get("ok") and "already" in (again.get("detail") or "").lower(),

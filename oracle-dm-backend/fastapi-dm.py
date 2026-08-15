@@ -171,6 +171,7 @@ from imagery.appearance import appearance_prompt, BEAUTY_BANDS
 from vtt import VttEngine
 from vtt import archetype_for_place as vtt_archetype_for_place
 from vtt import bridge as vtt_bridge
+from vtt import mapgen as vtt_mapgen
 from vtt import setpieces as vtt_setpieces
 from vtt.triggers import should_open_scene as vtt_should_open
 from vtt.triggers import scene_kind_for as vtt_scene_kind_for
@@ -7936,6 +7937,25 @@ def _vtt_place_conditions(place_slug: Optional[str]) -> str:
         return ""
 
 
+def _place_look_words(place_slug: str, ent=None) -> str:
+    """Whatever anybody has actually SAID this place looks like.
+
+    A bastion's owner described it in the builder and the words were written
+    onto the place entity, which is where `placelore` already reads a look
+    from — so a board opened here can be made of what its owner paid for
+    instead of what the seed felt like. Any place with an authored description
+    benefits; a bastion is only the case that guarantees one exists.
+    """
+    try:
+        ent = ent if ent is not None else world.get_entity(place_slug)
+        attrs = (getattr(ent, "attributes", None) or {}) if ent else {}
+        bits = [str(attrs.get("description") or attrs.get("look") or "")]
+        bits += [str(m) for m in (attrs.get("motifs") or [])][:2]
+        return " ".join(b for b in bits if b)[:400]
+    except Exception:
+        return ""
+
+
 def _bastion_rooms(place_slug: str) -> list[str]:
     """The facilities of the bastion that IS this place, as room names.
 
@@ -8019,6 +8039,11 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
         # override is a callback: the tactical layer must not have to know what
         # a bastion is.
         rooms=_bastion_rooms(place_slug or ""),
+        # What this place is MADE of, when its owner has said. Read off the
+        # place's own words rather than guessed from the seed — see
+        # mapgen.style_for. Empty for anywhere nobody has described, which is
+        # every board that behaved correctly before this.
+        style=vtt_mapgen.style_for(_place_look_words(place_slug or "")),
         # Outdoors, leave room for a bow to reach its own range band. Stated as
         # a policy rather than computed from what everyone is carrying: the
         # engine enforces long-range disadvantage, and on a 120-ft board that
@@ -20123,9 +20148,24 @@ def _activity_bastion_build(session_id: str, user_id: str,
     # move without the world layer learning a new idea.
     try:
         from eight_card_system.models import EntityType
-        ent = world.upsert_entity(want.name, EntityType.PLACE,
-                                  attributes={"bastion": True,
-                                              "kind": want.kind})
+        # The player's own words go where the RENDERERS already look.
+        # `placelore.character_of` reads `description`/`look` and `motifs` off a
+        # place's attributes and `scene_look()` leads with them — so writing
+        # them here is the whole of "the picture is of the thing they
+        # imagined". They were being recorded as lore only, which is prose for
+        # the DM and is read by nothing that draws.
+        attrs: dict = {"bastion": True, "kind": want.kind}
+        if want.description:
+            attrs["description"] = want.description
+        if want.motif:
+            attrs["motifs"] = [want.motif]
+        ent = world.upsert_entity(
+            want.name, EntityType.PLACE,
+            # What KIND of place it is, which is how placelore knows what
+            # surface it presents — a keep is an interior, and so is the hall
+            # inside a vessel. Left unsaid it inherits the country underneath.
+            subtype=("keep" if want.kind == "keep" else "vessel"),
+            attributes=attrs)
         if want.description or want.motif:
             world.record_lore(ent.slug, reason=_bb.describe(want, vessels=VESSELS))
         built["place_slug"] = ent.slug

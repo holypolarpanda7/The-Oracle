@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional, Sequence
 
@@ -2002,6 +2003,42 @@ _SETTINGS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("clearing", "glade", "meadow"), "clearing"),
     (("field", "plain", "road", "hill", "moor", "desert", "tundra"), "open"),
 )
+
+
+#: Words that decide what a vessel is MADE of, per style. Matched on word
+#: boundaries for the `landmark_for` reason — "arch" lives inside "archer" —
+#: and deliberately small: this is not a vocabulary anybody has to learn, it is
+#: the words people already use when they describe a flying ship.
+_STYLE_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("steampunk", ("brass", "brazen", "steam", "riveted", "rivets", "boiler",
+                   "iron", "clockwork", "pipework", "copper", "gearwork")),
+    ("organic",   ("grown", "living", "chitin", "chitinous", "carapace",
+                   "coral", "bone", "veined", "iridescent", "shell")),
+    ("timber",    ("timber", "oak", "wooden", "wood", "planked", "sail",
+                   "sails", "canvas")),
+)
+
+
+def style_for(text: Optional[str]) -> str:
+    """The board style a scrap of description asks for, or "" for none.
+
+    A skyship's style is the one whole-board choice that is a genuine CHOICE
+    rather than a material fact, and it was rolled from the seed — so a player
+    who paid to build a riveted brass contraption got a timber ship five times
+    in ten, and everything downstream (materials, silhouettes, what the painter
+    is told) followed that one wrong word.
+
+    Empty when nothing is said, because the seed deciding is the right answer
+    for a vessel nobody has described. A DESCRIBED vessel is not that.
+    """
+    t = f" {(text or '').strip().lower()} "
+    if not t.strip():
+        return ""
+    for style, words in _STYLE_WORDS:
+        for w in words:
+            if re.search(rf"\b{re.escape(w)}\b", t):
+                return style
+    return ""
 
 
 def archetype_for(text: Optional[str], default: str = "open") -> str:

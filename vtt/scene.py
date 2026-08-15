@@ -209,6 +209,7 @@ class VttEngine:
                    longest_range_ft: int = 0,
                    landmarks: Optional[str | Sequence[str]] = None,
                    rooms: Optional[Sequence[str]] = None,
+                   style: str = "",
                    auto_close: bool = True) -> TacticalMap:
         """Open a tactical board for a session, closing any board already out.
 
@@ -228,6 +229,11 @@ class VttEngine:
         bastion airship carries the facilities its owner built, and nothing
         else on the board could know what they are. The hull still decides how
         many of them there is room for and where they go.
+
+        ``style`` asks for a whole-board material where the archetype offers a
+        real choice — a skyship is timber, brass-and-steam or grown, and all
+        three are right. Left empty the seed decides, which is correct for a
+        vessel nobody has described and wrong for one somebody built.
 
         ``auto_close`` marks a board the *system* put out (a fight started), so
         the system may take it away again when the reason passes. A board the DM
@@ -258,7 +264,8 @@ class VttEngine:
 
         gen = generate_map(arch, width=w, height=h, seed=seed,
                            lighting=lighting, biome=biome or place_hint or "",
-                           landmarks=marks, rooms=tuple(rooms or ()))
+                           landmarks=marks, rooms=tuple(rooms or ()),
+                           style=style or "")
 
         self.close_scene(session_id=session_id)
 
