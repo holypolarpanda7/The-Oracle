@@ -14195,7 +14195,8 @@ async def register_character(req: RegisterCharacterRequest):
             # Lineage) is not held to the LEVEL a feat is filed behind — that
             # gate is the class ASI schedule, and stepping outside it is the
             # entire gift. Everything a character can genuinely fail at level 1
-            # still applies: species, spellcasting, ability minimums.
+            # still applies: species, spellcasting, ability minimums — and the
+            # schedule itself is not for sale (_LEVEL_LOCKED_FEATS).
             free_feat = _species_free_feat(session, req.race, req.feats,
                                            req.background)
             for ft in req.feats:
@@ -14209,7 +14210,7 @@ async def register_character(req: RegisterCharacterRequest):
                     race=req.race, background=req.background,
                     options=set(req.feat_options or ()),
                     waive_min_level=(ft == free_feat
-                                     and not _is_epic_boon(frow)))
+                                     and not _keeps_level_gate(frow)))
                 if not met:
                     raise HTTPException(
                         status_code=400,
@@ -14351,10 +14352,19 @@ def _prereq_species_ok(prereq_l: str, race_l: str) -> Optional[bool]:
     return any(o in race_l for o in species_opts)
 
 
-def _is_epic_boon(feat_row) -> bool:
-    """An epic boon keeps its level whatever slot is spending it — level 19 is
-    what an epic boon IS, not a filing convention."""
-    return (getattr(feat_row, "category", "") or "").strip().lower() == "epic-boon"
+#: Feats a species' "any feat you qualify for" slot does NOT reach, whatever it
+#: says. An epic boon keeps its level because level 19 is what an epic boon IS,
+#: not a filing convention; the straight Ability Score Improvement keeps its
+#: because it is the ASI schedule itself — a slot that exists to step outside
+#: that schedule must not be able to buy a turn of it at level 1.
+_LEVEL_LOCKED_FEATS = {"ability-score-improvement"}
+
+
+def _keeps_level_gate(feat_row) -> bool:
+    """True for a feat no free slot may reach ahead of its level."""
+    return ((getattr(feat_row, "category", "") or "").strip().lower() == "epic-boon"
+            or (getattr(feat_row, "index_slug", "") or "").strip().lower()
+            in _LEVEL_LOCKED_FEATS)
 
 
 def _species_free_feat(session: Session, race_name: Optional[str],

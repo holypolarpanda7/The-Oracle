@@ -1456,8 +1456,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   can genuinely fail at level 1 still applies: species, spellcasting, ability
   minimums. Two traps. The level is printed TWICE — as `min_level` AND inside
   the prerequisite prose ("Prerequisite: Level 4+, Dexterity 13+") — so a
-  waiver that skips only the column waives nothing at all. And EPIC BOONS keep
-  their level whoever is asking, because level 19 is what an epic boon is. The
+  waiver that skips only the column waives nothing at all. And two feats keep
+  their level whoever is asking (`_keeps_level_gate`): an EPIC BOON, because
+  level 19 is what an epic boon is, and the straight ABILITY SCORE IMPROVEMENT,
+  because it IS the schedule — a slot that exists to step outside the ASI
+  schedule must not be able to buy a turn of it at level 1. The
   slot is told apart server-side by `_species_free_feat`: the background's
   Origin feat is granted and known, so what is left is the species'.
 - **A trait that says "of your choice" is a QUESTION.** A human's Skillful

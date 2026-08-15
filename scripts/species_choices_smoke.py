@@ -222,19 +222,27 @@ def main() -> int:
         check("…parsed by the same parser the board uses",
               int(seen.get("darkvision") or 0) >= 60, str(seen))
 
-    # An epic boon is the one thing the gift does NOT reach: level 19 is what
-    # an epic boon IS, not a filing convention.
-    if boon and bg_feat:
-        refused = None
+    # Two feats the gift does NOT reach: an epic boon (level 19 is what an epic
+    # boon IS) and the straight ASI (the slot steps outside the ASI schedule —
+    # it does not buy a turn of it).
+    def refuse(name: str, feat_slug: str) -> str | None:
         try:
             asyncio.run(register(
-                user="species-smoke-3", name="Ilyra", race="Custom Lineage",
+                user=f"species-smoke-{name}", name=name, race="Custom Lineage",
                 char_class="Fighter", background=bg, stats=stats,
-                feats=[bg_feat, boon["slug"]]))
+                feats=[bg_feat, feat_slug]))
         except Exception as e:
-            refused = getattr(e, "detail", str(e))
+            return getattr(e, "detail", str(e))
+        return None
+
+    if boon and bg_feat:
+        why = refuse("Ilyra", boon["slug"])
         check("an epic boon stays level 19 even in that slot",
-              refused is not None, str(refused)[:70])
+              why is not None, str(why)[:70])
+    if bg_feat and "ability-score-improvement" in feats:
+        why = refuse("Corvin", "ability-score-improvement")
+        check("…and so does the straight Ability Score Improvement",
+              why is not None, str(why)[:70])
 
     # the background slot is still level-gated: same feat, wrong slot.
     if general and bg_feat:

@@ -254,15 +254,18 @@ function SpellPicker({ title, list, chosen, n, onToggle }: {
     `waiveLevel` is the Custom Lineage slot: "any feat you qualify for" answers
     to the feat's own prerequisites, not to the level its category is filed
     behind — that gate is the class ASI schedule, and stepping outside it is
-    the whole gift. Epic boons keep their level whoever is asking: level 19 is
-    what an epic boon IS. The server applies the same two rules. */
+    the whole gift. Two feats keep their level whoever is asking: an epic boon,
+    because level 19 is what an epic boon IS, and the straight Ability Score
+    Improvement, because it is the ASI schedule itself and the slot exists to
+    step outside that, not to buy a turn of it. The server re-checks both. */
 function featBlockReason(
   feat: CCOptions["feats"][number],
   finalStats: Partial<Record<Ability, number>>,
   clsSlug?: string,
   waiveLevel?: boolean,
 ): string | null {
-  const levelGated = !waiveLevel || feat.category === "epic-boon";
+  const levelGated = !waiveLevel || feat.category === "epic-boon"
+    || feat.slug === "ability-score-improvement";
   if (levelGated && (feat.min_level ?? 1) > 1) return `level ${feat.min_level}+`;
   const pre = (feat.prerequisite ?? "").trim();
   if (!pre) return null;

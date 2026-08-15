@@ -42,6 +42,9 @@ const CC = {
       prerequisite: "Level 4+", brief: "+2 HP per level.", choices: null },
     { slug: "boon-of-bloodshed", name: "Boon of Bloodshed", category: "epic-boon",
       min_level: 19, prerequisite: "Level 19+", brief: "Epic.", choices: null },
+    { slug: "ability-score-improvement", name: "Ability Score Improvement",
+      category: "general", min_level: 4, prerequisite: "Level 4+",
+      brief: "+2, or +1 twice.", choices: null },
   ],
   backgrounds: [{ slug: "soldier", name: "Soldier", skills: ["Athletics"],
     abilities: ["STR", "DEX", "CON"], origin_feat: "alert" }],
@@ -119,6 +122,9 @@ check("the 'any feat' slot reaches a level-4 feat at level 1",
   (await toughCard.innerText()).replace(/\n/g, " "));
 const boonCard = page.locator(".cf-card", { hasText: "Boon of Bloodshed" }).first();
 check("...but an epic boon stays locked", await boonCard.isDisabled());
+const asiCard = page.locator(".cf-card", { hasText: "Ability Score Improvement" }).first();
+check("...and so does the straight ASI — the slot steps outside that schedule, "
+  + "it doesn't buy a turn of it", await asiCard.isDisabled());
 await page.screenshot({ path: `${OUT}/31-species-feat-slot.png`, fullPage: true });
 
 await browser.close();
