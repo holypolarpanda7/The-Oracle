@@ -7936,6 +7936,37 @@ def _vtt_place_conditions(place_slug: Optional[str]) -> str:
         return ""
 
 
+def _bastion_rooms(place_slug: str) -> list[str]:
+    """The facilities of the bastion that IS this place, as room names.
+
+    A vessel board carves its compartments out of the hull, and until this
+    nothing could tell it what they were — so a bastion airship somebody paid
+    to build came out as a generic ship with a deckhouse, and the armoury they
+    bought existed only on a sheet. The board still decides how many rooms
+    there is beam and hold for; this only says what to call them.
+    """
+    if not place_slug:
+        return []
+    try:
+        from bastion.catalog import get_facility
+        from bastion.models import Bastion, FacilityInstance
+        with Session(engine) as s:
+            b = s.exec(select(Bastion).where(
+                Bastion.place_slug == place_slug)).first()
+            if b is None:
+                return []
+            rows = s.exec(select(FacilityInstance).where(
+                FacilityInstance.bastion_id == b.id)).all()
+        out: list[str] = []
+        for r in rows:
+            cat = get_facility(r.facility_slug) or {}
+            out.append(str(cat.get("name") or r.facility_slug).lower())
+        return out
+    except Exception as e:
+        print(f"[vtt] bastion rooms unavailable: {e}")
+        return []
+
+
 def _vtt_open(session_id: str, *, kind: str = "combat",
               archetype: Optional[str] = None, name: Optional[str] = None,
               ctx_obj=None, encounter_id: Optional[int] = None,
@@ -7983,6 +8014,11 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
         # catalogue: the fiction is theirs, and the footprint, the tiles it
         # stamps and where it goes are still the board's.
         landmarks=landmarks or (archetype or place_name or ""),
+        # A bastion's own rooms, when the place being fought over IS somebody's
+        # bastion. Read here rather than in vtt/ for the reason every board
+        # override is a callback: the tactical layer must not have to know what
+        # a bastion is.
+        rooms=_bastion_rooms(place_slug or ""),
         # Outdoors, leave room for a bow to reach its own range band. Stated as
         # a policy rather than computed from what everyone is carrying: the
         # engine enforces long-range disadvantage, and on a 120-ft board that

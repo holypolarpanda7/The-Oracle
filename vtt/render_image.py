@@ -365,6 +365,21 @@ def render_board_png(state: dict, *, cell: int = 46, margin: int = 22,
         if 0 <= cx < w_sq and 0 <= cy < h_sq:
             labels.setdefault((cx, cy), name)
 
+    # A named room, for the same reason. Its bulkheads are ordinary walls and
+    # its doorway an ordinary doorway, so nothing in the picture distinguishes
+    # the armoury of somebody's flying bastion from a store cupboard — and the
+    # room only exists because its owner paid for it by name. Only the rooms on
+    # the floor being drawn: a hold's compartments named over the weather deck
+    # would be labels for a place nobody can see.
+    for room in state.get("rooms") or []:
+        name = str(room.get("name") or "").strip()
+        if not name or int(room.get("level") or 0) != level:
+            continue
+        cx = int(room.get("x", 0)) + max(1, int(room.get("w", 1))) // 2
+        cy = int(room.get("y", 0)) + max(1, int(room.get("h", 1))) // 2
+        if 0 <= cx < w_sq and 0 <= cy < h_sq:
+            labels.setdefault((cx, cy), name)
+
     # ---- wreckage ----
     # Painted over whatever is beneath it, on the square that was broken. When
     # no sprite has been drawn yet the square is still correct underneath — the

@@ -81,6 +81,16 @@ class GeneratedMap:
     # vtt.setpieces — the mesh is drawing, the tiles it stamped are the rules,
     # and they are already in ``grid`` by the time this list is written.
     setpieces: list[dict] = field(default_factory=list)
+    # Named rooms this layout BUILT, as [{"name","x","y","w","h"}]. Today: a
+    # vessel's compartments. A room is not a rule — the walls and the doorway
+    # are already tiles by the time this is written — it is what the place is
+    # CALLED, which is the difference between a deckhouse and the armoury of a
+    # bastion that flies.
+    rooms: list[dict] = field(default_factory=list)
+    # Rooms the CALLER asked for, by name. An input, consumed by the generator
+    # exactly as ``style`` is: a bastion airship carries its owner's facilities,
+    # and nothing else on the board could know their names.
+    wanted_rooms: tuple[str, ...] = ()
 
     @property
     def width(self) -> int:
@@ -1328,9 +1338,17 @@ def _rail(g: Grid, rng: random.Random, surround: str) -> None:
             g.set(x, y, "w")
 
 
+#: What a compartment is called when nobody named it, from aft forward. A
+#: ship's rooms have names and they are not interchangeable — the great cabin
+#: is aft under the transom and the forecastle is in the bows, and a board that
+#: says so is a board a player can be told to meet someone in.
+_COMPARTMENTS = ("the great cabin", "the deckhouse", "the chart room",
+                 "the forecastle")
+
+
 def _rig_ship(g: Grid, rng: random.Random, out: GeneratedMap, stern_x: int,
-              *, cabin_skin: str = "hull") -> None:
-    """The furniture that makes a deck a ship: mast, cabin, hatch and hold."""
+              *, cabin_skin: str = "hull", cls=None, surround: str = "W") -> None:
+    """The furniture that makes a deck a ship: mast, compartments, hatch, hold."""
     from . import structures
     from .terrain import VOID
 
@@ -1352,35 +1370,105 @@ def _rig_ship(g: Grid, rng: random.Random, out: GeneratedMap, stern_x: int,
     # cutter came out with under twenty walkable squares and the board was
     # discarded as a collapsed generator, so every small ship silently became a
     # meadow.
+    # HOW MANY is the class's business. A cutter is a hull, a mast and an open
+    # deck; a cruiser is decks and cabins along her length, and drawing both as
+    # "one deckhouse aft" is most of why every vessel read as the same vessel
+    # from inside as well as out. A caller may ask for more by NAMING them —
+    # a bastion that flies is a hall with rooms in it, and those rooms are the
+    # facilities its owner paid for.
     open_deck = sum(1 for x, y in g.squares() if g.get(x, y) == "b")
-    built = None
-    for back in (5, 6, 4, 7) if open_deck >= 34 else ():
-        for w in (5, 4):
-            x0 = stern_x - back
-            y0 = cy - 2
-            b = structures.cabin(g, rng, x0, y0, skin=cabin_skin, on=("b",))
-            if b.interior:
-                built = b
-                break
-        if built:
-            break
-    if built:
-        out.skins.update(built.skins)
+    names = [n for n in (out.wanted_rooms or ()) if str(n).strip()]
+    want = max(len(names), int(getattr(cls, "compartments", 0) or 0),
+               1 if open_deck >= 34 else 0)
+    # Every compartment eats deck, and deck is where the fight happens. The
+    # cheapest way to build a board with nowhere to stand is to grant every
+    # room somebody asked for, so the hull rations them by its own size and the
+    # ones that do not fit are simply absent — the `landmarks` rule.
+    want = min(want, len(_COMPARTMENTS), max(0, (open_deck - 20) // 14))
+    # Swept from the transom FORWARD, one square at a time, because where a
+    # deckhouse fits is decided by the hull rather than by arithmetic: the beam
+    # narrows toward the bow, so the forward tries fail on their own and the
+    # count rations itself. Names are handed out in the order rooms are BUILT,
+    # never by which attempt they were — keying them to the attempt index spent
+    # a name on every place a cabin would not go, so a ship with one compartment
+    # called it the chart room and a bastion's armoury was never built at all.
+    built_any: list[dict] = []
+    x0 = stern_x - 5
+    while x0 >= 1 and len(built_any) < want:
+        b = structures.cabin(g, rng, x0, cy - 2, skin=cabin_skin, on=("b",))
+        if not b.interior:
+            x0 -= 1
+            continue
+        out.skins.update(b.skins)
+        xs = [p[0] for p in b.interior]
+        ys = [p[1] for p in b.interior]
+        i = len(built_any)
+        built_any.append({
+            "name": names[i] if i < len(names) else _COMPARTMENTS[i],
+            "level": 0,
+            "x": min(xs), "y": min(ys),
+            "w": max(xs) - min(xs) + 1, "h": max(ys) - min(ys) + 1,
+        })
+        # Clear of the one just built, plus a square of deck between them: two
+        # deckhouses sharing a wall is one long shed.
+        x0 = min(xs) - (max(xs) - min(xs) + 1) - 4
+    out.rooms.extend(built_any)
 
     # Below decks: a real storey under the weather deck, reached by one hatch.
     # Negative base_ft is the whole trick — an upper floor and a hold are the
     # same machinery pointed opposite ways, and every distance, cover and area
     # check already folds a level's base height in.
-    deck_squares = [(x, y) for x, y in g.squares() if g.get(x, y) == "b"]
+    # The whole HULL, not the open deck: a hold runs under the mast, under the
+    # rail and under the deckhouse too. Taking only walkable deck punched the
+    # hold full of holes and left the floor beneath a cabin as an island of
+    # planking surrounded by nothing, which no stair reached and no bulkhead
+    # explained.
+    deck_squares = [(x, y) for x, y in g.squares() if g.get(x, y) != surround]
     if len(deck_squares) < 12:
         return
     rows = [[VOID] * g.width for _ in range(g.height)]
     for x, y in deck_squares:
         rows[y][x] = FLOOR
+    level = len(out.levels) + 1
+
+    # Rooms the weather deck had no beam for go BELOW, which is where a ship
+    # puts them anyway. A deckhouse is limited by how wide the hull is amidships
+    # — a trader is nine squares across and holds exactly one — so a bastion
+    # that flies would have been a vessel with an armoury and nothing else. The
+    # hold is the whole footprint at -8 ft, and dividing it costs nothing new:
+    # a BULKHEAD is a wall and a doorway is a doorway, both already tiles.
+    over = names[len(built_any):]
+    if over:
+        xs_all = sorted({x for x, _y in deck_squares})
+        bands = max(1, min(len(over), len(xs_all) // 5))
+        step = len(xs_all) // bands
+        cuts = [xs_all[i * step] for i in range(1, bands)]
+        for bx in cuts:
+            col = [y for y in range(g.height) if rows[y][bx] == FLOOR]
+            for y in col:
+                rows[y][bx] = WALL
+            # One way through, or the hold is a row of sealed boxes and the
+            # companionway lands in whichever of them the dice picked.
+            door = [y for y in col
+                    if rows[y][bx - 1] == FLOOR and rows[y][bx + 1] == FLOOR]
+            if door:
+                rows[door[len(door) // 2]][bx] = "/"
+        edges = [xs_all[0]] + cuts + [xs_all[-1] + 1]
+        for i, name in enumerate(over[:bands]):
+            lo, hi = edges[i], edges[i + 1] - 1
+            ys = [y for y in range(g.height)
+                  if any(rows[y][x] == FLOOR for x in range(lo, hi + 1))]
+            if not ys:
+                continue
+            out.rooms.append({"name": name, "level": level,
+                              "x": lo, "y": min(ys),
+                              "w": hi - lo + 1, "h": max(ys) - min(ys) + 1})
+
     out.levels.append({"name": "Below Decks", "base_ft": -8,
                        "terrain": ["".join(r) for r in rows], "stairs": []})
-    level = len(out.levels)
-    hx, hy = deck_squares[rng.randrange(len(deck_squares))]
+    walkable = [sq for sq in deck_squares if g.get(sq[0], sq[1]) == "b"] \
+        or deck_squares
+    hx, hy = walkable[rng.randrange(len(walkable))]
     out.stairs.append({"level": 0, "x": hx, "y": hy, "to_level": level,
                        "to_x": hx, "to_y": hy, "kind": "companionway"})
 
@@ -1403,7 +1491,7 @@ def _gen_ship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     cls = _v.rolled(out.seed, sky=False, width=g.width, height=g.height)
     stern = _hull(g, rng, "W", cls=cls)
     _rail(g, rng, "W")
-    _rig_ship(g, rng, out, stern)
+    _rig_ship(g, rng, out, stern, cls=cls, surround="W")
     _scatter(g, rng, "o", 0.05, only_on=("b",))
     _scatter(g, rng, "%", 0.02, only_on=("b",))
     _connect_regions(g, rng)
@@ -1753,7 +1841,7 @@ def _gen_skyship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     cls = _v.rolled(out.seed, sky=True, width=g.width, height=g.height)
     stern = _hull(g, rng, "^", plan="sky", cls=cls)
     _rail(g, rng, "^")
-    _rig_ship(g, rng, out, stern,
+    _rig_ship(g, rng, out, stern, cls=cls, surround="^",
               cabin_skin={"steampunk": "plating",
                           "organic": "chitin"}.get(out.style, "hull"))
     _scatter(g, rng, "o", 0.05, only_on=("b",), mode="fly")
@@ -2134,7 +2222,8 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
                  seed: Optional[int] = None,
                  lighting: Optional[str] = None,
                  style: str = "", biome: str = "",
-                 landmarks: Sequence[str] = ()) -> GeneratedMap:
+                 landmarks: Sequence[str] = (),
+                 rooms: Sequence[str] = ()) -> GeneratedMap:
     """Build a board. The same ``(archetype, width, height, seed, style)``
     always produces the identical grid — so a map can be regenerated from its
     row.
@@ -2149,6 +2238,11 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
     without the rationing that keeps a colossus rare on boards nobody asked for
     one. They are still placed by the code, and a piece that cannot be fitted
     is simply absent: the fiction chooses what, the board chooses where.
+
+    ``rooms`` names compartments a generator that BUILDS rooms should call its
+    own — today a vessel's. The same bargain as ``landmarks``: the caller says
+    what the rooms are, the hull decides how many of them there is deck for and
+    where they stand.
     """
     archetype = archetype if archetype in ARCHETYPES else archetype_for(archetype)
     width = max(8, min(60, int(width)))
@@ -2157,7 +2251,8 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
     rng = _rng(seed)
     grid = Grid.blank(width, height)
     out = GeneratedMap(grid=grid, archetype=archetype, seed=seed, style=style,
-                       biome=biome)
+                       biome=biome,
+                       wanted_rooms=tuple(str(r) for r in rooms if str(r).strip()))
     ARCHETYPES[archetype](grid, rng, out)
 
     # Every board must be one connected space and have room to stand — judged in

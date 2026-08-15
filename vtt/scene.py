@@ -208,6 +208,7 @@ class VttEngine:
                    board_scale: Optional[str] = None,
                    longest_range_ft: int = 0,
                    landmarks: Optional[str | Sequence[str]] = None,
+                   rooms: Optional[Sequence[str]] = None,
                    auto_close: bool = True) -> TacticalMap:
         """Open a tactical board for a session, closing any board already out.
 
@@ -222,6 +223,11 @@ class VttEngine:
         :func:`vtt.setpieces.landmark_for` maps. Named nothing, the place text
         is read for one — a DM who describes a fountain in the square has said
         so whether or not they knew there was a parameter for it.
+
+        ``rooms`` names compartments the layout should call its own — a
+        bastion airship carries the facilities its owner built, and nothing
+        else on the board could know what they are. The hull still decides how
+        many of them there is room for and where they go.
 
         ``auto_close`` marks a board the *system* put out (a fight started), so
         the system may take it away again when the reason passes. A board the DM
@@ -252,7 +258,7 @@ class VttEngine:
 
         gen = generate_map(arch, width=w, height=h, seed=seed,
                            lighting=lighting, biome=biome or place_hint or "",
-                           landmarks=marks)
+                           landmarks=marks, rooms=tuple(rooms or ()))
 
         self.close_scene(session_id=session_id)
 
@@ -275,7 +281,12 @@ class VttEngine:
                    # placement and default token movement follow it.
                    "mode": gen.mode,
                    "spawn_party": [list(s) for s in gen.spawn_party[:60]],
-                   "spawn_foes": [list(s) for s in gen.spawn_foes[:60]]},
+                   "spawn_foes": [list(s) for s in gen.spawn_foes[:60]],
+                   # Named compartments. In `notes` rather than a column of
+                   # their own because a room is not a rule — its walls and its
+                   # doorway are already tiles by the time this is written, and
+                   # what is left is what the place is CALLED.
+                   "rooms": [dict(r) for r in gen.rooms]},
         )
         # Reuse the earlier render for a place we've already painted.
         if prior is not None and prior.background_image_id:
@@ -3596,6 +3607,9 @@ class VttEngine:
             "iso_image_id": row.iso_image_id,
             "iso_art_status": row.iso_art_status,
             "description": (row.notes or {}).get("description", ""),
+            # Named compartments: [{"name","level","x","y","w","h"}]. A label,
+            # never a rule — the bulkheads around one are ordinary walls.
+            "rooms": list((row.notes or {}).get("rooms") or []),
             "tokens": [_token_dict(t, row) for t in toks
                        if self._visible_to_team(t, toks, viewer_team)],
             "effects": [_effect_dict(e) for e in effs
@@ -3651,6 +3665,16 @@ class VttEngine:
         high = self._elevation_summary(row)
         if high:
             lines.append(f"  {high}")
+        # What the rooms are CALLED. The grid below shows walls and a doorway
+        # and cannot say which side of them the armoury is on, so a DM asked to
+        # send somebody there would have to invent an answer the board would
+        # then contradict.
+        named = [r for r in ((row.notes or {}).get("rooms") or []) if r.get("name")]
+        if named:
+            lines.append("  rooms: " + "; ".join(
+                f"{r['name']} at {r.get('x')},{r.get('y')}"
+                + (f" on level {r['level']}" if int(r.get("level") or 0) else "")
+                for r in named[:8]))
         # One grid per floor, each carrying only the creatures standing on it.
         # A single-storey board prints exactly what it always printed.
         for fi, floor in enumerate(floors):
