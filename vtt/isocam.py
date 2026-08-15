@@ -972,7 +972,7 @@ def coverage_mask(rows: Sequence[str], **kw) -> bytes:
 
 def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 skin_of=None, elevation=None, shells=None, setpieces=None,
-                _mask_only: bool = False, _colour_of=None,
+                _mask_only: bool = False, _colour_of=None, _flat: bool = False,
                 square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
                 structure: Optional[set[str]] = None,
@@ -1096,7 +1096,12 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                  rgb=rgb, colour=cur_colour[0], tint=face_tint[0])
 
     def shade(t: float) -> None:
-        face_tint[0] = t
+        # FLAT refuses the shading, and a segmentation map needs it to. Every
+        # other colour picture wants faces lit — it is what makes a wall read
+        # as a wall — but a seg map's colours are CLASS IDS, and a shaded class
+        # id is a different colour, which is either a different class or none
+        # at all. The seg net would read a lit wall as two materials meeting.
+        face_tint[0] = 1.0 if _flat else t
 
     def is_open(x: int, z: int) -> bool:
         """Floor a creature could stand on — not structure, not off the board.

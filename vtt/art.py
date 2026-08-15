@@ -653,7 +653,12 @@ def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
 #: instead of no init at all, so its floor material finally has a channel; and
 #: a taproom declares its own — boards, plaster-and-timber walls, square oak
 #: posts. Every built board's floor changes, so their paintings are stale.
-ISOBOARD_REV = 28
+#: Rev 29: a SEGMENTATION control image beside the depth one (vtt/segmap.py) —
+#: what each square IS, in ADE20K class colours, on a union ControlNet told it
+#: is being handed `segment`. Depth could only ever say where a thing is and how
+#: tall, so a two-foot shaft was a post, a candle or a bollard; it painted
+#: candles. Every conditioned board changes.
+ISOBOARD_REV = 29
 
 
 #: Retained for callers that still ask, and for the gallery's reporting. The
@@ -792,6 +797,9 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
                      extra: str = "", conditions: str = "",
                      controlnet: Optional[str] = None,
                      controlnet_strength: float = 0.55,
+                     controlnet_union_type: str = "",
+                     seg_controlnet: Optional[str] = None,
+                     seg_strength: float = 0.45,
                      force_new: bool = False,
                      store_width: int = 1536) -> BattlemapArt:
     """Paint the board as an isometric diorama, conditioned on its own depth.
@@ -884,6 +892,18 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
 
     depth_kw = conditioning_kwargs(gen, skin_of=_skin_of)
     depth = isocam.depth_image(**depth_kw)
+    # WHAT each square is, beside where it is. Same rasterizer, same camera,
+    # same kwargs — so the two control images cannot describe different rooms.
+    # See vtt/segmap.py for why depth alone could never say "post" rather than
+    # "candle", and why a class colour must not be shaded.
+    seg_controls: list[dict] = []
+    if seg_controlnet:
+        from . import segmap
+        seg = segmap.seg_image(**depth_kw)
+        if seg:
+            seg_controls.append({"name": seg_controlnet, "image": seg,
+                                 "union_type": "segment",
+                                 "strength": float(seg_strength)})
     # The half depth cannot carry: what the ground is MADE of. Outdoors that is
     # the whole board, so without it the model invents terrain the grid does not
     # have. See isocam.terrain_image.
@@ -915,6 +935,8 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
             seed=gen.seed & 0x7FFFFFFF, max_per_bucket=1,
             control_image=depth,
             controlnet=controlnet, controlnet_strength=controlnet_strength,
+            controlnet_union_type=controlnet_union_type,
+            controls=seg_controls,
             init_image=terrain,
             init_denoise=denoise,
             negative_extra=", ".join(p for p in (

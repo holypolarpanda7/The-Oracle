@@ -936,6 +936,11 @@ def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     for x in range(2, tap_x1 - 1):
         if x != gap:
             g.set(x, bar_y, "n")
+            # The counter says it is a counter. It is furniture to every RULE —
+            # same cover, same three feet — and a per-square skin is the only
+            # thing that lets the painter and the segmentation map tell a bar
+            # from the tables in front of it.
+            out.skins[f"{x},{bar_y}"] = "taproom-bar"
     behind = bar_y - 1 if bar_y == 1 else bar_y + 1
     for x in range(2, tap_x1 - 1):
         if g.in_bounds(x, behind) and g.get(x, behind) == FLOOR \

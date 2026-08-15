@@ -123,6 +123,15 @@ class ComfyClient:
         # only a battlemap has a floorplan to obey.
         self.controlnet = controlnet
         self.controlnet_strength = float(controlnet_strength)
+        #: Which condition a UNION ControlNet is being handed. One model
+        #: answers to depth, segmentation, canny and tile, and it is told which
+        #: rather than working it out — see `_apply_controlnet`. Empty for a
+        #: single-purpose net, where the question does not arise.
+        self.controlnet_union_type: str = ""
+        #: Further conditions for one render, each
+        #: ``{name, image, union_type, strength}``. Set for the duration of a
+        #: generate() call beside `_control_image_name`, and cleared with it.
+        self._extra_controls: list[dict] = []
         # img2img: how much of the init image is thrown away. 1.0 is a plain
         # text-to-image render and the init is ignored entirely.
         self.init_denoise = float(init_denoise)
@@ -355,17 +364,30 @@ class ComfyClient:
         g[ks_id]["inputs"]["denoise"] = self.init_denoise
 
     def _apply_controlnet(self, g: dict) -> None:
-        """Condition the render on a control image, when one was supplied.
+        """Condition the render on one or more control images.
 
-        Spliced between the text encoders and the sampler:
+        Spliced between the text encoders and the sampler, one link per
+        condition:
 
-            CLIPTextEncode(+/-) → ControlNetApplyAdvanced → KSampler
+            CLIPTextEncode(+/-) → ControlNetApplyAdvanced ×N → KSampler
 
-        ``ControlNetApplyAdvanced`` takes BOTH conditionings, so the negative
-        prompt stays wired up — the simpler ControlNetApply only handles the
-        positive and would quietly drop it.
+        ``ControlNetApplyAdvanced`` takes BOTH conditionings and returns both,
+        which is what makes them CHAIN: the first link's outputs are the second
+        link's inputs. (The simpler ControlNetApply only handles the positive
+        and would quietly drop the negative.)
+
+        **A union ControlNet must be TOLD what it is being fed.** One model
+        answers to depth, segmentation, canny, tile and the rest, and it picks
+        by an explicit type — not by looking at the image. Left unset it falls
+        back to "auto", and the widely-reported result is mush that looks like
+        a weak render rather than like a misconfiguration. So a condition
+        carrying ``union_type`` gets a ``SetUnionControlNetType`` between the
+        loader and the apply. The type strings are ComfyUI's own
+        (``comfy/cldm/control_types.py``): ``depth`` and ``segment``, not
+        ``seg``.
         """
-        if not (self.controlnet and self._control_image_name):
+        conds = self._controlnet_conditions()
+        if not conds:
             return
         ks_id = next((nid for nid, n in g.items()
                       if n.get("class_type") == "KSampler"), None)
@@ -375,18 +397,49 @@ class ComfyClient:
         neg = g[ks_id]["inputs"].get("negative")
         if not (pos and neg):
             return
-        g["70"] = {"class_type": "ControlNetLoader",
-                   "inputs": {"control_net_name": self.controlnet}}
-        g["71"] = {"class_type": "LoadImage",
-                   "inputs": {"image": self._control_image_name}}
-        g["72"] = {"class_type": "ControlNetApplyAdvanced", "inputs": {
-            "positive": pos, "negative": neg,
-            "control_net": ["70", 0], "image": ["71", 0],
-            "strength": self.controlnet_strength,
-            "start_percent": 0.0, "end_percent": 1.0,
-        }}
-        g[ks_id]["inputs"]["positive"] = ["72", 0]
-        g[ks_id]["inputs"]["negative"] = ["72", 1]
+        for i, c in enumerate(conds):
+            base = 70 + i * 10
+            loader, img, apply_ = str(base), str(base + 1), str(base + 2)
+            g[loader] = {"class_type": "ControlNetLoader",
+                         "inputs": {"control_net_name": c["name"]}}
+            net = [loader, 0]
+            if c.get("union_type"):
+                typed = str(base + 3)
+                g[typed] = {"class_type": "SetUnionControlNetType",
+                            "inputs": {"control_net": net,
+                                       "type": c["union_type"]}}
+                net = [typed, 0]
+            g[img] = {"class_type": "LoadImage",
+                      "inputs": {"image": c["image"]}}
+            g[apply_] = {"class_type": "ControlNetApplyAdvanced", "inputs": {
+                "positive": pos, "negative": neg,
+                "control_net": net, "image": [img, 0],
+                "strength": float(c.get("strength", self.controlnet_strength)),
+                "start_percent": float(c.get("start", 0.0)),
+                "end_percent": float(c.get("end", 1.0)),
+            }}
+            pos, neg = [apply_, 0], [apply_, 1]
+        g[ks_id]["inputs"]["positive"] = pos
+        g[ks_id]["inputs"]["negative"] = neg
+
+    def _controlnet_conditions(self) -> list[dict]:
+        """Every condition to apply this render, newest API and oldest together.
+
+        The single-image fields (``controlnet`` + one ``control_image``) are how
+        every caller but the isometric board still asks, and they keep working
+        by becoming a one-item list. Nothing else in the client needs to know
+        which form it was given.
+        """
+        out: list[dict] = []
+        if self.controlnet and self._control_image_name:
+            out.append({"name": self.controlnet,
+                        "image": self._control_image_name,
+                        "union_type": self.controlnet_union_type,
+                        "strength": self.controlnet_strength})
+        for extra in self._extra_controls:
+            if extra.get("image"):
+                out.append(extra)
+        return out
 
     def _apply_lora_triggers(self, g: dict) -> None:
         """Append each active LoRA's trigger word to the positive prompt.
@@ -457,6 +510,7 @@ class ComfyClient:
         reference_filenames: Optional[list[str]] = None,
         mature: bool = False,
         control_image: Optional[bytes] = None,
+        controls: Optional[list[dict]] = None,
         init_image: Optional[bytes] = None,
     ) -> bytes:
         """Queue a job and return the produced image bytes (PNG).
@@ -496,11 +550,26 @@ class ComfyClient:
             if not self._control_image_name:
                 print("[imagery] control image upload failed; "
                       "rendering unconditioned")
+        # Further conditions, each with its own picture to upload. A condition
+        # whose upload fails is DROPPED rather than failing the render: losing
+        # the segmentation hint costs a worse picture, and losing the render
+        # costs the turn.
+        self._extra_controls = []
+        for i, extra in enumerate(controls or []):
+            blob = extra.get("image")
+            if not blob or not extra.get("name"):
+                continue
+            up = self.upload_image(blob, f"control-{seed}-{i + 1}.png")
+            if not up:
+                print(f"[imagery] control image {i + 1} upload failed; skipped")
+                continue
+            self._extra_controls.append({**extra, "image": up})
         try:
             graph = self._build_graph(positive, negative, width, height, seed,
                                       steps or self.steps, checkpoint=ckpt)
         finally:
             self._control_image_name = None
+            self._extra_controls = []
         if reference_filenames:
             self._inject_references(graph, list(reference_filenames))
         try:

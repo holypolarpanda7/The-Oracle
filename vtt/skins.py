@@ -955,6 +955,15 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "oak beams",
          words="the walls are lime plaster between dark oak studs, low and "
                "smoke-stained, a shelf and a hook here and there"),
+    # The BAR, and it is a skin rather than just a tile because a counter is
+    # not a table: it is one long run you serve across and hide behind, and
+    # both the painter and the segmentation map have a word for it that they do
+    # not have for furniture in general.
+    Skin("taproom-bar", "taproom-boards",
+         "close-up of a worn oak plank floor, wide dark boards running one way, "
+         "warm mid brown, scuffed and stained, black gaps between the boards",
+         words="a long timber bar counter runs down one side, its top worn "
+               "smooth, casks and shelves behind it"),
     Skin("taproom-post", "spar-timber",
          "a flat expanse of oiled timber, straight close grain all running one "
          "way, no corners and no edges",

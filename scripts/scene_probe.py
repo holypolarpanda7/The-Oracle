@@ -293,6 +293,9 @@ def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False,
     img = store._cfg()
     cn = getattr(img, "isoboard_controlnet", "") or ""
     strength = float(getattr(img, "isoboard_controlnet_strength", 0.55))
+    union = getattr(img, "isoboard_controlnet_union_type", "") or ""
+    seg_cn = getattr(img, "isoboard_seg_controlnet", "") or ""
+    seg_str = float(getattr(img, "isoboard_seg_strength", 0.45))
     if not cn:
         print("  no isoboard_controlnet configured — nothing to paint.")
         return
@@ -303,6 +306,8 @@ def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False,
             got = art.render_iso_board(gen, store=store, biome=r["biome"],
                                        lighting=gen.lighting, name=r["label"],
                                        controlnet=cn, controlnet_strength=strength,
+                                       controlnet_union_type=union,
+                                       seg_controlnet=seg_cn, seg_strength=seg_str,
                                        force_new=force)
         except Exception as exc:                       # noqa: BLE001
             print(f"    failed: {exc}")

@@ -245,6 +245,8 @@ class ImageStore:
                 control_image: Optional[bytes] = None,
                 controlnet: Optional[str] = None,
                 controlnet_strength: float = 0.8,
+                controlnet_union_type: str = "",
+                controls: Optional[list] = None,
                 init_image: Optional[bytes] = None,
                 init_denoise: float = 1.0,
                 ) -> tuple[Optional[bytes], Optional[int], bool]:
@@ -268,6 +270,9 @@ class ImageStore:
             # and the same client serves portraits and items too.
             client.controlnet = controlnet
             client.controlnet_strength = float(controlnet_strength)
+            # A UNION net is told which condition it is being handed; a
+            # single-purpose one has nothing to be told.
+            client.controlnet_union_type = controlnet_union_type or ""
             # Only a board that already knows what its ground is made of wants
             # an init image; a portrait most certainly does not.
             client.init_denoise = float(init_denoise)
@@ -280,6 +285,7 @@ class ImageStore:
                 seed=seed,
                 reference_filenames=reference_filenames,
                 control_image=control_image,
+                controls=list(controls or []),
                 init_image=init_image,
                 mature=mature,
             )
@@ -313,6 +319,8 @@ class ImageStore:
         control_image: Optional[bytes] = None,
         controlnet: Optional[str] = None,
         controlnet_strength: float = 0.8,
+        controlnet_union_type: str = "",
+        controls: Optional[list] = None,
         init_image: Optional[bytes] = None,
         init_denoise: float = 1.0,
     ) -> Optional[ImageResult]:
@@ -385,6 +393,8 @@ class ImageStore:
                                           control_image=control_image,
                                           controlnet=controlnet,
                                           controlnet_strength=controlnet_strength,
+                                          controlnet_union_type=controlnet_union_type,
+                                          controls=controls,
                                           init_image=init_image,
                                           init_denoise=init_denoise)
         if offline or raw is None:

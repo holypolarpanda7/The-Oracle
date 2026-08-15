@@ -401,6 +401,21 @@ class ImageryConfig:
     # into a plain grey massing model.
     isoboard_controlnet: str = ""
     isoboard_controlnet_strength: float = 0.55
+    # Which condition the board's ControlNet is being handed, when it is a
+    # UNION model (one net answering to depth, segmentation, canny, tile…).
+    # ComfyUI's own strings — see comfy/cldm/control_types.py — so "depth" and
+    # "segment", never "seg". Empty for a single-purpose net, where the
+    # question does not arise, and leaving it empty on a union net means "auto",
+    # which is the widely-reported way to get mush that looks like a weak render
+    # rather than like a misconfiguration.
+    isoboard_controlnet_union_type: str = ""
+    # A SECOND conditioning image for the board: what each square IS, painted
+    # in ADE20K class colours (see vtt/segmap.py). Depth says where a thing is
+    # and how tall; only this says whether the two-foot shaft is a timber post
+    # or a candle. Needs a net that can take `segment` — the union model can.
+    # Empty = off, and the board conditions on depth alone exactly as before.
+    isoboard_seg_controlnet: str = ""
+    isoboard_seg_strength: float = 0.45
     # RescaleCFG (0..1) lets you raise `cfg_scale` without the blown-out colour
     # high CFG normally causes. MEASURED WORSE for this pipeline: on the
     # goliath probe, cfg 10 + rescale 0.7 pushed the render further toward a
