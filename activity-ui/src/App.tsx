@@ -4,7 +4,7 @@ import type {
   ActionBarData, Ally, ArenaState, BarAction, CCPayload, CharacterSummary,
   CombatState, LevelUpData, LexEntry,
   ChronicleData, Locale, RepData, RouteRow, ServerEvent, SheetData, VttArea,
-  VttOptions, VttScene, VttTargets, WorldShop,
+  VttOptions, VttScene, VttTargets, WorldShop, BastionPlan,
 } from "./lib/types";
 import { Block, isTyped, makeOracleBlock, makeSpeechBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
@@ -15,6 +15,7 @@ import { LevelUpOverlay } from "./components/LevelUp";
 import { ReprepareOverlay } from "./components/Reprepare";
 import { PlaySurface } from "./components/PlaySurface";
 import { Stall } from "./components/Stall";
+import { BastionBuilder } from "./components/BastionBuilder";
 import { Chronicle } from "./components/Chronicle";
 import { ItemInspector, type ItemView } from "./components/ItemInspector";
 import { levelChime, rollThunk } from "./lib/sound";
@@ -50,6 +51,12 @@ export default function App({ session }: { session: Session }) {
   // the button only exists where a stall does; null closes it.
   const [shop, setShop] = useState<WorldShop | null>(null);
   const [stallOpen, setStallOpen] = useState(false);
+  // The bastion builder. Asked for on demand rather than pushed: raising a
+  // stronghold is a deliberate act, not something the play surface nags about.
+  const [bastion, setBastion] = useState<BastionPlan | null>(null);
+  const [bastionOpen, setBastionOpen] = useState(false);
+  const [bastionBusy, setBastionBusy] = useState(false);
+  const [bastionError, setBastionError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<SheetData | null>(null);
   const [locale, setLocale] = useState<Locale | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -248,6 +255,15 @@ export default function App({ session }: { session: Session }) {
         case "shop":
           setShop(ev.shop);
           if (!ev.shop) setStallOpen(false);
+          break;
+        case "bastion":
+          setBastion(ev.plan);
+          setBastionBusy(false);
+          break;
+        case "bastion_built":
+          setBastionBusy(false);
+          setBastionError(ev.ok ? null : (ev.detail || "It could not be raised."));
+          if (ev.ok) setBastionOpen(false);
           break;
         case "suggest":
           setSuggestions(ev.actions);
@@ -549,6 +565,19 @@ export default function App({ session }: { session: Session }) {
                     swap_out, swap_in, ability_increases, feat, feat_choices })}
               />
             )}
+            {bastionOpen && bastion && (
+              <BastionBuilder
+                plan={bastion}
+                busy={bastionBusy}
+                error={bastionError}
+                onClose={() => { setBastionOpen(false); setBastionError(null); }}
+                onBuild={(choice) => {
+                  setBastionBusy(true);
+                  setBastionError(null);
+                  connRef.current?.send({ t: "bastion_build", choice });
+                }}
+              />
+            )}
             {stallOpen && shop && (
               <Stall
                 shop={shop}
@@ -561,6 +590,10 @@ export default function App({ session }: { session: Session }) {
               draft={draft}
               hasStall={!!shop}
               onOpenStall={() => setStallOpen(true)}
+              onOpenBastion={() => {
+                setBastionOpen(true);
+                connRef.current?.send({ t: "bastion_plan" });
+              }}
               sheet={sheet}
               locale={locale}
               suggestions={suggestions}

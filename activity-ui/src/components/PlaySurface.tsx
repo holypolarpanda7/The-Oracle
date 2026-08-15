@@ -185,6 +185,9 @@ export interface PlayProps {
   /** Somebody here sells something — the button only exists where a stall does. */
   hasStall?: boolean;
   onOpenStall?: () => void;
+  /** Raising a stronghold — always offered; the screen itself says whether
+   *  this character is high enough level to have one. */
+  onOpenBastion?: () => void;
   /** The DM writing, live — a preview held apart from `blocks` because the
    *  server has not finished with it (see narration_delta). Empty when there
    *  is nothing in flight. */
@@ -340,6 +343,12 @@ export function PlaySurface(p: PlayProps) {
                     e.stopPropagation();
                     p.onOpenStall?.();
                   }}>Wares</button>
+                )}
+                {p.onOpenBastion && (
+                  <button className="wares" onClick={(e) => {
+                    e.stopPropagation();
+                    p.onOpenBastion?.();
+                  }}>Bastion</button>
                 )}
               </div>
               {p.blocks.length

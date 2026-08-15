@@ -825,6 +825,33 @@ export interface WorldShop {
   purse_text: string;
 }
 
+/** The bastion builder's offer: what the rules allow THIS character.
+ *  Everything priced here is priced by the server (bastion/build.py) — the
+ *  screen shows a running total so choosing makes sense and buys nothing. */
+export interface BastionFacilityOption {
+  slug: string; name: string; space: string; min_level: number;
+  desc: string; orders: string[]; income_gp: number;
+  propulsion: boolean; cost_gp: number;
+}
+export interface BastionVesselOption {
+  slug: string; name: string;
+  crew?: number; passengers?: number; cargo_tons?: number; cost_gp: number;
+}
+export interface BastionPlan {
+  level: number;
+  can_own: boolean;
+  min_level: number;
+  purse_gp: number;
+  cost_per_facility_gp: number;
+  kinds: { slug: string; name: string; blurb: string;
+           available: boolean; why: string }[];
+  facilities: BastionFacilityOption[];
+  vessels: BastionVesselOption[];
+  /** You only get one. Present once it is raised. */
+  existing?: { id: number; name: string; kind: string;
+               facilities: string[] } | null;
+}
+
 export type ServerEvent =
   | { t: "hello"; channel: string; characters: CharacterSummary[] }
   | { t: "arena"; state: ArenaState }
@@ -832,6 +859,11 @@ export type ServerEvent =
   | { t: "player"; text: string; who?: string; secret?: boolean }
   | { t: "narration"; text: string; secret?: boolean }
   | { t: "shop"; shop: WorldShop | null }
+  | { t: "bastion"; plan: BastionPlan | null }
+  | { t: "bastion_built"; ok: boolean; detail?: string;
+      bastion?: { id: number; name: string; kind: string; cost_gp: number;
+                  facilities: string[]; place_slug?: string };
+      notes?: string[] }
   // The DM writing, live. A PREVIEW: hook-free (see narration/stream.py) but
   // not the authoritative text — dice are still unrolled and speech is not yet
   // split out — so `narration_end` discards it and the real blocks follow.
@@ -923,6 +955,10 @@ export type ClientEvent =
   | { t: "actions" }
   | { t: "shop" }
   | { t: "shop_buy"; item: string }
+  | { t: "bastion_plan" }
+  | { t: "bastion_build"; choice: {
+      kind: string; name: string; description: string; motif: string;
+      facilities: string[]; vessel_slug: string; vehicle_kind: string } }
   /** Take an act chosen on the bar. The server re-derives it from its own
    *  catalogue and re-checks the aim — this is a request, not an instruction. */
   | { t: "board_action"; action_id: string; target_token_id?: number;

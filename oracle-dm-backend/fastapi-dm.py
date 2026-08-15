@@ -19975,6 +19975,129 @@ def _activity_sheet(session_id: str, user_id: str) -> Optional[dict]:
     }
 
 
+def _activity_bastion(session_id: str, user_id: str) -> Optional[dict]:
+    """Everything the builder screen needs, for whoever is asking.
+
+    The constraints come from `bastion/build.py` — one place decides what is
+    legal, so this screen and the DM's own path cannot disagree — and the purse
+    is the character's real one, because a builder that quotes a price against
+    imaginary money is a builder that lies.
+    """
+    from bastion import build as _bb
+    from airships.catalog import VESSELS
+
+    char_id = _activity_char_id(session_id, user_id)
+    if not char_id:
+        return None
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if char is None:
+            return None
+        level, purse = int(char.level or 1), _purse_of(char)
+        gold = to_cp(purse) / 100.0
+        have = s.exec(select(Bastion).where(
+            Bastion.character_id == char.id)).first()
+        mine = None
+        if have is not None:
+            rooms = s.exec(select(FacilityInstance).where(
+                FacilityInstance.bastion_id == have.id)).all()
+            mine = {"id": have.id, "name": have.name,
+                    "kind": ("airship" if have.airship_id else
+                             "mobile" if have.vehicle_kind else "keep"),
+                    "facilities": [r.facility_slug for r in rooms]}
+    out = _bb.plan(level, purse_gp=gold, vessels=VESSELS)
+    out["existing"] = mine
+    return out
+
+
+def _activity_bastion_build(session_id: str, user_id: str,
+                            choice: dict) -> dict:
+    """Raise it. Returns ``{ok, detail|bastion}``.
+
+    Checked and PAID for in one transaction: the cost is decided by the same
+    `check` the screen quoted from, so a client that lies about its own
+    arithmetic buys nothing.
+    """
+    from bastion import build as _bb
+    from airships.catalog import VESSELS
+
+    char_id = _activity_char_id(session_id, user_id)
+    if not char_id:
+        return {"ok": False, "detail": "No character in this session."}
+    want = _bb.Choice(
+        kind=str(choice.get("kind") or "keep"),
+        name=str(choice.get("name") or "").strip()[:80],
+        description=str(choice.get("description") or "").strip()[:400],
+        motif=str(choice.get("motif") or "").strip()[:200],
+        facilities=tuple(str(f) for f in (choice.get("facilities") or [])),
+        vessel_slug=str(choice.get("vessel_slug") or ""),
+        vehicle_kind=str(choice.get("vehicle_kind") or "").strip()[:80],
+    )
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if char is None:
+            return {"ok": False, "detail": "No character."}
+        if s.exec(select(Bastion).where(
+                Bastion.character_id == char.id)).first():
+            return {"ok": False,
+                    "detail": f"{char.name} already owns a bastion."}
+        purse = _purse_of(char)
+        gold = to_cp(purse) / 100.0
+        verdict = _bb.check(want, int(char.level or 1), purse_gp=gold,
+                            vessels=VESSELS)
+        if not verdict.ok:
+            return {"ok": False, "detail": " ".join(verdict.reasons)}
+
+        ship_id = None
+        if want.kind == "airship":
+            try:
+                from airships.flight import build_airship
+                ship = build_airship(s, want.vessel_slug, name=want.name,
+                                     owner_character_id=char.id,
+                                     session_id=session_id)
+                ship_id = ship.id
+            except Exception as e:                       # noqa: BLE001
+                print(f"[bastion] vessel build failed: {e}")
+                return {"ok": False,
+                        "detail": "That vessel could not be built."}
+
+        b = Bastion(character_id=char.id, name=want.name,
+                    level_acquired=int(char.level or 1),
+                    vehicle_kind=(want.vehicle_kind or "airship"
+                                  if want.kind != "keep" else None),
+                    airship_id=ship_id,
+                    notes=_bb.describe(want, vessels=VESSELS) or None)
+        s.add(b)
+        s.commit()
+        s.refresh(b)
+        for slug in dict.fromkeys(want.facilities):
+            cat = get_facility(slug) or {}
+            s.add(FacilityInstance(
+                bastion_id=b.id, facility_slug=slug,
+                name=cat.get("name", slug), facility_type="special",
+                space=cat.get("space")))
+        _write_purse(char, subtract_cost(purse, gp_to_cp(verdict.cost_gp)))
+        s.add(char)
+        s.commit()
+        built = {"id": b.id, "name": b.name, "kind": want.kind,
+                 "cost_gp": verdict.cost_gp,
+                 "facilities": list(dict.fromkeys(want.facilities))}
+    # The world learns it exists. A bastion is a PLACE — that is what lets the
+    # party be inside it, lets it be somewhere, and (for a flying one) lets it
+    # move without the world layer learning a new idea.
+    try:
+        from eight_card_system.models import EntityType
+        ent = world.upsert_entity(want.name, EntityType.PLACE,
+                                  attributes={"bastion": True,
+                                              "kind": want.kind})
+        if want.description or want.motif:
+            world.record_lore(ent.slug, reason=_bb.describe(want, vessels=VESSELS))
+        built["place_slug"] = ent.slug
+    except Exception as e:                               # noqa: BLE001
+        print(f"[bastion] world place failed: {e}")
+    return {"ok": True, "bastion": built, "notes": verdict.notes}
+
+
 def _shop_slice(session_id: str, user_id: str):
     """The world slice a shop question is asked against, and who is asking.
 
@@ -23251,6 +23374,43 @@ async def activity_ws(ws: WebSocket, channel: str):
                 except Exception as e:
                     print(f"[activity] action bar failed: {e}")
                     await ws.send_json({"t": "actions", "data": None})
+                continue
+
+            # ---- the bastion builder: what you may raise, and raising it ----
+            if msg.get("t") == "bastion_plan":
+                try:
+                    await ws.send_json({"t": "bastion", "plan": await asyncio.to_thread(
+                        _activity_bastion, session_id, user_id)})
+                except Exception as e:
+                    print(f"[activity] bastion plan failed: {e}")
+                    await ws.send_json({"t": "bastion", "plan": None})
+                continue
+            if msg.get("t") == "bastion_build":
+                try:
+                    res = await asyncio.to_thread(
+                        _activity_bastion_build, session_id, user_id,
+                        dict(msg.get("choice") or {}))
+                except Exception as e:
+                    print(f"[activity] bastion build failed: {e}")
+                    res = {"ok": False, "detail": "The work could not be begun."}
+                await ws.send_json({"t": "bastion_built", **res})
+                if res.get("ok"):
+                    b = res["bastion"]
+                    # Raising a stronghold is a world event, so the table hears
+                    # it the way it hears a deal struck.
+                    await _activity_broadcast(session_id, {
+                        "t": "narration",
+                        "text": f"*({b['name']} is raised — {b['cost_gp']:g} gp.)*"},
+                        fallback=ws)
+                    try:
+                        sheet = await asyncio.to_thread(
+                            _activity_sheet, session_id, user_id)
+                        if sheet:
+                            await ws.send_json({"t": "sheet", "sheet": sheet})
+                        await ws.send_json({"t": "bastion", "plan": await asyncio.to_thread(
+                            _activity_bastion, session_id, user_id)})
+                    except Exception as e:
+                        print(f"[activity] bastion refresh failed: {e}")
                 continue
 
             # ---- the stall: what the people standing here actually sell ----

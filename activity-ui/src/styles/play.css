@@ -1297,3 +1297,86 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
   border-radius: 4px; padding: 3px 9px;
 }
 .stall-buy:hover { background: rgba(230, 188, 100, 0.22); }
+
+/* ---------- the bastion builder ----------
+   Two columns that deliberately do not match: the left is the game's, with
+   costs and refusals; the right is the player's, and nothing on it is
+   validated. The seam between them is the point of the screen. */
+.bb-wrap {
+  position: fixed; inset: 0; z-index: 62;
+  background: rgba(4, 6, 12, 0.78);
+  display: grid; place-items: center; padding: 18px;
+}
+.bb {
+  width: min(880px, 100%); max-height: min(86vh, 860px); overflow: auto;
+  background: linear-gradient(180deg, rgba(18, 22, 38, 0.98), rgba(9, 12, 22, 0.98));
+  border: 1px solid color-mix(in srgb, var(--gold) 35%, var(--edge));
+  border-radius: 10px; padding: 14px 18px;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.75);
+}
+.bb-head {
+  display: flex; align-items: baseline; gap: 10px;
+  border-bottom: 1px solid var(--edge); padding-bottom: 8px; margin-bottom: 12px;
+}
+.bb-title { font-family: var(--display); font-size: 1.15rem; color: var(--gold); }
+.bb-purse { margin-left: auto; font-family: var(--mono); font-size: 0.7rem; color: var(--gold-dim); }
+.bb-x { background: none; border: none; color: var(--text); opacity: 0.6; cursor: pointer; }
+.bb-x:hover { opacity: 1; }
+.bb-body { display: grid; grid-template-columns: 1.25fr 1fr; gap: 18px; }
+@media (max-width: 720px) { .bb-body { grid-template-columns: 1fr; } }
+.bb-col { min-width: 0; }
+.bb-lbl {
+  font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--gold-dim);
+  margin: 12px 0 5px;
+}
+.bb-dim { opacity: 0.6; text-transform: none; letter-spacing: 0; }
+.bb-kinds { display: grid; gap: 6px; }
+.bb-kind {
+  text-align: left; cursor: pointer; padding: 7px 9px; border-radius: 6px;
+  background: rgba(8, 12, 24, 0.6);
+  border: 1px solid var(--edge); color: var(--text);
+}
+.bb-kind b { display: block; font-family: var(--display); font-size: 0.85rem; }
+.bb-kind span { font-size: 0.7rem; opacity: 0.72; }
+.bb-kind.on { border-color: var(--gold); background: rgba(230, 188, 100, 0.12); }
+.bb-kind:disabled { opacity: 0.4; cursor: not-allowed; }
+.bb-in, .bb-ta, .bb-sel {
+  width: 100%; box-sizing: border-box; padding: 6px 8px;
+  background: rgba(6, 9, 17, 0.8); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 5px;
+  font-family: inherit; font-size: 0.8rem;
+}
+.bb-ta { resize: vertical; line-height: 1.45; }
+.bb-facs { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; }
+.bb-facs li { padding: 4px 2px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.bb-facs li.on { background: rgba(230, 188, 100, 0.07); }
+.bb-facs label { display: grid; grid-template-columns: auto 1fr auto; gap: 6px;
+                 align-items: baseline; cursor: pointer; }
+.bb-fn { font-size: 0.8rem; }
+.bb-fd { grid-column: 2 / -1; font-size: 0.68rem; opacity: 0.62; }
+.bb-tag {
+  font-family: var(--mono); font-size: 0.55rem; letter-spacing: 0.06em;
+  text-transform: uppercase; padding: 1px 5px; border-radius: 3px;
+  color: var(--gold); border: 1px solid color-mix(in srgb, var(--gold) 45%, var(--edge));
+}
+.bb-tag.earn { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 45%, var(--edge)); }
+.bb-free { font-size: 0.68rem; opacity: 0.55; font-style: italic; margin-top: 8px; }
+.bb-note { font-size: 0.82rem; opacity: 0.8; }
+.bb-foot {
+  display: flex; align-items: center; gap: 12px;
+  border-top: 1px solid var(--edge); margin-top: 14px; padding-top: 10px;
+}
+.bb-total { font-family: var(--mono); font-size: 0.78rem; color: var(--gold); }
+.bb-total.over { color: var(--crimson); }
+.bb-warn { color: var(--crimson); font-size: 0.7rem; }
+.bb-err { color: var(--crimson); font-size: 0.72rem; }
+.bb-go {
+  margin-left: auto; cursor: pointer;
+  font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.08em;
+  text-transform: uppercase; padding: 7px 16px; border-radius: 5px;
+  color: var(--text); background: rgba(230, 188, 100, 0.16);
+  border: 1px solid color-mix(in srgb, var(--gold) 50%, var(--edge));
+}
+.bb-go:hover:enabled { background: rgba(230, 188, 100, 0.28); }
+.bb-go:disabled { opacity: 0.4; cursor: not-allowed; }
