@@ -98,6 +98,14 @@ SCENES: tuple[tuple[str, str, str, str, str], ...] = (
      "over the side hand over hand.",
      "the deck of an airship under boarding", "sky", ""),
 
+    # A SEA ship, because a skyship is not a boat that happens to be up and the
+    # two have to be looked at side by side to see whether they are still the
+    # same vessel. Both hull plan and deck skin were split for this reason.
+    ("ship",
+     "Grapnels bite into the rail and the pirates swarm over. The deck is wet, "
+     "the mainmast creaks, and the sea is running hard past the hull.",
+     "the deck of a caravel at sea", "sea", ""),
+
     # ---- boards built AROUND a landmark ---------------------------------
     # Every other scene here is about the derived geometry. These are about the
     # one thing on the board that is somebody else's model: what the DM has to

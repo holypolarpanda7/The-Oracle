@@ -388,7 +388,7 @@ MATERIAL_NEGATIVE = (
 #: three agree about what a "dungeon" looks like.
 BOARD_LOOKS: tuple[str, ...] = (
     "underground", "dungeon", "woodland", "town", "cavern", "ruins",
-    "interior", "snow", "desert", "wetland",
+    "interior", "snow", "desert", "wetland", "sea", "sky",
 )
 
 #: Archetype -> the look its surfaces are drawn in. An archetype is a much
@@ -400,7 +400,13 @@ _ARCH_LOOK: dict[str, str] = {
     "mine": "underground", "forest": "woodland", "clearing": "woodland",
     "swamp": "wetland", "reef": "wetland", "open-water": "wetland",
     "street": "town", "tavern": "interior", "camp": "woodland",
-    "ship": "interior", "skyship": "interior", "arena": "town",
+    # A DECK IS NOT AN INTERIOR. Both vessels were filed under `interior`, so
+    # the open sea around a caravel was drawn with an indoor water swatch (a
+    # dark green, which painted as a lawn the ship sat on) and the prompt told
+    # the model it was inside a building. A skin is look-agnostic, so the deck,
+    # hull, rail and mast swatches are untouched by this — what it fixes is the
+    # water, the sky and what the room is said to BE.
+    "ship": "sea", "skyship": "sky", "arena": "town",
     "ruins": "ruins", "bridge": "town", "mountain-pass": "snow",
     "sky-islands": "woodland", "open": "woodland",
 }
@@ -418,6 +424,10 @@ _BIOME_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("city", "town", "village", "street", "market"), "town"),
     (("tavern", "hall", "chamber", "indoor", "interior", "manor"), "interior"),
     (("crypt", "dungeon", "vault", "keep"), "dungeon"),
+    # After the interior words, so "the hall of a ship" is still a hall, and
+    # before nothing — these are the last resort before the archetype.
+    (("sea", "ocean", "open water", "deck", "shore"), "sea"),
+    (("sky", "cloud", "aloft", "airship", "skyship"), "sky"),
 )
 
 
@@ -664,7 +674,13 @@ def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
 #: and regional prompting all failed. Three skins also had their negations
 #: taken OUT of their positive words ("NOT flagstones", "NOT planking", "NOT
 #: crates"), which in a positive prompt asks for the thing.
-ISOBOARD_REV = 30
+#: Rev 31: a vessel stops being an INTERIOR. Both ships were filed under the
+#: `interior` look, so the open sea round a caravel was drawn with an indoor
+#: water swatch and the prompt said the deck was inside a building; `sea` and
+#: `sky` are real looks now. Plus a `sea-surface` skin (the look-agnostic `W`
+#: swatch is a SEABED, right from below and a green mat from above) and a
+#: riveted-brass swatch that is brass rather than verdigris.
+ISOBOARD_REV = 31
 
 
 #: Retained for callers that still ask, and for the gallery's reporting. The

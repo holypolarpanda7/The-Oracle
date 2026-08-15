@@ -1086,6 +1086,17 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "close-up of tarred ship planking, caulked seams and iron nail heads",
          words="the hull is tarred carvel planking with caulked seams",
          body="ship", exact=True),
+    # The sea a ship SAILS ON, and it is not the sea a reef sits under. `W` is
+    # look-agnostic — one swatch of dark green deep water everywhere — which is
+    # right seen from below and paints as a flat green mat when a caravel is
+    # standing on it. The reef learned this in reverse: its `~` was a picture of
+    # a pond SURFACE, catastrophic on a board fought inside the water.
+    Skin("sea-surface", "open-sea",
+         "aerial photograph of open ocean, deep blue-green swell with white "
+         "foam streaks along the crests, no shoreline and no horizon",
+         words="the ship is under way on open sea — long swell running past the "
+               "hull, foam breaking along the crests and a wake astern",
+         negative="beach, shore, sand, horizon, sky, boat, land"),
     Skin("sea-deck", "deck-planking",
          "close-up of holystoned ship deck planking, pale scrubbed oak, pitched "
          "seams",
@@ -1155,8 +1166,18 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # ship with different railings. What a hull is made of has to reach the
     # floor or it reaches nothing.
     Skin("plated-deck", "riveted-brass",
-         "a flat expanse of riveted brass and iron deck plating, verdigris and "
-         "oil stains, filling the whole frame",
+         # WARM metal, and NOT A WORD ABOUT VERDIGRIS. Twice measured: the
+         # original asked for "verdigris and oil stains" and averaged to
+         # (56,109,104), a teal green, so a whole deck of it painted as GRASS;
+         # rewritten to keep "a few streaks of green verdigris in the seams" it
+         # came back (100,111,76), olive. A swatch prompt is a POSITIVE prompt —
+         # naming the green asks for the green, however small the helping you
+         # request — which is the same trap `Skin.negative` exists for and the
+         # same one the seabed fell into asking for "no plants".
+         "a flat expanse of riveted brass and iron deck plating, warm golden "
+         "brass polished by boots and darkened by oil, rows of iron rivets, "
+         "filling the whole frame",
+         negative="verdigris, green patina, oxidised copper, moss, grass",
          words="the deck is riveted metal plate, oil-stained, with grilles and "
                "pipe runs let into it, boilers and vented steam below the keel",
          skirt_ft=13, skirt_inset=HULL_TAPER, body="ship", exact=True),
@@ -1233,7 +1254,7 @@ ARCH_SKINS: dict[str, dict[str, str]] = {
     # is wet, tarred and salt-bleached and its hull sits IN the water; a
     # skyship's is dry and hangs in air, and you see its underside.
     "ship":          {"b": "sea-deck", "w": "railing", "O": "mast",
-                      "#": "hull"},
+                      "#": "hull", "W": "sea-surface", "~": "sea-surface"},
     "skyship":       {"b": "sky-deck", "w": "sky-rail", "O": "mast",
                       "#": "hull"},
     "sky-islands":   {"R": "cliff"},

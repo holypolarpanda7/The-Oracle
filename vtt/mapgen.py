@@ -1382,6 +1382,16 @@ def _gen_ship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     for x, y in g.squares():
         if g.get(x, y) not in ("W", "~"):
             out.elevation[f"{x},{y}"] = SHIP_FREEBOARD_FT
+        # NO SWELL, and it was tried. The sea round a caravel is a perfectly
+        # flat plane, the depth map carries nothing about it, and the painter
+        # keeps the terrain image's flat colour — so the reef's lesson (give the
+        # depth map relief and the picture follows) looks like it should apply.
+        # It does not: elevation is stored PER SQUARE and drawn flat-topped, so
+        # three feet of swell came back as a field of terraced slabs reading as
+        # broken ice floes. Same shape as the cliff that was a stack of boxes —
+        # water needs a surface the board has no way to express. Left flat
+        # deliberately; the fix, if there is one, is a renderer that can round a
+        # water top, not a number here.
     out.description = ("the deck of a ship under sail — a single mast stepped "
                        "amidships, a rail you can see the sea through, the "
                        "captain's cabin aft and a hatch down into the hold")

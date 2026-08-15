@@ -45,7 +45,7 @@ sys.path.insert(0, str(ROOT))
 #: reason and so the two catalogues agree about what a "dungeon" looks like.
 CONTEXTS = [
     "underground", "dungeon", "woodland", "town", "cavern", "ruins",
-    "interior", "snow", "desert", "wetland",
+    "interior", "snow", "desert", "wetland", "sea", "sky",
 ]
 
 OUT_DIR = ROOT / "material-probe"
