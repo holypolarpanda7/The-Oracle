@@ -1397,13 +1397,60 @@ def test_setpieces() -> None:
     eq("a landmark that fits somewhere is found", stood, 8)
 
 
+def test_vessels() -> None:
+    """Two ships are not the same ship, and none of them is a meadow."""
+    from . import mapgen as _mg
+    from . import vessels as _v
+
+    section("vessels: a hull is the vessel's, not the board's")
+
+    seen: set[str] = set()
+    collapsed = 0
+    for arch in ("ship", "skyship"):
+        for w, h in ((36, 26), (30, 22), (24, 18), (20, 14)):
+            for seed in range(1, 13):
+                gen = _mg.generate_map(arch, width=w, height=h, seed=seed)
+                deck = sum(r.count("b") for r in gen.grid.to_rows())
+                if deck == 0:
+                    collapsed += 1
+                    continue
+                seen.add(gen.description.split(" under")[0].split(" —")[0])
+    # Every vessel board used to fall back to open ground below a certain size:
+    # the density floor was written for a collapsed cave, and a small ship in a
+    # large sea looks exactly like one. Then the RAIL ate what was left — `w` is
+    # impassable, and on a fine hull almost every square touches the water.
+    check("no vessel board collapses to open ground", collapsed == 0,
+          f"{collapsed} of 96")
+    check("and the fleet is not one ship", len(seen) >= 5,
+          f"{len(seen)} distinct hulls over 96 boards")
+
+    # The silhouette is what the painter is conditioned on, so two classes that
+    # differ only in name would be two pictures of one ship.
+    big = _v.get("galleon")
+    small = _v.get("cutter")
+    check("a galleon is longer and broader than a cutter",
+          big.length > small.length and big.beam > small.beam)
+    check("a sea hull and a sky hull are cut to different plans",
+          _v.get("caravel").plan == "sea" and _v.get("courier").plan == "sky")
+    # Proportion, not clamping: a big vessel on a small board stays that vessel.
+    L, B = _v.fitted(big, 16, 12)
+    check("a hull too big for its board keeps its proportions",
+          abs((L / B) - (big.length / big.beam)) < 0.35,
+          f"{L}x{B} vs {big.length}x{big.beam}")
+    # A named vessel's own numbers pick its shape.
+    tiny = _v.for_vessel({"crew": 2, "passengers": 2, "cargo_tons": 0.5})
+    great = _v.for_vessel({"crew": 10, "passengers": 40, "cargo_tons": 2.0})
+    check("a catalogued vessel's crew and cargo choose its class",
+          tiny.length < great.length, f"{tiny.slug} vs {great.slug}")
+
+
 def main() -> int:
     print("\033[1mThe Oracle — tactical board self-test\033[0m")
     for fn in (test_distance, test_sight_and_cover, test_templates, test_movement,
                test_opportunity, test_mapgen, test_engine, test_bridge,
                test_light_and_vision, test_hiding, test_underwater,
                test_mounts_and_squeezing, test_board_size, test_levels,
-               test_setpieces):
+               test_setpieces, test_vessels):
         try:
             fn()
         except Exception:

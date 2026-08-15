@@ -298,6 +298,23 @@ def _island(grid: Grid, rng: random.Random, cx: int, cy: int, radius: float,
 # about, because stepping off it is a fall.
 # --------------------------------------------------------------------------
 
+#: How far a sea's swell rises, in feet. Three: enough for the depth map to
+#: carry the water at all, small enough that riding a crest is not a hill.
+SWELL_FT = 3
+
+#: Archetypes that are MEANT to be mostly untraversable — a hull in the sea, an
+#: island in the sky — and so are judged by whether they produced anything to
+#: stand on rather than by what fraction of the board it is.
+SPARSE_ARCHETYPES = frozenset({"ship", "skyship", "open-water", "sky-islands",
+                               "reef"})
+
+#: The smallest deck worth calling a board, in squares — the same twelve
+#: `_rig_ship` already treats as "too small for a hold", so the two agree about
+#: what a small ship is. Twelve squares is sixty feet of deck: a cramped board
+#: for a boarding action, which is the point of a cutter, and emphatically not
+#: the collapsed generator this floor exists to catch.
+VESSEL_DECK_FLOOR = 12
+
 STEP_FT = 5
 LEDGE_FT = 10
 
@@ -1239,55 +1256,43 @@ def _gen_camp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 
 def _hull(g: Grid, rng: random.Random, surround: str, deck: str = "b",
-          plan: str = "sea") -> int:
+          plan: str = "sea", cls=None) -> int:
     """Carve a SHIP-shaped deck out of the board. Returns the stern's x.
 
     The first shape was a symmetric lens — the same taper at both ends — which
-    is a leaf, not a vessel, and it is why every ship board read as a rectangle
+    is a leaf, not a vessel, and is why every ship board read as a rectangle
     with the corners knocked off.
 
-    There are TWO plans now, and the reason is that one was not enough: a
-    skyship and a caravel wearing the same outline and near enough the same
-    skins came back as the same boat, which is a fair complaint about a flying
-    ship. A **sea** hull comes to a point at the bow, holds its full beam
-    through the waist and finishes in a broad flat transom, because it is a
-    box that has to float and be steered from the back. A **sky** hull is
-    slender and fine at BOTH ends — nothing about air rewards a transom — and
-    fullest amidships where the lift is. Those silhouettes are what the painter
-    is conditioned on, so they are most of the difference between the two.
+    The second shape was two plans, sea and sky, and it was still one ship
+    apiece: length and beam came from the BOARD (``width - 2`` by
+    ``height - 2``), so a two-crew skiff and a forty-passenger cruiser were the
+    same outline in the same frame. A vessel now brings its own CLASS — see
+    :mod:`vtt.vessels` — which carries length, beam, fineness and plan, so a
+    cutter and a galleon are different ships and a small one is a small ship in
+    a lot of sea rather than a small ship stretched to the edges.
 
     Either way the outline is a staircase, because it is carved out of squares.
-    What stops it LOOKING like one is `isocam.footprint`, which cuts every
-    outer corner so a one-square step is drawn as the diagonal it means.
+    What stops it LOOKING like one is `isocam.footprint`, which cuts every outer
+    corner so a one-square step is drawn as the diagonal it means.
     """
+    from . import vessels as _v
+
+    if cls is None:
+        cls = _v.rolled(rng.randrange(1 << 30), sky=(plan == "sky"))
     g.fill_rect(0, 0, g.width - 1, g.height - 1, surround)
-    length = max(6, g.width - 2)
-    beam = max(4, g.height - 2)
+    length, beam = _v.fitted(cls, g.width, g.height)
+    # Centred rather than pinned to the left edge: a hull shorter than the board
+    # sitting against one side reads as a ship half off the picture.
+    x0 = max(1, (g.width - length) // 2)
     cy = (g.height - 1) / 2.0
 
-    def half_beam(t: float) -> float:
-        """Half-width at t along the hull; 0 is the bow, 1 the stern."""
-        if plan == "sky":
-            # Fine at both ends, fullest a little aft of amidships. The floor
-            # keeps a spine of deck at the very tips, so the bow is a point you
-            # can stand on rather than a gap.
-            k = max(0.16, math.sin(math.pi * min(1.0, t * 0.92 + 0.04)) ** 0.62)
-            return k * 0.88 * (beam / 2.0)
-        if t < 0.42:                       # the bow, entering fine
-            k = 0.10 + 0.90 * (t / 0.42) ** 0.62
-        elif t < 0.78:                     # the waist, full beam
-            k = 1.0
-        else:                              # quarters easing to a flat stern
-            k = 1.0 - 0.28 * ((t - 0.78) / 0.22) ** 1.4
-        return k * (beam / 2.0)
-
     for i in range(length):
-        x = 1 + i
-        hb = half_beam(i / float(length - 1))
+        x = x0 + i
+        hb = _v.half_beam(cls, i / float(max(1, length - 1)), beam)
         for y in range(g.height):
             if abs(y - cy) <= hb:
                 g.set(x, y, deck)
-    return length          # the last deck column is x = length
+    return x0 + length - 1     # the last deck column
 
 
 def _rail(g: Grid, rng: random.Random, surround: str) -> None:
@@ -1298,14 +1303,27 @@ def _rail(g: Grid, rng: random.Random, surround: str) -> None:
     board where falling off the edge is a real outcome, a gap in the rail is a
     mechanical statement (half cover ends here) that nobody meant to make.
     """
+    orth = ((1, 0), (-1, 0), (0, 1), (0, -1))
     edge = [(x, y) for x, y in g.squares()
             if g.get(x, y) == "b"
-            and any(g.get(x + dx, y + dy) == surround
-                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))]
+            and any(g.get(x + dx, y + dy) == surround for dx, dy in orth)]
     if not edge:
         return
-    gangway = edge[rng.randrange(len(edge))]
-    for x, y in edge:
+    # A rail may not EAT the ship. `w` is impassable, and on a narrow hull —
+    # a cutter, a courier, the fine ends of anything — almost every deck square
+    # touches the sea, so railing all of them left a vessel with two squares to
+    # stand on and the board fell back to open ground as a collapsed generator.
+    # A square only takes a rail if the deck still reaches round it: two deck
+    # neighbours or more, which keeps a walkable spine down the hull and leaves
+    # the tips of the bow and stern as deck a creature can stand on.
+    keep = {sq for sq in edge
+            if sum(1 for dx, dy in orth
+                   if g.get(sq[0] + dx, sq[1] + dy) == "b") < 2}
+    railable = [sq for sq in edge if sq not in keep]
+    if not railable:
+        return
+    gangway = railable[rng.randrange(len(railable))]
+    for x, y in railable:
         if (x, y) != gangway:
             g.set(x, y, "w")
 
@@ -1327,8 +1345,16 @@ def _rig_ship(g: Grid, rng: random.Random, out: GeneratedMap, stern_x: int,
 
     # The captain's quarters, aft. Placed against the transom where the beam is
     # still full, and skipped rather than squeezed if the board is too small.
+    #
+    # A SMALL vessel gets none, and that is a rule about ships rather than about
+    # boards: a cutter is a hull, a mast and an open deck, and building a cabin
+    # into one leaves nowhere to fight. Measured — with the cabin, a railed
+    # cutter came out with under twenty walkable squares and the board was
+    # discarded as a collapsed generator, so every small ship silently became a
+    # meadow.
+    open_deck = sum(1 for x, y in g.squares() if g.get(x, y) == "b")
     built = None
-    for back in (5, 6, 4, 7):
+    for back in (5, 6, 4, 7) if open_deck >= 34 else ():
         for w in (5, 4):
             x0 = stern_x - back
             y0 = cy - 2
@@ -1373,7 +1399,9 @@ SHIP_FREEBOARD_FT = 6
 
 
 def _gen_ship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
-    stern = _hull(g, rng, "W")
+    from . import vessels as _v
+    cls = _v.rolled(out.seed, sky=False, width=g.width, height=g.height)
+    stern = _hull(g, rng, "W", cls=cls)
     _rail(g, rng, "W")
     _rig_ship(g, rng, out, stern)
     _scatter(g, rng, "o", 0.05, only_on=("b",))
@@ -1382,19 +1410,25 @@ def _gen_ship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     for x, y in g.squares():
         if g.get(x, y) not in ("W", "~"):
             out.elevation[f"{x},{y}"] = SHIP_FREEBOARD_FT
-        # NO SWELL, and it was tried. The sea round a caravel is a perfectly
-        # flat plane, the depth map carries nothing about it, and the painter
-        # keeps the terrain image's flat colour — so the reef's lesson (give the
-        # depth map relief and the picture follows) looks like it should apply.
-        # It does not: elevation is stored PER SQUARE and drawn flat-topped, so
-        # three feet of swell came back as a field of terraced slabs reading as
-        # broken ice floes. Same shape as the cliff that was a stack of boxes —
-        # water needs a surface the board has no way to express. Left flat
-        # deliberately; the fix, if there is one, is a renderer that can round a
-        # water top, not a number here.
-    out.description = ("the deck of a ship under sail — a single mast stepped "
-                       "amidships, a rail you can see the sea through, the "
-                       "captain's cabin aft and a hatch down into the hold")
+            continue
+        # SWELL. The sea round a caravel was a perfectly flat plane, so the
+        # depth map carried nothing about it and the painter kept the terrain
+        # image's flat colour — a mat with the ship sitting on it. This is the
+        # reef's lesson applied to the surface instead of the floor: give the
+        # depth map relief and the picture follows.
+        #
+        # Elevation is per-square and drawn flat-topped, so the crests come out
+        # FACETED rather than rounded. That was my objection and the call went
+        # the other way: faceted water still reads as water in motion, which a
+        # mirror-flat plane never did. Long, low and running one way, because
+        # that is what swell is. Three feet changes nothing anybody will notice
+        # — deep water is impassable to a walker, and a swimmer riding a crest
+        # is three feet up, which is correct.
+        wave = math.sin((x * 0.9 + y * 1.7) * 0.55) + 0.4 * math.sin(y * 0.9)
+        out.elevation[f"{x},{y}"] = int(round(SWELL_FT * (wave + 1.4) / 2.8))
+    out.description = (f"the deck of {cls.words} under sail — a single mast "
+                       "stepped amidships, a rail you can see the sea through, "
+                       "the captain's cabin aft and a hatch down into the hold")
 
 
 def _gen_arena(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -1715,7 +1749,9 @@ def _gen_skyship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # stays the ship it was.
     if out.style not in SKYSHIP_STYLES:
         out.style = rng.choice(("timber", "timber", "steampunk", "organic"))
-    stern = _hull(g, rng, "^", plan="sky")
+    from . import vessels as _v
+    cls = _v.rolled(out.seed, sky=True, width=g.width, height=g.height)
+    stern = _hull(g, rng, "^", plan="sky", cls=cls)
     _rail(g, rng, "^")
     _rig_ship(g, rng, out, stern,
               cabin_skin={"steampunk": "plating",
@@ -1723,15 +1759,18 @@ def _gen_skyship(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _scatter(g, rng, "o", 0.05, only_on=("b",), mode="fly")
     out.mode = "fly"
     out.lighting = "bright"
+    # The CLASS and the STYLE are two independent facts about a vessel — how big
+    # and what shape, and what it is made of — so both are said. A grown chitin
+    # courier and a grown chitin cruiser are different ships.
     out.description = {
-        "steampunk": ("the deck of a skyship — a riveted brass-and-iron "
+        "steampunk": (f"the deck of {cls.words} — a riveted brass-and-iron "
                       "contraption, boiler venting, pipework along the rails, "
                       "open air past every side"),
-        "organic": ("the deck of a skyship that was GROWN rather than built — "
+        "organic": (f"the deck of {cls.words}, GROWN rather than built — "
                     "ridged chitin underfoot, veined and iridescent, open air "
                     "past every side"),
     }.get(out.style,
-          "the deck of a skyship under sail, rigging taut, open air past "
+          f"the deck of {cls.words} under sail, rigging taut, open air past "
           "every rail")
 
 
@@ -2125,7 +2164,14 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
     # the medium it's fought in, so an open-water board isn't condemned for
     # being unwalkable.
     _connect_regions(grid, rng, out.mode)
-    if len(_walkable(grid, out.mode)) < (width * height) // 8:
+    # A DELIBERATELY sparse board is not a collapsed one. A vessel is a small
+    # solid thing in a large expanse of sea or sky, and judging it by "an eighth
+    # of the board must be walkable" condemned every ship smaller than a galleon
+    # to be replaced by a meadow. The floor for those is an absolute one: is
+    # there a deck to fight on at all.
+    floor = (VESSEL_DECK_FLOOR if archetype in SPARSE_ARCHETYPES
+             else (width * height) // 8)
+    if len(_walkable(grid, out.mode)) < floor:
         # A generator collapsed (rare corner of the CA); fall back to open ground
         # rather than handing the table an unplayable board.
         grid = Grid.blank(width, height)
