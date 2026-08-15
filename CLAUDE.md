@@ -207,6 +207,16 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    NAME that is wholly the player's; the only refusal on that half is a room
    left unnamed. Those names reach the place's description (APPENDED) and a
    vessel board's compartments via `_bastion_rooms`.
+   **ENLARGING (cramped→roomy→vast) needed a size to MEAN something first** —
+   `space` and `hirelings` were stored and read by nothing, so a vast smithy
+   and a cramped one were the same smithy. A size now sets capacity and scales
+   what a turn produces (`space_capacity`/`space_output`; a cramped gaming hall
+   earns 100 gp, a vast one 250). The work is PAID when ordered and LANDS on a
+   bastion turn — gold alone deciding the pace is what makes the calendar
+   pointless — and mid-works the facility still works at its OLD size.
+   `resolve_bastion_turn` returns `completions` rather than applying them,
+   because it touches no database. One step at a time, each size has its own
+   level, one building site at a time, and an ordinary room is never enlarged.
 
 ## Running
 - Backend: `uv run python oracle-dm-backend/fastapi-dm.py`
