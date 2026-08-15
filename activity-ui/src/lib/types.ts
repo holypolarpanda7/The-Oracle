@@ -1059,6 +1059,13 @@ export interface FeatChoice {
   /** Further choices the same feat asks for — one, or a list (Skill Expert
    *  wants an ability, a skill proficiency, AND which skill gets Expertise). */
   also?: FeatChoice | FeatChoice[] | null;
+  /** Ask this question only when the option named here was chosen above it
+   *  (Custom Lineage's extra skill hangs off the skill half of its gift). */
+  when?: string;
+  /** "options": the tag the pick is filed under on the sheet, and any sense it
+   *  grants. Both are the SERVER's business — listed for completeness. */
+  tag?: string;
+  grants_senses?: Record<string, string>;
 }
 
 /** GET /cc/feat_spells/{feat} — the pool a school-scoped feat pick draws from. */
@@ -1110,6 +1117,9 @@ export interface CCOptions {
     /** The cultural hand this species' names are written in. */
     script?: Script;
     feat_choice?: "origin" | "any" | null;
+    /** What the SPECIES asks the player (Skillful's skill, its languages, a
+     *  lineage gift) — the same schema a feat's questions use. */
+    choices?: FeatChoice | null;
   }[];
   classes: {
     slug: string; name: string; hit_die?: number | null;

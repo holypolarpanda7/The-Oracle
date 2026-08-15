@@ -778,13 +778,15 @@ class RegisterCharacterRequest(BaseModel):
     # Resolved to display names and stored on Character.spells.
     cantrips: Optional[List[str]] = None
     spells: Optional[List[str]] = None
-    # Feat-choice proficiencies (Musician/Crafter tools, faction-feat languages).
-    # Stored as `tool:`/`language:` tags. Ability-increase choices are already
-    # folded into `stats` client-side.
+    # Feat-choice proficiencies (Musician/Crafter tools, faction-feat languages)
+    # AND the ones a species asks for (Skillful's skill, "two languages of your
+    # choice"). Stored as `tool:`/`language:` tags. Ability-increase choices are
+    # already folded into `stats` client-side.
     tools: Optional[List[str]] = None
     languages: Optional[List[str]] = None
-    # Named picks a feat asks for that aren't a proficiency — a damage
-    # resistance, a giant strike. Stored under the choice's own tag prefix.
+    # Named picks a feat or a species asks for that aren't a proficiency — a
+    # damage resistance, a giant strike, a Custom Lineage's gift. Stored under
+    # the choice's own tag prefix.
     feat_options: Optional[List[str]] = None
 
 
@@ -14189,6 +14191,13 @@ async def register_character(req: RegisterCharacterRequest):
                             detail=(f"'{dup.name}' is already one of your feats — "
                                     "choose a different one for the other slot."))
                 seen.add(ft)
+            # A species whose slot reads "any feat you qualify for" (Custom
+            # Lineage) is not held to the LEVEL a feat is filed behind — that
+            # gate is the class ASI schedule, and stepping outside it is the
+            # entire gift. Everything a character can genuinely fail at level 1
+            # still applies: species, spellcasting, ability minimums.
+            free_feat = _species_free_feat(session, req.race, req.feats,
+                                           req.background)
             for ft in req.feats:
                 frow = session.exec(select(_Feat).where(
                     _Feat.index_slug == ft)).first()
@@ -14198,7 +14207,9 @@ async def register_character(req: RegisterCharacterRequest):
                     frow.prerequisite, frow.min_level, fstats,
                     req.char_class, req.level, existing_feats=req.feats,
                     race=req.race, background=req.background,
-                    options=set(req.feat_options or ()))
+                    options=set(req.feat_options or ()),
+                    waive_min_level=(ft == free_feat
+                                     and not _is_epic_boon(frow)))
                 if not met:
                     raise HTTPException(
                         status_code=400,
@@ -14235,16 +14246,28 @@ async def register_character(req: RegisterCharacterRequest):
             # skill), and filing the wrong one under "giant-strike" makes a
             # follow-on feat's prerequisite read as met when it isn't.
             by_value: Dict[str, str] = {}
-            for fslug in (req.feats or []):
-                for spec in _feat_choice_specs(fslug):
-                    if spec.get("kind") != "options":
-                        continue
-                    tag = str(spec.get("tag") or "feat-option")
-                    for v in (spec.get("from") or []):
-                        by_value.setdefault(str(v).strip().lower(), tag)
+            # A SPECIES asks in the same schema and files under its own tag —
+            # a Custom Lineage's gift is not a "feat-option".
+            senses: Dict[str, str] = {}
+            specs = [sp for fslug in (req.feats or [])
+                     for sp in _feat_choice_specs(fslug)]
+            specs += _species_choice_specs(session, req.race)
+            for spec in specs:
+                if spec.get("kind") != "options":
+                    continue
+                tag = str(spec.get("tag") or "feat-option")
+                for v in (spec.get("from") or []):
+                    by_value.setdefault(str(v).strip().lower(), tag)
+                for v, sense in (spec.get("grants_senses") or {}).items():
+                    senses.setdefault(str(v).strip().lower(), str(sense))
             for v in req.feat_options:
-                _add_tags(char, by_value.get(str(v).strip().lower(),
-                                             "feat-option"), [v])
+                key = str(v).strip().lower()
+                _add_tags(char, by_value.get(key, "feat-option"), [v])
+                # An option that grants a SENSE writes the tag the board reads
+                # (`sense: darkvision 60 ft`) — the same door an invocation's
+                # Devil's Sight comes through.
+                if key in senses:
+                    _add_tags(char, "sense", [senses[key]])
 
         # Spells chosen at creation (class cantrips/spells + Magic Initiate +
         # a feat's school-scoped pick). Stored as display names to match the
@@ -14328,12 +14351,41 @@ def _prereq_species_ok(prereq_l: str, race_l: str) -> Optional[bool]:
     return any(o in race_l for o in species_opts)
 
 
+def _is_epic_boon(feat_row) -> bool:
+    """An epic boon keeps its level whatever slot is spending it — level 19 is
+    what an epic boon IS, not a filing convention."""
+    return (getattr(feat_row, "category", "") or "").strip().lower() == "epic-boon"
+
+
+def _species_free_feat(session: Session, race_name: Optional[str],
+                       feats: Optional[list],
+                       background: Optional[str]) -> Optional[str]:
+    """Which creation feat is the species' free pick — only for a species whose
+    pool is "any feat you qualify for" (Custom Lineage). None otherwise.
+
+    The payload sends a flat list, so the slots are told apart the one way that
+    can't be spoofed: the background's Origin feat is GRANTED and known here,
+    and what's left is the species'.
+    """
+    row = _race_row(session, race_name)
+    if row is None or (getattr(row, "feat_choice", "") or "").strip().lower() != "any":
+        return None
+    _ensure_local_backgrounds()
+    granted = (_BACKGROUND_KITS.get((background or "").strip().lower(), {})
+               or {}).get("origin_feat")
+    for f in (feats or []):
+        if f != granted:
+            return f
+    return None
+
+
 def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
                      stats: Dict[str, int], char_class: Optional[str],
                      level: int, existing_feats: Optional[list] = None,
                      race: Optional[str] = None,
                      background: Optional[str] = None,
-                     options: Optional[set] = None
+                     options: Optional[set] = None,
+                     waive_min_level: bool = False
                      ) -> tuple[bool, Optional[str]]:
     """Check whether a character meets a feat's prerequisites.
 
@@ -14348,8 +14400,11 @@ def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
     ('Mark of Shadow feat', with its option: 'Strike of the Giants (Fire
     Strike)'), a prerequisite BACKGROUND, and dragonmark exclusivity.
     Unrecognized clauses are NOT blocked (best-effort — we don't silently
-    forbid a legal pick). Returns (met, reason_if_not)."""
-    if level < int(min_level or 1):
+    forbid a legal pick). `waive_min_level` is the Custom Lineage case: a slot
+    that grants "any feat you qualify for" answers to the feat's own
+    prerequisites, not to the level its category is normally filed behind.
+    Returns (met, reason_if_not)."""
+    if not waive_min_level and level < int(min_level or 1):
         return False, f"requires level {min_level}"
     if not prerequisite:
         return True, None
@@ -14382,6 +14437,12 @@ def _feat_prereq_met(prerequisite: Optional[str], min_level: int,
             return True, None
         m = re.search(r"level\s*(\d+)", c)
         if m:
+            # The book prints the level TWICE — as the feat's category and
+            # again in its own prerequisite line ("Prerequisite: Level 4+,
+            # Dexterity 13+"). A slot that waives the level has to waive both,
+            # or it waives nothing at all.
+            if waive_min_level:
+                return True, None
             need = int(m.group(1))
             return (True, None) if level >= need else (False, f"requires level {need}")
         if "spellcast" in c or "pact magic" in c or "cast at least one spell" in c \
@@ -15048,6 +15109,132 @@ def _feat_choices_merged() -> Dict[str, Dict[str, Any]]:
     return merged
 
 
+# ---------------------------------------------------------------------------
+# What a SPECIES asks the player at creation.
+#
+# Same schema as FEAT_CHOICES, rendered by the same component, for the same
+# reason: "proficiency in one skill of your choice" is a QUESTION, and until
+# something asks it the trait is a line of prose the sheet never records. A
+# human's Skillful skill and every "plus two languages of your choice" line in
+# the species table were both invisible.
+#
+# Two halves, exactly as the feats split:
+#   · LANGUAGES are DERIVED from the species' own `languages` line, so a book
+#     species nobody wrote a schema for still gets its picks;
+#   · everything else is a schema — SRD/house species here, owned-book ones in
+#     the LOCAL override slot (owned_books/species_choices.json).
+#
+# Two additions to the schema, both needed by a species and harmless to feats:
+# `when` makes a follow-on question conditional on the option chosen above it
+# (Custom Lineage's extra skill exists only if you took the skill half), and
+# `grants_senses` maps a chosen option to a real `sense:` tag — the board reads
+# senses off the character row and must not have to know what a species is.
+# ---------------------------------------------------------------------------
+
+#: The standard + rare languages a pick may draw from. Kept here because the
+#: SERVER owns the pool: a species already speaking Elvish must not be offered
+#: it again, and the client cannot know which line named which tongue.
+_LANGUAGES = [
+    "Common", "Dwarvish", "Elvish", "Giant", "Gnomish", "Goblin", "Halfling",
+    "Orc", "Abyssal", "Celestial", "Draconic", "Deep Speech", "Infernal",
+    "Primordial", "Sylvan", "Undercommon",
+]
+
+_WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4}
+
+
+def _language_picks(languages: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Read a species' language line as a real choice.
+
+    "Common plus two more of your choice" / "Common + two extra of your
+    choice" / "Common, Quori, plus one more of your choice" — the same fact
+    written three ways across the SRD and the owned-book slot, which is why
+    this is derived from the prose rather than tabulated per species.
+    """
+    low = (languages or "").strip().lower()
+    if "of your choice" not in low:
+        return None
+    m = re.search(r"\b(one|two|three|four|\d+)\b\s*"
+                  r"(?:extra|more|additional|other)?\s*"
+                  r"(?:languages?)?\s*of your choice", low)
+    tok = m.group(1) if m else ""
+    n = int(tok) if tok.isdigit() else _WORD_NUMBERS.get(tok, 1)
+    n = max(1, min(4, n))
+    known = {lang for lang in _LANGUAGES
+             if re.search(rf"\b{re.escape(lang.lower())}\b", low)}
+    pool = [lang for lang in _LANGUAGES if lang not in known]
+    return {"kind": "language", "n": n, "from": pool,
+            "hint": f"Choose {n} more language{'s' if n > 1 else ''} you speak."}
+
+
+SPECIES_CHOICES: Dict[str, Dict[str, Any]] = {
+    # Human — Skillful: proficiency in one skill of your choice. (Resourceful
+    # and Versatile need nothing asked: inspiration, and the Origin feat the
+    # species feat slot already covers.)
+    "human": {"kind": "skills", "n": 1,
+              "hint": "Skillful — choose one skill proficiency."},
+    # The Custom Lineage gift is one OR the other, and the skill only exists
+    # if that is the half you took.
+    "custom-lineage": {
+        "kind": "options", "n": 1, "tag": "lineage-gift",
+        "from": ["Darkvision 60 ft", "One extra skill"],
+        "grants_senses": {"Darkvision 60 ft": "darkvision 60 ft"},
+        "hint": "Your people's gift — choose one.",
+        "also": {"kind": "skills", "n": 1, "when": "One extra skill",
+                 "hint": "Choose the skill your people trained you in."}},
+}
+
+# Owned-book species choice schemas stay LOCAL (same policy as feat_choices.json):
+# {"<species-slug>": {"kind": ..., "n": ..., ...}}.
+_SPECIES_CHOICE_OVERRIDE_FILE = (Path(__file__).resolve().parent.parent
+                                 / "owned_books" / "species_choices.json")
+
+
+def _species_choices_merged() -> Dict[str, Dict[str, Any]]:
+    """SPECIES_CHOICES plus any local (owned-book) overrides. Overrides win."""
+    merged = dict(SPECIES_CHOICES)
+    try:
+        if _SPECIES_CHOICE_OVERRIDE_FILE.is_file():
+            import json
+            with open(_SPECIES_CHOICE_OVERRIDE_FILE, encoding="utf-8") as fh:
+                data = json.load(fh)
+            for k, v in (data or {}).items():
+                if isinstance(v, dict) and v.get("kind"):
+                    merged[str(k).strip().lower()] = v
+    except Exception as e:
+        print(f"[cc] species-choice override load failed: {e}")
+    return merged
+
+
+def _flatten_choice(spec: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """A choice schema as a flat list: the primary question, then every `also`."""
+    if not spec:
+        return []
+    head = {k: v for k, v in spec.items() if k != "also"}
+    extra = spec.get("also")
+    rest = extra if isinstance(extra, list) else ([extra] if extra else [])
+    return [head] + [e for e in rest if isinstance(e, dict)]
+
+
+def _species_choice_schema(row) -> Optional[Dict[str, Any]]:
+    """Every question this species asks, as one schema (primary + `also`)."""
+    parts = _flatten_choice(
+        _species_choices_merged().get((getattr(row, "index_slug", "") or "").lower()))
+    lang = _language_picks(getattr(row, "languages", None))
+    if lang:
+        parts.append(lang)
+    if not parts:
+        return None
+    return {**parts[0], "also": parts[1:]} if len(parts) > 1 else parts[0]
+
+
+def _species_choice_specs(session: Session,
+                          race_name: Optional[str]) -> List[Dict[str, Any]]:
+    """The flat question list for a character's species (empty when unknown)."""
+    row = _race_row(session, race_name)
+    return _flatten_choice(_species_choice_schema(row)) if row is not None else []
+
+
 @app.get("/cc/options")
 def cc_options():
     """Everything the deterministic CC wizard needs: races, classes (with
@@ -15097,6 +15284,9 @@ def cc_options():
             "lineages": getattr(r, "lineages", None) or [],
             "lineage_label": getattr(r, "lineage_label", None),
             "feat_choice": getattr(r, "feat_choice", None),
+            # What this species ASKS the player (a skill, its languages, a
+            # lineage gift) — the same schema a feat's questions use.
+            "choices": _species_choice_schema(r),
             # The cultural hand this species' names are written in.
             "script": _script_for_species(r.name),
         } for r in races],
@@ -15853,22 +16043,34 @@ def _char_immune(char: Character, key: str) -> bool:
     return _normalize_immunity(key) in _char_immunities(char)
 
 
-def _race_type_and_immunities(session: Session, race_name: Optional[str]) -> tuple[str, list]:
-    """Resolve a species' creature type + trait-granted immunities from rules_race.
-    Defaults to ('Humanoid', []) for an unknown/blank species."""
+def _race_row(session: Session, race_name: Optional[str]):
+    """The rules_race row for a character's species, or None.
+
+    A sheet stores the species WITH its lineage — "Elf (Wood Elf)" — so the
+    parenthetical has to come off before the name will match anything.
+    """
     if not race_name:
-        return ("Humanoid", [])
+        return None
     try:
         from rules.models import Race as _Race
-        want = str(race_name).strip().lower()
+        bare = re.sub(r"\s*\(.*?\)\s*", " ", str(race_name)).strip()
+        want = bare.lower()
         row = session.exec(select(_Race).where(func.lower(_Race.name) == want)).first()
         if row is None:
             row = session.exec(select(_Race).where(
-                _Race.index_slug == slugify(race_name))).first()
-        if row is not None:
-            return (row.creature_type or "Humanoid", list(row.immunities or []))
+                _Race.index_slug == slugify(bare))).first()
+        return row
     except Exception as e:
-        print(f"[creature-type lookup] {e}")
+        print(f"[species lookup] {e}")
+        return None
+
+
+def _race_type_and_immunities(session: Session, race_name: Optional[str]) -> tuple[str, list]:
+    """Resolve a species' creature type + trait-granted immunities from rules_race.
+    Defaults to ('Humanoid', []) for an unknown/blank species."""
+    row = _race_row(session, race_name)
+    if row is not None:
+        return (row.creature_type or "Humanoid", list(row.immunities or []))
     return ("Humanoid", [])
 
 
@@ -22515,6 +22717,13 @@ async def activity_ws(ws: WebSocket, channel: str):
                             gender=p.get("gender"),
                             stats=p.get("stats"), skills=p.get("skills"),
                             feats=p.get("feats"), approve=True, source="guided",
+                            # The rest of what CC asked for — a Proving Grounds
+                            # slot is built by the SAME wizard, so dropping its
+                            # spells and its feats' picks made an arena wizard a
+                            # wizard with no spells.
+                            tools=p.get("tools"), languages=p.get("languages"),
+                            feat_options=p.get("feat_options"),
+                            cantrips=p.get("cantrips"), spells=p.get("spells"),
                             gear_mode=p.get("gear_mode") or "kit",
                             bought_items=p.get("bought_items"),
                             wondrous_item=p.get("wondrous_item"),

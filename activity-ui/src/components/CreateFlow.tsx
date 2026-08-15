@@ -3,7 +3,7 @@ import type { CCOptions, CCPayload, CCSpells, FeatChoice, FeatPicks, FeatSpells,
   Pantheon, Power, SpellBrief } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
-import { choiceParts, FeatChoiceFields, partSatisfied } from "./FeatChoices";
+import { choiceParts, FeatChoiceFields, partActive, partSatisfied } from "./FeatChoices";
 
 /** Male+female species portraits for a race/lineage card. Each image walks a
  * candidate list (lineage art → base species art) and hides itself only when
@@ -168,6 +168,10 @@ interface Draft {
    *  skill and a Custom Lineage feat wanting a skill are two picks, not one,
    *  and a single flat bucket silently merged them into one. */
   featPicks: Record<string, FeatPicks>;
+  /** What the SPECIES asked for — a human's Skillful skill, the languages a
+   *  "plus two of your choice" line grants, a Custom Lineage's gift. One
+   *  bucket, because a character has exactly one species. */
+  speciesPicks: FeatPicks;
   cantrips: string[];     // class cantrip slugs
   spells: string[];       // class level-1 spell slugs
   miClass?: string;       // Magic Initiate: chosen class list
@@ -184,10 +188,15 @@ interface Draft {
 const freshDraft = (): Draft => ({
   boostMode: "two-one", method: "standard_array", pool: [], assigned: {},
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
-  skills: [], featPicks: {},
+  skills: [], featPicks: {}, speciesPicks: {},
   cantrips: [], spells: [], miCantrips: [], miSpells: [],
   gearMode: "kit", cart: {}, name: "",
 });
+
+/** A payload list, deduplicated — or undefined when nothing was chosen (the
+ *  fields are optional and an empty array is noise on the wire). */
+const uniq = (xs: string[]): string[] | undefined =>
+  xs.length ? [...new Set(xs)] : undefined;
 
 const CASTER_CLASSES = new Set([
   "bard", "cleric", "druid", "paladin", "ranger", "sorcerer", "warlock",
@@ -240,13 +249,21 @@ function SpellPicker({ title, list, chosen, n, onToggle }: {
 }
 
 /** Client-side mirror of the backend feat-prerequisite check (level minimum,
-    ability minimums, spellcasting). Returns null when met, else the reason. */
+    ability minimums, spellcasting). Returns null when met, else the reason.
+
+    `waiveLevel` is the Custom Lineage slot: "any feat you qualify for" answers
+    to the feat's own prerequisites, not to the level its category is filed
+    behind — that gate is the class ASI schedule, and stepping outside it is
+    the whole gift. Epic boons keep their level whoever is asking: level 19 is
+    what an epic boon IS. The server applies the same two rules. */
 function featBlockReason(
   feat: CCOptions["feats"][number],
   finalStats: Partial<Record<Ability, number>>,
   clsSlug?: string,
+  waiveLevel?: boolean,
 ): string | null {
-  if ((feat.min_level ?? 1) > 1) return `level ${feat.min_level}+`;
+  const levelGated = !waiveLevel || feat.category === "epic-boon";
+  if (levelGated && (feat.min_level ?? 1) > 1) return `level ${feat.min_level}+`;
   const pre = (feat.prerequisite ?? "").trim();
   if (!pre) return null;
   for (const clause of pre.split(/[;,]| and /)) {
@@ -447,6 +464,24 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
     return sum + (it ? it.cost_gp * qty : 0);
   }, 0), [d.cart, opts]);
 
+  // ----- species choices -----
+  // A species asks in the same schema a feat does (a skill, its languages, a
+  // gift), so the SAME component renders them — and `partActive` is what keeps
+  // a conditional question (Custom Lineage's extra skill) off the screen until
+  // the option it hangs off is taken.
+  const speciesQuestions = useMemo(
+    () => choiceParts(race?.choices).filter((p) => partActive(p, d.speciesPicks)),
+    [race, d.speciesPicks]);
+  const speciesDone = speciesQuestions.every(
+    (part) => partSatisfied(part, d.speciesPicks));
+  /** Only what an ACTIVE question asked for — a gift swapped from the skill
+   *  half to darkvision must not still post the skill it no longer grants. */
+  const speciesPicked = (key: "skills" | "tools" | "languages" | "options"): string[] => {
+    const wanted = new Set(speciesQuestions.map(
+      (p) => (p.kind === "language" ? "languages" : p.kind)));
+    return wanted.has(key) ? ((d.speciesPicks[key] as string[] | undefined) ?? []) : [];
+  };
+
   // ----- feat & spell choices -----
   // Choices carried by the chosen origin feats (Skilled → skills, Magic
   // Initiate → a class + cantrips + a spell).
@@ -484,7 +519,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   const spellsDone = classCantripsDone && classSpellsDone && miDone && featSpellsDone;
 
   const stageDone: Record<Stage, boolean> = {
-    race: !!d.race && (!(race?.lineages?.length) || !!d.lineage),
+    race: !!d.race && (!(race?.lineages?.length) || !!d.lineage) && speciesDone,
     class: !!d.cls,
     background: !!d.background,
     abilities: abilitiesDone,
@@ -537,10 +572,14 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
         gender: d.gender?.trim() || undefined,
         // Feat-granted skills (Skilled) fold into the skill list; tools/languages
         // ride their own fields.
-        stats, skills: [...d.skills, ...gather("skills")],
-        tools: gather("tools").length ? gather("tools") : undefined,
-        languages: gather("languages").length ? gather("languages") : undefined,
-        feat_options: gather("options").length ? gather("options") : undefined,
+        // …and what the SPECIES asked for rides the same fields: a skill is a
+        // skill however it was granted, and the server files each under its
+        // own tag.
+        stats, skills: [...d.skills, ...gather("skills"),
+                        ...speciesPicked("skills")],
+        tools: uniq([...gather("tools"), ...speciesPicked("tools")]),
+        languages: uniq([...gather("languages"), ...speciesPicked("languages")]),
+        feat_options: uniq([...gather("options"), ...speciesPicked("options")]),
         feats: feats.length ? feats : undefined,
         cantrips: allCantrips.length ? allCantrips : undefined,
         spells: allSpells.length ? allSpells : undefined,
@@ -590,8 +629,10 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                   className={`cf-card ${d.race === r.slug ? "picked" : ""}`}
                   onClick={() => {
                     uiTick();
-                    // changing species clears its lineage + any race feat
-                    setD({ ...d, race: r.slug, lineage: undefined, featRace: undefined });
+                    // changing species clears its lineage, its own questions
+                    // and any race feat
+                    setD({ ...d, race: r.slug, lineage: undefined,
+                           featRace: undefined, speciesPicks: {} });
                     setDetail(r.slug);
                   }}
                 >
@@ -653,6 +694,21 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                     </div>
                   </>
                 ) : null}
+
+                {/* What the species itself asks — a trait that says "one skill
+                    of your choice" is a question, and nothing used to ask it. */}
+                {race.choices && (
+                  <>
+                    <div className="cf-sub-label" style={{ marginTop: 18 }}>
+                      {race.name} — your people's gifts
+                      {!speciesDone && <span className="cf-req"> · required</span>}
+                    </div>
+                    <FeatChoiceFields
+                      choice={race.choices}
+                      picks={d.speciesPicks}
+                      onChange={(next) => setD({ ...d, speciesPicks: next })} />
+                  </>
+                )}
               </div>
             )}
           </>
@@ -744,12 +800,19 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
           <>
             <div className="cf-sub-label">
               Choose {skillsNeeded} class skills
-              {bg?.skills.length ? ` — your background grants ${bg.skills.join(", ")}` : ""}
+              {(() => {
+                const held = [...(bg?.skills ?? []), ...speciesPicked("skills")];
+                return held.length ? ` — you already have ${held.join(", ")}` : "";
+              })()}
             </div>
             <div className="cf-chips">
               {(cls?.skill_options ?? []).map((s) => {
                 const on = d.skills.includes(s);
-                const granted = bg?.skills.includes(s);
+                // Already yours — from the background, or from a species trait
+                // answered back on the Origin stage. Spending a class pick on
+                // a proficiency you hold buys nothing.
+                const granted = bg?.skills.includes(s)
+                  || speciesPicked("skills").includes(s);
                 return (
                   <button
                     key={s}
@@ -792,6 +855,7 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                   : `${race?.name} grants an Origin feat`}
                 feats={raceFeatPool} finalStats={finalStats} clsSlug={d.cls}
                 chosen={d.featRace}
+                waiveLevel={raceFeat === "any"}
                 onPick={(slug) => setD({ ...d, featRace: slug, featPicks: {},
                   miClass: undefined, miCantrips: [], miSpells: [] })} />
             )}
@@ -993,20 +1057,23 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
 
 /** A pool of feat cards, prerequisites enforced: feats you don't qualify for
     are greyed out, non-selectable, and show the reason. */
-function FeatPicker({ title, feats, finalStats, clsSlug, chosen, onPick }: {
+function FeatPicker({ title, feats, finalStats, clsSlug, chosen, onPick,
+                     waiveLevel }: {
   title: string;
   feats: CCOptions["feats"];
   finalStats: Partial<Record<Ability, number>>;
   clsSlug?: string;
   chosen?: string;
   onPick: (slug: string) => void;
+  /** The species slot that grants ANY feat — its level gate doesn't apply. */
+  waiveLevel?: boolean;
 }) {
   return (
     <>
       <div className="cf-sub-label" style={{ marginTop: 18 }}>{title}</div>
       <div className="cf-grid">
         {feats.map((f) => {
-          const blocked = featBlockReason(f, finalStats, clsSlug);
+          const blocked = featBlockReason(f, finalStats, clsSlug, waiveLevel);
           return (
             <button
               key={f.slug}

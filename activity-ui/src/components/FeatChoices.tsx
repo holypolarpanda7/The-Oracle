@@ -55,7 +55,9 @@ export function choiceOptions(c: FeatChoice): string[] {
     if (c.from === "artisan") return ARTISAN_TOOLS;
     return [...INSTRUMENTS, ...ARTISAN_TOOLS];
   }
-  if (c.kind === "language") return LANGUAGES;
+  // A species' language pick arrives with its pool already narrowed (a
+  // dwarf is not offered Dwarvish again) — the server owns that filter.
+  if (c.kind === "language") return Array.isArray(c.from) ? c.from : LANGUAGES;
   if (c.kind === "ability") {
     return Array.isArray(c.from) ? c.from : (ABILITY_CODES as readonly string[]).slice();
   }
@@ -74,10 +76,19 @@ function bucketOf(kind: FeatChoice["kind"]): keyof FeatPicks | null {
   }
 }
 
+/** Is this question being asked at all? A `when` question hangs off the option
+ *  chosen above it — Custom Lineage's extra skill exists only if you took the
+ *  skill half of its gift, and a conditional question that is always shown is
+ *  a choice the rules never offered. */
+export function partActive(part: FeatChoice, picks: FeatPicks): boolean {
+  return !part.when || (picks.options ?? []).includes(part.when);
+}
+
 /** Has one question of a feat been answered? Exported because creation asks
  *  its questions across two stages (proficiencies on Skills, spells on
  *  Spells) and has to judge them a part at a time. */
 export function partSatisfied(part: FeatChoice, picks: FeatPicks): boolean {
+  if (!partActive(part, picks)) return true;   // not asked → nothing owed
   const n = part.n ?? 1;
   if (part.kind === "ability") return !!picks.ability;
   if (part.kind === "asi") {
@@ -143,14 +154,19 @@ export function FeatChoiceFields({ choice, picks, onChange, spellPicker }: {
 
   const toggleList = (bucket: keyof FeatPicks, n: number) => (v: string) => {
     const cur = ((picks[bucket] as string[] | undefined) ?? []);
+    // A choose-ONE row REPLACES: greying out the other half of an either/or
+    // (Custom Lineage's gift) means changing your mind takes two taps, and the
+    // second one is on a chip that looks disabled.
     const next = cur.includes(v) ? cur.filter((x) => x !== v)
-      : cur.length >= n ? cur : [...cur, v];
+      : cur.length < n ? [...cur, v]
+      : n === 1 ? [v] : cur;
     onChange({ ...picks, [bucket]: next });
   };
 
   return (
     <>
       {parts.map((c, i) => {
+        if (!partActive(c, picks)) return null;
         if (c.kind === "magic_initiate" || c.kind === "spells") {
           return <div key={i}>{spellPicker?.(c) ?? null}</div>;
         }
@@ -178,7 +194,7 @@ export function FeatChoiceFields({ choice, picks, onChange, spellPicker }: {
         const n = c.n ?? 1;
         return (
           <ChoiceChips
-            key={i}
+            key={i} single={n === 1}
             label={c.hint || `Choose ${n}`}
             options={choiceOptions(c)}
             chosen={(picks[bucket] as string[] | undefined) ?? []}

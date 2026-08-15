@@ -35,6 +35,33 @@ the parsers miss.
 `lineages`/`lineage_label`/`feat_choice` optional. Species grant NO ability
 bonuses (2024 model) — the loader forces `ability_bonuses={}`.
 
+## `species_choices.json` → backend `SPECIES_CHOICES`  (read directly, no DB)
+What a species ASKS at creation — a trait reading "one skill of your choice"
+is a question, and until something asks it the sheet never records it. Same
+schema as `feat_choices.json` (and rendered by the same component), keyed by
+species slug:
+```json
+{
+  "warforged": {
+    "kind": "skills", "n": 1, "hint": "Specialized Design — one skill.",
+    "also": {"kind": "tools", "n": 1, "from": "any", "hint": "...one tool."}
+  },
+  "kobold": {
+    "kind": "options", "n": 1, "tag": "species-choice",
+    "from": ["Craftiness", "Defiance", "Draconic Sorcery"],
+    "hint": "Kobold Legacy — choose one.",
+    "also": {"kind": "skills", "n": 1, "when": "Craftiness", "hint": "..."}
+  }
+}
+```
+Two fields beyond the feat schema: `when` asks a question ONLY when the option
+named was chosen above it (an either/or whose halves want different follow-ups),
+and `grants_senses` (`{"Darkvision 60 ft": "darkvision 60 ft"}`) writes the
+`sense:` tag the tactical board reads — the board must not have to know what a
+species is. **LANGUAGES are never written here**: they are derived from each
+species' own `languages` line, so a species nobody wrote a schema for still
+gets its picks, with the tongues it already speaks kept out of the pool.
+
 ## `feats_overrides.json` → `rules_feat`  (loader: `ingest_feats_overrides`)
 ```json
 {

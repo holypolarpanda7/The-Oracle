@@ -245,6 +245,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Feat smoke test: `uv run python scripts/feats_smoke.py` (a feat's questions,
   its grants, its named options, the resource it hands over and the at-will
   spell it grants — all the way to what the DM is told)
+- Species-choice smoke test: `uv run python scripts/species_choices_smoke.py`
+  (a species asks what its traits promise — languages read off its own line, a
+  skill, an either/or gift — and the answers reach the sheet as real tags; plus
+  the "any feat you qualify for" slot reaching a level-4 feat at level 1 while
+  the background slot and every epic boon stay gated). Scratch DB carrying a
+  COPY of the real `rules_race`/`rules_feat` rows — never the world DB.
 - Summoning smoke test: `uv run python scripts/summons_smoke.py` (the scaling
   arithmetic, variant gates, the stat block the combat engine reads, the side
   it fights on, where it lands in initiative, and the backend's own hooks)
@@ -316,7 +322,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (a background grants its Origin feat, choices and all), `feat-spells` (the
   two feat slots are independent: the granted feat is gone from the species
   pool, both feats' questions gate Onward separately, and a school-scoped
-  spell pick lands on the Spells stage), `pframe-shot`
+  spell pick lands on the Spells stage), `species-choices` (the species' own
+  questions gate the Origin stage, a conditional one appears only when the
+  option it hangs off is taken, and the "any feat" slot reaches a level-4 feat
+  while an epic boon stays locked), `pframe-shot`
   (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
   at desktop and phone: status bar, "here & now" rail, narration column, roll
   card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
@@ -1440,6 +1449,32 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   granting +1 to an ability, silently merged into one answer. Answers are
   keyed by feat slug (`Draft.featPicks`) and rendered by the SHARED
   `FeatChoiceFields`, so creation asks exactly what level-up asks.
+- **"Any feat you qualify for" answers to the FEAT, not to the level.** A
+  species slot whose pool is `feat_choice="any"` (Custom Lineage) waives the
+  level a feat's category is filed behind — that gate is the class ASI
+  schedule, and stepping outside it is the entire gift. Everything a character
+  can genuinely fail at level 1 still applies: species, spellcasting, ability
+  minimums. Two traps. The level is printed TWICE — as `min_level` AND inside
+  the prerequisite prose ("Prerequisite: Level 4+, Dexterity 13+") — so a
+  waiver that skips only the column waives nothing at all. And EPIC BOONS keep
+  their level whoever is asking, because level 19 is what an epic boon is. The
+  slot is told apart server-side by `_species_free_feat`: the background's
+  Origin feat is granted and known, so what is left is the species'.
+- **A trait that says "of your choice" is a QUESTION.** A human's Skillful
+  skill, a Custom Lineage's darkvision-or-skill gift, and every "plus two
+  languages of your choice" line were prose nothing asked about, so the sheet
+  never recorded them. `SPECIES_CHOICES` uses the FEAT schema and the same
+  `FeatChoiceFields`, asked on the Origin stage and gating it. Two halves, like
+  the feats: LANGUAGES are derived from the species' own `languages` line (so a
+  species with no schema still gets its picks, and the server narrows the pool
+  by what it already speaks), everything else is a schema — SRD/house here,
+  owned-book ones in `owned_books/species_choices.json`. Two additions to the
+  schema: `when` hangs a follow-up off the option chosen above it (an either/or
+  whose halves ask different things), and `grants_senses` turns a chosen option
+  into the `sense:` tag the BOARD reads — `vtt/` must not have to know what a
+  species is. The picks ride the payload's existing `skills`/`tools`/
+  `languages`/`feat_options` fields, and a class skill the species already
+  granted is struck off the class list.
 - **A feat nobody can see does nothing.** Class and species features had a
   prompt block from the start; feats never did, and the Activity's Features tab
   listed neither. So a Metamagic Adept's two options, an Eldritch Adept's
