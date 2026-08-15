@@ -843,7 +843,7 @@ class VttEngine:
         if gen is None:
             gen = self.regenerate(row)
         cn, strength = "", 0.55
-        union, seg_cn, seg_str = "", "", 0.45
+        union, seg_cn, seg_str, regional = "", "", 0.45, False
         try:
             from game_config import get_config
             _img = get_config().imagery
@@ -852,6 +852,7 @@ class VttEngine:
             union = getattr(_img, "isoboard_controlnet_union_type", "") or ""
             seg_cn = getattr(_img, "isoboard_seg_controlnet", "") or ""
             seg_str = float(getattr(_img, "isoboard_seg_strength", 0.45))
+            regional = bool(getattr(_img, "isoboard_regional_prompt", False))
         except Exception as e:
             print(f"[vtt] isoboard controlnet config unavailable: {e}")
         if not cn:
@@ -865,7 +866,7 @@ class VttEngine:
             lighting=row.lighting, extra=extra, conditions=conditions,
             controlnet=cn, controlnet_strength=strength,
             controlnet_union_type=union,
-            seg_controlnet=seg_cn, seg_strength=seg_str)
+            seg_controlnet=seg_cn, seg_strength=seg_str, regional=regional)
         self._set_fields(map_id, iso_image_id=art.image_id,
                          iso_art_status=("ready" if art.image_id else "offline"))
         return art.image_id

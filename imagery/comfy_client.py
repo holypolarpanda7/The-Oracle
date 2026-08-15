@@ -128,6 +128,10 @@ class ComfyClient:
         #: rather than working it out — see `_apply_controlnet`. Empty for a
         #: single-purpose net, where the question does not arise.
         self.controlnet_union_type: str = ""
+        #: Region prompts for one render, each ``{words, mask, strength}``
+        #: with the mask already uploaded. Set beside `_control_image_name`
+        #: and cleared with it.
+        self._region_conds: list[dict] = []
         #: Further conditions for one render, each
         #: ``{name, image, union_type, strength}``. Set for the duration of a
         #: generate() call beside `_control_image_name`, and cleared with it.
@@ -324,6 +328,10 @@ class ComfyClient:
         self._apply_model_layers(g)
         self._apply_lora_triggers(g)
         self._apply_init_image(g)
+        # Regions BEFORE the ControlNet chain: the chain reads whatever the
+        # sampler currently points at, so it has to pick up the combined
+        # conditioning rather than the bare encoder.
+        self._apply_regions(g)
         self._apply_controlnet(g)
         return g
 
@@ -422,6 +430,56 @@ class ComfyClient:
         g[ks_id]["inputs"]["positive"] = pos
         g[ks_id]["inputs"]["negative"] = neg
 
+    def _apply_regions(self, g: dict) -> None:
+        """Say a different thing about different parts of the picture.
+
+            CLIPTextEncode(region words) → ConditioningSetMask → Combine → …
+
+        Each region is ADDED to the shared positive rather than replacing it:
+        the base prompt is still the scene, the style and the framing, and a
+        region only says what its own squares are made of. Applied to the
+        POSITIVE alone — a mask on the negative would mean "no blurriness
+        here, and everywhere else it is fine".
+
+        Spliced ahead of the ControlNet chain, so its links pick up the
+        combined conditioning rather than the bare encoder. Order matters:
+        `_apply_controlnet` reads whatever the sampler currently points at.
+        """
+        if not self._region_conds:
+            return
+        ks_id = next((nid for nid, n in g.items()
+                      if n.get("class_type") == "KSampler"), None)
+        clip = next((nid for nid, n in g.items()
+                     if n.get("class_type") == "CheckpointLoaderSimple"), None)
+        if ks_id is None or clip is None:
+            return
+        pos = g[ks_id]["inputs"].get("positive")
+        if not pos:
+            return
+        for i, r in enumerate(self._region_conds):
+            base = 200 + i * 10
+            img, mask, enc, setm, comb = (str(base), str(base + 1),
+                                          str(base + 2), str(base + 3),
+                                          str(base + 4))
+            g[img] = {"class_type": "LoadImage", "inputs": {"image": r["mask"]}}
+            # The mask is a black-and-white PICTURE, so it arrives on the image
+            # output and has to be converted; LoadImage's own MASK output is the
+            # file's alpha channel, which a PNG of white squares does not have.
+            g[mask] = {"class_type": "ImageToMask",
+                       "inputs": {"image": [img, 0], "channel": "red"}}
+            g[enc] = {"class_type": "CLIPTextEncode",
+                      "inputs": {"text": r["words"], "clip": [clip, 1]}}
+            g[setm] = {"class_type": "ConditioningSetMask", "inputs": {
+                "conditioning": [enc, 0], "mask": [mask, 0],
+                "strength": float(r.get("strength", 0.85)),
+                "set_cond_area": "default",
+            }}
+            g[comb] = {"class_type": "ConditioningCombine",
+                       "inputs": {"conditioning_1": pos,
+                                  "conditioning_2": [setm, 0]}}
+            pos = [comb, 0]
+        g[ks_id]["inputs"]["positive"] = pos
+
     def _controlnet_conditions(self) -> list[dict]:
         """Every condition to apply this render, newest API and oldest together.
 
@@ -511,6 +569,7 @@ class ComfyClient:
         mature: bool = False,
         control_image: Optional[bytes] = None,
         controls: Optional[list[dict]] = None,
+        regions: Optional[list[dict]] = None,
         init_image: Optional[bytes] = None,
     ) -> bytes:
         """Queue a job and return the produced image bytes (PNG).
@@ -564,12 +623,26 @@ class ComfyClient:
                 print(f"[imagery] control image {i + 1} upload failed; skipped")
                 continue
             self._extra_controls.append({**extra, "image": up})
+        # Region masks, uploaded like any other conditioning picture. A region
+        # whose mask will not upload is dropped: its words are lost, which is
+        # the behaviour before regions existed, and losing the render is worse.
+        self._region_conds = []
+        for i, r in enumerate(regions or []):
+            blob, words = r.get("mask"), (r.get("words") or "").strip()
+            if not blob or not words:
+                continue
+            up = self.upload_image(blob, f"region-{seed}-{i}.png")
+            if not up:
+                print(f"[imagery] region mask {i} upload failed; skipped")
+                continue
+            self._region_conds.append({**r, "mask": up})
         try:
             graph = self._build_graph(positive, negative, width, height, seed,
                                       steps or self.steps, checkpoint=ckpt)
         finally:
             self._control_image_name = None
             self._extra_controls = []
+            self._region_conds = []
         if reference_filenames:
             self._inject_references(graph, list(reference_filenames))
         try:

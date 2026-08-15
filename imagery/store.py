@@ -247,6 +247,7 @@ class ImageStore:
                 controlnet_strength: float = 0.8,
                 controlnet_union_type: str = "",
                 controls: Optional[list] = None,
+                regions: Optional[list] = None,
                 init_image: Optional[bytes] = None,
                 init_denoise: float = 1.0,
                 ) -> tuple[Optional[bytes], Optional[int], bool]:
@@ -286,6 +287,7 @@ class ImageStore:
                 reference_filenames=reference_filenames,
                 control_image=control_image,
                 controls=list(controls or []),
+                regions=list(regions or []),
                 init_image=init_image,
                 mature=mature,
             )
@@ -321,6 +323,7 @@ class ImageStore:
         controlnet_strength: float = 0.8,
         controlnet_union_type: str = "",
         controls: Optional[list] = None,
+        regions: Optional[list] = None,
         init_image: Optional[bytes] = None,
         init_denoise: float = 1.0,
     ) -> Optional[ImageResult]:
@@ -395,6 +398,7 @@ class ImageStore:
                                           controlnet_strength=controlnet_strength,
                                           controlnet_union_type=controlnet_union_type,
                                           controls=controls,
+                                          regions=regions,
                                           init_image=init_image,
                                           init_denoise=init_denoise)
         if offline or raw is None:

@@ -416,6 +416,12 @@ class ImageryConfig:
     # Empty = off, and the board conditions on depth alone exactly as before.
     isoboard_seg_controlnet: str = ""
     isoboard_seg_strength: float = 0.45
+    # Bind each skin's own sentence to the squares wearing it, instead of
+    # concatenating all of them into one clause where they compete (see
+    # vtt/regions.py). Complementary to the seg map rather than an alternative:
+    # this is unlimited in vocabulary and weak on small scattered regions,
+    # segmentation is the reverse. Off = the single global clause, unchanged.
+    isoboard_regional_prompt: bool = False
     # RescaleCFG (0..1) lets you raise `cfg_scale` without the blown-out colour
     # high CFG normally causes. MEASURED WORSE for this pipeline: on the
     # goliath probe, cfg 10 + rescale 0.7 pushed the render further toward a

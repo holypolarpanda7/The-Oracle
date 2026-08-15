@@ -800,6 +800,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
                      controlnet_union_type: str = "",
                      seg_controlnet: Optional[str] = None,
                      seg_strength: float = 0.45,
+                     regional: bool = False,
                      force_new: bool = False,
                      store_width: int = 1536) -> BattlemapArt:
     """Paint the board as an isometric diorama, conditioned on its own depth.
@@ -841,7 +842,19 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
     # prior for one. The same lesson as the sky, one turn further: colouring
     # the conditioning image was necessary and is not sufficient. What a thing
     # is MADE of is the subject of these boards, so it is weighted like one.
+    # REGIONS, when asked for: each skin's own sentence bound to the squares
+    # that own it, instead of all of them concatenated into one clause where
+    # they compete. Whatever is too small to be worth a mask keeps its words in
+    # the shared clause, so making the prompt regional never silently DELETES
+    # what a material used to say. See vtt/regions.py.
+    region_conds: list[dict] = []
     material_words = _skins.words_for(present)
+    if regional and present:
+        from . import regions as _regions
+        region_conds, leftover = _regions.regions_for(
+            gen, **conditioning_kwargs(gen, skin_of=_skin_of))
+        if region_conds:
+            material_words = _regions.global_words(present, region_conds, leftover)
     subject, look, context = build_map_prompt(
         gen, name=name, biome=biome, lighting=lighting,
         extra=", ".join(p for p in (
@@ -936,7 +949,7 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
             control_image=depth,
             controlnet=controlnet, controlnet_strength=controlnet_strength,
             controlnet_union_type=controlnet_union_type,
-            controls=seg_controls,
+            controls=seg_controls, regions=region_conds,
             init_image=terrain,
             init_denoise=denoise,
             negative_extra=", ".join(p for p in (

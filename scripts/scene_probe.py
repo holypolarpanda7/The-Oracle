@@ -296,6 +296,7 @@ def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False,
     union = getattr(img, "isoboard_controlnet_union_type", "") or ""
     seg_cn = getattr(img, "isoboard_seg_controlnet", "") or ""
     seg_str = float(getattr(img, "isoboard_seg_strength", 0.45))
+    regional = bool(getattr(img, "isoboard_regional_prompt", False))
     if not cn:
         print("  no isoboard_controlnet configured — nothing to paint.")
         return
@@ -308,6 +309,7 @@ def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False,
                                        controlnet=cn, controlnet_strength=strength,
                                        controlnet_union_type=union,
                                        seg_controlnet=seg_cn, seg_strength=seg_str,
+                                       regional=regional,
                                        force_new=force)
         except Exception as exc:                       # noqa: BLE001
             print(f"    failed: {exc}")

@@ -164,6 +164,43 @@ check(not any(v["class_type"].startswith(("ControlNet", "SetUnion"))
               for v in g3.values()),
       "and an unconditioned render is untouched")
 
+print("\n\033[1m6. the OTHER method: a sentence per region\033[0m")
+from vtt import regions                                          # noqa: E402
+conds, leftover = regions.regions_for(gen, **kw)
+words = [c["words"][:38] for c in conds]
+check(len(conds) >= 3, "the taproom's materials get their own regions",
+      f"{len(conds)}: {words}")
+check(all(c["mask"] for c in conds), "each with a mask of its own squares")
+present = sorted({sk.skin_at(rows[y][x], x, y, codes=codes, squares=squares)
+                  for y in range(len(rows))
+                  for x in range(len(rows[y]))} - {""})
+check(regions.global_words(present, [], present) == sk.words_for(present),
+      "with NO regions the shared clause is byte-for-byte what it always was",
+      "turning this off has to be a true revert, not a similar-looking prompt")
+tiny = regions.regions_for(gen, minimum=0.99, **kw)
+check(tiny == ([], list(tiny[1])) and not tiny[0] and tiny[1],
+      "a skin too small for a region keeps its words in the shared clause",
+      "or making the prompt regional would silently DELETE what it said")
+
+c3 = ComfyClient(base_url="x", controlnet="union.safetensors")
+c3.controlnet_union_type = "depth"
+c3._control_image_name = "depth.png"
+c3._region_conds = [{"words": "oak boards", "mask": "m0.png", "strength": 0.85},
+                    {"words": "timber posts", "mask": "m1.png", "strength": 0.85}]
+g4 = c3._build_graph("a taproom", "blurry", 1024, 768, 7, 30)
+ks4 = next(n for n, v in g4.items() if v["class_type"] == "KSampler")
+combines = [n for n in g4 if g4[n]["class_type"] == "ConditioningCombine"]
+apply4 = next(n for n in g4 if g4[n]["class_type"] == "ControlNetApplyAdvanced")
+check(len(combines) == 2, "each region is COMBINED onto the shared positive",
+      "added, not replacing — the base prompt is still the scene")
+check(g4[apply4]["inputs"]["positive"] == [max(combines, key=int), 0],
+      "and the ControlNet chain reads the combined conditioning, not the "
+      "bare encoder")
+check(all("negative" not in g4[n]["inputs"] for n in g4
+          if g4[n]["class_type"] == "ConditioningSetMask"),
+      "nothing is masked onto the NEGATIVE",
+      "\"no blurriness here, and elsewhere it is fine\" is not a thing to ask")
+
 print()
 if _fails:
     print(f"{BAD}{_fails} FAILED{OFF}")
