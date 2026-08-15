@@ -413,6 +413,16 @@ async def lifespan(app: FastAPI):
                             f"ALTER TABLE vtt_map ADD COLUMN {col} JSON")
                         print(f"[Startup] Migrated vtt_map: added {col}")
 
+                # Building work in progress on pre-existing facilities.
+                bf_existing = {row[1] for row in conn.exec_driver_sql(
+                    'PRAGMA table_info("bastion_facility")')}
+                for col, ddl in (("enlarging_to", "VARCHAR"),
+                                 ("enlarge_done_turn", "INTEGER")):
+                    if bf_existing and col not in bf_existing:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE bastion_facility ADD COLUMN {col} {ddl}")
+                        print(f"[Startup] Migrated bastion_facility: added {col}")
+
                 # Board-side conditions on pre-existing token tables: restrained
                 # and grappled both mean Speed 0, which the board enforces.
                 vt_existing = {row[1] for row in conn.exec_driver_sql(
@@ -17309,6 +17319,26 @@ async def bastion_add_facility(req: BastionFacilityRequest):
                 status_code=400,
                 detail=f"{cat['name']} requires level {cat['min_level']} (character is {char.level}).",
             )
+        # HOW MANY is a level entitlement, and this older path did not ask —
+        # which would have let the DM's own route quietly exceed what the
+        # builder screen enforces. `build.py` is the one place that decides;
+        # every path in has to go through it.
+        if char:
+            from bastion.catalog import basic_allowance, special_allowance
+            held = session.exec(select(FacilityInstance).where(
+                FacilityInstance.bastion_id == b.id)).all()
+            basic = (req.facility_type == "basic"
+                     if hasattr(req, "facility_type") else False)
+            used = sum(1 for f in held
+                       if (f.facility_type == "basic") == basic)
+            cap = (basic_allowance(char.level) if basic
+                   else special_allowance(char.level))
+            if used >= cap:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(f"A level-{char.level} bastion holds {cap} "
+                            f"{'ordinary rooms' if basic else 'special facilities'}"
+                            f"; it already has {used}."))
         if req.pay_cost and char:
             cost_cp = gp_to_cp(facility_cost_gp(req.facility_slug))
             if to_cp(_char_purse(char)) < cost_cp:
@@ -17353,7 +17383,14 @@ async def bastion_turn(req: BastionTurnRequest):
             )
         ).all()
         fac_payload = [
-            {"facility_slug": f.facility_slug, "current_order": f.current_order} for f in facilities
+            {"id": f.id, "facility_slug": f.facility_slug,
+             "current_order": f.current_order,
+             # SIZE, and any building work that might land this turn. Without
+             # these the turn cannot tell a vast smithy from a cramped one and
+             # an ordered enlargement would never finish.
+             "space": f.space, "enlarging_to": f.enlarging_to,
+             "enlarge_done_turn": f.enlarge_done_turn}
+            for f in facilities
         ]
         start_day = world.current_day()
         result = resolve_bastion_turn(
@@ -17372,6 +17409,18 @@ async def bastion_turn(req: BastionTurnRequest):
                 end_day = world.advance_day(result["days"])
             except Exception:
                 end_day = start_day
+
+        # Building work that landed. Written here rather than in the resolver
+        # because that function touches no database on purpose.
+        by_id = {f.id: f for f in facilities}
+        for done in result.get("completions") or []:
+            row = by_id.get(done.get("id"))
+            if row is None:
+                continue
+            row.space = done["space"]
+            row.enlarging_to = None
+            row.enlarge_done_turn = None
+            session.add(row)
 
         for ev in result["events"]:
             session.add(BastionEvent(
@@ -20077,6 +20126,17 @@ def _activity_bastion(session_id: str, user_id: str) -> Optional[dict]:
                     # Named rooms, by the names their owner gave them.
                     "rooms": [{"slug": r.facility_slug, "name": r.name}
                               for r in inst if r.facility_type == "basic"],
+                    # Each installed facility with its SIZE and what enlarging
+                    # it would mean — including the ones that cannot be, with
+                    # the reason attached, because an option missing from a
+                    # list is indistinguishable from a bug.
+                    "installed": _bb.enlargements(
+                        [{"id": r.id, "facility_slug": r.facility_slug,
+                          "name": r.name, "space": r.space,
+                          "facility_type": r.facility_type,
+                          "enlarging_to": r.enlarging_to} for r in inst],
+                        level, purse_gp=gold),
+                    "turns_taken": have.turns_taken,
                     "notes": have.notes or ""}
     # The SAME plan whether you are raising one or adding to one. A stronghold
     # is never finished — the rules hand out another special facility at 9, 13
@@ -20110,6 +20170,55 @@ def _extend_place_look(place_slug: Optional[str], want) -> None:
         world.upsert_entity(ent.name, ent.type, slug=ent.slug, attributes=attrs)
     except Exception as e:                                   # noqa: BLE001
         print(f"[bastion] place look not extended: {e}")
+
+
+def _activity_bastion_enlarge(session_id: str, user_id: str,
+                              facility_id: int) -> dict:
+    """Order the work on one facility. Returns ``{ok, detail|works}``.
+
+    PAID when ordered and finished on a bastion turn — the two halves are
+    deliberately apart. Gold alone deciding how fast a stronghold grows is what
+    makes a calendar pointless, and a table that never takes bastion turns has
+    simply not started the work rather than lost the money for nothing.
+    """
+    from bastion import build as _bb
+
+    char_id = _activity_char_id(session_id, user_id)
+    if not char_id:
+        return {"ok": False, "detail": "No character in this session."}
+    with Session(engine) as s:
+        char = s.get(Character, char_id)
+        if char is None:
+            return {"ok": False, "detail": "No character."}
+        row = s.get(FacilityInstance, int(facility_id or 0))
+        if row is None:
+            return {"ok": False, "detail": "No such facility."}
+        b = s.get(Bastion, row.bastion_id)
+        if b is None or b.character_id != char.id:
+            return {"ok": False, "detail": "That is not yours to build in."}
+        purse = _purse_of(char)
+        gold = to_cp(purse) / 100.0
+        e = _bb.enlargement(
+            {"id": row.id, "facility_slug": row.facility_slug,
+             "space": row.space, "facility_type": row.facility_type,
+             "enlarging_to": row.enlarging_to},
+            int(char.level or 1), purse_gp=gold)
+        if not e.ok:
+            return {"ok": False, "detail": " ".join(e.reasons)}
+        row.enlarging_to = e.to_space
+        # The turn it lands ON, counted from the turns already taken, so a
+        # bastion that has never taken one is not already late.
+        row.enlarge_done_turn = int(b.turns_taken) + max(1, e.turns)
+        s.add(row)
+        _write_purse(char, subtract_cost(purse, gp_to_cp(e.cost_gp)))
+        s.add(char)
+        s.commit()
+        works = {"facility_id": row.id, "name": row.name,
+                 "from": e.from_space, "to": e.to_space,
+                 "cost_gp": e.cost_gp, "turns": e.turns,
+                 "done_turn": row.enlarge_done_turn,
+                 "then_holds": e.capacity}
+    return {"ok": True, "works": works}
 
 
 def _activity_bastion_build(session_id: str, user_id: str,
@@ -23585,7 +23694,40 @@ async def activity_ws(ws: WebSocket, channel: str):
                     # it the way it hears a deal struck.
                     await _activity_broadcast(session_id, {
                         "t": "narration",
-                        "text": f"*({b['name']} is raised — {b['cost_gp']:g} gp.)*"},
+                        "text": (f"*({b['name']} grows — {b['cost_gp']:g} gp.)*"
+                                 if res.get("added") else
+                                 f"*({b['name']} is raised — "
+                                 f"{b['cost_gp']:g} gp.)*")},
+                        fallback=ws)
+                    try:
+                        sheet = await asyncio.to_thread(
+                            _activity_sheet, session_id, user_id)
+                        if sheet:
+                            await ws.send_json({"t": "sheet", "sheet": sheet})
+                        await ws.send_json({"t": "bastion", "plan": await asyncio.to_thread(
+                            _activity_bastion, session_id, user_id)})
+                    except Exception as e:
+                        print(f"[activity] bastion refresh failed: {e}")
+                continue
+
+            # Enlarging one: ordered and PAID here, finished on a bastion turn.
+            if msg.get("t") == "bastion_enlarge":
+                try:
+                    res = await asyncio.to_thread(
+                        _activity_bastion_enlarge, session_id, user_id,
+                        int(msg.get("facility_id") or 0))
+                except Exception as e:
+                    print(f"[activity] bastion enlarge failed: {e}")
+                    res = {"ok": False, "detail": "The work could not be begun."}
+                await ws.send_json({"t": "bastion_works", **res})
+                if res.get("ok"):
+                    w = res["works"]
+                    await _activity_broadcast(session_id, {
+                        "t": "narration",
+                        "text": (f"*(Work begins on {w['name']}: {w['from']} "
+                                 f"to {w['to']}, {w['cost_gp']:g} gp, "
+                                 f"{w['turns']} bastion turn"
+                                 f"{'' if w['turns'] == 1 else 's'}.)*")},
                         fallback=ws)
                     try:
                         sheet = await asyncio.to_thread(

@@ -18,7 +18,9 @@ except Exception:  # pragma: no cover - standalone import fallback
     OWNED_SOURCE = "Owned (non-SRD)"
 
 
-# Space sizes (relative footprint of a special facility).
+# Space sizes (relative footprint of a special facility), smallest first. The
+# ORDER is the rule — a facility is enlarged one step at a time, and nothing
+# skips a size — so it is a tuple and never a set.
 SPACES = ("cramped", "roomy", "vast")
 
 # Character level at which each tier of special facility unlocks.
@@ -179,6 +181,57 @@ def propulsion_facilities() -> List[Dict]:
     setting that adds its own kind of helm works without touching this file.
     """
     return [f for f in FACILITIES.values() if f.get("propulsion")]
+
+
+def next_space(space: Optional[str]) -> Optional[str]:
+    """The size ABOVE this one, or None at the top. One step at a time."""
+    try:
+        i = SPACES.index(str(space or "cramped").strip().lower())
+    except ValueError:
+        return None
+    return SPACES[i + 1] if i + 1 < len(SPACES) else None
+
+
+def space_min_level(space: str) -> int:
+    """The character level a size needs."""
+    from game_config import get_config
+    return int(get_config().bastion.space_min_level.get(
+        str(space or "").strip().lower(), 5))
+
+
+def space_cost_gp(space: str) -> float:
+    """What enlarging TO this size costs, through the live cost multiplier."""
+    from game_config import get_config
+    cfg = get_config().bastion
+    base = float(cfg.space_cost_gp.get(str(space or "").strip().lower(), 0))
+    return round(base * cfg.cost_multiplier, 4)
+
+
+def space_turns(space: str) -> int:
+    """How many bastion turns the building work takes."""
+    from game_config import get_config
+    return int(get_config().bastion.space_turns.get(
+        str(space or "").strip().lower(), 1))
+
+
+def space_capacity(space: Optional[str]) -> int:
+    """How many hirelings a facility of this size can hold.
+
+    This is what a size MEANS. ``FacilityInstance.space`` and ``.hirelings``
+    have both been stored since the table was written and read by nothing at
+    all, so a vast smithy and a cramped one were the same smithy and paying to
+    enlarge one would have bought a word.
+    """
+    from game_config import get_config
+    return int(get_config().bastion.space_capacity.get(
+        str(space or "cramped").strip().lower(), 1))
+
+
+def space_output(space: Optional[str]) -> float:
+    """How much more a facility of this size produces on a bastion turn."""
+    from game_config import get_config
+    return float(get_config().bastion.space_output.get(
+        str(space or "cramped").strip().lower(), 1.0))
 
 
 def get_facility(slug: str) -> Optional[Dict]:

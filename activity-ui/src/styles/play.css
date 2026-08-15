@@ -1380,6 +1380,21 @@ body.rez-active { user-select: none; cursor: nwse-resize; }
 .bb-kindtag { font-size: 0.63rem; letter-spacing: 0.08em; text-transform: uppercase;
   opacity: 0.6; }
 .bb-sub { font-size: 0.72rem; opacity: 0.85; }
+/* What already stands here, and what it would take to make it bigger. The
+   refused ones keep their row and carry the reason: an option missing from a
+   list is indistinguishable from a bug. */
+.bb-built { list-style: none; margin: 0 0 8px; padding: 0; max-height: 190px;
+  overflow: auto; }
+.bb-built li { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+  align-items: center; padding: 5px 2px;
+  border-bottom: 1px solid rgba(255,255,255,0.05); }
+.bb-size { grid-column: 1; font-size: 0.66rem; opacity: 0.6;
+  text-transform: capitalize; }
+.bb-built .bb-fn { grid-column: 1; }
+.bb-built .bb-add, .bb-built .bb-tag, .bb-built .bb-why {
+  grid-column: 2; grid-row: 1 / span 2; }
+.bb-why { font-size: 0.64rem; opacity: 0.5; max-width: 15ch; text-align: right; }
+.bb-tag.works { color: #e6bc64; }
 .bb-note { font-size: 0.82rem; opacity: 0.8; }
 .bb-foot {
   display: flex; align-items: center; gap: 12px;

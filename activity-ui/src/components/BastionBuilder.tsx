@@ -20,7 +20,7 @@ import type { BastionPlan } from "../lib/types";
  *  choosing makes sense, and the server re-checks and charges — the
  *  Quartermaster's rule, for the same reason.
  */
-export function BastionBuilder({ plan, onBuild, onClose, busy, error }: {
+export function BastionBuilder({ plan, onBuild, onEnlarge, onClose, busy, error }: {
   plan: BastionPlan;
   onBuild: (choice: {
     kind: string; name: string; description: string; motif: string;
@@ -28,6 +28,8 @@ export function BastionBuilder({ plan, onBuild, onClose, busy, error }: {
     rooms: { slug: string; name: string; description: string }[];
     vessel_slug: string; vehicle_kind: string;
   }) => void;
+  /** Order the building work on one facility. Paid now, finished on a turn. */
+  onEnlarge: (facilityId: number) => void;
   onClose: () => void;
   busy?: boolean;
   error?: string | null;
@@ -137,6 +139,40 @@ export function BastionBuilder({ plan, onBuild, onClose, busy, error }: {
                   )}
                 </>
               )}
+
+              {held?.installed?.length ? (
+                <>
+                  <div className="bb-lbl">
+                    What stands here
+                    <span className="bb-dim"> · enlarging takes bastion turns</span>
+                  </div>
+                  <ul className="bb-built">
+                    {held.installed.map((f) => (
+                      <li key={f.id}>
+                        <span className="bb-fn">{f.name}</span>
+                        <span className="bb-size">
+                          {f.space} · holds {f.holds}
+                        </span>
+                        {f.enlarging_to ? (
+                          <span className="bb-tag works">
+                            building → {f.enlarging_to}
+                          </span>
+                        ) : f.can_enlarge ? (
+                          <button className="bb-add" disabled={!!busy}
+                                  title={`Then holds ${f.then_holds}, produces `
+                                         + `x${f.then_output} — ${f.turns} bastion `
+                                         + `turn${f.turns === 1 ? "" : "s"}`}
+                                  onClick={() => onEnlarge(f.id)}>
+                            → {f.to_space} · {f.cost_gp.toLocaleString()} gp
+                          </button>
+                        ) : (
+                          <span className="bb-why">{f.why}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
 
               <div className="bb-lbl">
                 Special facilities

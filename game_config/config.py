@@ -89,6 +89,24 @@ class BastionConfig:
     basic_facility_base_cost: int = 500
     basic_facilities_at_start: int = 4
     basic_facilities_per_tier: int = 2
+    # --- ENLARGING a facility (cramped -> roomy -> vast) ---
+    # A size is worth having, or paying for one is a gold sink: it is how many
+    # people can work the place, and how much the place produces.
+    space_capacity: dict[str, int] = field(default_factory=lambda: {
+        "cramped": 1, "roomy": 4, "vast": 12})
+    space_output: dict[str, float] = field(default_factory=lambda: {
+        "cramped": 1.0, "roomy": 1.5, "vast": 2.5})
+    # The character level each size needs, on the same tier ladder the
+    # facilities themselves use.
+    space_min_level: dict[str, int] = field(default_factory=lambda: {
+        "cramped": 5, "roomy": 9, "vast": 13})
+    space_cost_gp: dict[str, int] = field(default_factory=lambda: {
+        "cramped": 0, "roomy": 2000, "vast": 5000})
+    # Building work takes TIME, and a bastion's unit of time is its turn. An
+    # enlargement finishes on a turn, which is what stops gold alone deciding
+    # how fast a stronghold grows.
+    space_turns: dict[str, int] = field(default_factory=lambda: {
+        "cramped": 0, "roomy": 1, "vast": 2})
 
 
 @dataclass

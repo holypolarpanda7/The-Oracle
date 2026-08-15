@@ -265,6 +265,13 @@ export default function App({ session }: { session: Session }) {
           setBastionError(ev.ok ? null : (ev.detail || "It could not be raised."));
           if (ev.ok) setBastionOpen(false);
           break;
+        // Ordering the work does NOT close the screen: the point of the
+        // builders being in is that you can see it, and a stronghold you are
+        // still adding to is the normal state of one.
+        case "bastion_works":
+          setBastionBusy(false);
+          setBastionError(ev.ok ? null : (ev.detail || "The work could not begin."));
+          break;
         case "suggest":
           setSuggestions(ev.actions);
           break;
@@ -575,6 +582,11 @@ export default function App({ session }: { session: Session }) {
                   setBastionBusy(true);
                   setBastionError(null);
                   connRef.current?.send({ t: "bastion_build", choice });
+                }}
+                onEnlarge={(facility_id) => {
+                  setBastionBusy(true);
+                  setBastionError(null);
+                  connRef.current?.send({ t: "bastion_enlarge", facility_id });
                 }}
               />
             )}

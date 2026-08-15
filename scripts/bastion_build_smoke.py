@@ -277,6 +277,114 @@ plan2 = m._activity_bastion(SESSION, USER)
 check(plan2 and plan2.get("existing", {}).get("name") == "The Gilded Sow",
       "and the screen shows what you already hold instead of an empty form")
 
+print("\n\033[1m9. enlarging: a size that finally MEANS something\033[0m")
+# `FacilityInstance.space` and `.hirelings` have been stored since the table was
+# written and read by NOTHING, so a vast smithy and a cramped one were the same
+# smithy. Paying to enlarge one would have bought a word.
+from bastion import resolve_bastion_turn, space_capacity, space_output  # noqa: E402
+check(space_capacity("vast") > space_capacity("cramped")
+      and space_output("vast") > space_output("cramped"),
+      "a bigger facility holds more people and produces more",
+      f"cramped holds {space_capacity('cramped')} at x{space_output('cramped'):g}, "
+      f"vast holds {space_capacity('vast')} at x{space_output('vast'):g}")
+
+# The ARMORY, which is cramped: roomy needs level 9 and this character is 11.
+# The smithy is already roomy and vast needs 13, so it is the level wall — a
+# useful pair, because it shows gold cannot outrun the character.
+with Session(m.engine) as s:
+    smithy = s.exec(select(FacilityInstance).where(
+        FacilityInstance.facility_slug == "armory")).first()
+    bast = s.exec(select(Bastion)).first()
+    before_gp = m.to_cp(m._purse_of(s.get(m.Character, char_id))) / 100.0
+    smithy_id, bast_id = smithy.id, bast.id
+check(smithy.space == "cramped" and not smithy.enlarging_to,
+      "the armoury stands at its catalogue size, with no work under way",
+      f"{smithy.space}")
+
+plan3 = m._activity_bastion(SESSION, USER)
+opt = next(r for r in plan3["existing"]["installed"] if r["id"] == smithy_id)
+check(opt["can_enlarge"] and opt["to_space"] == "roomy",
+      "the screen offers the NEXT size up, one step and never a skipped one",
+      f"{opt['space']} -> {opt['to_space']}, {opt['cost_gp']:g} gp, "
+      f"{opt['turns']} turn(s), then holds {opt['then_holds']}")
+wall = next((r for r in plan3["existing"]["installed"]
+             if r["space"] == "roomy" and not r["can_enlarge"]), None)
+check(wall is not None and "level 13" in (wall["why"] or ""),
+      "a size has a LEVEL, so a full purse cannot outrun the character",
+      f"{wall['name'] if wall else '-'}: {wall['why'] if wall else ''}")
+room = next((r for r in plan3["existing"]["installed"]
+             if r["slug"] == "bedroom"), None)
+check(room is not None and not room["can_enlarge"] and room["why"],
+      "and one that cannot be enlarged says why rather than vanishing",
+      f"{room['name'] if room else '-'}: {room['why'] if room else ''}")
+
+res9 = m._activity_bastion_enlarge(SESSION, USER, smithy_id)
+check(res9.get("ok"), "the work is ordered", f"{res9.get('detail','')}")
+with Session(m.engine) as s:
+    smithy = s.get(FacilityInstance, smithy_id)
+    after_gp = m.to_cp(m._purse_of(s.get(m.Character, char_id))) / 100.0
+check(smithy.enlarging_to == "roomy" and smithy.space == "cramped",
+      "and MID-WORKS the facility still works, at its old size",
+      "a smithy with scaffolding on it is not a smithy that has closed")
+check(abs((before_gp - after_gp) - res9["works"]["cost_gp"]) < 1,
+      "paid when ordered", f"{before_gp:g} -> {after_gp:g} gp")
+again = m._activity_bastion_enlarge(SESSION, USER, smithy_id)
+check(not again.get("ok") and "under way" in (again.get("detail") or ""),
+      "and a second order on the same building site is refused",
+      f"{again.get('detail')}")
+
+# The other half: it LANDS on a bastion turn, not the moment it was paid for.
+with Session(m.engine) as s:
+    b = s.get(Bastion, bast_id)
+    facs = s.exec(select(FacilityInstance).where(
+        FacilityInstance.bastion_id == bast_id)).all()
+    payload = [{"id": f.id, "facility_slug": f.facility_slug,
+                "current_order": "Craft (weapon/armor)", "space": f.space,
+                "enlarging_to": f.enlarging_to,
+                "enlarge_done_turn": f.enlarge_done_turn} for f in facs]
+    early = resolve_bastion_turn(payload, world_day=1, turn_number=b.turns_taken)
+    late = resolve_bastion_turn(payload, world_day=1,
+                                turn_number=smithy.enlarge_done_turn)
+check(not early["completions"],
+      "a turn taken too early finishes nothing",
+      "gold alone deciding how fast a stronghold grows is what makes a "
+      "calendar pointless")
+check(any(c["id"] == smithy_id and c["space"] == "roomy"
+          for c in late["completions"]),
+      "and the turn it was costed to finish on finishes it",
+      f"{late['completions']}")
+check(any(e["event_type"] == "built" for e in late["events"]),
+      "with a line in the bastion's own log saying so",
+      next((e["description"] for e in late["events"]
+            if e["event_type"] == "built"), ""))
+
+hall = [{"facility_slug": "gaming-hall", "current_order": "Trade (patrons)",
+         "space": sp} for sp in ("cramped", "vast")]
+small = resolve_bastion_turn([hall[0]], world_day=1, turn_number=1)["income_gp"]
+big = resolve_bastion_turn([hall[1]], world_day=1, turn_number=1)["income_gp"]
+check(big > small,
+      "and the size is worth its gold on every turn after",
+      f"a cramped gaming hall earns {small:g} gp; a vast one earns {big:g}")
+
+print("\n\033[1m10. what enlarging refuses\033[0m")
+v9 = B.enlargement({"id": 1, "facility_slug": "library", "space": "vast",
+                    "facility_type": "special"}, 20, purse_gp=999999)
+check(not v9.ok and "as large as one gets" in " ".join(v9.reasons),
+      "a vast facility is the top", f"{v9.reasons}")
+v9 = B.enlargement({"id": 2, "facility_slug": "smithy", "space": "roomy",
+                    "facility_type": "special"}, 11, purse_gp=1)
+check(not v9.ok and any("gp" in r for r in v9.reasons),
+      "an empty purse cannot start the work")
+v9 = B.enlargement({"id": 3, "facility_slug": "smithy", "space": "roomy",
+                    "facility_type": "special"}, 9, purse_gp=999999)
+check(not v9.ok and any("level" in r for r in v9.reasons),
+      "and a size has a LEVEL, so gold cannot outrun the character",
+      f"{v9.reasons}")
+v9 = B.enlargement({"id": 4, "facility_slug": "bedroom", "space": "cramped",
+                    "facility_type": "basic"}, 17, purse_gp=999999)
+check(not v9.ok and "not enlarged" in " ".join(v9.reasons),
+      "an ordinary room is not enlarged — that would be gold for an adjective")
+
 print()
 if _fails:
     print(f"{BAD}{_fails} FAILED{OFF}")

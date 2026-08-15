@@ -28,7 +28,9 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
 from .catalog import (basic_allowance, basic_facilities, facilities_for_level,
-                      get_facility, propulsion_facilities, special_allowance)
+                      get_facility, next_space, propulsion_facilities,
+                      space_capacity, space_cost_gp, space_min_level,
+                      space_output, space_turns, special_allowance)
 from .turn import (basic_facility_cost_gp, can_own_bastion, facility_cost_gp,
                    min_bastion_level)
 
@@ -316,3 +318,99 @@ def describe(choice: Choice, *, vessels: Optional[dict] = None) -> str:
     if said:
         bits.append("rooms: " + ", ".join(said))
     return "; ".join(bits)
+
+
+# --------------------------------------------------------------- enlarging
+
+@dataclass
+class Enlargement:
+    """What enlarging one facility would mean, or why it cannot be.
+
+    Its own type rather than a second use of :class:`Verdict` because it
+    answers a different question — not "may this be built" but "what would this
+    one become" — and the screen has to show the BECOMING (the size, what it
+    then holds, what it then produces) whether or not the answer is yes.
+    """
+
+    ok: bool
+    facility_id: int = 0
+    from_space: str = ""
+    to_space: str = ""
+    cost_gp: float = 0.0
+    turns: int = 0
+    capacity: int = 0
+    output_multiplier: float = 1.0
+    reasons: list[str] = field(default_factory=list)
+
+
+def enlargement(inst: dict, level: int, *, purse_gp: float = 0.0) -> Enlargement:
+    """May this facility be enlarged, and into what?
+
+    ``inst`` is one installed facility as a dict — ``{"id", "facility_slug",
+    "space", "enlarging_to", "facility_type"}`` — so this module still touches
+    no database, exactly as :func:`check` does not.
+
+    The rules of it, all in one place: one step at a time and never a skipped
+    size; the bigger size has its own level; the work is paid for when ordered
+    and takes bastion TURNS to finish; and a facility already being worked on
+    is not a second building site.
+    """
+    reasons: list[str] = []
+    here = str(inst.get("space") or "cramped").lower()
+    want = next_space(here)
+    pending = str(inst.get("enlarging_to") or "")
+
+    if str(inst.get("facility_type") or "special") == "basic":
+        # A basic room is somewhere to sleep, not a workshop with a capacity.
+        # Enlarging one would be paying gold to change an adjective.
+        reasons.append("Ordinary rooms are not enlarged.")
+    if pending:
+        reasons.append(f"Work is already under way here ({pending}).")
+    if want is None:
+        reasons.append(f"A {here} facility is as large as one gets.")
+        return Enlargement(ok=False, facility_id=int(inst.get("id") or 0),
+                           from_space=here, to_space="", reasons=reasons)
+
+    need = space_min_level(want)
+    if level < need:
+        reasons.append(f"A {want} facility needs level {need}; you are {level}.")
+    cost = space_cost_gp(want)
+    if purse_gp and cost > purse_gp:
+        reasons.append(f"The work costs {cost:g} gp and you have {purse_gp:g}.")
+
+    return Enlargement(
+        ok=not reasons, facility_id=int(inst.get("id") or 0),
+        from_space=here, to_space=want, cost_gp=cost, turns=space_turns(want),
+        capacity=space_capacity(want), output_multiplier=space_output(want),
+        reasons=reasons)
+
+
+def enlargements(installed: Sequence[dict], level: int, *,
+                 purse_gp: float = 0.0) -> list[dict]:
+    """Every installed facility, with what enlarging it would mean.
+
+    Returned for ALL of them including the refused ones, with the reason
+    attached — the same rule the targeting layer follows: an option greyed out
+    with a stated cause is information, and one missing from the list is
+    indistinguishable from a bug.
+    """
+    out: list[dict] = []
+    for inst in installed:
+        e = enlargement(inst, level, purse_gp=purse_gp)
+        cat = get_facility(str(inst.get("facility_slug") or "")) or {}
+        out.append({
+            "id": e.facility_id,
+            "slug": inst.get("facility_slug"),
+            "name": inst.get("name") or cat.get("name") or inst.get("facility_slug"),
+            "space": e.from_space,
+            "holds": space_capacity(e.from_space),
+            "enlarging_to": inst.get("enlarging_to") or "",
+            "can_enlarge": e.ok,
+            "to_space": e.to_space,
+            "cost_gp": e.cost_gp,
+            "turns": e.turns,
+            "then_holds": e.capacity,
+            "then_output": e.output_multiplier,
+            "why": " ".join(e.reasons),
+        })
+    return out

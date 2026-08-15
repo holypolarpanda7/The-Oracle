@@ -72,6 +72,16 @@ class FacilityInstance(SQLModel, table=True):
     hirelings: int = 0
     current_order: Optional[str] = None  # order issued for the upcoming turn
     enabled: bool = True
+
+    # --- building work in progress (see bastion/build.py: enlarge) ---
+    # An enlargement is paid for when it is ORDERED and lands when the work is
+    # done, which is measured in bastion turns rather than in gold: a
+    # stronghold that grows the instant somebody can afford it has no use for
+    # a calendar. ``enlarging_to`` is the size being built toward and
+    # ``enlarge_done_turn`` the bastion turn it completes ON, so a facility
+    # mid-works still works — at its OLD size, which is the point.
+    enlarging_to: Optional[str] = None
+    enlarge_done_turn: Optional[int] = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 

@@ -837,6 +837,23 @@ export interface BastionVesselOption {
   slug: string; name: string;
   crew?: number; passengers?: number; cargo_tons?: number; cost_gp: number;
 }
+export interface BastionInstalled {
+  id: number;
+  slug: string;
+  name: string;
+  space: string;
+  holds: number;
+  /** Non-empty while the builders are in: the size being built toward. */
+  enlarging_to: string;
+  can_enlarge: boolean;
+  to_space: string;
+  cost_gp: number;
+  turns: number;
+  then_holds: number;
+  then_output: number;
+  why: string;
+}
+
 export interface BastionPlan {
   level: number;
   can_own: boolean;
@@ -861,6 +878,10 @@ export interface BastionPlan {
   existing?: { id: number; name: string; kind: string;
                facilities: string[];
                rooms: { slug: string; name: string }[];
+               /** Each installed facility with its SIZE and what enlarging it
+                *  would mean — refused ones included, with the reason. */
+               installed: BastionInstalled[];
+               turns_taken: number;
                notes?: string } | null;
 }
 
@@ -877,6 +898,10 @@ export type ServerEvent =
                   facilities: string[]; rooms?: string[];
                   place_slug?: string };
       notes?: string[]; added?: boolean }
+  | { t: "bastion_works"; ok: boolean; detail?: string;
+      works?: { facility_id: number; name: string; from: string; to: string;
+                cost_gp: number; turns: number; done_turn: number;
+                then_holds: number } }
   // The DM writing, live. A PREVIEW: hook-free (see narration/stream.py) but
   // not the authoritative text — dice are still unrolled and speech is not yet
   // split out — so `narration_end` discards it and the real blocks follow.
@@ -971,7 +996,11 @@ export type ClientEvent =
   | { t: "bastion_plan" }
   | { t: "bastion_build"; choice: {
       kind: string; name: string; description: string; motif: string;
-      facilities: string[]; vessel_slug: string; vehicle_kind: string } }
+      facilities: string[];
+      rooms: { slug: string; name: string; description: string }[];
+      vessel_slug: string; vehicle_kind: string } }
+  /** Order the building work on one facility: paid now, finished on a turn. */
+  | { t: "bastion_enlarge"; facility_id: number }
   /** Take an act chosen on the bar. The server re-derives it from its own
    *  catalogue and re-checks the aim — this is a request, not an instruction. */
   | { t: "board_action"; action_id: string; target_token_id?: number;
