@@ -686,7 +686,7 @@ def worth_painting(grid: Grid) -> bool:
 
 
 def isoboard_ref(grid: Grid, archetype: str, seed: int,
-                 skins: str = "") -> str:
+                 skins: str = "", conditioning: str = "") -> str:
     """Cache slug for the painted isometric view of this exact layout.
 
     ``skins`` is what the board is MADE of, and leaving it out was a real bug
@@ -696,14 +696,26 @@ def isoboard_ref(grid: Grid, archetype: str, seed: int,
     the same picture — which sat underneath a genuine limit of the technique
     and made it look worse than it is.
 
+    ``conditioning`` is HOW it was painted — which ControlNets, at what
+    strengths, with or without regional prompts. Same lesson a second time, and
+    the reason it is here before a single arm has been rendered: seg-on and
+    seg-off produce different pictures from identical tiles and identical
+    skins, so without this they would share a slug and the first one rendered
+    would be served to the other. That is not merely a stale picture — it is an
+    experiment that reports no difference between two things that differ, which
+    is worse than no experiment at all. (Bumping ISOBOARD_REV does not help:
+    it invalidates everything once, and the two arms still collide with each
+    other afterwards.)
+
     Same lesson as ``layout_signature`` following the CURRENT grid: the cache
     key has to name everything the picture depends on, or it quietly serves the
     wrong one.
     """
     base = layout_signature(grid, archetype, seed)
-    if not skins:
+    parts = "|".join(p for p in (skins, conditioning) if p)
+    if not parts:
         return f"iso-v{ISOBOARD_REV}-{base}"
-    tag = hashlib.sha256(skins.encode("utf-8")).hexdigest()[:8]
+    tag = hashlib.sha256(parts.encode("utf-8")).hexdigest()[:8]
     return f"iso-v{ISOBOARD_REV}-{base}-{tag}"
 
 
@@ -868,7 +880,14 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
     ref = isoboard_ref(
         gen.grid, gen.archetype, gen.seed,
         skins="|".join(f"{k}={v}" for k, v in sorted(code_skins.items()))
-        + "#" + "|".join(f"{k}={v}" for k, v in sorted(square_skins.items())))
+        + "#" + "|".join(f"{k}={v}" for k, v in sorted(square_skins.items())),
+        # HOW it is painted, not just what is on it. Two arms of an experiment
+        # differ in nothing else, so without this they share a slug.
+        conditioning="|".join(p for p in (
+            f"cn={controlnet}@{controlnet_strength}" if controlnet else "",
+            f"u={controlnet_union_type}" if controlnet_union_type else "",
+            f"seg={seg_controlnet}@{seg_strength}" if seg_controlnet else "",
+            f"reg={len(region_conds)}" if region_conds else "") if p))
 
     if not worth_painting(gen.grid):
         # An OPEN board is refused, and this is a limit of the technique rather
