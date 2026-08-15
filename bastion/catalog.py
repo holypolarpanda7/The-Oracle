@@ -94,6 +94,37 @@ _FACILITIES: List[Dict] = [
      "desc": "A seat of great power granting potent blessings to its master."},
 ]
 
+#: BASIC facilities: the ordinary rooms. They issue no orders, earn nothing and
+#: change no rule — which is exactly why they are the expressive half of a
+#: stronghold. `FacilityInstance` has carried ``facility_type="basic"`` since
+#: the table was written and nothing ever created one, so every bastion in this
+#: project was a list of workshops with nowhere to sleep.
+#:
+#: Each entry is a KIND, not a room: the player names and describes their own,
+#: so one bastion's bedroom is "the master's cabin, all brass and green glass"
+#: and another's is "Ket's bunk". The kind is here for the cost and the space
+#: it takes; everything else about it belongs to whoever built it.
+_BASIC: List[Dict] = [
+    {"slug": "bedroom", "name": "Bedroom", "space": "cramped",
+     "desc": "Somewhere to sleep. Where the people who live here actually live."},
+    {"slug": "dining-room", "name": "Dining Room", "space": "roomy",
+     "desc": "A table long enough to seat the household and its guests."},
+    {"slug": "parlor", "name": "Parlor", "space": "cramped",
+     "desc": "A room for sitting, talking and receiving anyone who calls."},
+    {"slug": "kitchen", "name": "Kitchen", "space": "roomy",
+     "desc": "Hearth, larder and the work of feeding everyone under this roof."},
+    {"slug": "storage", "name": "Storage", "space": "roomy",
+     "desc": "Cellar, hold or lumber room: where everything else ends up."},
+    {"slug": "courtyard", "name": "Courtyard", "space": "vast",
+     "desc": "Open ground within the walls — a yard, a deck, a garden square."},
+]
+
+BASIC_FACILITIES: Dict[str, Dict] = {
+    f["slug"]: {**f, "type": "basic", "min_level": 0, "orders": [],
+                "source": OWNED_SOURCE} for f in _BASIC
+}
+
+
 # Indexed by slug for fast lookup, with source tag applied.
 FACILITIES: Dict[str, Dict] = {
     f["slug"]: {**f, "type": "special", "source": OWNED_SOURCE} for f in _FACILITIES
@@ -151,7 +182,46 @@ def propulsion_facilities() -> List[Dict]:
 
 
 def get_facility(slug: str) -> Optional[Dict]:
-    return FACILITIES.get(slug)
+    """A facility by slug, special or basic."""
+    return FACILITIES.get(slug) or BASIC_FACILITIES.get(slug)
+
+
+def basic_facilities() -> List[Dict]:
+    """The ordinary rooms, which every bastion may have from the start."""
+    return list(BASIC_FACILITIES.values())
+
+
+def tiers_unlocked(level: int) -> int:
+    """How many facility tiers a character of ``level`` has reached."""
+    return sum(1 for t in FACILITY_TIER_LEVELS if level >= t)
+
+
+def special_allowance(level: int) -> int:
+    """How many SPECIAL facilities this character may hold.
+
+    A level entitlement, not a purchase. The tier levels are the rule and the
+    per-tier counts are config, so a table running a generous game turns one
+    knob rather than editing a list. Gold still decides whether you can afford
+    the facility your level entitles you to; it has never decided how many.
+    """
+    from game_config import get_config
+    cfg = get_config().bastion
+    tiers = tiers_unlocked(level)
+    if tiers <= 0:
+        return 0
+    return int(cfg.special_facilities_at_start
+               + cfg.special_facilities_per_tier * (tiers - 1))
+
+
+def basic_allowance(level: int) -> int:
+    """How many BASIC rooms this character may hold. Same shape, own knobs."""
+    from game_config import get_config
+    cfg = get_config().bastion
+    tiers = tiers_unlocked(level)
+    if tiers <= 0:
+        return 0
+    return int(cfg.basic_facilities_at_start
+               + cfg.basic_facilities_per_tier * (tiers - 1))
 
 
 def facilities_for_level(level: int) -> List[Dict]:

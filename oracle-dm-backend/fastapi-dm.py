@@ -7980,7 +7980,11 @@ def _bastion_rooms(place_slug: str) -> list[str]:
         out: list[str] = []
         for r in rows:
             cat = get_facility(r.facility_slug) or {}
-            out.append(str(cat.get("name") or r.facility_slug).lower())
+            # The INSTANCE's name first: a basic room is named by whoever built
+            # it, and labelling their compartment "Bedroom" on the board throws
+            # away the one thing they were asked for. A special facility's
+            # instance name is the catalogue's anyway, so this costs nothing.
+            out.append(str(r.name or cat.get("name") or r.facility_slug).lower())
         return out
     except Exception as e:
         print(f"[vtt] bastion rooms unavailable: {e}")
@@ -20059,16 +20063,53 @@ def _activity_bastion(session_id: str, user_id: str) -> Optional[dict]:
         have = s.exec(select(Bastion).where(
             Bastion.character_id == char.id)).first()
         mine = None
+        held_sp = held_ba = 0
         if have is not None:
-            rooms = s.exec(select(FacilityInstance).where(
+            inst = s.exec(select(FacilityInstance).where(
                 FacilityInstance.bastion_id == have.id)).all()
+            held_sp = sum(1 for r in inst if r.facility_type != "basic")
+            held_ba = sum(1 for r in inst if r.facility_type == "basic")
             mine = {"id": have.id, "name": have.name,
                     "kind": ("airship" if have.airship_id else
                              "mobile" if have.vehicle_kind else "keep"),
-                    "facilities": [r.facility_slug for r in rooms]}
-    out = _bb.plan(level, purse_gp=gold, vessels=VESSELS)
+                    "facilities": [r.facility_slug
+                                   for r in inst if r.facility_type != "basic"],
+                    # Named rooms, by the names their owner gave them.
+                    "rooms": [{"slug": r.facility_slug, "name": r.name}
+                              for r in inst if r.facility_type == "basic"],
+                    "notes": have.notes or ""}
+    # The SAME plan whether you are raising one or adding to one. A stronghold
+    # is never finished — the rules hand out another special facility at 9, 13
+    # and 17 — so the screen's second visit is the first visit with the slots
+    # already spent, not a read-only card saying you have one.
+    out = _bb.plan(level, purse_gp=gold, vessels=VESSELS,
+                   held_special=held_sp, held_basic=held_ba)
     out["existing"] = mine
     return out
+
+
+def _extend_place_look(place_slug: Optional[str], want) -> None:
+    """Fold newly named rooms into the place's own authored description.
+
+    APPENDED, never replaced: the description is the owner's words and a later
+    visit adding a kitchen must not overwrite what they wrote about the hall.
+    """
+    if not place_slug:
+        return
+    said = [r.name.strip() for r in getattr(want, "rooms", ()) if r.name.strip()]
+    if not said:
+        return
+    try:
+        ent = world.get_entity(place_slug)
+        if ent is None:
+            return
+        attrs = dict(getattr(ent, "attributes", None) or {})
+        have = str(attrs.get("description") or "")
+        attrs["description"] = (have + ("; " if have else "")
+                                + ", ".join(said))[:600]
+        world.upsert_entity(ent.name, ent.type, slug=ent.slug, attributes=attrs)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[bastion] place look not extended: {e}")
 
 
 def _activity_bastion_build(session_id: str, user_id: str,
@@ -20091,6 +20132,11 @@ def _activity_bastion_build(session_id: str, user_id: str,
         description=str(choice.get("description") or "").strip()[:400],
         motif=str(choice.get("motif") or "").strip()[:200],
         facilities=tuple(str(f) for f in (choice.get("facilities") or [])),
+        rooms=tuple(_bb.Room(
+            slug=str((r or {}).get("slug") or "bedroom"),
+            name=str((r or {}).get("name") or "").strip()[:80],
+            description=str((r or {}).get("description") or "").strip()[:200])
+            for r in (choice.get("rooms") or [])),
         vessel_slug=str(choice.get("vessel_slug") or ""),
         vehicle_kind=str(choice.get("vehicle_kind") or "").strip()[:80],
     )
@@ -20098,16 +20144,58 @@ def _activity_bastion_build(session_id: str, user_id: str,
         char = s.get(Character, char_id)
         if char is None:
             return {"ok": False, "detail": "No character."}
-        if s.exec(select(Bastion).where(
-                Bastion.character_id == char.id)).first():
-            return {"ok": False,
-                    "detail": f"{char.name} already owns a bastion."}
+        have = s.exec(select(Bastion).where(
+            Bastion.character_id == char.id)).first()
+        held_sp = held_ba = 0
+        if have is not None:
+            inst = s.exec(select(FacilityInstance).where(
+                FacilityInstance.bastion_id == have.id)).all()
+            held_sp = sum(1 for r in inst if r.facility_type != "basic")
+            held_ba = sum(1 for r in inst if r.facility_type == "basic")
         purse = _purse_of(char)
         gold = to_cp(purse) / 100.0
         verdict = _bb.check(want, int(char.level or 1), purse_gp=gold,
-                            vessels=VESSELS)
+                            vessels=VESSELS,
+                            held_special=held_sp, held_basic=held_ba,
+                            extending=have is not None)
         if not verdict.ok:
             return {"ok": False, "detail": " ".join(verdict.reasons)}
+
+        # ADDING to one that exists. The rules make a bastion something you go
+        # on building — another special facility at 9, 13 and 17 — so the
+        # second visit is an extension, and refusing it (which is what this did)
+        # meant a level-17 character was living in the two rooms they could
+        # afford at level 5.
+        if have is not None:
+            if not (want.facilities or want.rooms):
+                return {"ok": False,
+                        "detail": f"{have.name} is already built. Choose "
+                                  f"something to add to it."}
+            for slug in dict.fromkeys(want.facilities):
+                cat = get_facility(slug) or {}
+                s.add(FacilityInstance(
+                    bastion_id=have.id, facility_slug=slug,
+                    name=cat.get("name", slug), facility_type="special",
+                    space=cat.get("space")))
+            for room in want.rooms:
+                cat = get_facility(room.slug) or {}
+                s.add(FacilityInstance(
+                    bastion_id=have.id, facility_slug=room.slug,
+                    name=room.name, facility_type="basic",
+                    space=cat.get("space")))
+            _write_purse(char, subtract_cost(purse, gp_to_cp(verdict.cost_gp)))
+            s.add(char)
+            s.commit()
+            added = {"id": have.id, "name": have.name,
+                     "cost_gp": verdict.cost_gp,
+                     "facilities": list(dict.fromkeys(want.facilities)),
+                     "rooms": [r.name for r in want.rooms],
+                     "place_slug": have.place_slug}
+            # Rooms somebody named are part of what this place IS, so they join
+            # the description the renderers read rather than replacing it.
+            _extend_place_look(have.place_slug, want)
+            return {"ok": True, "bastion": added, "notes": verdict.notes,
+                    "added": True}
 
         ship_id = None
         if want.kind == "airship":
@@ -20137,12 +20225,21 @@ def _activity_bastion_build(session_id: str, user_id: str,
                 bastion_id=b.id, facility_slug=slug,
                 name=cat.get("name", slug), facility_type="special",
                 space=cat.get("space")))
+        # The ordinary rooms, under the names their owner gave them. The KIND
+        # is what the rules priced; the NAME is the whole reason to ask.
+        for room in want.rooms:
+            cat = get_facility(room.slug) or {}
+            s.add(FacilityInstance(
+                bastion_id=b.id, facility_slug=room.slug,
+                name=room.name, facility_type="basic",
+                space=cat.get("space")))
         _write_purse(char, subtract_cost(purse, gp_to_cp(verdict.cost_gp)))
         s.add(char)
         s.commit()
         built = {"id": b.id, "name": b.name, "kind": want.kind,
                  "cost_gp": verdict.cost_gp,
-                 "facilities": list(dict.fromkeys(want.facilities))}
+                 "facilities": list(dict.fromkeys(want.facilities)),
+                 "rooms": [r.name for r in want.rooms]}
     # The world learns it exists. A bastion is a PLACE — that is what lets the
     # party be inside it, lets it be somewhere, and (for a flying one) lets it
     # move without the world layer learning a new idea.
@@ -20169,6 +20266,18 @@ def _activity_bastion_build(session_id: str, user_id: str,
         if want.description or want.motif:
             world.record_lore(ent.slug, reason=_bb.describe(want, vessels=VESSELS))
         built["place_slug"] = ent.slug
+        # WRITE IT BACK. The row is what every later question asks — where the
+        # party is, whether this place is somebody's bastion, which rooms a
+        # board aboard it should be given (`_bastion_rooms` keys on exactly
+        # this column). Returning the slug to the client and not storing it
+        # left every bastion raised in the builder unfindable from its own
+        # place, and the failure is silent in both directions.
+        with Session(engine) as s2:
+            row = s2.get(Bastion, built["id"])
+            if row is not None and not row.place_slug:
+                row.place_slug = ent.slug
+                s2.add(row)
+                s2.commit()
     except Exception as e:                               # noqa: BLE001
         print(f"[bastion] world place failed: {e}")
     return {"ok": True, "bastion": built, "notes": verdict.notes}

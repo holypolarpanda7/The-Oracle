@@ -142,11 +142,20 @@ with Session(m.engine) as s:
     s.commit()
     s.refresh(b)
     for slug in ("armory", "barrack", "arcane-study"):
-        s.add(FacilityInstance(bastion_id=b.id, facility_slug=slug))
+        s.add(FacilityInstance(bastion_id=b.id, facility_slug=slug,
+                               name=slug.replace("-", " ")))
+    # A BASIC room, named by its owner. This is the case the board must not
+    # flatten: "Bedroom" is a floor plan and "the master cabin" is the thing
+    # they paid to have.
+    s.add(FacilityInstance(bastion_id=b.id, facility_slug="bedroom",
+                           facility_type="basic", name="the master cabin"))
     s.commit()
 
 rooms = m._bastion_rooms(PLACE)
-check(len(rooms) == 3,
+check("the master cabin" in rooms,
+      "a room keeps the name its owner gave it, all the way onto the board",
+      f"{rooms}")
+check(len(rooms) == 4,
       "the backend reads the facilities off the bastion that IS this place",
       f"{rooms}")
 check(not m._bastion_rooms("some-tavern"),

@@ -32,6 +32,12 @@ def facility_cost_gp(slug: str) -> float:
     return round(cfg.special_facility_base_cost * cfg.cost_multiplier, 4)
 
 
+def basic_facility_cost_gp(slug: str = "") -> float:
+    """Cost to add a BASIC room. Cheap on purpose: a bedroom is not a smithy."""
+    cfg = get_config().bastion
+    return round(cfg.basic_facility_base_cost * cfg.cost_multiplier, 4)
+
+
 def can_own_bastion(level: int) -> bool:
     return level >= min_bastion_level()
 

@@ -75,6 +75,20 @@ class BastionConfig:
     gold_income_multiplier: float = 1.0   # scales facility gp income
     special_facility_base_cost: int = 5000  # baseline gp for a special facility
     min_level: int = 5                    # character level a bastion unlocks at
+    # How many SPECIAL facilities a character may hold: this many on acquiring
+    # a bastion, and one more at each later tier level (see
+    # ``bastion.catalog.FACILITY_TIER_LEVELS``). The count is a LEVEL
+    # entitlement, not a purchase — gold decides whether you can afford the one
+    # your level entitles you to, never how many you get.
+    special_facilities_at_start: int = 2
+    special_facilities_per_tier: int = 1
+    # BASIC facilities: the ordinary rooms of a stronghold. They issue no
+    # orders and earn nothing, they are named and described by whoever builds
+    # them, and they are the reason a bastion is somebody's home rather than a
+    # list of workshops.
+    basic_facility_base_cost: int = 500
+    basic_facilities_at_start: int = 4
+    basic_facilities_per_tier: int = 2
 
 
 @dataclass

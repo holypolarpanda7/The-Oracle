@@ -27,8 +27,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
-from .catalog import facilities_for_level, get_facility, propulsion_facilities
-from .turn import can_own_bastion, facility_cost_gp, min_bastion_level
+from .catalog import (basic_allowance, basic_facilities, facilities_for_level,
+                      get_facility, propulsion_facilities, special_allowance)
+from .turn import (basic_facility_cost_gp, can_own_bastion, facility_cost_gp,
+                   min_bastion_level)
 
 #: What a bastion can be built INTO. Not a rules distinction — the model has
 #: carried `vehicle_kind` and `airship_id` since mobile bastions went in — but
@@ -53,6 +55,21 @@ DEFAULT_BUDGET_GP = 0.0
 
 
 @dataclass
+class Room:
+    """One BASIC room: a kind the rules price, and a name that is the player's.
+
+    The kind is why it costs what it costs and takes the space it takes. The
+    name is the entire point — a bedroom is a rules object and "the master's
+    cabin, all brass and green glass" is somebody's home, and nothing here
+    checks, trims or templates the second one.
+    """
+
+    slug: str = "bedroom"
+    name: str = ""
+    description: str = ""
+
+
+@dataclass
 class Choice:
     """What a player asked for. Every expressive field is free text."""
 
@@ -63,6 +80,8 @@ class Choice:
     description: str = ""
     motif: str = ""
     facilities: tuple[str, ...] = ()
+    #: The ordinary rooms, each named by whoever built it.
+    rooms: tuple[Room, ...] = ()
     #: For a flying bastion: which vessel out of `airships/catalog.py`.
     vessel_slug: str = ""
     #: For a travelling one: what it IS, in the player's words ("a barge", "a
@@ -99,14 +118,21 @@ def kinds_for(level: int) -> list[dict]:
 
 
 def plan(level: int, *, purse_gp: float = DEFAULT_BUDGET_GP,
-         vessels: Optional[dict] = None) -> dict:
+         vessels: Optional[dict] = None,
+         held_special: int = 0, held_basic: int = 0) -> dict:
     """Everything a builder screen needs to offer, for THIS character.
 
     Facilities are the catalogue's own, filtered to what the level unlocks and
     priced through the live config — so a table running the gritty preset sees
     gritty prices, and nobody has to know that here.
+
+    ``held_special``/``held_basic`` are what this bastion ALREADY has, so the
+    same call serves the second visit: a stronghold is never finished, it gains
+    a special facility at each tier level, and the screen has to be able to say
+    how many slots are left rather than how many exist.
     """
     per = facility_cost_gp("")
+    basic_per = basic_facility_cost_gp("")
     movers = {f["slug"] for f in propulsion_facilities()}
     facs = [{
         "slug": f["slug"], "name": f["name"], "space": f.get("space", ""),
@@ -122,21 +148,35 @@ def plan(level: int, *, purse_gp: float = DEFAULT_BUDGET_GP,
               "cargo_tons": v.get("cargo_tons"),
               "cost_gp": float(v.get("cost_gp") or 0)}
              for k, v in sorted((vessels or {}).items())]
+    basics = [{"slug": f["slug"], "name": f["name"], "space": f.get("space", ""),
+               "desc": f.get("desc", ""), "cost_gp": basic_per}
+              for f in basic_facilities()]
     return {
         "level": int(level),
         "can_own": can_own_bastion(level),
         "min_level": min_bastion_level(),
         "purse_gp": float(purse_gp),
         "cost_per_facility_gp": per,
+        "cost_per_room_gp": basic_per,
         "kinds": kinds_for(level),
         "facilities": facs,
+        # The ordinary rooms, and how many of each sort are still owed to this
+        # character. HOW MANY is a level entitlement — the rules hand out
+        # special facilities at 5, 9, 13 and 17 — and the builder used to let
+        # anybody with the gold buy the lot, which is a shop, not a stronghold.
+        "basics": basics,
+        "special_slots": special_allowance(level),
+        "special_used": int(held_special),
+        "basic_slots": basic_allowance(level),
+        "basic_used": int(held_basic),
         "vessels": fleet,
     }
 
 
 def price(choice: Choice, *, vessels: Optional[dict] = None) -> float:
-    """What this choice costs in gold. Facilities plus the hull, if any."""
+    """What this choice costs in gold: facilities, rooms, and the hull if any."""
     total = facility_cost_gp("") * len(set(choice.facilities))
+    total += basic_facility_cost_gp("") * len(choice.rooms)
     if choice.kind == "airship" and choice.vessel_slug:
         v = (vessels or {}).get(choice.vessel_slug) or {}
         total += float(v.get("cost_gp") or 0)
@@ -144,12 +184,20 @@ def price(choice: Choice, *, vessels: Optional[dict] = None) -> float:
 
 
 def check(choice: Choice, level: int, *, purse_gp: float = 0.0,
-          vessels: Optional[dict] = None) -> Verdict:
+          vessels: Optional[dict] = None,
+          held_special: int = 0, held_basic: int = 0,
+          extending: bool = False) -> Verdict:
     """May this be built? The ONE place that decides.
 
     Errs toward refusing loudly and early rather than half-building something:
     a stronghold is expensive, and a player who is told afterwards that their
     gold went on a facility their level cannot use has been robbed by a bug.
+
+    ``extending`` is adding to a bastion that already exists, which the rules
+    make the normal case — another special facility arrives at 9, 13 and 17.
+    The questions that were settled when it was RAISED are not asked again: it
+    already has a name, it is already a keep or a ship, and if it flies it
+    already has a hull and something to move it.
     """
     reasons: list[str] = []
     notes: list[str] = []
@@ -157,14 +205,44 @@ def check(choice: Choice, level: int, *, purse_gp: float = 0.0,
     if not can_own_bastion(level):
         reasons.append(
             f"A bastion needs level {min_bastion_level()}; you are {level}.")
-    if not (choice.name or "").strip():
-        reasons.append("It needs a name.")
-    if choice.kind not in {k for k, _n, _b in KINDS}:
-        reasons.append(f"'{choice.kind}' is not something a bastion can be.")
+    if not extending:
+        if not (choice.name or "").strip():
+            reasons.append("It needs a name.")
+        if choice.kind not in {k for k, _n, _b in KINDS}:
+            reasons.append(f"'{choice.kind}' is not something a bastion can be.")
 
     picked = list(dict.fromkeys(choice.facilities))
     if len(picked) != len(choice.facilities):
         notes.append("The same facility was chosen twice; it counts once.")
+
+    # HOW MANY is the character's LEVEL talking, not their purse. The rules
+    # hand out special facilities at 5, 9, 13 and 17 and this was checked by
+    # nothing at all, so a rich level-5 character could buy every facility in
+    # the book at once and a poor level-17 one was entitled to nothing. That is
+    # a shop, not a stronghold.
+    slots = special_allowance(level)
+    if len(picked) + held_special > slots:
+        reasons.append(
+            f"A level-{level} bastion holds {slots} special facilit"
+            f"{'y' if slots == 1 else 'ies'}"
+            + (f" and yours already has {held_special}" if held_special else "")
+            + f"; that is {len(picked) + held_special}. More come at "
+            f"levels 9, 13 and 17.")
+    room_slots = basic_allowance(level)
+    if len(choice.rooms) + held_basic > room_slots:
+        reasons.append(
+            f"A level-{level} bastion holds {room_slots} ordinary rooms"
+            + (f" and yours already has {held_basic}" if held_basic else "")
+            + f"; that is {len(choice.rooms) + held_basic}.")
+    for room in choice.rooms:
+        if get_facility(room.slug) is None:
+            reasons.append(f"There is no room called '{room.slug}'.")
+        elif not (room.name or "").strip():
+            # A room the player did not name is the one thing the expressive
+            # half CAN refuse, because an unnamed room is not an expression —
+            # it is a blank the screen will render as nothing.
+            reasons.append(
+                f"The {get_facility(room.slug)['name'].lower()} needs a name.")
     for slug in picked:
         cat = get_facility(slug)
         if cat is None:
@@ -176,7 +254,8 @@ def check(choice: Choice, level: int, *, purse_gp: float = 0.0,
                 f"{cat['name']} needs level {need}; you are {level}.")
 
     movers = {f["slug"] for f in propulsion_facilities()}
-    if choice.kind in ("mobile", "airship") and not (set(picked) & movers):
+    if (not extending and choice.kind in ("mobile", "airship")
+            and not (set(picked) & movers)):
         # The rule mobile bastions have always had, said at the moment it can
         # still be acted on rather than the first time somebody tries to leave.
         have = ", ".join(sorted(
@@ -184,9 +263,9 @@ def check(choice: Choice, level: int, *, purse_gp: float = 0.0,
         reasons.append(
             f"A bastion that means to travel needs something aboard that can "
             f"move it ({have or 'a propulsion facility'}).")
-    if choice.kind == "airship" and not choice.vessel_slug:
+    if not extending and choice.kind == "airship" and not choice.vessel_slug:
         reasons.append("A flying bastion needs a vessel to be built into.")
-    if choice.kind == "keep" and (set(picked) & movers):
+    if not extending and choice.kind == "keep" and (set(picked) & movers):
         notes.append("A fixed place has no use for propulsion; it will sit idle.")
 
     cost = price(choice, vessels=vessels)
@@ -224,7 +303,16 @@ def describe(choice: Choice, *, vessels: Optional[dict] = None) -> str:
     elif choice.kind == "mobile" and choice.vehicle_kind.strip():
         bits.append(f"built into {choice.vehicle_kind.strip()}")
     named = [get_facility(s) for s in dict.fromkeys(choice.facilities)]
-    rooms = ", ".join(f["name"].lower() for f in named if f)
-    if rooms:
-        bits.append(f"with {rooms}")
+    facs = ", ".join(f["name"].lower() for f in named if f)
+    if facs:
+        bits.append(f"with {facs}")
+    # The ordinary rooms, by the names their owner gave them rather than by
+    # their kind. "A bedroom" describes a floor plan; "the master's cabin, all
+    # brass and green glass" describes somebody's home, and the second is what
+    # the world and the picture should hear.
+    said = [r.name.strip() + (f" ({r.description.strip()})"
+                              if r.description.strip() else "")
+            for r in choice.rooms if (r.name or "").strip()]
+    if said:
+        bits.append("rooms: " + ", ".join(said))
     return "; ".join(bits)

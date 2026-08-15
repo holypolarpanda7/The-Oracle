@@ -843,13 +843,25 @@ export interface BastionPlan {
   min_level: number;
   purse_gp: number;
   cost_per_facility_gp: number;
+  cost_per_room_gp: number;
   kinds: { slug: string; name: string; blurb: string;
            available: boolean; why: string }[];
   facilities: BastionFacilityOption[];
+  /** The ordinary rooms. Priced and sized by the rules, NAMED by the player. */
+  basics: { slug: string; name: string; space: string; desc: string;
+            cost_gp: number }[];
+  /** How many of each the LEVEL entitles you to, and how many are spent.
+   *  The count is never a purchase — see bastion/catalog.special_allowance. */
+  special_slots: number;
+  special_used: number;
+  basic_slots: number;
+  basic_used: number;
   vessels: BastionVesselOption[];
-  /** You only get one. Present once it is raised. */
+  /** One bastion, and it is never finished: a later visit ADDS to this. */
   existing?: { id: number; name: string; kind: string;
-               facilities: string[] } | null;
+               facilities: string[];
+               rooms: { slug: string; name: string }[];
+               notes?: string } | null;
 }
 
 export type ServerEvent =
@@ -861,9 +873,10 @@ export type ServerEvent =
   | { t: "shop"; shop: WorldShop | null }
   | { t: "bastion"; plan: BastionPlan | null }
   | { t: "bastion_built"; ok: boolean; detail?: string;
-      bastion?: { id: number; name: string; kind: string; cost_gp: number;
-                  facilities: string[]; place_slug?: string };
-      notes?: string[] }
+      bastion?: { id: number; name: string; kind?: string; cost_gp: number;
+                  facilities: string[]; rooms?: string[];
+                  place_slug?: string };
+      notes?: string[]; added?: boolean }
   // The DM writing, live. A PREVIEW: hook-free (see narration/stream.py) but
   // not the authoritative text — dice are still unrolled and speech is not yet
   // split out — so `narration_end` discards it and the real blocks follow.

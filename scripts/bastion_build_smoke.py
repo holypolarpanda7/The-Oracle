@@ -165,6 +165,13 @@ check(abs(left_gp - (60000 - res["bastion"]["cost_gp"])) < 1,
       f"60000 -> {left_gp:g} gp after {res['bastion']['cost_gp']:g}")
 check("whale-shaped" in (b.notes or ""),
       "the player's own words are on the bastion")
+with Session(m.engine) as s:
+    _b = s.exec(select(Bastion)).first()
+check(_b.place_slug == res["bastion"].get("place_slug"),
+      "the place is written BACK onto the bastion row",
+      "every later question keys on that column — including which rooms a "
+      "board aboard it gets — and returning the slug without storing it left "
+      "a bastion unfindable from its own place, silently, in both directions")
 check(bool(res["bastion"].get("place_slug")),
       "and the world has a PLACE for it — which is what lets the party be "
       "inside it, and a flying one move without the world layer learning a "
@@ -206,11 +213,66 @@ check(style_for(m._place_look_words(slug)) == "steampunk",
 check(style_for("the deck of a ship") == "",
       "a vessel nobody described still lets the seed decide")
 
-print("\n\033[1m6. and only one\033[0m")
-again = m._activity_bastion_build(SESSION, USER, {
-    "kind": "keep", "name": "Second Hall", "facilities": []})
-check(not again.get("ok") and "already" in (again.get("detail") or "").lower(),
-      "a second bastion is refused", f"{again.get('detail')}")
+print("\n\033[1m6. a stronghold is never finished\033[0m")
+# The rules answer the question the first version of this builder ducked: a
+# bastion GAINS a special facility at 9, 13 and 17, so the second visit is an
+# extension, not a locked card. Refusing it left a level-17 character living in
+# the two rooms they could afford at level 5.
+p2 = m._activity_bastion(SESSION, USER)
+check(p2["special_used"] == 2 and p2["special_slots"] == 3,
+      "the screen comes back knowing what is already built",
+      f"{p2['special_used']} of {p2['special_slots']} special, "
+      f"{p2['basic_used']} of {p2['basic_slots']} rooms")
+
+more = m._activity_bastion_build(SESSION, USER, {
+    "facilities": ["smithy"],
+    "rooms": [{"slug": "bedroom", "name": "the master cabin",
+               "description": "all brass and green glass"},
+              {"slug": "kitchen", "name": "Ket's galley"}]})
+check(more.get("ok") and more.get("added"),
+      "and you can add to it", f"{more.get('detail','')}")
+with Session(m.engine) as s:
+    inst = s.exec(select(FacilityInstance)).all()
+    ent2 = m.world.get_entity(slug)
+check(sum(1 for r in inst if r.facility_type == "basic") == 2,
+      "the ordinary rooms are installed as BASIC facilities",
+      "`facility_type='basic'` has been in the table since it was written and "
+      "nothing ever created one, so every bastion here was a list of workshops "
+      "with nowhere to sleep")
+check(any(r.name == "the master cabin" for r in inst),
+      "under the names their owner gave them, not their kind",
+      "'a bedroom' is a floor plan; 'the master cabin' is somebody's home")
+check("master cabin" in str((getattr(ent2, "attributes", None) or {})
+                            .get("description") or ""),
+      "and the new rooms join the look the renderers read — appended, never "
+      "replacing what they wrote about the hall")
+
+print("\n\033[1m7. how many is the LEVEL talking, not the purse\033[0m")
+over = m._activity_bastion_build(SESSION, USER, {"facilities": ["library"]})
+check(not over.get("ok") and "level" in (over.get("detail") or "").lower(),
+      "a fourth special facility is refused at level 11 — with money in hand",
+      f"{over.get('detail')}")
+check("9, 13 and 17" in (over.get("detail") or ""),
+      "…and the refusal says when the next one comes")
+v = B.check(B.Choice(kind="keep", name="Hollowhall",
+                     facilities=("armory", "barrack", "smithy", "library")),
+            5, purse_gp=999999, vessels=VESSELS)
+check(not v.ok and any("holds 2" in r for r in v.reasons),
+      "a rich level-5 character cannot buy the whole book",
+      f"{v.reasons} — this was checked by NOTHING; gold decided the count, "
+      f"which is a shop rather than a stronghold")
+v = B.check(B.Choice(kind="keep", name="Hollowhall", facilities=("armory",),
+                     rooms=(B.Room("bedroom", ""),)), 11,
+            purse_gp=999999, vessels=VESSELS)
+check(not v.ok and any("needs a name" in r for r in v.reasons),
+      "and an UNNAMED room is the one thing the expressive half refuses",
+      "a blank is not an expression; everything a player actually writes is "
+      "taken as written")
+
+print("\n\033[1m8. and still only one bastion\033[0m")
+check(not m._activity_bastion_build(SESSION, USER, {
+          "kind": "keep", "name": "Second Hall"}).get("ok"),
+      "a bare second raising adds nothing and says so")
 plan2 = m._activity_bastion(SESSION, USER)
 check(plan2 and plan2.get("existing", {}).get("name") == "The Gilded Sow",
       "and the screen shows what you already hold instead of an empty form")
