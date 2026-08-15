@@ -204,6 +204,36 @@ class Skin:
     #: a BEACH — surf, sand and palm fronds. What a material must not be is a
     #: negative, and it belongs next to the material.
     negative: str = ""
+    #: What this skin keeps being MISTAKEN FOR, for the render's negative.
+    #:
+    #: Distinct from ``negative`` above, which is about the swatch photograph.
+    #: This is about the painting: the catalogue already says what a thing IS
+    #: (``words``), and that turns out not to be enough — a taproom's posts came
+    #: back as lit candles at every shape and at 1.6 prompt weight leading the
+    #: prompt, and one clause in the NEGATIVE fixed them outright.
+    #:
+    #: It lives on the SKIN because a negative applies to the whole picture and
+    #: therefore must only be said when this material is actually on the board.
+    #: "No stone floor" is right in a taproom and catastrophic in a crypt, whose
+    #: floor is stone; the same rule that took `hearth` and `window` out of the
+    #: shared negative. Same shape as ``Grid.absent_terrain_negative``: derived
+    #: from what is present, never a global.
+    #:
+    #: **Only ever an OBJECT, never a MATERIAL.** Measured both ways on the
+    #: same board. "candles" for a post the model keeps substituting: the
+    #: flames go and nothing else moves. "flagstones, stone floor, paving…" for
+    #: a floor that came back stone: the floor went GREEN, and the street doing
+    #: the same to "planking" turned its surround green too. Forbidding a
+    #: material does not redirect the picture toward the right material, it
+    #: pushes the whole palette away from that one and the model lands wherever
+    #: it likes.
+    #:
+    #: The distinction that predicts it: a post HAS a silhouette with a correct
+    #: reading the model was missing, so removing the wrong reading recovers the
+    #: right one. A flat floor carries no shape information at all, so removing
+    #: an option supplies nothing in its place. Same reason the mountain pass
+    #: got worse when houses and doors were forbidden.
+    misread: str = ""
     #: Draw at exactly the height given, with no per-instance jitter.
     #:
     #: Jitter is life for a rock face and a lie for anything a neighbouring
@@ -839,8 +869,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
                "joints; it is not a lawn and not open grass"),
     Skin("field-stone", "granite",
          "raw grey granite, close-up of the bare fractured rock face",
-         words="the low rocks are lichened granite boulders, waist high, "
-               "NOT crates and NOT boxes",
+         words="the low rocks are lichened granite boulders, waist high",
+         misread="crates, boxes, chests, barrels",
          variants=_FIELD_STONE),
     Skin("scree", "scree",
          "close-up of loose shale and broken slate scree",
@@ -937,8 +967,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     Skin("cobbles", "cobble",
          "close-up of a worn cobbled street surface, rounded granite setts and "
          "the gaps between them",
-         words="the roadway is worn granite cobbles, rutted and greasy with "
-               "use, NOT planking and NOT floorboards"),
+         words="the roadway is worn granite cobbles, rutted and greasy with use",
+         misread=""),
     # A TAPROOM, and the three things a room the model already knows still gets
     # wrong. The floor is the reason this set exists: with the ground-only init
     # (see art._ground_init) a built board's floor finally has a channel, and a
@@ -948,8 +978,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     Skin("taproom-floor", "taproom-boards",
          "close-up of a worn oak plank floor, wide dark boards running one way, "
          "warm mid brown, scuffed and stained, black gaps between the boards",
-         words="the floor is wide oak boards, dark with age and spilled ale, "
-               "NOT flagstones and NOT paving"),
+         words="the floor is wide oak boards, dark with age and spilled ale",
+         misread=""),
     Skin("taproom-wall", "plaster-timber",
          "close-up of a timber-framed wall, white lime plaster between dark "
          "oak beams",
@@ -968,8 +998,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "a flat expanse of oiled timber, straight close grain all running one "
          "way, no corners and no edges",
          words="square oak posts carry the ceiling beams, chamfered and dark "
-               "with smoke, a brace out to the beam at the head of each — they "
-               "are TIMBER POSTS, not stone columns and not candles",
+               "with smoke, a brace out to the beam at the head of each",
+         misread="candles, candlestick, candelabra, lit candle, wax candle",
          variants=_POST, exact=True),
     # What a watchtower is BUILT of, and the DM's narration decides which — a
     # crossing in deep forest gets a timber tower and a mountain road a stone
@@ -1464,6 +1494,21 @@ def substances() -> dict[str, str]:
     for sk in SKINS.values():
         out.setdefault(sk.substance, sk.art)
     return out
+
+
+def misread_for(names: Sequence[str]) -> str:
+    """What the painter must NOT read these materials as.
+
+    Only for skins actually PRESENT — the whole point of hanging it on the skin
+    rather than on the board is that a negative is global to the picture, so a
+    taproom may forbid flagstones without a crypt losing its floor.
+    """
+    seen: list[str] = []
+    for n in names:
+        sk = SKINS.get(n or "")
+        if sk and sk.misread and sk.misread not in seen:
+            seen.append(sk.misread)
+    return ", ".join(seen)
 
 
 def words_for(names: Sequence[str]) -> str:

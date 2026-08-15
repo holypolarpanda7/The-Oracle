@@ -658,7 +658,13 @@ def iso_denoise_for(grid: Grid, skinned: bool = False) -> float:
 #: is being handed `segment`. Depth could only ever say where a thing is and how
 #: tall, so a two-foot shaft was a post, a candle or a bollard; it painted
 #: candles. Every conditioned board changes.
-ISOBOARD_REV = 29
+#: Rev 30: `Skin.misread` — what a material keeps being mistaken FOR, said in
+#: the NEGATIVE and only on boards wearing that skin. Measured: it is what
+#: stopped a taproom's posts being candles, where the shape, the prompt weight
+#: and regional prompting all failed. Three skins also had their negations
+#: taken OUT of their positive words ("NOT flagstones", "NOT planking", "NOT
+#: crates"), which in a positive prompt asks for the thing.
+ISOBOARD_REV = 30
 
 
 #: Retained for callers that still ask, and for the gallery's reporting. The
@@ -971,8 +977,12 @@ def render_iso_board(gen: GeneratedMap, *, store=None, name: str = "",
             controls=seg_controls, regions=region_conds,
             init_image=terrain,
             init_denoise=denoise,
+            # What the materials on THIS board keep being mistaken for. Same
+            # shape as `absent_terrain_negative`: derived from what is present,
+            # never a global, because a negative applies to the whole picture.
             negative_extra=", ".join(p for p in (
-                gen.grid.absent_terrain_negative(), _ISO_NEGATIVE) if p),
+                gen.grid.absent_terrain_negative(),
+                _skins.misread_for(present), _ISO_NEGATIVE) if p),
         )
     except Exception as e:
         print(f"[vtt.art] iso board render failed: {e}")
@@ -1199,18 +1209,12 @@ _ISO_NEGATIVE = (
     # inside it.
     "people, person, figure, character, adventurer, creature, monster, "
     "miniature, text, label, caption, watermark, border, frame, user interface, "
-    "grid lines, arrows, top-down, overhead, floorplan, blueprint, "
-    # CANDLES, and this is a real exception to "naming a thing to forbid it is
-    # still naming it" rather than a contradiction of it. That lesson was
-    # measured on the mountain pass, where the negative was a broad CATEGORY
-    # (no houses, no doors, no village) on a board whose silhouette genuinely
-    # looked like a village — and the model just built the village out of
-    # something else. This is one specific object the model MISREADS: a
-    # taproom's posts came back as lit candles at every shape and every prompt
-    # weight, including the post clause at 1.6 leading the prompt. Forbidding
-    # the misreading works where forbidding the subject did not. Measured: same
-    # board, same seed, one clause — flames gone, posts stay.
-    "candles, candlestick, candelabra"
+    # NB no "candles" here either, for the same reason, and it was briefly
+    # added before being moved: forbidding them globally would take the candles
+    # out of a crypt that legitimately has them. What a MATERIAL is mistaken for
+    # belongs on the material — see `Skin.misread` and `misread_for` — so it is
+    # only ever said on a board actually wearing that skin.
+    "grid lines, arrows, top-down, overhead, floorplan, blueprint"
 )
 
 
