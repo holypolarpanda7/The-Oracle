@@ -186,7 +186,14 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    tactical layer already has `skyship`/`sky-islands` boards in the `fly` medium.
    Mobile bastions live in `bastion/mobile.py`: a bastion built into a vehicle
    travels if one of its facilities declares `propulsion`, and several helms
-   crewing in shifts stretch the 8-hour day toward 24.
+   crewing in shifts stretch the 8-hour day toward 24. **Raising one is
+   `bastion/build.py`**, and it splits in two on purpose: the CONSTRAINTS are
+   the game's, decided in one place so the builder screen and the DM cannot
+   disagree and re-checked on commit (the Quartermaster's rule — the server
+   prices the cart), and the EXPRESSION is the player's, validated by nothing.
+   A refusal always names what would fix it; something merely unwise (an engine
+   in a fixed hall) is a NOTE, because advice that blocks is a builder nobody
+   uses twice. The screen is `BastionBuilder.tsx`.
 
 ## Running
 - Backend: `uv run python oracle-dm-backend/fastapi-dm.py`
@@ -267,6 +274,13 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `skins` (what a square is MADE of versus what it DOES: a skin changes no
   rule, may reshape a quoted height but never restate it, a tent you can walk
   into, a watchtower top that is a real storey, a hold at -8 ft)
+- Bastion builder smoke test: `uv run python scripts/bastion_build_smoke.py`
+  (what the rules allow, what they refuse and how they say so, that nothing
+  argues with the player's description, and raising one against a real purse)
+- Vessel-rooms smoke test: `uv run python scripts/vessel_rooms_smoke.py` (from
+  the DM's own sentence: the hull decides how many compartments, the caller
+  names them, a bastion's facilities become its rooms, and the hold you divide
+  is still one you can walk)
 - Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
   (a god born in play becomes choosable in CC; an unmade one stops being offered)
 - Activity UI harnesses (Playwright, against the offline demo — run
@@ -557,6 +571,30 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   airship is slender and fine at BOTH ends — nothing about air rewards a
   transom — and you see its whole keel, so it gets a side half again as deep.
   `_hull(plan=)` and two deck skins.
+- **A ship has a CLASS, and from the inside it has ROOMS.** `_hull` took its
+  length and beam from the BOARD (`width - 2` by `height - 2`), so a two-crew
+  skiff and a forty-passenger cruiser were the same outline in the same frame
+  and only the water underneath told them apart. `vtt/vessels.py` is the
+  missing middle: length, beam, fineness and plan per class, DERIVED from a
+  catalogued vessel's own crew/passengers/cargo (the fleet is gitignored data,
+  so a hull table naming those vessels could not be committed) or rolled from
+  the seed. **The silhouette is what the painter is conditioned on**, so two
+  classes differing only in name would be two pictures of one ship, and a
+  vessel that will not fit keeps its PROPORTIONS rather than being clamped into
+  the board's own rectangle. The same complaint applies inboard: `_rig_ship`
+  built one deckhouse aft whatever it was rigging. **How many compartments is
+  the class's business** (`HullClass.compartments`), swept from the transom
+  forward one square at a time so the narrowing beam rations them; **what they
+  are CALLED can only come from the caller** (`generate_map(rooms=)`, the
+  `landmarks=` bargain), and for a bastion that flies the backend's
+  `_bastion_rooms` supplies the facilities its owner actually bought — read
+  there, not in `vtt/`, because the tactical layer must not know what a bastion
+  is. A trader is nine squares in the beam and holds ONE deckhouse, so the rest
+  go BELOW, divided by bulkheads that are ordinary walls with ordinary
+  doorways — and a hold must be built from the whole HULL, not from walkable
+  deck, or it comes out full of holes with the floor under a cabin stranded as
+  an island. A room is not a rule, so it lives in `notes`; it reaches
+  `state()`, the DM board, and the PNG's label chip on the drawn floor only.
 - **A timber watchtower is not a stone one in wood.** Drawn as a walled shelter
   in log cladding it came back a squat box with a door in it. It is four raked
   legs holding a platform up, open underneath — `structures._post_tower` — and
