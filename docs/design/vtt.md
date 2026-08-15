@@ -227,3 +227,44 @@ cd activity-ui && npm run build && node vtt-shot.mjs   # screenshot the overlay
   drag is a later nicety.
 * **Art alignment is approximate** by design; a wall painted at the wrong square
   is cosmetic, but a fussy DM will notice.
+
+## Conditioning the painted board: the arms, and how to run them
+
+Three channels now condition an isometric board, and they fail on different
+axes — which is why they are measured apart before being measured together.
+
+| channel | says | strong at | weak at |
+|---|---|---|---|
+| depth (`isocam.depth_image`) | where and how tall | everything geometric | what a thing IS |
+| segmentation (`vtt/segmap.py`) | which of ADE20K's 150 classes | small scattered objects, pixel-exact | anything outside those 150 nouns |
+| regions (`vtt/regions.py`) | this skin's own sentence, here | large contiguous areas, unlimited vocabulary | small scattered squares (attention masking works on the latent) |
+
+The arms, each a single command. `--force` is not optional — the art cache is
+keyed on the LAYOUT and knows nothing about conditioning, so a second arm is
+otherwise served the first arm's picture. Flags rather than environment
+variables on purpose: this runs under the Windows interpreter, and an env var
+that does not cross gives you arms that are bit-identical and look like a
+result.
+
+```bash
+P=./.venv/Scripts/python.exe
+S=scripts/scene_probe.py
+U=controlnet-union-promax-sdxl.safetensors
+ONLY="--only taproom,crypt,mountain-road,market --limit 4 --paint --force"
+
+$P $S $ONLY --tag base                          # today's shipping config
+$P $S $ONLY --tag union   --union $U            # the model swap, alone
+$P $S $ONLY --tag seg     --union $U --seg      # + what each square IS
+$P $S $ONLY --tag reg     --regional            # + a sentence per region
+$P $S $ONLY --tag both    --union $U --seg --regional
+```
+
+`union` exists to keep the comparison honest: swapping a dedicated depth net
+for a union model changes the depth conditioning too, so without that arm a
+better `seg` render could be the segmentation OR the different model.
+
+What each arm has to answer, on the taproom: are the posts still candles, is
+the bar visible, is the hearth a fireplace, and is the floor boards rather than
+flagstone. The crypt and the mountain pass are the regression guards — an
+interior that was already good, and the board that has historically punished
+every conditioning change.

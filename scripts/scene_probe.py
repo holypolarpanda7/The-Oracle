@@ -32,6 +32,7 @@ import argparse
 import io
 import sys
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -273,7 +274,7 @@ def _colour(code: str):
 
 
 def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False,
-          depth: bool = False) -> None:
+          depth: bool = False, arm: Optional[dict] = None) -> None:
     """Render the real battlemap for the first ``limit`` scenes.
 
     ``tag`` names the arm of an experiment and goes in the file name; ``force``
@@ -297,6 +298,18 @@ def paint(rows: list[dict], limit: int, tag: str = "", force: bool = False,
     seg_cn = getattr(img, "isoboard_seg_controlnet", "") or ""
     seg_str = float(getattr(img, "isoboard_seg_strength", 0.45))
     regional = bool(getattr(img, "isoboard_regional_prompt", False))
+    if arm:
+        if arm.get("union"):
+            cn, union = arm["union"], "depth"
+            seg_cn = arm["union"] if arm.get("seg") else ""
+        if arm.get("seg_strength") is not None:
+            seg_str = float(arm["seg_strength"])
+        if arm.get("regional"):
+            regional = True
+    print(f"  {D}arm: depth={cn or '-'}"
+          f"{' union=' + union if union else ''}"
+          f"{' +seg@' + str(seg_str) if seg_cn else ''}"
+          f"{' +regional' if regional else ''}{OFF}")
     if not cn:
         print("  no isoboard_controlnet configured — nothing to paint.")
         return
@@ -344,6 +357,19 @@ def main() -> int:
                     help="render past the cache (needed to compare two arms)")
     ap.add_argument("--depth", action="store_true",
                     help="also write the conditioning images beside the render")
+    # Experiment arms. COMMAND-LINE rather than environment on purpose: this
+    # script runs under the WINDOWS interpreter to reach ComfyUI, an env var
+    # does not cross into a Windows process without WSLENV, and three denoise
+    # arms once came back BIT-IDENTICAL because every one of them had silently
+    # used the default. An argv flag cannot go missing that way.
+    ap.add_argument("--union", default="",
+                    help="use this union ControlNet for depth (arm: the model "
+                         "swap, isolated from what it is asked to do)")
+    ap.add_argument("--seg", action="store_true",
+                    help="add the segmentation control image (needs --union)")
+    ap.add_argument("--seg-strength", type=float, default=None)
+    ap.add_argument("--regional", action="store_true",
+                    help="give each skin's words their own masked region")
     a = ap.parse_args()
 
     rows = decisions()
@@ -353,7 +379,9 @@ def main() -> int:
     if a.paint:
         want = [w.strip() for w in a.only.split(",") if w.strip()]
         paint([r for r in rows if r["label"] in want] if want else rows,
-              a.limit, tag=a.tag, force=a.force, depth=a.depth)
+              a.limit, tag=a.tag, force=a.force, depth=a.depth,
+              arm={"union": a.union, "seg": a.seg,
+                   "seg_strength": a.seg_strength, "regional": a.regional})
     return 0
 
 
