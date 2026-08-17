@@ -825,3 +825,66 @@ body {
 @media (pointer: coarse) {
   .play .grip { display: none; }
 }
+
+/* ---- creation: the origin panel, a keepsake's own words, the review ------ */
+.cf-textarea {
+  min-height: 76px;
+  resize: vertical;
+  font-family: var(--serif);
+  line-height: 1.5;
+}
+.cf-origin { display: flex; flex-direction: column; gap: 10px; }
+.cf-origin-row { display: flex; flex-direction: column; gap: 6px; }
+.cf-origin-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.cf-was { color: var(--text-dim); font-style: italic; font-size: 12px; }
+.cf-backstory {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--brass) 25%, transparent);
+  color: var(--text-dim);
+  font-style: italic;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* The sealing page is the last look a player gets at what they made, so it
+   shows the WHOLE sheet — which means the ability row has to be a row. It had
+   no styles of its own at all and stacked into eighteen lines on a phone. */
+.cf-summary {
+  background: rgba(9, 12, 21, 0.82);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.cf-summary .stat-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  margin: 12px 0 14px;
+}
+.cf-summary .stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 7px 2px 6px;
+  background: rgba(8, 11, 20, 0.5);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+}
+.cf-summary .stat .k {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em;
+  color: var(--text-faint);
+}
+.cf-summary .stat .v { font-size: 18px; color: var(--parchment); }
+.cf-summary .stat .m { font-family: var(--mono); font-size: 9px; color: var(--teal); }
+.cf-summary .inv-line { margin: 5px 0; line-height: 1.5; }
+@media (max-width: 420px) {
+  .cf-summary .stat-grid { grid-template-columns: repeat(3, 1fr); }
+}

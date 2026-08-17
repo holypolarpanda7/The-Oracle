@@ -1017,6 +1017,17 @@ export interface CCPayload {
   gear_mode?: "kit" | "buy";
   bought_items?: { name: string; quantity: number }[];
   wondrous_item?: string;
+  /** The player's own name for it, and their own words — a described piece is
+   *  drawn for this character alone and keeps `base` for its stats. */
+  wondrous_name?: string;
+  wondrous_desc?: string;
+  /** Where they come from, in their own words, and the world ties that go with
+   *  it. `*_new` marks a name the player invented, which becomes a real stub. */
+  backstory?: string;
+  homeland?: string;
+  homeland_new?: boolean;
+  faction?: string;
+  faction_new?: boolean;
   deity?: string;
   gender?: string;
   // Spell slugs chosen at creation (class list + Magic Initiate). cantrips =
@@ -1166,6 +1177,9 @@ export interface CCOptions {
   common_items: {
     slug: string; name: string; item_type?: string | null;
     attunement: boolean; brief: string;
+    /** The whole text, for the panel — a keepsake you keep forever is not a
+     *  choice to make off 160 characters. */
+    desc?: string;
   }[];
   buyable_items: { slug: string; name: string; category?: string | null; cost_gp: number }[];
   starting_gold: { by_class: Record<string, number>; default: number };
@@ -1203,4 +1217,17 @@ export interface PowerFamily {
 export interface Pantheon {
   families: PowerFamily[];
   powers: Power[];
+}
+
+/** GET /cc/origins — who and where the world ALREADY has, offered at creation
+ *  so a young world fills up rather than fraying into one-member clans. */
+export interface OriginRow {
+  slug: string;
+  name: string;
+  subtype?: string | null;
+  brief?: string;
+}
+export interface CCOrigins {
+  homelands: OriginRow[];
+  factions: OriginRow[];
 }

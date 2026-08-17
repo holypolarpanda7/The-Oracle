@@ -45,7 +45,7 @@ from eight_card_system.extraction import extract_and_apply
 from eight_card_system.models import (
     Entity as WorldEntity, Relation as WorldRelation, WorldEvent,
     EntityType, RelationType, Attitude, CompanionControl, NpcAttr, attitude_for_trust,
-    QuestState, QuestTier,
+    QuestState, QuestTier, PlaceScale,
 )
 from rules import (
     RulesLibrary,
@@ -344,6 +344,7 @@ async def lifespan(app: FastAPI):
                     ("dnr", "INTEGER DEFAULT 0"),
                     ("gender", "TEXT"),
                     ("notes", "TEXT"),
+                    ("backstory", "TEXT"),
                     ("active_portrait", "TEXT"),
                     ("appearance", "TEXT"),
                     ("portrait_seed", "INTEGER"),
@@ -771,8 +772,21 @@ class RegisterCharacterRequest(BaseModel):
     gear_mode: Optional[str] = "kit"
     # [{"name": str, "quantity": int}] purchased in buy mode.
     bought_items: Optional[List[Dict[str, Any]]] = None
-    # A free common wondrous item chosen at creation (rules_item slug).
+    # A free common wondrous item chosen at creation (rules_item slug), and —
+    # optionally — the player's own NAME and DESCRIPTION for it. A described
+    # piece is drawn for this character alone; the catalogue art is untouched,
+    # and `base` keeps every mechanical lookup resolving after the rename.
     wondrous_item: Optional[str] = None
+    wondrous_name: Optional[str] = None
+    wondrous_desc: Optional[str] = None
+    # Where they come FROM, in their own words, and the world TIES that go with
+    # it: a homeland and a people/faction, either already in the world or named
+    # by the player and created as a stub the DM can use.
+    backstory: Optional[str] = None
+    homeland: Optional[str] = None
+    homeland_new: Optional[bool] = False
+    faction: Optional[str] = None
+    faction_new: Optional[bool] = False
     # Spells chosen at creation — spell slugs. `cantrips` = level-0 picks,
     # `spells` = level-1 picks (both from the class list and/or Magic Initiate).
     # Resolved to display names and stored on Character.spells.
@@ -1264,6 +1278,13 @@ class Character(SQLModel, table=True):
     # back FURIOUS at the reviver. See the REVIVE hook + revival/ package.
     dnr: bool = Field(default=False)
     notes: Optional[str] = Field(default=None, sa_column=Column(String))
+    # Where this character comes FROM, in the player's own words: who raised
+    # them, what they left, why they walk. Written at creation, shown to the DM
+    # with the sheet. The world TIES it makes — a homeland, a people, a faction
+    # — are world-graph entities and edges, not text; this is the story around
+    # them, and the two must not be confused (a faction the DM can use is a
+    # node; a paragraph is a paragraph).
+    backstory: Optional[str] = Field(default=None, sa_column=Column(String))
     # Which stored portrait "look" is currently shown: the context key of the
     # active portrait image — ``"portrait"`` (or None) = the base look,
     # ``"portrait-gear-*"`` = an equipped-gear variant the player rendered.
@@ -12518,6 +12539,10 @@ def _build_character_sheet(char: Character) -> Dict[str, Any]:
         "char_class": char.char_class,
         "subclass": char.subclass,
         "background": char.background,
+        # Where they came from, in their own words. The DM narrates a person,
+        # and a person who arrived from nowhere is the one thing a living world
+        # can't use.
+        "backstory": getattr(char, "backstory", None),
         "deity": getattr(char, "deity", None),
         "dnr": bool(getattr(char, "dnr", False)),
         "level": char.level,
@@ -12569,6 +12594,12 @@ def _character_resource_block(character_id: int) -> str:
         lines.append(lvl_line)
         lines.append(f"Purse: {format_purse(purse)} (~{gp_value(purse):g} gp)")
         lines.append(f"Lifestyle: {char.lifestyle}")
+        # Who they are BEFORE the first scene: their own words for where they
+        # come from. Written once at creation and never re-derived — the DM
+        # narrates a person, and a person out of nowhere is the one thing a
+        # world with memory cannot use.
+        if getattr(char, "backstory", None):
+            lines.append(f"Their own account of themselves: {char.backstory}")
 
         # Survival state (HP, exhaustion, provisions) when enabled.
         cfg = get_config()
@@ -14088,6 +14119,146 @@ def _grant_wondrous_item(char: Character, session: Session,
     return row.name
 
 
+def _kick_item_art(ref: str, base: str, desc: str) -> None:
+    """Draw a player-named item in the BACKGROUND. Creation must not wait on a
+    GPU: the piece is on the sheet with its name and its description either
+    way, and the picture arrives when it arrives."""
+    if not get_config().imagery.enabled:
+        return
+
+    def _draw():
+        try:
+            _item_art(ref, base, describe=desc)
+        except Exception as e:  # noqa: BLE001
+            print(f"[cc] item art failed for {ref}: {e}")
+    try:
+        threading.Thread(target=_draw, daemon=True).start()
+    except Exception as e:  # noqa: BLE001
+        print(f"[cc] item art thread failed: {e}")
+
+
+def _apply_origin_ties(char: Character, req: RegisterCharacterRequest) -> dict:
+    """Open the world edges a character's ORIGIN implies.
+
+    A homeland and a people are not paragraph decoration: they are a PLACE and
+    a FACTION the DM can put NPCs in, send letters from and turn against you.
+    Either can be one the world already has — the CC offers those first,
+    because a world with somebody else's clan in it is worth more than one with
+    ten clans of one member each — or a name the player invented, which is
+    created as a STUB (the frontier-stub pattern) for the world to fill in.
+    """
+    out: dict = {}
+    if not ((req.homeland or "").strip() or (req.faction or "").strip()):
+        return out
+    try:
+        pc = world.find_pc(char.discord_user_id, char.name)
+        if pc is None:
+            # The PC's world entity is normally born when they first enter the
+            # world. A tie made at creation needs it NOW — and `place_pc` finds
+            # this same entity by (owner, name) when the time comes, so it is
+            # the same character rather than a second one.
+            pc = world.create_entity(
+                char.name, EntityType.PC, tags=["pc"],
+                discord_user_id=char.discord_user_id, character_id=char.id)
+        home = (req.homeland or "").strip()
+        if home:
+            place = (world.upsert_entity(home, EntityType.PLACE,
+                                         subtype=PlaceScale.REGION)
+                     if req.homeland_new else
+                     next(iter(world.find_entities_by_name(home)), None))
+            if place is not None:
+                world.add_relation(
+                    pc.slug, RelationType.PART_OF, place.slug,
+                    attributes={"note": f"{char.name} is of {place.name}"})
+                out["homeland"] = place.name
+                char_home = place.name
+                with Session(engine) as s:
+                    row = s.get(Character, char.id)
+                    if row is not None and not row.home_region:
+                        row.home_region = char_home
+                        s.add(row)
+                        s.commit()
+        faction = (req.faction or "").strip()
+        if faction:
+            fac = (world.upsert_entity(faction, EntityType.FACTION)
+                   if req.faction_new else
+                   next(iter(world.find_entities_by_name(faction)), None))
+            if fac is not None:
+                world.add_relation(
+                    pc.slug, RelationType.MEMBER_OF, fac.slug,
+                    attributes={"note": f"{char.name} belongs to {fac.name}"})
+                out["faction"] = fac.name
+    except Exception as e:  # noqa: BLE001
+        print(f"[cc] origin ties failed: {e}")
+    return out
+
+
+def _cc_request(user_id: str, p: Dict[str, Any]) -> RegisterCharacterRequest:
+    """The CC payload as a registration request — EVERY field of it.
+
+    Written once because it was written twice: the Activity's own path and the
+    Proving Grounds' each built this by hand and each forgot a different half,
+    so a wizard created in the Activity arrived with no spells, no feat picks,
+    no tools and no languages. The wizard screen asked; nothing carried the
+    answers. Anything the client may send belongs here and nowhere else.
+    """
+    return RegisterCharacterRequest(
+        discord_user_id=user_id,
+        name=(p.get("name") or "").strip(),
+        race=p.get("race"), char_class=p.get("char_class"),
+        background=p.get("background"), deity=p.get("deity"),
+        gender=p.get("gender"),
+        stats=p.get("stats"), skills=p.get("skills"),
+        feats=p.get("feats"), approve=True, source="guided",
+        gear_mode=p.get("gear_mode") or "kit",
+        bought_items=p.get("bought_items"),
+        wondrous_item=p.get("wondrous_item"),
+        wondrous_name=p.get("wondrous_name"),
+        wondrous_desc=p.get("wondrous_desc"),
+        tools=p.get("tools"), languages=p.get("languages"),
+        feat_options=p.get("feat_options"),
+        cantrips=p.get("cantrips"), spells=p.get("spells"),
+        backstory=p.get("backstory"),
+        homeland=p.get("homeland"), homeland_new=bool(p.get("homeland_new")),
+        faction=p.get("faction"), faction_new=bool(p.get("faction_new")),
+    )
+
+
+@app.get("/cc/origins")
+def cc_origins(limit: int = 24):
+    """Who and where the world ALREADY has, for a character's origin.
+
+    The point of offering these is that a young world fills up rather than
+    fraying: a second character from the Ashen Coast, or a second Hand of the
+    Quiet Bell, makes both of them mean more. Inventing one is still allowed —
+    it becomes a real stub — but the existing ones come first.
+    """
+    from eight_card_system.models import Entity as _Ent
+    homelands: list[dict] = []
+    factions: list[dict] = []
+    try:
+        with Session(world.engine) as s:
+            rows = s.exec(select(_Ent).where(
+                _Ent.type.in_([EntityType.PLACE, EntityType.FACTION]))).all()
+        for e in rows:
+            if (e.status or "active") not in ("active", "alive"):
+                continue
+            attrs = e.attributes if isinstance(e.attributes, dict) else {}
+            row = {"slug": e.slug, "name": e.name,
+                   "subtype": e.subtype,
+                   "brief": str(attrs.get("description") or "")[:140]}
+            if e.type == EntityType.FACTION:
+                factions.append(row)
+            elif (e.subtype or "") in (PlaceScale.REGION, PlaceScale.SETTLEMENT,
+                                       PlaceScale.WILDS, PlaceScale.CONTINENT):
+                homelands.append(row)
+    except Exception as e:  # noqa: BLE001
+        print(f"[cc] origins lookup failed: {e}")
+    homelands.sort(key=lambda r: r["name"])
+    factions.sort(key=lambda r: r["name"])
+    return {"homelands": homelands[:limit], "factions": factions[:limit]}
+
+
 @app.post("/register_character")
 async def register_character(req: RegisterCharacterRequest):
     """Register a new character for a discord user.
@@ -14302,19 +14473,44 @@ async def register_character(req: RegisterCharacterRequest):
             kit_granted = _grant_starting_kit(char)
             bg_feature = _apply_background(char, req.background)
 
-        # A free common wondrous item (independent of the gear choice).
+        # A free common wondrous item (independent of the gear choice) — and,
+        # if the player named and described it, their OWN piece: renamed on the
+        # sheet (with `base` kept, so the stats still resolve) and drawn for
+        # this character alone. Creation is the one other place besides play
+        # that spends GPU time on an item, and for the same reason: a piece
+        # somebody wrote is not the catalogue's.
         wondrous_granted = None
+        wondrous_art = None
         if req.wondrous_item:
             wondrous_granted = _grant_wondrous_item(char, session, req.wondrous_item)
+            desc = (req.wondrous_desc or "").strip()
+            title = (req.wondrous_name or "").strip()
+            if wondrous_granted and (desc or title):
+                new_name, ref = _name_and_describe_item(
+                    char, wondrous_granted, desc, title)
+                wondrous_granted = new_name
+                if desc:
+                    wondrous_art = (ref, _item_base_name(char, new_name), desc)
+
+        # The player's own words for where they come from, and the world ties
+        # that go with them.
+        char.backstory = (req.backstory or "").strip()[:2000] or None
 
         session.add(char)
         session.commit()
         session.refresh(char)
 
+    # World ties are opened AFTER the character row is committed — the SQLite
+    # rule this project learned the hard way (see the revival notes).
+    origins = _apply_origin_ties(char, req)
+    if wondrous_art:
+        _kick_item_art(*wondrous_art)
+
     return {"status": "ok", "message": "Character registered", "character_id": char.id,
             "starting_kit": kit_granted or None,
             "background_feature": bg_feature,
             "purchase": purchase,
+            "origins": origins or None,
             "wondrous_item": wondrous_granted}
 
 
@@ -15375,6 +15571,9 @@ def cc_options():
             "item_type": w.item_type,
             "attunement": bool(w.requires_attunement),
             "brief": (w.desc or "")[:160],
+            # The WHOLE text, for the panel beside the grid: a keepsake you
+            # keep forever is not a choice to make off 160 characters.
+            "desc": w.desc or "",
         } for w in common_items],
         "buyable_items": [{
             "slug": b.index_slug, "name": b.name, "category": b.category,
@@ -22726,19 +22925,7 @@ async def activity_ws(ws: WebSocket, channel: str):
             if msg.get("t") == "cc_register":
                 p = msg.get("payload") or {}
                 try:
-                    req = RegisterCharacterRequest(
-                        discord_user_id=user_id,
-                        name=(p.get("name") or "").strip(),
-                        race=p.get("race"), char_class=p.get("char_class"),
-                        background=p.get("background"), deity=p.get("deity"),
-                        gender=p.get("gender"),
-                        stats=p.get("stats"), skills=p.get("skills"),
-                        feats=p.get("feats"), approve=True, source="guided",
-                        gear_mode=p.get("gear_mode") or "kit",
-                        bought_items=p.get("bought_items"),
-                        wondrous_item=p.get("wondrous_item"),
-                    )
-                    result = await register_character(req)
+                    result = await register_character(_cc_request(user_id, p))
                 except HTTPException as e:
                     await ws.send_json({"t": "cc_error", "detail": e.detail})
                     continue
@@ -22772,26 +22959,10 @@ async def activity_ws(ws: WebSocket, channel: str):
                     p = msg.get("payload") or {}
                     _arena_clear_slot(user_id, slot)   # slots are overwritable
                     try:
-                        req = RegisterCharacterRequest(
-                            discord_user_id=user_id,
-                            name=(p.get("name") or "").strip(),
-                            race=p.get("race"), char_class=p.get("char_class"),
-                            background=p.get("background"), deity=p.get("deity"),
-                            gender=p.get("gender"),
-                            stats=p.get("stats"), skills=p.get("skills"),
-                            feats=p.get("feats"), approve=True, source="guided",
-                            # The rest of what CC asked for — a Proving Grounds
-                            # slot is built by the SAME wizard, so dropping its
-                            # spells and its feats' picks made an arena wizard a
-                            # wizard with no spells.
-                            tools=p.get("tools"), languages=p.get("languages"),
-                            feat_options=p.get("feat_options"),
-                            cantrips=p.get("cantrips"), spells=p.get("spells"),
-                            gear_mode=p.get("gear_mode") or "kit",
-                            bought_items=p.get("bought_items"),
-                            wondrous_item=p.get("wondrous_item"),
-                        )
-                        result = await register_character(req)
+                        # The SAME wizard builds a Proving Grounds slot, so it
+                        # is the same request — built in one place so the two
+                        # can't forget different halves of it again.
+                        result = await register_character(_cc_request(user_id, p))
                     except HTTPException as e:
                         await ws.send_json({"t": "cc_error", "detail": e.detail})
                         continue

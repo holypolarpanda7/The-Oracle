@@ -8,7 +8,6 @@ import type {
 } from "./lib/types";
 import { Block, isTyped, makeOracleBlock, makeSpeechBlock } from "./components/Narration";
 import { CreateFlow } from "./components/CreateFlow";
-import { PortraitStep } from "./components/PortraitStep";
 import { Landing } from "./components/Landing";
 import { Arena, ArenaResult, Quartermaster } from "./components/Arena";
 import { LevelUpOverlay } from "./components/LevelUp";
@@ -32,7 +31,7 @@ function Corner({ pos }: { pos: string }) {
   );
 }
 
-type Screen = "landing" | "create" | "portrait" | "play" | "arena";
+type Screen = "landing" | "create" | "play" | "arena";
 
 export default function App({ session }: { session: Session }) {
   const [screen, setScreen] = useState<Screen>("landing");
@@ -109,6 +108,9 @@ export default function App({ session }: { session: Session }) {
   const enterTimerRef = useRef<number | null>(null);
   const screenRef = useRef<Screen>("landing");
   screenRef.current = screen;
+  // The sealed character, for handlers that run outside React's render.
+  const newCharRef = useRef<typeof newChar>(null);
+  newCharRef.current = newChar;
 
   const clearEnterTimer = () => {
     if (enterTimerRef.current) {
@@ -177,19 +179,22 @@ export default function App({ session }: { session: Session }) {
           }
           break;
         case "cc_done": {
-          // Detour through the portrait step before entering the world. We do
-          // NOT set pendingEnterRef, so the following `hello` won't auto-enter;
-          // PortraitStep triggers the enter when the player is ready.
+          // The likeness is the LAST STAGE of creation, not a screen after it:
+          // the wizard stays mounted so a player does all their making in one
+          // place. We do NOT set pendingEnterRef, so the following `hello`
+          // won't auto-enter; the portrait stage triggers the enter when the
+          // player is ready.
           const det = ev.detail as { character_id?: number } | undefined;
           const id = det && typeof det.character_id === "number" ? det.character_id : null;
           setNewChar({ name: ev.name, id });
-          setScreen("portrait");
           break;
         }
         case "cc_error":
           // On the portrait step this event means the *enter* failed, not CC —
           // surface it there (CreateFlow isn't mounted to show ccError).
-          if (screenRef.current === "portrait") {
+          // Once the character is sealed, a cc_error is the ENTER failing, not
+          // creation — it belongs on the likeness stage, beside its button.
+          if (newCharRef.current) {
             clearEnterTimer();
             setEnterError(ev.detail);
             setEntering(false);
@@ -556,6 +561,10 @@ export default function App({ session }: { session: Session }) {
         {screen === "create" && (
           <CreateFlow
             ccError={ccError}
+            sealed={newChar}
+            entering={entering}
+            enterError={enterError}
+            onEnterWorld={() => newChar && beginEnter({ character_name: newChar.name })}
             onCancel={() => setScreen(arenaSlotRef.current !== null ? "arena" : "landing")}
             onDone={(payload: CCPayload) => {
               setCcError(null);
@@ -566,16 +575,6 @@ export default function App({ session }: { session: Session }) {
                 connRef.current?.send({ t: "cc_register", payload });
               }
             }}
-          />
-        )}
-
-        {screen === "portrait" && newChar && (
-          <PortraitStep
-            name={newChar.name}
-            characterId={newChar.id}
-            entering={entering}
-            enterError={enterError}
-            onDone={() => beginEnter({ character_name: newChar.name })}
           />
         )}
 
