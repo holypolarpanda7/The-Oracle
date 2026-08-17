@@ -261,6 +261,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   guild/channel/member through the REAL voice-state handler: the music sidecar
   is not an occupant, an emptied table closes after the grace period, stepping
   back in cancels it, and a table nobody sat at is still swept)
+- Creation-story smoke test: `uv run python scripts/cc_story_smoke.py` (the CC
+  payload survives the wire — spells, tools, languages, feat picks — a keepsake
+  renamed keeps its `base`, and an origin becomes real world entities and edges)
 - Species-choice smoke test: `uv run python scripts/species_choices_smoke.py`
   (a species asks what its traits promise — languages read off its own line, a
   skill, an either/or gift — and the answers reach the sheet as real tags; plus
@@ -344,7 +347,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   while an epic boon stays locked), `cc-panels` (the background panel carries
   the whole of what a background grants; Pact of the Tome's two spell questions
   gate the Spells stage separately; the landing's way out asks first),
-  `pframe-shot`
+  `cc-story` (a feat that builds on another stays locked without it; the
+  background's story panel; a keepsake named and described; the review page
+  showing the whole character; the Likeness stage), `pframe-shot`
   (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
   at desktop and phone: status bar, "here & now" rail, narration column, roll
   card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
@@ -1482,6 +1487,42 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   schedule must not be able to buy a turn of it at level 1. The
   slot is told apart server-side by `_species_free_feat`: the background's
   Origin feat is granted and known, so what is left is the species'.
+- **A prerequisite that names a FEAT is a prerequisite.** The client's mirror of
+  `_feat_prereq_met` judged ability minimums and spellcasting and nothing else,
+  so every giant feat read as free in a slot that waives the level — what
+  actually gates Vigor of the Hill Giant is Strike of the Giants AND the strike
+  it chose. The mirror now reads prerequisites the way the server does:
+  REQUIREMENTS (`;` / ` and `) of ALTERNATIVES (`or`), each judged as met /
+  unmet / unparseable, with unparseable always allowed. It is a mirror and not
+  a second answer — the server still re-checks, and a false BLOCK would be
+  worse than the false allow it replaces.
+- **The CC payload is built in ONE place (`_cc_request`), because it was built
+  in two.** The Activity's own path and the Proving Grounds' each assembled a
+  `RegisterCharacterRequest` by hand and each forgot a different half: an
+  Activity wizard arrived with no spells, no tools, no languages and no feat
+  picks — the screens asked, and nothing carried the answers.
+- **A keepsake can be made the player's OWN at creation.** The free wondrous
+  item takes a name and a description, which renames it on the sheet (keeping
+  `base`, or every stat lookup breaks — the rule that already caught a suit of
+  armour once) and draws it for that character alone, in a background thread:
+  creation must never wait on a GPU, and the piece is on the sheet with its
+  name and words either way. Same path as `describe_item` during play, and the
+  shared catalogue art is untouched.
+- **An ORIGIN is world state, not prose.** The background stage asks — all of
+  it optional — for a HOMELAND and a PEOPLE, offering what the world already
+  has first (`GET /cc/origins`), because a second character out of the Ashen
+  Coast makes both of them mean more, while a name the player invents becomes a
+  real PLACE or FACTION entity with a real edge (`PART_OF` / `MEMBER_OF`) the
+  DM can use. The PC's world entity is created at registration when a tie needs
+  it; `place_pc` finds that same entity by (owner, name) later, so it is the
+  same character rather than a second one. The BACKSTORY beside it is text and
+  stays text — `Character.backstory`, shown to the DM with the sheet.
+- **The likeness is the last STAGE of creation, not a screen after it.** A
+  portrait needs a sealed character to draw against, so it comes after the
+  seal — but inside the same wizard, with the same stage rail, so a player does
+  all their making in one place. The footer is hidden there (the step carries
+  its own buttons and there is nothing after it), and once sealed a `cc_error`
+  is the world ENTRY failing rather than creation.
 - **A choice you can't see the whole of isn't a choice.** Two surfaces the CC
   never gave the player. A background card showed two skills, so its Origin
   feat, its tool, its feature and its gear were invisible until after the
@@ -1857,6 +1898,16 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   already a string the tracker persists. The per-round action count is NOT in
   this bestiary's parse, so it defaults to 3 and says so rather than pretending
   to have read it.
+- **A spell's LEVEL is printed as a GLYPH, and one glyph is ambiguous.** `l`
+  and `I` are always a 1 in this extraction; **`J` is both 1 and 3** (Jump and
+  Divine Smite are level 1, Slow and Clairvoyance are level 3), and reading it
+  as a 1 filed Slow — a level 3 spell — on the level 1 list, where a fresh
+  wizard could take it. Nothing downstream would ever notice: it has a level,
+  the level is a number, and it is wrong. `_level_from_token` resolves an
+  ambiguous glyph against the SRD's own clean text (`srd_spell_levels`, not an
+  OCR of a scan) and only guesses when nothing can answer — out loud.
+  `scripts/repair_spell_levels.py` is the standing audit over every row
+  (`--apply` writes); across 292 checkable spells exactly one was wrong.
 - **The extractor splits WORDS, and it splits spell NAMES — 20 spells were
   uncastable because nothing could find them.** The PDF pass writes "dam age"
   for damage (13 spells) and "He X" for Hex, "Witc H B O Lt" for Witch Bolt,
