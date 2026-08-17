@@ -638,7 +638,16 @@ def _components_value(body: str) -> Optional[str]:
     return value
 
 
-_DIGIT_REPAIR = {"l": "1", "J": "1", "I": "1", "O": "0"}
+#: Glyphs the extractor writes instead of digits. `l` and `I` are always a 1 —
+#: measured across every damaged level line in the PHB. **`J` is NOT**: it is
+#: the OCR of both 1 and 3 in this typeface (Jump and Divine Smite are level 1,
+#: Slow and Clairvoyance are level 3), so guessing it silently filed Slow as a
+#: level 1 spell, castable by a level 1 wizard. An ambiguous glyph is resolved
+#: against the SRD's own clean text where the spell is an SRD one, and only
+#: guessed when nothing can answer — see `_level_from_token`.
+_DIGIT_REPAIR = {"l": "1", "I": "1", "O": "0"}
+#: Glyphs that could be more than one digit. Never guessed silently.
+_AMBIGUOUS_DIGITS = {"J": (1, 3)}
 
 # Vocabulary for repairing glyph-spaced words in field values.
 _VALUE_VOCAB = ("Bonus Action", "Reaction", "Action", "Ritual", "Instantaneous",
@@ -707,9 +716,50 @@ def _harvest_spell_names(text: str, engine) -> dict:
     return canon
 
 
+def srd_spell_levels(workspace: Path = WORKSPACE) -> dict:
+    """{collapsed name: level} read off the SRD's own (clean, CC-BY) text.
+
+    The authority for a level the PHB extraction damaged: the SRD file is not
+    an OCR of a scan, so "Level 3 Transmutation" is exactly that.
+    """
+    srd = next(iter(workspace.glob("srd-cc*.txt")), None)
+    if srd is None:
+        return {}
+    hdr = re.compile(r"^([A-Z][A-Za-z' \-/]{2,44})\n(?:Level (\d)|Cantrip) ([A-Za-z]+)",
+                     re.M)
+    out: dict[str, int] = {}
+    try:
+        for m in hdr.finditer(srd.read_text(encoding="utf-8", errors="ignore")):
+            out[_collapse_key(m.group(1))] = int(m.group(2) or 0)
+    except Exception as e:  # noqa: BLE001
+        print(f"[spells] SRD level map failed: {e}")
+    return out
+
+
+def _level_from_token(tok: Optional[str], key: str, srd_levels: dict) -> int:
+    """The spell's level from its (possibly damaged) header glyph.
+
+    An UNAMBIGUOUS glyph is repaired and trusted. An ambiguous one is looked up
+    in the SRD instead, and only if nothing can answer is its first reading
+    used — a guess that is at least announced rather than silent.
+    """
+    if not tok:
+        return 0
+    if tok in _AMBIGUOUS_DIGITS:
+        known = srd_levels.get(key)
+        if known is not None:
+            return int(known)
+        first = _AMBIGUOUS_DIGITS[tok][0]
+        print(f"[spells] unreadable level glyph {tok!r} for {key!r} — assuming {first}")
+        return first
+    return int(_DIGIT_REPAIR.get(tok, tok) or 0)
+
+
 def parse_phb_spells(text: str, canon: dict,
-                     slug_by_key: Optional[dict] = None) -> list[dict]:
+                     slug_by_key: Optional[dict] = None,
+                     srd_levels: Optional[dict] = None) -> list[dict]:
     slug_by_key = slug_by_key or {}
+    srd_levels = srd_levels if srd_levels is not None else srd_spell_levels()
     spells: list[dict] = []
     matches = list(_SPELL_HEADER.finditer(text))
     for i, m in enumerate(matches):
@@ -721,7 +771,8 @@ def parse_phb_spells(text: str, canon: dict,
         tidy = re.sub(r"\s*'\s*", "'", raw_name)
         name = (canon.get(_collapse_key(tidy))
                 or re.sub(r"'S\b", "'s", " ".join(tidy.title().split())))
-        level = 0 if cantrip else int(_DIGIT_REPAIR.get(lvl, lvl) or 0)
+        level = 0 if cantrip else _level_from_token(
+            lvl, _collapse_key(name), srd_levels)
         end = matches[i + 1].start() if i + 1 < len(matches) else m.end() + 6000
         body = _fix_ocr_digits(text[m.start():end])
         # A real spell entry always opens with its Casting Time; table rows
@@ -878,7 +929,8 @@ def ingest_spells(engine=None, database_url=None, workspace: Path = WORKSPACE) -
     with Session(engine) as s:
         slug_by_key = {_collapse_key(n): slug for n, slug in
                        s.exec(select(Spell.name, Spell.index_slug))}
-    spells = parse_phb_spells(text, canon, slug_by_key)
+    spells = parse_phb_spells(text, canon, slug_by_key,
+                              srd_spell_levels(workspace))
     spells += _fallback_missing_spells(text, spells, engine)
     result = {"spells_parsed": len(spells), "spells_new": 0, "spells_updated": 0}
     with Session(engine) as s:
@@ -1002,7 +1054,18 @@ _SUBCLASS_FEATURE = re.compile(
 
 
 def _repair_int(raw: str) -> int:
-    return int("".join(_DIGIT_REPAIR.get(c, c) for c in raw))
+    """A damaged number. An AMBIGUOUS glyph has no second source to check here
+    (unlike a spell's level, which the SRD can settle), so it takes its first
+    reading and says so — silently wrong is the thing to avoid."""
+    out = []
+    for c in raw:
+        if c in _AMBIGUOUS_DIGITS:
+            print(f"[ingest] unreadable digit {c!r} in {raw!r} — "
+                  f"assuming {_AMBIGUOUS_DIGITS[c][0]}")
+            out.append(str(_AMBIGUOUS_DIGITS[c][0]))
+        else:
+            out.append(_DIGIT_REPAIR.get(c, c))
+    return int("".join(out))
 
 
 _TINY_WORDS = {"a", "an", "and", "at", "in", "of", "on", "or", "the", "to"}
