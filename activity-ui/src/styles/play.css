@@ -89,6 +89,16 @@
 .play .sb-ac { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.1em;
   color: var(--gold-2); border: 1px solid var(--gold-dim); border-radius: 4px;
   padding: 4px 8px; background: rgba(8, 11, 20, 0.6); }
+/* The way out. Quiet until wanted — it must never compete with the vitals —
+   but never hidden either, including on a phone, where it is the only exit. */
+.play .sb-exit {
+  flex: none; margin-left: 4px;
+  width: 28px; height: 28px; line-height: 1;
+  background: transparent; border: 1px solid var(--gold-dim); border-radius: 4px;
+  color: var(--gold-dim); font-size: 0.8rem; cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.play .sb-exit:hover { color: var(--crimson); border-color: var(--crimson); }
 @media (max-width: 720px) {
   .play .sb-world { display: none; }
   .play .sb-ac { display: none; }

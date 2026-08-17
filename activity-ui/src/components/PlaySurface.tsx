@@ -7,6 +7,7 @@ import { useResizable, resetAllPanels, dropPanel } from "../lib/useResizable";
 import { InitiativeCarousel } from "./InitiativeCarousel";
 import { VttOverlay } from "./VttOverlay";
 import { ActionBar } from "./ActionBar";
+import { uiTick } from "../lib/sound";
 import type {
   ActionBarData, Ally, BarAction, CombatState, Locale, RollResult, RouteRow,
   SheetData, VttArea, VttOptions, VttScene, VttTargets,
@@ -108,7 +109,9 @@ function renderBlock(b: Block, i: number, onBlockDone: (i: number) => void) {
 /** The always-on world header: who you are, where you stand, and what hour it
  *  is in the world. The clock and the place are the two facts that make a
  *  persistent world feel persistent, and they were previously invisible. */
-function StatusBar({ sheet, locale }: { sheet: SheetData | null; locale: Locale | null }) {
+function StatusBar({ sheet, locale, onExit }: {
+  sheet: SheetData | null; locale: Locale | null; onExit: () => void;
+}) {
   if (!sheet && !locale) return null;
   const hp = sheet ? sheet.hp : 0;
   const max = sheet ? Math.max(1, sheet.hp_max) : 1;
@@ -138,6 +141,10 @@ function StatusBar({ sheet, locale }: { sheet: SheetData | null; locale: Locale 
           <span className="sb-ac">AC {sheet.ac}</span>
         </span>
       )}
+      {/* The way out, where it is always in reach: an Activity has no window
+          chrome of its own, so without this there is no exit at all. */}
+      <button className="sb-exit" onClick={() => { uiTick(); onExit(); }}
+              title="Leave the Oracle" aria-label="Leave the Oracle">✕</button>
     </div>
   );
 }
@@ -236,6 +243,8 @@ export interface PlayProps {
   onSkip: () => void;
   onBlockDone: (i: number) => void;
   onMainMenu: () => void;
+  /** Leave the Activity entirely (asks first) — the status bar's ✕. */
+  onExit: () => void;
   onInspect: (name: string) => void;
   onItemAction: (name: string, action: string) => void;
   onPortrait: (action: "regear" | "select" | "delete",
@@ -277,7 +286,7 @@ export function PlaySurface(p: PlayProps) {
   return (
     <div className={`play${p.vtt ? " boarded" : ""}`}>
       <IconDefs />
-      <StatusBar sheet={p.sheet} locale={p.locale} />
+      <StatusBar sheet={p.sheet} locale={p.locale} onExit={p.onExit} />
       {p.combat && <InitiativeCarousel combat={p.combat} />}
       {/* The rail is absent in the Proving Grounds (no world, no clock) and
           before the first state push, and an empty column track would shove

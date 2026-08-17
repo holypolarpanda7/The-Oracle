@@ -39,15 +39,25 @@ const CC = {
     point_buy: { budget: 27, min: 8, max: 15, costs: { "8": 0 } }, roll: { expr: "4d6kh3", count: 6 } },
   common_items: [], buyable_items: [], starting_gold: { by_class: { fighter: 150 }, default: 100 },
 };
+// The server answers with one entry per spell QUESTION (a feat may ask twice —
+// see cc-panels.mjs), each carrying the index of the spec it belongs to. Fey
+// Touched asks once, at index 1: its ability choice is 0.
+const FEY_POOL = [
+  { slug: "bless", name: "Bless", level: 1, school: "Enchantment" },
+  { slug: "charm-person", name: "Charm Person", level: 1, school: "Enchantment" },
+  { slug: "detect-evil-and-good", name: "Detect Evil and Good", level: 1, school: "Divination" },
+];
+const FEY_GRANTED = [{ slug: "misty-step", name: "Misty Step", level: 2, school: "Conjuration" }];
 const FEY_SPELLS = {
   feat: "fey-touched", n: 1, level: 1, schools: ["Divination", "Enchantment"],
   hint: "Fey Magic — choose a level 1 Divination or Enchantment spell.",
-  spells: [
-    { slug: "bless", name: "Bless", level: 1, school: "Enchantment" },
-    { slug: "charm-person", name: "Charm Person", level: 1, school: "Enchantment" },
-    { slug: "detect-evil-and-good", name: "Detect Evil and Good", level: 1, school: "Divination" },
-  ],
-  granted: [{ slug: "misty-step", name: "Misty Step", level: 2, school: "Conjuration" }],
+  spells: FEY_POOL, granted: FEY_GRANTED,
+  picks: [{
+    idx: 1, n: 1, level: 1, ritual: false, when: null,
+    schools: ["Divination", "Enchantment"],
+    hint: "Fey Magic — choose a level 1 Divination or Enchantment spell.",
+    spells: FEY_POOL, granted: FEY_GRANTED,
+  }],
 };
 
 const browser = await chromium.launch();
@@ -58,7 +68,7 @@ await ctx.route("**/cc/options", (r) =>
 // (every other feat asks for no spells) has to go in before the specific one.
 await ctx.route("**/cc/feat_spells/**", (r) => r.fulfill({
   contentType: "application/json",
-  body: JSON.stringify({ feat: "x", n: 0, spells: [], granted: [] }) }));
+  body: JSON.stringify({ feat: "x", n: 0, spells: [], granted: [], picks: [] }) }));
 await ctx.route("**/cc/feat_spells/fey-touched", (r) =>
   r.fulfill({ contentType: "application/json", body: JSON.stringify(FEY_SPELLS) }));
 const page = await ctx.newPage();

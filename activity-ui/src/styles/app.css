@@ -146,6 +146,23 @@ body {
   user-select: none;
 }
 .landing-sound input { accent-color: var(--brass); }
+/* Leaving is a real choice the surface has to offer — an Activity has no
+   window chrome of its own — but it is not one to invite, so it reads as the
+   quietest thing on the page. */
+.landing-exit {
+  margin-top: 4px;
+  background: transparent;
+  border: 1px solid var(--gold-dim);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-family: var(--serif);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.landing-exit:hover { color: var(--crimson); border-color: var(--crimson); }
 .landing-arena {
   background: transparent;
   border: 1px solid var(--crimson);

@@ -19,7 +19,7 @@ import { BastionBuilder } from "./components/BastionBuilder";
 import { Chronicle } from "./components/Chronicle";
 import { ItemInspector, type ItemView } from "./components/ItemInspector";
 import { levelChime, rollThunk } from "./lib/sound";
-import type { Session } from "./lib/session";
+import { closeActivity, type Session } from "./lib/session";
 
 /** Ornamental corner bracket — bold keylines with a brass stud. */
 function Corner({ pos }: { pos: string }) {
@@ -36,6 +36,10 @@ type Screen = "landing" | "create" | "portrait" | "play" | "arena";
 
 export default function App({ session }: { session: Session }) {
   const [screen, setScreen] = useState<Screen>("landing");
+  // The way OUT. "ask" is the confirmation (leaving mid-session by a stray tap
+  // would be worse than having no button at all); "bye" is the honest ending
+  // for a plain browser tab, which a script may not close.
+  const [exiting, setExiting] = useState<null | "ask" | "bye">(null);
   // The Proving Grounds: practice bouts. `arenaMode` means the play surface is
   // showing a bout, so "main menu" goes back to the Grounds, not the landing.
   const [arena, setArena] = useState<ArenaState | null>(null);
@@ -453,7 +457,43 @@ export default function App({ session }: { session: Session }) {
               connRef.current?.send({ t: "arena_state" });
               setScreen("arena");
             }}
+            onExit={() => setExiting("ask")}
           />
+        )}
+
+        {exiting && (
+          <div className="levelup-veil"
+               onClick={() => exiting === "ask" && setExiting(null)}>
+            <div className="levelup" onClick={(e) => e.stopPropagation()}>
+              <div className="levelup-head">
+                <span className="lu-title">
+                  {exiting === "ask" ? "Leave the Oracle?" : "Until next time"}
+                </span>
+              </div>
+              {exiting === "ask" ? (
+                <>
+                  <p style={{ lineHeight: 1.6 }}>
+                    The world keeps its own time — your character, your place and
+                    everything you've done stay exactly as they are, and you can
+                    come back to them whenever you like.
+                  </p>
+                  <div className="lu-actions" style={{ gap: 10 }}>
+                    <button className="lu-confirm" onClick={async () => {
+                      if (!(await closeActivity())) setExiting("bye");
+                    }}>Leave the table</button>
+                    <button className="lu-confirm" onClick={() => setExiting(null)}>
+                      Stay
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p style={{ lineHeight: 1.6 }}>
+                  You've left the table. This tab can be closed — a page a script
+                  didn't open, it can't close by itself.
+                </p>
+              )}
+            </div>
+          </div>
         )}
 
         {screen === "arena" && (
@@ -681,6 +721,7 @@ export default function App({ session }: { session: Session }) {
                   setScreen("landing");
                 }
               }}
+              onExit={() => setExiting("ask")}
               onInspect={inspectItem}
               onItemAction={(name, action) => itemAction(name, action)}
               onPortrait={portraitAction}

@@ -3,7 +3,8 @@ import type { CCOptions, CCPayload, CCSpells, FeatChoice, FeatPicks, FeatSpells,
   Pantheon, Power, SpellBrief } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
-import { choiceParts, FeatChoiceFields, partActive, partSatisfied } from "./FeatChoices";
+import { choiceParts, FeatChoiceFields, partActive, partSatisfied,
+  spellBucket } from "./FeatChoices";
 
 /** Male+female species portraits for a race/lineage card. Each image walks a
  * candidate list (lineage art → base species art) and hides itself only when
@@ -494,9 +495,15 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
   // alongside the primary choice — `choiceParts` is the same flattening the
   // level-up overlay uses, so the two can't drift. Each feat's questions stay
   // ATTACHED to it: two feats asking the same kind are two separate answers.
-  const featQuestions: { slug: string; part: Choice }[] = chosenFeats.flatMap(
-    (slug) => choiceParts(opts?.feats.find((f) => f.slug === slug)?.choices)
-      .map((part) => ({ slug, part: part as Choice })));
+  // The INDEX rides along: a feat may ask for spells twice (the Book of
+  // Shadows wants cantrips and rituals), and the index is how each answer
+  // finds its own pool. A `when` question isn't asked until the option it
+  // hangs off is taken.
+  const featQuestions: { slug: string; part: Choice; idx: number }[] =
+    chosenFeats.flatMap((slug) =>
+      choiceParts(opts?.feats.find((f) => f.slug === slug)?.choices)
+        .map((part, idx) => ({ slug, part: part as Choice, idx }))
+        .filter(({ part }) => partActive(part, d.featPicks[slug] ?? {})));
   const picksFor = (slug: string): FeatPicks => d.featPicks[slug] ?? {};
   const setPicksFor = (slug: string, next: FeatPicks) =>
     setD({ ...d, featPicks: { ...d.featPicks, [slug]: next } });
@@ -561,9 +568,12 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
       const feats = [d.featBg, d.featRace].filter(Boolean) as string[];
       const lineageName = race?.lineages?.find((l) => l.slug === d.lineage)?.name;
       // Each feat's proficiency picks, gathered across both slots.
-      const gather = (key: "skills" | "tools" | "languages" | "options" | "spells") =>
+      const gather = (key: "skills" | "tools" | "languages" | "options" | "spells"
+                          | "cantrips") =>
         chosenFeats.flatMap((s) => picksFor(s)[key] ?? []);
-      const allCantrips = [...d.cantrips, ...d.miCantrips];
+      // A feat may hand over CANTRIPS of its own (the Book of Shadows) —
+      // gathered from the feats' own bucket, never from the class's.
+      const allCantrips = [...d.cantrips, ...d.miCantrips, ...gather("cantrips")];
       // What a feat GRANTS outright (Fey Touched's Misty Step) isn't sent —
       // the server folds it in from the feat itself, so it can't be lost here.
       const allSpells = [...d.spells, ...d.miSpells, ...gather("spells")];
@@ -745,11 +755,16 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
               <button
                 key={b.slug}
                 className={`cf-card ${d.background === b.slug ? "picked" : ""}`}
-                onClick={() => { uiTick(); setD({ ...d, background: b.slug }); }}
+                onClick={() => {
+                  uiTick();
+                  setD({ ...d, background: b.slug });
+                  setDetail(b.slug);   // …and show the whole of what it grants
+                }}
               >
                 <div className="cf-card-name">{b.name}</div>
                 <div className="cf-card-sub">
                   {b.skills.length ? b.skills.join(", ") : "—"}
+                  {b.origin_feat ? ` · ${b.origin_feat.replace(/-/g, " ")}` : ""}
                 </div>
               </button>
             ))}
@@ -939,19 +954,22 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
                 )}
               </div>
             )}
-            {featSpellQuestions.map(({ slug, part }) => {
-              const pool = featSpellData[slug];
+            {featSpellQuestions.map(({ slug, part, idx }) => {
+              const pool = (featSpellData[slug]?.picks ?? [])
+                .find((p) => p.idx === idx);
               if (!pool) return null;
-              const chosen = picksFor(slug).spells ?? [];
+              const bucket = spellBucket(part);
+              const chosen = picksFor(slug)[bucket] ?? [];
               const n = part.n ?? 1;
               return (
-                <div key={slug} style={{ marginTop: (spellData || miChoice) ? 20 : 0 }}>
+                <div key={`${slug}#${idx}`}
+                     style={{ marginTop: (spellData || miChoice) ? 20 : 0 }}>
                   <SpellPicker
                     title={part.hint || `Feat spell (choose ${n})`}
                     list={pool.spells} chosen={chosen} n={n}
                     onToggle={(sl) => setPicksFor(slug, {
                       ...picksFor(slug),
-                      spells: chosen.includes(sl)
+                      [bucket]: chosen.includes(sl)
                         ? chosen.filter((x) => x !== sl) : [...chosen, sl],
                     })} />
                   {pool.granted.length > 0 && (
@@ -1042,7 +1060,8 @@ export function CreateFlow({ onDone, onCancel, ccError }: {
           `.cf-detail.race-dup` in the phone media block. */}
       <aside className={`cf-detail ${stage === "race" ? "race-dup" : ""}`}>
         <DetailPanel opts={opts} stage={stage} raceSlug={d.race} clsSlug={d.cls}
-                     lineageSlug={d.lineage} hovered={detail} />
+                     bgSlug={d.background} lineageSlug={d.lineage}
+                     hovered={detail} />
       </aside>
 
       <footer className="cf-foot">
@@ -1339,9 +1358,10 @@ function GearStage({ opts, d, setD, budget, spent }: {
   );
 }
 
-function DetailPanel({ opts, stage, raceSlug, clsSlug, lineageSlug, hovered }: {
+function DetailPanel({ opts, stage, raceSlug, clsSlug, bgSlug, lineageSlug,
+                      hovered }: {
   opts: CCOptions; stage: Stage;
-  raceSlug?: string; clsSlug?: string; lineageSlug?: string;
+  raceSlug?: string; clsSlug?: string; bgSlug?: string; lineageSlug?: string;
   hovered: string | null;
 }) {
   if (stage === "race" || hovered) {
@@ -1375,6 +1395,49 @@ function DetailPanel({ opts, stage, raceSlug, clsSlug, lineageSlug, hovered }: {
               Pick a {(r.lineage_label ?? "lineage").toLowerCase()} below.
             </p>
           ) : null}
+        </div>
+      );
+    }
+  }
+  if (stage === "background") {
+    // Everything a background actually gives, in one place: the boosts, the
+    // skills, the tool, the Origin feat WITH what it does, and the gear. The
+    // cards show two skills, which is not enough to choose on.
+    // `hovered` may still hold the slug of something from an earlier stage;
+    // fall back to the chosen background rather than showing nothing.
+    const b = opts.backgrounds.find((x) => x.slug === hovered)
+      ?? opts.backgrounds.find((x) => x.slug === bgSlug);
+    if (b) {
+      const feat = b.origin_feat
+        ? opts.feats.find((f) => f.slug === b.origin_feat)
+        : undefined;
+      return (
+        <div className="cf-detail-body">
+          <h3>{b.name}</h3>
+          <p className="cf-detail-meta">
+            {b.abilities?.length
+              ? `Ability boosts: ${b.abilities.join(" / ")} — +2 and +1, or +1 to each`
+              : "Ability boosts: any three abilities"}
+          </p>
+          <ul>
+            <li><b>Skills</b> — {b.skills.length ? b.skills.join(", ") : "—"}</li>
+            {b.tool && <li><b>Tool</b> — {b.tool}</li>}
+            {feat
+              ? <li><b>Origin feat</b> — {feat.name}: {feat.brief}</li>
+              : b.origin_feat
+                ? <li><b>Origin feat</b> — {b.origin_feat.replace(/-/g, " ")}</li>
+                : <li><b>Origin feat</b> — your choice from the origin feats</li>}
+            {b.feature && <li><b>Feature</b> — {b.feature}</li>}
+            {b.items?.length ? (
+              <li><b>Equipment</b> — {b.items.map(
+                (it) => (it.quantity > 1 ? `${it.name} ×${it.quantity}` : it.name),
+              ).join(", ")}</li>
+            ) : null}
+          </ul>
+          <p className="cf-detail-meta" style={{ opacity: 0.7 }}>
+            Its gear comes with the standard kit; choosing to buy your own on
+            the Gear stage takes it instead.
+          </p>
         </div>
       );
     }

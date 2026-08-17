@@ -297,6 +297,47 @@ def main() -> int:
               any(k.startswith("opt-") and v["total"] == 1
                   for k, v in pools.items()), str(list(pools)))
 
+    print(f"\n{BOLD}9. an option may ask its OWN questions{OFF}")
+    if has_choices:
+        # The Pact invocations carry no prerequisite, so Eldritch Adept reaches
+        # them — and the Book of Shadows asks twice: three cantrips from any
+        # list, and two level-1 RITUALS. One list could not hold both.
+        opts = dm._feat_choice_specs("eldritch-adept")
+        pact = next((s for s in opts if s.get("kind") == "options"), {})
+        check("the Pacts are on the invocation list",
+              {"Pact of the Blade", "Pact of the Chain", "Pact of the Tome"}
+              <= set(pact.get("from") or []),
+              ", ".join((pact.get("from") or [])[:3]))
+        pools = dm.cc_feat_spells("eldritch-adept")["picks"]
+        tome = [p for p in pools if p.get("when") == "Pact of the Tome"]
+        check("the Book of Shadows asks twice", len(tome) == 2,
+              " + ".join(f"{p['n']}@L{p['level']}" for p in tome))
+        check("…and the ritual half really is rituals only",
+              any(p["ritual"] and p["spells"] for p in tome)
+              and all(sp["name"] for p in tome if p["ritual"] for sp in p["spells"]),
+              ", ".join(sp["name"] for p in tome if p["ritual"]
+                        for sp in p["spells"][:4]))
+
+        t = pc()
+        dm._apply_feat(t, "eldritch-adept",
+                       {"options": ["Pact of the Tome"], "ability": "cha",
+                        "cantrips": ["fire-bolt", "mage-hand", "light"],
+                        "spells": ["detect-magic", "alarm"]})
+        check("both answers land on the sheet, and separately",
+              {"Fire Bolt", "Mage Hand", "Light", "Detect Magic", "Alarm"}
+              <= set(t.spells or []), ", ".join(t.spells or []))
+
+        c = pc()
+        dm._apply_feat(c, "eldritch-adept",
+                       {"options": ["Pact of the Chain"], "ability": "cha"})
+        check("a different pact grants its own thing instead",
+              "Find Familiar" in (dm._castable_lists(c)[0] or [])
+              and not (c.spells or []),
+              str(dm._castable_lists(c)[0]))
+        check("…and a question that hangs off the Tome isn't owed for the Chain",
+              all(dm._feat_choice_satisfied(s, {"options": ["Pact of the Chain"]})
+                  for s in opts if s.get("when")))
+
     print()
     if _fails:
         print(f"{RED}{len(_fails)} check(s) failed:{OFF} " + "; ".join(_fails))

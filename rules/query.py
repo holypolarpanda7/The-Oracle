@@ -108,11 +108,14 @@ class RulesLibrary:
     def spells_by_school(self, schools: list[str], *,
                          level: Optional[int] = None,
                          max_level: Optional[int] = None,
-                         cls: Optional[str] = None) -> list[Spell]:
+                         cls: Optional[str] = None,
+                         ritual: bool = False) -> list[Spell]:
         """Spells of the given school(s), for a pick scoped by SCHOOL rather
         than by class list — Fey Touched wants "a level 1 Divination or
         Enchantment spell" from anywhere, which ``legal_spells_for`` can't
-        express. ``level`` pins one spell level; ``max_level`` caps it."""
+        express. ``level`` pins one spell level; ``max_level`` caps it;
+        ``ritual`` keeps only spells with the Ritual tag (the Book of Shadows
+        asks for two level-1 RITUALS, which no other scoping can say)."""
         wanted = {str(s).strip().lower() for s in (schools or []) if str(s).strip()}
         with Session(self.engine) as s:
             stmt = select(Spell)
@@ -124,6 +127,7 @@ class RulesLibrary:
         cls_l = (cls or "").strip().lower()
         out = [sp for sp in rows
                if (not wanted or (sp.school or "").strip().lower() in wanted)
+               and (not ritual or bool(sp.ritual))
                and (not cls_l or any(cls_l == c.lower() for c in (sp.classes or [])))]
         return sorted(out, key=lambda sp: (sp.level, sp.name))
 

@@ -33,13 +33,38 @@ function browserSession(): Session {
   };
 }
 
+// The live SDK, kept so the player has a way OUT: closing an embedded Activity
+// is an RPC call on the same instance that opened it, and nothing else can do
+// it — a Discord Activity has no window chrome of its own.
+let sdk: Awaited<ReturnType<typeof importSdk>> | null = null;
+const importSdk = async () => {
+  const { DiscordSDK } = await import("@discord/embedded-app-sdk");
+  return new DiscordSDK(String(CLIENT_ID));
+};
+
+/** Leave the Activity. Returns false when there is nothing we're allowed to
+ *  close (a plain browser tab this script didn't open), so the caller can say
+ *  so instead of leaving the player staring at an unchanged screen. */
+export async function closeActivity(): Promise<boolean> {
+  if (sdk) {
+    try {
+      const { RPCCloseCodes } = await import("@discord/embedded-app-sdk");
+      sdk.close(RPCCloseCodes.CLOSE_NORMAL, "Left the table");
+      return true;
+    } catch (e) {
+      console.error("[activity] close failed:", e);
+    }
+  }
+  window.close();   // only works for a tab we opened; silently ignored otherwise
+  return false;
+}
+
 export async function resolveSession(): Promise<Session> {
   const inDiscord = new URLSearchParams(location.search).has("frame_id");
   if (!inDiscord || !CLIENT_ID) return browserSession();
 
   try {
-    const { DiscordSDK } = await import("@discord/embedded-app-sdk");
-    const sdk = new DiscordSDK(CLIENT_ID);
+    sdk = await importSdk();
     await sdk.ready();
 
     const { code } = await sdk.commands.authorize({
@@ -67,6 +92,7 @@ export async function resolveSession(): Promise<Session> {
       embedded: true,
     };
   } catch (e) {
+    sdk = null;   // a half-open SDK can't close anything either
     // If the handshake fails, don't hard-crash the whole surface — drop to the
     // browser/demo path so the UI is still explorable.
     console.error("[activity] Discord SDK init failed; using browser session:", e);

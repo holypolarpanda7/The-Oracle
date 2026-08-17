@@ -65,6 +65,14 @@ export function choiceOptions(c: FeatChoice): string[] {
   return Array.isArray(c.from) ? c.from : ALL_SKILLS;   // skills
 }
 
+/** Which bucket a spell question is answered in. A level-0 pick is a CANTRIP,
+ *  and keeping it apart is what lets one feat ask for both — the Book of
+ *  Shadows wants three cantrips AND two level-1 rituals, and a single list
+ *  would merge them into one unanswerable question. */
+export function spellBucket(c: FeatChoice): "cantrips" | "spells" {
+  return c.level === 0 ? "cantrips" : "spells";
+}
+
 /** Which slot of FeatPicks a choice kind writes into. */
 function bucketOf(kind: FeatChoice["kind"]): keyof FeatPicks | null {
   switch (kind) {
@@ -101,7 +109,8 @@ export function partSatisfied(part: FeatChoice, picks: FeatPicks): boolean {
       && (picks.spells?.length ?? 0) === (part.spells ?? 1);
   }
   // A school-scoped pick; n = 0 is a pure grant, so nothing to answer.
-  if (part.kind === "spells") return (picks.spells?.length ?? 0) === n;
+  if (part.kind === "spells")
+    return (picks[spellBucket(part)]?.length ?? 0) === n;
   const bucket = bucketOf(part.kind);
   return !bucket || (picks[bucket] as string[] | undefined)?.length === n;
 }
@@ -146,8 +155,10 @@ export function FeatChoiceFields({ choice, picks, onChange, spellPicker }: {
   choice?: FeatChoice | null;
   picks: FeatPicks;
   onChange: (next: FeatPicks) => void;
-  /** Renders the Magic Initiate cantrip/spell pickers, if the caller has a list. */
-  spellPicker?: (c: FeatChoice) => React.ReactNode;
+  /** Renders the Magic Initiate cantrip/spell pickers, if the caller has a
+   *  list. `index` is the spec's position in the flattened choice list, which
+   *  is how the caller finds the right pool when a feat asks twice. */
+  spellPicker?: (c: FeatChoice, index: number) => React.ReactNode;
 }) {
   const parts = choiceParts(choice);
   if (!parts.length) return null;
@@ -168,7 +179,7 @@ export function FeatChoiceFields({ choice, picks, onChange, spellPicker }: {
       {parts.map((c, i) => {
         if (!partActive(c, picks)) return null;
         if (c.kind === "magic_initiate" || c.kind === "spells") {
-          return <div key={i}>{spellPicker?.(c) ?? null}</div>;
+          return <div key={i}>{spellPicker?.(c, i) ?? null}</div>;
         }
         if (c.kind === "asi") {
           return <AsiSpread key={i} choice={c} picks={picks} onChange={onChange} />;

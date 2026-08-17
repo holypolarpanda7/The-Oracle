@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AsiFeat, FeatPicks, FeatSpells, LevelUpData, SpellBrief } from "../lib/types";
 import {
-  ABILITY_CODES, AsiSpread, FeatChoiceFields, featChoicesSatisfied,
+  ABILITY_CODES, AsiSpread, FeatChoiceFields, featChoicesSatisfied, spellBucket,
 } from "./FeatChoices";
 import { uiTick } from "../lib/sound";
 
@@ -42,7 +42,9 @@ function AsiStep({ data, mode, setMode, increases, setIncreases,
     if (!feat) { setFeatSpells(null); return; }
     let live = true;
     fetch(`/cc/feat_spells/${feat}`).then((r) => r.json())
-      .then((j: FeatSpells) => { if (live) setFeatSpells(j.n > 0 ? j : null); })
+      .then((j: FeatSpells) => {
+        if (live) setFeatSpells((j.picks ?? []).length ? j : null);
+      })
       .catch(() => { if (live) setFeatSpells(null); });
     return () => { live = false; };
   }, [feat]);
@@ -89,25 +91,32 @@ function AsiStep({ data, mode, setMode, increases, setIncreases,
           {chosen?.choices && (
             <FeatChoiceFields
               choice={chosen.choices} picks={picks} onChange={setPicks}
-              spellPicker={(c) => (c.kind !== "spells" || !featSpells) ? null : (
-                <>
-                  <LuSpellPick
-                    label={c.hint || `Feat spell (choose ${c.n ?? 1})`}
-                    list={featSpells.spells} chosen={picks.spells ?? []}
-                    n={c.n ?? 1}
-                    onToggle={(slug) => setPicks({
-                      ...picks,
-                      spells: (picks.spells ?? []).includes(slug)
-                        ? (picks.spells ?? []).filter((x) => x !== slug)
-                        : [...(picks.spells ?? []), slug],
-                    })} />
-                  {featSpells.granted.length > 0 && (
-                    <div className="lu-opt-feats">
-                      Always prepared: {featSpells.granted.map((g) => g.name).join(", ")}.
-                    </div>
-                  )}
-                </>
-              )} />
+              spellPicker={(c, idx) => {
+                // Each spell question has its OWN pool (a feat may ask twice)
+                // and its own bucket — level 0 answers into cantrips.
+                const pool = (featSpells?.picks ?? []).find((p) => p.idx === idx);
+                if (c.kind !== "spells" || !pool) return null;
+                const bucket = spellBucket(c);
+                const chosen = picks[bucket] ?? [];
+                return (
+                  <>
+                    <LuSpellPick
+                      label={c.hint || `Feat spell (choose ${c.n ?? 1})`}
+                      list={pool.spells} chosen={chosen} n={c.n ?? 1}
+                      onToggle={(slug) => setPicks({
+                        ...picks,
+                        [bucket]: chosen.includes(slug)
+                          ? chosen.filter((x) => x !== slug)
+                          : [...chosen, slug],
+                      })} />
+                    {pool.granted.length > 0 && (
+                      <div className="lu-opt-feats">
+                        Always prepared: {pool.granted.map((g) => g.name).join(", ")}.
+                      </div>
+                    )}
+                  </>
+                );
+              }} />
           )}
         </>
       )}

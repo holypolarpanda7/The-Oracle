@@ -1056,6 +1056,10 @@ export interface FeatChoice {
   // free; n = 0 means grant only, nothing to choose. The pool comes from
   // GET /cc/feat_spells/{feat} — the server owns the filter.
   level?: number; schools?: string[]; granted?: string[];
+  /** "spells": keep only spells with the Ritual tag (the Book of Shadows asks
+   *  for two level-1 rituals). A level-0 question is answered in the CANTRIPS
+   *  bucket, so one feat can ask for cantrips and spells separately. */
+  ritual?: boolean;
   /** Further choices the same feat asks for — one, or a list (Skill Expert
    *  wants an ability, a skill proficiency, AND which skill gets Expertise). */
   also?: FeatChoice | FeatChoice[] | null;
@@ -1068,11 +1072,24 @@ export interface FeatChoice {
   grants_senses?: Record<string, string>;
 }
 
-/** GET /cc/feat_spells/{feat} — the pool a school-scoped feat pick draws from. */
+/** One spell question of a feat, with its pool already filtered by the server.
+ *  `idx` is the position of the spec in the feat's flattened choice list, which
+ *  is how an answer is matched to its pool when a feat asks twice. */
+export interface FeatSpellPick {
+  idx: number; n: number;
+  level?: number | null; schools?: string[]; ritual?: boolean;
+  when?: string | null; hint?: string | null;
+  spells: SpellBrief[]; granted: SpellBrief[];
+}
+
+/** GET /cc/feat_spells/{feat} — every pool a feat's spell picks draw from. The
+ *  top-level fields repeat the first pick, for callers written when a feat
+ *  could only ask once. */
 export interface FeatSpells {
   feat: string; n: number;
   level?: number | null; schools?: string[]; hint?: string | null;
   spells: SpellBrief[]; granted: SpellBrief[];
+  picks?: FeatSpellPick[];
 }
 
 /** The picks a player has made for one feat, sent back with the level-up. */
@@ -1136,6 +1153,10 @@ export interface CCOptions {
     slug: string; name: string; skills: string[];
     feature?: string | null; abilities?: string[];
     origin_feat?: string | null;
+    /** The tool it trains and the gear it hands over — the rest of what a
+     *  background actually is, which the cards never showed. */
+    tool?: string | null;
+    items?: { name: string; quantity: number }[];
   }[];
   ability_methods: {
     standard_array: number[];

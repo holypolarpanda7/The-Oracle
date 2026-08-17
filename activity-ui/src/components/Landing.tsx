@@ -2,11 +2,13 @@ import { useState } from "react";
 import type { CharacterSummary } from "../lib/types";
 import { setSoundEnabled, soundEnabled, uiTick } from "../lib/sound";
 
-export function Landing({ characters, onEnter, onCreate, onArena }: {
+export function Landing({ characters, onEnter, onCreate, onArena, onExit }: {
   characters: CharacterSummary[];
   onEnter: (name: string) => void;
   onCreate: () => void;
   onArena: () => void;
+  /** Close the Activity entirely — the way OUT, which there wasn't one of. */
+  onExit: () => void;
 }) {
   const [sound, setSound] = useState(soundEnabled());
   const living = characters.filter((c) => c.alive);
@@ -76,6 +78,11 @@ export function Landing({ characters, onEnter, onCreate, onArena }: {
         />
         <span>{sound ? "🔊" : "🔇"} table sounds</span>
       </label>
+
+      <button className="landing-exit"
+              onClick={() => { uiTick(); onExit(); }}>
+        ✕ Leave the Oracle
+      </button>
     </div>
   );
 }
