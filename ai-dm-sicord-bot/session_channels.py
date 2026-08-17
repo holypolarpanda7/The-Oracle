@@ -31,11 +31,18 @@ import discord
 ephemeral_session_channels: Dict[int, Dict] = {}
 # channel_id -> the idle-sweep task, so we can cancel it once someone joins.
 _idle_tasks: Dict[int, asyncio.Task] = {}
+# channel_id -> the "everyone left" task, cancelled if anyone comes back.
+_empty_tasks: Dict[int, asyncio.Task] = {}
 
 # Category the tables live under; created on demand if absent.
 SESSION_CATEGORY_NAME = "The Oracle — Tables"
 # How long an untouched (never-joined) table lingers before it's swept.
 IDLE_SWEEP_SECONDS = 900  # 15 minutes
+# How long an EMPTIED table is held open before it's deleted. Not zero: a
+# player whose client drops, who switches to their phone, or who steps out for
+# a moment comes back to the table they were sitting at rather than to a hole
+# where it used to be — and the Activity's own reconnect is inside this window.
+EMPTY_GRACE_SECONDS = 20
 # Ambient playlist a fresh table starts with. A fresh table is a TITLE SCREEN
 # and a character-creation wizard, not a scene — nobody is at the Silver
 # Tankard yet, and creation can run twenty minutes. `tavern` was wrong twice
@@ -317,22 +324,58 @@ async def _start_table_music(channel: discord.VoiceChannel, bot) -> None:
         print(f"[session] music start failed for {channel.id}: {e}")
 
 
+def seated(channel: Optional[discord.abc.GuildChannel]) -> list:
+    """The PLAYERS in a voice channel — bots don't count.
+
+    The table's music is played by the voice sidecar, which joins as its own
+    bot user and never leaves on its own. Counted as an occupant it held every
+    table open forever: the last player would walk out and the channel would
+    stay, because something was still "in" it.
+    """
+    return [m for m in getattr(channel, "members", []) or [] if not m.bot]
+
+
 async def _idle_sweep(guild: discord.Guild, channel_id: int) -> None:
     """Delete a table that nobody joined within the idle window."""
     try:
         await asyncio.sleep(IDLE_SWEEP_SECONDS)
     except asyncio.CancelledError:
         return
+    # Forget the task FIRST: cleanup cancels whatever sweep is registered for
+    # the channel, and this one is it — cancelling yourself mid-await kills the
+    # deletion you were on your way to perform, so the table was never actually
+    # swept and the cancellation looked like nothing had happened.
+    _idle_tasks.pop(channel_id, None)
     channel = guild.get_channel(channel_id)
-    if channel is not None and not channel.members:
+    if channel is not None and not seated(channel):
         await cleanup_session_channel(guild, channel_id, reason="No one took a seat")
+
+
+async def _empty_sweep(guild: discord.Guild, channel_id: int) -> None:
+    """Delete a table the last player left — after a short grace period.
+
+    Re-checked on waking: the delay is the whole point, so a table somebody
+    stepped back into must not be deleted out from under them.
+    """
+    try:
+        await asyncio.sleep(EMPTY_GRACE_SECONDS)
+    except asyncio.CancelledError:
+        return
+    _empty_tasks.pop(channel_id, None)
+    channel = guild.get_channel(channel_id)
+    if channel is None:
+        ephemeral_session_channels.pop(channel_id, None)
+        return
+    if not seated(channel):
+        await cleanup_session_channel(guild, channel_id, reason="Table emptied")
 
 
 async def cleanup_session_channel(guild: discord.Guild, channel_id: int, reason: str) -> None:
     """Delete a table and forget all state tied to it."""
-    task = _idle_tasks.pop(channel_id, None)
-    if task is not None:
-        task.cancel()
+    for pending in (_idle_tasks, _empty_tasks):
+        task = pending.pop(channel_id, None)
+        if task is not None:
+            task.cancel()
     try:
         import music_player
         await music_player.stop_music_in_channel(channel_id)
@@ -368,7 +411,8 @@ async def handle_voice_state_update(
 
     * Someone JOINS a table they didn't launch from → DM them the launch button
       (the feasible "auto-start": we can't force the client to open it).
-    * A table EMPTIES → delete it.
+    * A table EMPTIES → delete it, EMPTY_GRACE_SECONDS later, if it is still
+      empty then. Coming back inside that window cancels the sweep.
     """
     if member.bot:
         return
@@ -381,10 +425,12 @@ async def handle_voice_state_update(
     # Joined a live table: hand them the launch button in a DM — unless we just
     # gave them one (the normal launch-then-join path), which would double-DM.
     if after_id in ephemeral_session_channels and after.channel is not None:
-        # Cancel the idle sweep — the table is in use now.
-        task = _idle_tasks.pop(after_id, None)
-        if task is not None:
-            task.cancel()
+        # Cancel both sweeps — the table is in use now, whether it had never
+        # been sat at or had just been left.
+        for pending in (_idle_tasks, _empty_tasks):
+            task = pending.pop(after_id, None)
+            if task is not None:
+                task.cancel()
 
         # Begin the table's ambient music now that someone's seated.
         await _start_table_music(after.channel, bot)
@@ -400,8 +446,8 @@ async def handle_voice_state_update(
                 except discord.Forbidden:
                     pass  # DMs closed — the Activity tray still works manually
 
-    # Left a table that is now empty: sweep it.
+    # Left a table that is now empty: close it in a moment, not instantly.
     if before_id in ephemeral_session_channels and before.channel is not None:
-        if not before.channel.members:
-            await cleanup_session_channel(
-                member.guild, before_id, reason="Table emptied")
+        if not seated(before.channel) and before_id not in _empty_tasks:
+            _empty_tasks[before_id] = asyncio.create_task(
+                _empty_sweep(member.guild, before_id))
