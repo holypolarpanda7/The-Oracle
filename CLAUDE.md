@@ -69,6 +69,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
      already ignores). A table opens on `music_control.MENU_PLAYLIST` — a
      title screen and a CC wizard are not a scene — and `leave_menu_music`
      moves it off when play begins with no DM cue to follow.
+   - `session_channels.py` — the ephemeral voice TABLES. **A table's occupants
+     are its PLAYERS: `seated()` ignores bots.** The music sidecar joins as its
+     own bot user and never leaves on its own, so counting it held every table
+     open forever — the last player walked out and the channel stayed because
+     something was still "in" it. A table the last player leaves closes after
+     `EMPTY_GRACE_SECONDS` (20) and is re-checked on waking, so a dropped
+     client, a switch to the phone or an Activity reconnect comes back to the
+     table rather than to a hole where it was. **A sweep must forget its own
+     task before calling cleanup**, which cancels whatever is registered for
+     the channel — cancelling yourself mid-await kills the deletion you were on
+     your way to perform, which is why an idle table was never actually swept.
    - See `MODULE_ARCHITECTURE.md` for the full module map
 2. **`oracle-dm-backend/fastapi-dm.py`** — the "DM brain."
    - OpenRouter LLM call → narration
@@ -243,8 +254,13 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
   level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed)
 - Feat smoke test: `uv run python scripts/feats_smoke.py` (a feat's questions,
-  its grants, its named options, the resource it hands over and the at-will
-  spell it grants — all the way to what the DM is told)
+  its grants, its named options, the resource it hands over, the at-will spell
+  it grants, and an OPTION that asks its own questions — all the way to what
+  the DM is told)
+- Session-table smoke test: `uv run python scripts/session_table_smoke.py` (fake
+  guild/channel/member through the REAL voice-state handler: the music sidecar
+  is not an occupant, an emptied table closes after the grace period, stepping
+  back in cancels it, and a table nobody sat at is still swept)
 - Species-choice smoke test: `uv run python scripts/species_choices_smoke.py`
   (a species asks what its traits promise — languages read off its own line, a
   skill, an either/or gift — and the answers reach the sheet as real tags; plus
@@ -325,7 +341,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   spell pick lands on the Spells stage), `species-choices` (the species' own
   questions gate the Origin stage, a conditional one appears only when the
   option it hangs off is taken, and the "any feat" slot reaches a level-4 feat
-  while an epic boon stays locked), `pframe-shot`
+  while an epic boon stays locked), `cc-panels` (the background panel carries
+  the whole of what a background grants; Pact of the Tome's two spell questions
+  gate the Spells stage separately; the landing's way out asks first),
+  `pframe-shot`
   (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
   at desktop and phone: status bar, "here & now" rail, narration column, roll
   card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
@@ -1463,6 +1482,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   schedule must not be able to buy a turn of it at level 1. The
   slot is told apart server-side by `_species_free_feat`: the background's
   Origin feat is granted and known, so what is left is the species'.
+- **A choice you can't see the whole of isn't a choice.** Two surfaces the CC
+  never gave the player. A background card showed two skills, so its Origin
+  feat, its tool, its feature and its gear were invisible until after the
+  character existed — the detail panel now carries all of it (`/cc/options`
+  serves `tool` and `items` for that, and nothing else reads them). And the
+  Activity had no EXIT at all: an embedded Activity has no window chrome of its
+  own, so closing it is an RPC call on the SDK instance that opened it —
+  `session.closeActivity()`, which returns false in a plain browser tab (a page
+  a script didn't open can't be closed) so the surface can say so rather than
+  appear to ignore the click. The way out is on the landing and in the play
+  status bar, and it asks first.
 - **A trait that says "of your choice" is a QUESTION.** A human's Skillful
   skill, a Custom Lineage's darkvision-or-skill gift, and every "plus two
   languages of your choice" line were prose nothing asked about, so the sheet
@@ -1548,6 +1578,22 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   wrong instead of one per caller. The companion goes in the summons slot with
   no `spells` key — nothing casts it — and its `level` is the owner's CLASS
   level, which `materialize()` does not distinguish from a slot level.
+- **An OPTION may ask its own questions, and the Pacts are why.** In the 2024
+  book the three Pact invocations carry NO prerequisite, so Eldritch Adept
+  reaches them — and Pact of the Tome asks for three cantrips from any list AND
+  two level-1 RITUALS, which is two questions hanging off one option. Three
+  things made that expressible: `when` (the species-choice mechanism — a spec
+  is skipped by `_apply_feat`, `_feat_choice_satisfied` and
+  `_feat_granted_spells` unless its option was taken, so picking the Chain owes
+  the Tome's questions nothing); `ritual: true` on `spells_by_school`, because
+  "a level 1 ritual from any class's list" is sayable no other way; and a
+  level-0 spell question answering into the **cantrips** bucket, so one feat's
+  two answers stay two answers. `/cc/feat_spells/{feat}` returns a LIST of
+  `picks` keyed by the spec's own index — the client matches an answer to its
+  pool by that, never by position — with the old top-level fields repeating the
+  first pick. What a pact GRANTS instead of asking (the Chain's Find Familiar,
+  at will) is an `option_catalog.json` entry, which already reaches
+  `_castable_lists`; nothing new was needed for it.
 - **A named feat OPTION is a proper noun until something says what it does.**
   `owned_books/option_catalog.json` (gitignored, cached once — restart after
   editing) maps `tag -> option -> {cost, resource, grants_spell, at_will,
