@@ -124,6 +124,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
    - `ventures.py` — **other people's quests**: an NPC steps out of their role
      and goes after something, in 1-3 stages, progressing on world-time whether
      or not anyone is watching. See `docs/design/ventures.md`.
+   - `threads.py` — **the character's OWN unfinished business**: the half of a
+     backstory a DM can act on. A personality trait describes how somebody
+     behaves in a scene already happening and is no help at all with "what
+     should we do next"; what answers that is something left OPEN, because
+     every one carries a verb — a home to RETURN to, a wrong to AVENGE,
+     somebody to FIND, a thing to RECOVER, a debt to REPAY, a wrong to ATONE
+     for. So a thread is not prose: it is a real PLACE with real coordinates
+     (so `[[ROUTES]]` costs the journey and the mapmaker draws it), optionally
+     a real person standing there, and an `UNRESOLVED` edge from the PC.
+     Resolving it CHANGES the world and it stops being offered — which a
+     paragraph in a text box cannot do, since prose goes on saying the village
+     is burned long after the party rebuilt it.
    - `demo.py` — runnable end-to-end demo.
 4. **`rules/`** — SRD **rules reference** (structured game data). Seeded from the
    open, CC-BY-4.0 5e SRD dataset so the DM brain + dice roller get exact numbers.
@@ -322,6 +334,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `skins` (what a square is MADE of versus what it DOES: a skin changes no
   rule, may reshape a quoted height but never restate it, a tent you can walk
   into, a watchtower top that is a real storey, a hold at -8 ft)
+- Unfinished-business smoke test: `uv run python scripts/threads_smoke.py` (a
+  thread survives creation as real world state; anchors scatter from the
+  character's own seed rather than beside the party, and a retry lays the same
+  map; reach bands make visibly different offers; the DM is told only when
+  somebody asks or names their own past; settling one closes it and the others
+  are untouched)
 - Bastion builder smoke test: `uv run python scripts/bastion_build_smoke.py`
   (what the rules allow, what they refuse and how they say so, that nothing
   argues with the player's description, and raising one against a real purse)
@@ -1753,6 +1771,37 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   in component enforcement: imported sheets routinely arrive with no pack, and
   a false refusal stops play dead where a missed enforcement only makes the
   game slightly generous. A pack with *something* in it is taken at its word.
+- **A backstory is only useful to the DM if it left something OPEN, and where
+  the anchor LANDS is the scale decision.** `threads.py`. The six kinds are
+  unresolved business, not personality — a trait says how you behave in a
+  scene already running, and the question a DM actually needs answered is
+  "what could these people do next". An anchor is placed on a bearing and at a
+  distance seeded from the **CHARACTER**, never beside wherever they happen to
+  be standing: placed locally, a hundred players' ruins pile on the starting
+  village and the rest of a 50-million-square-mile planet stays empty.
+  Deterministic, for the cartographer's reason — a retried registration must
+  lay the same map, not a second ruin beside the first.
+  **Two threads want a DAY's room, not the cartographer's six miles.** Six
+  keeps a ruin out of a village and does nothing about crowding; measured at
+  300 characters it left a MEDIAN gap of 16 miles with two thirds of anchors
+  within a day of another, which is a world that is more backstory than
+  country. `THREAD_SPACING_MI` is 24, and when a band is full the placement
+  steps OUTWARD (`_CONGESTION_STEPS`) rather than packing tighter — that is
+  what makes it scale, since the bands reach 1,100 miles and the planet is
+  12,566 around. Distance within a band is drawn area-uniformly
+  (`sqrt` of a uniform over the squared radii) or a ring piles its points on
+  its inner edge.
+  **The DM block is gated on the player's MESSAGE alone**, not on
+  `_scene_text` — that helper folds in the location's name and description,
+  and a thread is something somebody ASKS for, so a tavern describing itself
+  as a place people look for work is not somebody asking. Second half of the
+  gate is `mentions_thread`, which matches a thread's own place/person on WORD
+  BOUNDARIES (the `setpieces.landmark_for` rule: "The Ford" is inside
+  "afford", and a length guard does not save you, because the name that trips
+  it is a real four-letter name). Never more than one offered at a time, and
+  never as an instruction — a player is allowed to leave their past alone, and
+  a DM who keeps raising it is running their character for them.
+  `[[THREAD: resolve | <kind> | <what happened>]]` closes one out.
 - **An NPC may want something, and a VENTURE is not a companion.** Until
   `eight_card_system/ventures.py` the world had people who *are* something (a
   role, a hook) and quests the PARTY takes, and nothing in between — so an NPC
