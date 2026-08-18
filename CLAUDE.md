@@ -1794,10 +1794,35 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   anchor a median of 27 mi, **0% within a day's walk**, median 350 mi from the
   starting village, and only ~10% of the planet in use — so the headroom is an
   order of magnitude, and the reach bands are what caps it, not the world.
-  The cost is O(existing places) per anchor and it shows: 53 ms per character
-  at 200 anchors, 367 ms at 800. That is fine for a one-time registration and
-  is the thing to profile first if it ever isn't — a coarse lat/lon bucket over
-  `_coordful_places` is the fix, not a smaller world.
+  **The cheapest anchor is one that already EXISTS.** `candidates_for` offers
+  what the world made in play — a place the extractor marked `destroyed`, an
+  NPC who went `missing`, anything named in a WorldEvent whose summary reads
+  like the kind (the second is what catches a village the DM burned in prose
+  without the status ever being set, which is most of them). Adopting one via
+  `attach_thread` creates NOTHING: no place, no bearing, no roll. Two
+  characters out of the same ruin is the POINT — resolution is per-PC, so
+  settling one leaves the other's open. Only INVENTED anchors are withheld
+  from the next player; history the world made is offered to everyone.
+  **Fit is ranked and annotated, never refused.** A tiefling should not be
+  shown a wood-elf village's burning as the obvious answer, but a tiefling
+  raised among humans is one of the oldest backstories there is — so
+  `fit_for` sorts natives first and labels the rest ("mostly elves and humans
+  — you would have been an outsider there"). `denizens` is the HAZARD table
+  (wolves, bandits), so the population signal is the races of the NPCs the
+  world actually placed there, plus species words in the description.
+  Comparison runs on loose tokens (`Elf (Wood Elf)` → elf/wood elf/wood, so a
+  half-elf reads as at home among elves); DISPLAY is a separate step over
+  canonical plurals, because printing the first three tokens alphabetically
+  cut "humans" off a village that was half human.
+  **Placement cost: I guessed wrong and the profiler said so.** The distance
+  loop was never the problem — 87% of the time was `_anchor_name` calling
+  `graph.find_entities_by_name` twelve times per anchor, and that helper loads
+  EVERY entity and compares names in Python (half a million JSON decodes per
+  twenty anchors). One name-column query, plus folding two full table scans
+  into one two-column `_placed_world`, took 800 anchors from **367 ms to 14
+  ms** and 2,000 anchors to 39 ms. The lat/lon grid is kept — it is why
+  distance no longer appears in the profile at all — but it bought ~10% on its
+  own. `find_entities_by_name` is still O(world) for every caller.
   **The DM block is gated on the player's MESSAGE alone**, not on
   `_scene_text` — that helper folds in the location's name and description,
   and a thread is something somebody ASKS for, so a tavern describing itself

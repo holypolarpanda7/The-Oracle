@@ -14327,13 +14327,25 @@ def _apply_origin_ties(char: Character, req: RegisterCharacterRequest) -> dict:
         for spec in (req.threads or []):
             if not isinstance(spec, dict):
                 continue
-            made = world_threads.open_thread(
-                world, pc,
-                str(spec.get("kind") or ""),
-                str(spec.get("summary") or ""),
-                subject=str(spec.get("subject") or "") or None,
-                place_name=str(spec.get("place") or "") or None,
-            )
+            existing = str(spec.get("existing") or "").strip()
+            if existing:
+                # They hitched to something the world already has. Nothing new
+                # is created and no bearing is rolled — see attach_thread.
+                made = world_threads.attach_thread(
+                    world, pc,
+                    str(spec.get("kind") or ""),
+                    str(spec.get("summary") or ""),
+                    existing,
+                    subject=str(spec.get("subject") or "") or None,
+                )
+            else:
+                made = world_threads.open_thread(
+                    world, pc,
+                    str(spec.get("kind") or ""),
+                    str(spec.get("summary") or ""),
+                    subject=str(spec.get("subject") or "") or None,
+                    place_name=str(spec.get("place") or "") or None,
+                )
             if made:
                 opened.append(made)
         if opened:
@@ -14411,14 +14423,19 @@ def cc_origins(limit: int = 24):
 
 
 @app.get("/cc/threads")
-def cc_threads():
+def cc_threads(species: Optional[str] = None):
     """The unfinished-business questions the background stage asks.
 
     Served rather than hard-coded in the client for the reason every other CC
     pool is: the wizard and the server must offer the same list, and the
     server is the one that has to understand the answer.
+
+    ``species`` ranks what the world already has by whether it FITS the
+    character being made — a tiefling should not be shown a wood-elf village's
+    kidnapping as the obvious answer. It ranks and annotates; it never
+    removes, because a tiefling raised among humans is a backstory.
     """
-    return {"threads": world_threads.questions()}
+    return {"threads": world_threads.questions(world, species)}
 
 
 @app.post("/register_character")

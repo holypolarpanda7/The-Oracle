@@ -898,6 +898,44 @@ body {
   border-top: 1px solid color-mix(in srgb, var(--brass) 18%, transparent);
 }
 .cf-thread-body .cf-hint { margin-top: 6px; }
+/* What the world already has. Deliberately a wider, quieter card than a
+   suggestion chip: a suggestion is a phrase, this is a PLACE with history, and
+   the history is the reason to pick it. */
+.cf-thread-known { display: flex; flex-direction: column; gap: 6px; }
+.cf-thread-known-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--brass);
+  opacity: 0.85;
+}
+.cf-known {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+  border: 1px solid color-mix(in srgb, var(--brass) 30%, transparent);
+  border-radius: 5px;
+  background: rgba(9, 12, 21, 0.55);
+}
+.cf-known:hover { border-color: color-mix(in srgb, var(--brass) 60%, transparent); }
+.cf-known.picked {
+  border-color: var(--brass);
+  background: color-mix(in srgb, var(--brass) 12%, rgba(9, 12, 21, 0.7));
+}
+/* An outsider's option is offered, not hidden — a tiefling raised among
+   humans is a backstory. It just doesn't lead. */
+.cf-known.odd { opacity: 0.72; }
+.cf-known-name { font-size: 13px; }
+.cf-known-why { font-size: 11px; color: var(--text-dim); font-style: italic; }
+.cf-known-odd { font-size: 11px; color: var(--brass); opacity: 0.8; }
+
 .cf-thread-field { display: flex; flex-direction: column; gap: 3px; }
 .cf-thread-field > span {
   font-family: var(--mono);

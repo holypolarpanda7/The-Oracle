@@ -202,7 +202,8 @@ interface Draft {
   /** Unfinished business, keyed by thread kind. A kind with no entry was not
    *  answered — every one of these is optional, and a character who walks in
    *  with nothing left open is a legitimate character. */
-  threads: Record<string, { summary: string; subject?: string; place?: string }>;
+  threads: Record<string, { summary: string; subject?: string; place?: string;
+                            existing?: string }>;
   deity?: string;                 // patron god (esp. clerics/paladins/warlocks)
   gender?: string;                // gender identity (free-form)
   name: string;
@@ -399,11 +400,18 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
 
   // The unfinished-business questions. Served rather than written here so the
   // wizard and the server can never offer different lists.
+  // Re-fetched when the SPECIES changes: the server ranks what the world
+  // already has by whether it fits this character, so a tiefling isn't shown a
+  // wood-elf village's burning as the obvious answer.
   useEffect(() => {
-    fetch("/cc/threads").then((r) => r.json())
-      .then((d) => setThreadKinds(d?.threads ?? []))
+    // Keyed off the draft's own slug, not the resolved `race` object — that
+    // is declared further down, and naming it here is a temporal dead zone.
+    const name = opts?.races.find((r) => r.slug === d.race)?.name;
+    const q = name ? `?species=${encodeURIComponent(name)}` : "";
+    fetch(`/cc/threads${q}`).then((r) => r.json())
+      .then((j) => setThreadKinds(j?.threads ?? []))
       .catch(() => setThreadKinds([]));
-  }, []);
+  }, [d.race, opts]);
 
   // The seal has happened — walk on to the likeness.
   useEffect(() => {
@@ -747,6 +755,7 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
               summary: v.summary.trim(),
               subject: v.subject?.trim() || undefined,
               place: v.place?.trim() || undefined,
+              existing: v.existing || undefined,
             }));
           return rows.length ? rows : undefined;
         })(),
@@ -1428,7 +1437,8 @@ function ThreadQuestions({ d, setD, kinds }: {
   const [open, setOpen] = useState<string | null>(null);
   const answered = (slug: string) => (d.threads[slug]?.summary ?? "").trim();
 
-  const put = (slug: string, patch: Partial<{ summary: string; subject: string; place: string }>) => {
+  const put = (slug: string, patch: Partial<{ summary: string; subject: string;
+                                             place: string; existing: string }>) => {
     const prev = d.threads[slug] ?? { summary: "" };
     setD({ ...d, threads: { ...d.threads, [slug]: { ...prev, ...patch } } });
   };
@@ -1465,12 +1475,48 @@ function ThreadQuestions({ d, setD, kinds }: {
             {isOpen && (
               <div className="cf-thread-body">
                 <p className="cf-hint">{k.question}</p>
+
+                {/* What the world ALREADY has, offered first — the same order
+                    /cc/origins puts existing homelands in, and for a stronger
+                    reason: hitching to a village the party actually watched
+                    burn costs the world no new place at all. */}
+                {k.candidates.length > 0 && (
+                  <div className="cf-thread-known">
+                    <span className="cf-thread-known-label">
+                      Already in the world
+                    </span>
+                    {k.candidates.map((c) => (
+                      <button
+                        key={c.slug}
+                        className={`cf-known ${val?.existing === c.slug ? "picked" : ""}`
+                                   + (c.fit === "outsider" ? " odd" : "")}
+                        onClick={() => {
+                          uiTick();
+                          put(k.slug, {
+                            existing: val?.existing === c.slug ? undefined : c.slug,
+                            // Their own words still matter; seed them with
+                            // something true so the thread is answered.
+                            summary: (val?.summary ?? "").trim() || c.why,
+                          });
+                        }}
+                      >
+                        <span className="cf-known-name">{c.name}</span>
+                        <span className="cf-known-why">{c.why}</span>
+                        {c.fit_note && (
+                          <span className="cf-known-odd">{c.fit_note}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <div className="cf-chips">
                   {k.suggestions.map((sug) => (
                     <button
                       key={sug}
                       className={`cf-chip ${val?.summary === sug ? "picked" : ""}`}
-                      onClick={() => { uiTick(); put(k.slug, { summary: sug }); }}
+                      onClick={() => { uiTick();
+                        put(k.slug, { summary: sug, existing: undefined }); }}
                     >{sug}</button>
                   ))}
                 </div>
@@ -1500,16 +1546,18 @@ function ThreadQuestions({ d, setD, kinds }: {
                     />
                   </label>
                 )}
-                <label className="cf-thread-field">
-                  <span>The place, if you know its name <em>· optional</em></span>
-                  <input
-                    className="cf-input"
-                    maxLength={48}
-                    placeholder="otherwise the world names it for you"
-                    value={val?.place ?? ""}
-                    onChange={(e) => put(k.slug, { place: e.target.value })}
-                  />
-                </label>
+                {!val?.existing && (
+                  <label className="cf-thread-field">
+                    <span>The place, if you know its name <em>· optional</em></span>
+                    <input
+                      className="cf-input"
+                      maxLength={48}
+                      placeholder="otherwise the world names it for you"
+                      value={val?.place ?? ""}
+                      onChange={(e) => put(k.slug, { place: e.target.value })}
+                    />
+                  </label>
+                )}
                 {answered(k.slug) && (
                   <button className="cf-thread-clear"
                           onClick={() => { uiTick(); clear(k.slug); setOpen(null); }}>

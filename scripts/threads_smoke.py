@@ -213,6 +213,80 @@ def main() -> int:
         still = s.exec(select(_Ent).where(_Ent.name == "Ashmere")).first()
     check("the place itself survives — it is somewhere now", still is not None)
 
+    # ---------------------------------------------------------------
+    print(f"\n{BOLD}6. hitching to history the world already made{OFF}")
+    # A village burns in play, with a recorded population, and a tiefling
+    # quarter burns elsewhere. Both are real world state, not backstory.
+    from eight_card_system import geo as _geo
+    thorn = dm.world.create_entity(
+        "Thornwick", EntityType.PLACE, subtype="settlement", status="destroyed",
+        attributes={"description": "A river village.",
+                    "coords": _geo.coords_attr(45.9, 1.2)})
+    for nm, race in (("Alder Fenn", "Human"), ("Sylwen", "Elf (Wood Elf)")):
+        n = dm.world.create_entity(nm, EntityType.NPC, attributes={"race": race})
+        dm.world.add_relation(n.slug, RelationType.LOCATED_IN, thorn.slug)
+    ember = dm.world.create_entity(
+        "Emberrow", EntityType.PLACE, subtype="settlement", status="destroyed",
+        attributes={"description": "A cliffside quarter.",
+                    "coords": _geo.coords_attr(44.2, -1.9)})
+    vk = dm.world.create_entity("Vashka", EntityType.NPC, attributes={"race": "Tiefling"})
+    dm.world.add_relation(vk.slug, RelationType.LOCATED_IN, ember.slug)
+
+    cands = th.candidates_for(dm.world, "lost-home")
+    names = [c["name"] for c in cands]
+    check("a place the world destroyed is offered as an anchor",
+          "Thornwick" in names and "Emberrow" in names, ", ".join(names))
+    check("…and it says WHY, in the world's own words",
+          all(c["why"] for c in cands), cands[0]["why"] if cands else "")
+
+    tf = th.candidates_for(dm.world, "lost-home", species="Tiefling")
+    check("a tiefling is offered the tiefling quarter FIRST",
+          tf and tf[0]["name"] == "Emberrow", " > ".join(c["name"] for c in tf))
+    odd = next((c for c in tf if c["name"] == "Thornwick"), None)
+    check("…the elf-and-human village is still offered, not hidden", odd is not None)
+    check("…but marked, and it names the people",
+          bool(odd) and odd["fit"] == "outsider"
+          and "elves" in odd["fit_note"] and "humans" in odd["fit_note"],
+          str(odd and odd["fit_note"]))
+    we = th.candidates_for(dm.world, "lost-home", species="Elf (Wood Elf)")
+    check("…and a wood elf gets the opposite order",
+          we and we[0]["name"] == "Thornwick", " > ".join(c["name"] for c in we))
+    he = th.candidates_for(dm.world, "lost-home", species="Half-Elf")
+    check("a half-elf is at home among elves", 
+          he and he[0]["name"] == "Thornwick", " > ".join(c["name"] for c in he))
+
+    # The free ride: adopting one creates NO new place.
+    with Session(dm.world.engine) as s:
+        before = len(s.exec(select(_Ent).where(_Ent.type == EntityType.PLACE)).all())
+    p3 = dict(payload, name="Kessa Dree",
+              threads=[{"kind": "lost-home", "summary": "I was away when it burned",
+                        "existing": "emberrow"}])
+    asyncio.run(dm.register_character(dm._cc_request("threads-smoke-3", p3)))
+    with Session(dm.world.engine) as s:
+        after = len(s.exec(select(_Ent).where(_Ent.type == EntityType.PLACE)).all())
+    check("adopting one costs the world NO new place", after == before,
+          f"{before} -> {after}")
+    pc3 = dm.world.find_pc("threads-smoke-3", "Kessa Dree")
+    own3 = th.open_threads_for(dm.world, pc3.slug)
+    check("…and the thread points at the real one",
+          len(own3) == 1 and own3[0]["place"] == "Emberrow",
+          str(own3 and own3[0]["place"]))
+    check("…so the DM's line names a place with history",
+          any("Emberrow" in ln for ln in th.hook_lines(dm.world, pc3.slug, "Kessa")))
+
+    # Two characters out of the same ruin is the POINT, not a collision.
+    p4 = dict(payload, name="Ordo Vane",
+              threads=[{"kind": "lost-home", "summary": "my whole street went up",
+                        "existing": "emberrow"}])
+    asyncio.run(dm.register_character(dm._cc_request("threads-smoke-4", p4)))
+    pc4 = dm.world.find_pc("threads-smoke-4", "Ordo Vane")
+    check("two characters can share one ruin",
+          th.open_threads_for(dm.world, pc4.slug)[0]["place"] == "Emberrow")
+    th.resolve_thread(dm.world, pc3.slug, "lost-home", "rebuilt")
+    check("…and settling one does not settle the other's",
+          len(th.open_threads_for(dm.world, pc4.slug)) == 1
+          and len(th.open_threads_for(dm.world, pc3.slug)) == 0)
+
     print()
     if _fails:
         print(f"{RED}{len(_fails)} check(s) failed:{OFF} " + "; ".join(_fails))

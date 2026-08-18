@@ -1246,6 +1246,26 @@ export interface CCThreadKind {
   wants_subject: boolean;
   reach: string;
   suggestions: string[];
+  /** What the WORLD already has that could serve as this thread's anchor —
+   *  a village burned in play, somebody who went missing. Offered before the
+   *  invented option: hitching to real history costs the world no new place. */
+  candidates: CCThreadCandidate[];
+}
+
+export interface CCThreadCandidate {
+  slug: string;
+  name: string;
+  type: string;
+  status: string;
+  /** Why it qualifies — the event that did it, in the world's own words. */
+  why: string;
+  day: number;
+  has_coords: boolean;
+  /** "native" | "outsider" — whether this character's species belongs there.
+   *  An outsider's option is ranked last and never hidden: a tiefling raised
+   *  among humans is a backstory, not a mistake. */
+  fit: string;
+  fit_note: string;
 }
 
 /** What the player answered for one of them. `summary` is their own words and
@@ -1256,4 +1276,6 @@ export interface CCThreadAnswer {
   summary: string;
   subject?: string;
   place?: string;
+  /** Slug of a thing the world already has, chosen instead of inventing one. */
+  existing?: string;
 }

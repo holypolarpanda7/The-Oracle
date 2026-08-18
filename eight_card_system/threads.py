@@ -98,6 +98,13 @@ class ThreadKind:
     suggestions: tuple[str, ...] = ()
     # How the DM is told about it. ``{who}``/``{what}``/``{where}`` are filled.
     hook: str = "{who} has unfinished business with {what}."
+    # What ALREADY in the world could serve as this thread's anchor. A village
+    # the party watched burn is a better lost home than one invented at
+    # creation, and it costs the world nothing to reuse it — see
+    # ``candidates_for``.
+    match_types: tuple[str, ...] = ()
+    match_statuses: tuple[str, ...] = ()   # empty = anything still standing
+    match_cues: tuple[str, ...] = ()       # words in its own recorded history
 
 
 THREAD_KINDS: tuple[ThreadKind, ...] = (
@@ -116,6 +123,11 @@ THREAD_KINDS: tuple[ThreadKind, ...] = (
             "a steading swallowed by the marsh",
         ),
         hook="{who} has never gone back to {what} ({where}).",
+        match_types=(EntityType.PLACE,),
+        match_statuses=("destroyed", "ruined", "razed", "burned", "abandoned",
+                        "lost", "sacked"),
+        match_cues=("burn", "burned", "razed", "sacked", "destroyed", "ruin",
+                    "drowned", "flooded", "abandoned", "put to the torch"),
     ),
     ThreadKind(
         slug="vengeance",
@@ -134,6 +146,9 @@ THREAD_KINDS: tuple[ThreadKind, ...] = (
             "whoever it was — I never saw a face",
         ),
         hook="{who} is owed an answer by {what}, and has never had it ({where}).",
+        match_types=(EntityType.NPC, EntityType.FACTION),
+        match_cues=("burn", "razed", "sacked", "slaughter", "murder", "raid",
+                    "betray", "hanged", "killed", "destroyed"),
     ),
     ThreadKind(
         slug="missing",
@@ -152,6 +167,9 @@ THREAD_KINDS: tuple[ThreadKind, ...] = (
             "the person who paid my ransom, so I could thank them",
         ),
         hook="{who} is still looking for {what} ({where}).",
+        match_types=(EntityType.NPC,),
+        match_statuses=("missing", "vanished", "lost", "departed", "unknown",
+                        "taken", "captured"),
     ),
     ThreadKind(
         slug="taken",
@@ -170,6 +188,8 @@ THREAD_KINDS: tuple[ThreadKind, ...] = (
             "my name — somebody else is using it",
         ),
         hook="{who} means to get {what} back ({where}).",
+        match_types=(EntityType.ITEM,),
+        match_cues=("stolen", "taken", "lost", "plundered", "looted", "seized"),
     ),
     ThreadKind(
         slug="debt",
@@ -188,6 +208,7 @@ THREAD_KINDS: tuple[ThreadKind, ...] = (
             "a promise to return, made to someone still waiting",
         ),
         hook="{who} owes {what}, and has not settled it ({where}).",
+        match_types=(EntityType.FACTION, EntityType.NPC),
     ),
     ThreadKind(
         slug="guilt",
@@ -204,6 +225,9 @@ THREAD_KINDS: tuple[ThreadKind, ...] = (
             "I was the one who opened the gate",
         ),
         hook="{who} is trying to make up for {what} ({where}).",
+        match_types=(EntityType.PLACE,),
+        match_cues=("betray", "died", "killed", "lost", "fell", "burned",
+                    "opened the gate", "failed"),
     ),
 )
 
@@ -214,10 +238,19 @@ def kind(slug: str) -> Optional[ThreadKind]:
     return _BY_SLUG.get((slug or "").strip().lower())
 
 
-def questions() -> list[dict]:
-    """The catalogue as the character-creation screen wants it."""
-    return [
-        {
+def questions(graph: Optional[WorldGraph] = None,
+              species: Optional[str] = None) -> list[dict]:
+    """The catalogue as the character-creation screen wants it.
+
+    Given a graph, each question also carries what the WORLD already has that
+    could serve as its anchor — offered before the invented option, the same
+    order `/cc/origins` puts existing homelands in, and for a stronger reason:
+    hitching to a village the party actually watched burn costs the world no
+    new entity at all.
+    """
+    out = []
+    for k in THREAD_KINDS:
+        row = {
             "slug": k.slug,
             "label": k.label,
             "question": k.question,
@@ -225,9 +258,15 @@ def questions() -> list[dict]:
             "wants_subject": k.subject_type is not None,
             "reach": k.reach,
             "suggestions": list(k.suggestions),
+            "candidates": [],
         }
-        for k in THREAD_KINDS
-    ]
+        if graph is not None:
+            try:
+                row["candidates"] = candidates_for(graph, k.slug, species=species)
+            except Exception as e:  # noqa: BLE001
+                print(f"[threads] candidates for {k.slug} failed: {e}")
+        out.append(row)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -244,14 +283,84 @@ def _seed_for(pc_slug: str, kind_slug: str) -> int:
     return int.from_bytes(h[:8], "big")
 
 
-def _coordful_places(s: Session) -> list[tuple[str, geo.Coords]]:
+def _placed_world(graph: WorldGraph) -> tuple[list[tuple[str, geo.Coords]], set[str]]:
+    """Every positioned place, and which of them are somebody's thread anchor.
+
+    ONE query returning two COLUMNS, not entities. Placement needs a slug and
+    a position; building a full ORM object for each place — and JSON-decoding
+    every attribute blob to do it — was the whole remaining cost once the name
+    lookup was fixed. Both answers come off the same scan, because they used to
+    be two scans of the same table.
+    """
     from sqlmodel import select
-    out: list[tuple[str, geo.Coords]] = []
-    for e in s.exec(select(Entity).where(Entity.type == EntityType.PLACE)).all():
-        c = geo.coords_from_attrs(e.attributes)
+    places: list[tuple[str, geo.Coords]] = []
+    threads: set[str] = set()
+    with Session(graph.engine) as s:
+        rows = s.exec(select(Entity.slug, Entity.attributes)
+                      .where(Entity.type == EntityType.PLACE)).all()
+    for slug, attrs in rows:
+        if not isinstance(attrs, dict):
+            continue
+        c = geo.coords_from_attrs(attrs)
         if c is not None:
-            out.append((e.slug, c))
-    return out
+            places.append((slug, c))
+        if attrs.get("thread"):
+            threads.add(slug)
+    return places, threads
+
+
+# --- the clearance grid -----------------------------------------------------
+# Proving a candidate spot is clear used to mean comparing it against EVERY
+# place in the world, because `all()` cannot stop early when the answer is yes.
+# That is one great-circle sum per place per candidate, and it grew with the
+# world: 53 ms per character at 200 anchors, 367 ms at 800.
+#
+# But the question is only ever "is anything within N miles", and a place five
+# hundred miles away is obviously not. So the world is chopped into cells a
+# little wider than the largest radius anyone asks about, and a candidate is
+# compared only against its own cell and the eight touching it — everything
+# else is further away than N by the geometry of the grid, with no arithmetic
+# needed to prove it. Cost stops growing with the world and starts tracking
+# only how crowded the neighbourhood is.
+_CELL_MI = 30.0
+
+
+def _cell_of(c: geo.Coords, cell_mi: float) -> tuple[int, int]:
+    """Which grid cell a position falls in.
+
+    Latitude is uniform; a degree of LONGITUDE shrinks toward the poles, so the
+    cell's longitude width is widened by 1/cos(lat). That makes high-latitude
+    cells cover more degrees rather than less ground, which is the direction
+    that stays CORRECT — a cell too wide costs a few extra comparisons, a cell
+    too narrow silently misses a neighbour and lets two anchors land on top of
+    each other.
+    """
+    deg_lat = cell_mi / (geo.WORLD_CIRCUMFERENCE_MI / 360.0)
+    lat_i = int(math.floor(c[0] / deg_lat))
+    shrink = max(0.05, math.cos(math.radians(c[0])))
+    deg_lon = deg_lat / shrink
+    return lat_i, int(math.floor(c[1] / deg_lon))
+
+
+class _Clearance:
+    """Places bucketed by cell, asked 'is anything within N miles of here'."""
+
+    def __init__(self, places: list[tuple[str, geo.Coords]], cell_mi: float):
+        self.cell_mi = cell_mi
+        self.cells: dict[tuple[int, int], list[geo.Coords]] = {}
+        for _slug, c in places:
+            self.cells.setdefault(_cell_of(c, cell_mi), []).append(c)
+
+    def nearby(self, c: geo.Coords) -> list[geo.Coords]:
+        lat_i, lon_i = _cell_of(c, self.cell_mi)
+        out: list[geo.Coords] = []
+        for dlat in (-1, 0, 1):
+            for dlon in (-1, 0, 1):
+                out += self.cells.get((lat_i + dlat, lon_i + dlon), ())
+        return out
+
+    def clear_of(self, c: geo.Coords, radius_mi: float) -> bool:
+        return all(geo.distance_mi(c, o) >= radius_mi for o in self.nearby(c))
 
 
 def anchor_coords(
@@ -269,17 +378,19 @@ def anchor_coords(
     rng = random.Random(_seed_for(pc_slug, k.slug))
     lo, hi = REACH_MILES.get(k.reach, REACH_MILES["far"])
     start = origin or (geo.ORIGIN_LAT, geo.ORIGIN_LON)
-    with Session(graph.engine) as s:
-        taken = _coordful_places(s)
     # Other people's threads want a day's room; anything else wants only the
     # cartographer's clearance, so a ruin may still sit near a real town.
-    tslugs = _thread_slugs(graph)   # once — this is a query, not a lookup
-    other_threads = [c for slug, c in taken if slug in tslugs]
+    taken, tslugs = _placed_world(graph)
+    # Two grids, because the two rules have different radii. The cell must be
+    # at least as wide as the radius it answers for, or a neighbouring cell
+    # would not be neighbouring enough.
+    all_grid = _Clearance(taken, max(_CELL_MI, ANCHOR_CLEARANCE_MI))
+    thread_grid = _Clearance([(s_, c) for s_, c in taken if s_ in tslugs],
+                             max(_CELL_MI, THREAD_SPACING_MI))
 
     def clear(c: geo.Coords) -> bool:
-        if any(geo.distance_mi(c, o) < ANCHOR_CLEARANCE_MI for _, o in taken):
-            return False
-        return all(geo.distance_mi(c, o) >= THREAD_SPACING_MI for o in other_threads)
+        return (all_grid.clear_of(c, ANCHOR_CLEARANCE_MI)
+                and thread_grid.clear_of(c, THREAD_SPACING_MI))
 
     best: Optional[tuple[geo.Coords, float, float]] = None
     for step in range(_CONGESTION_STEPS):
@@ -301,15 +412,6 @@ def anchor_coords(
     return best  # type: ignore[return-value]
 
 
-def _thread_slugs(graph: WorldGraph) -> set[str]:
-    """Slugs of places that are somebody's thread anchor."""
-    from sqlmodel import select
-    with Session(graph.engine) as s:
-        rows = s.exec(select(Entity).where(Entity.type == EntityType.PLACE)).all()
-    return {e.slug for e in rows
-            if isinstance(e.attributes, dict) and e.attributes.get("thread")}
-
-
 _ANCHOR_NOUNS = {
     "ruin": ["Ashes", "Burnt Acre", "Hollow", "Cinderfield", "Drowned Rows"],
     "stronghold": ["Keep", "Bastion", "Watch", "Hold", "Redoubt"],
@@ -322,11 +424,26 @@ _ANCHOR_ADJECTIVES = ["Grey", "Silent", "Cold", "Broken", "Far", "Old",
                       "Sunken", "Quiet", "Bitter", "Long"]
 
 
+def _taken_names(graph: WorldGraph) -> set[str]:
+    """Every name in use, lowercased — ONE query, one column.
+
+    `graph.find_entities_by_name` answers this for a single name by loading
+    every entity in the database and comparing in Python, which is fine once
+    and ruinous in a loop: profiling anchor placement at 600 anchors put 87% of
+    the time inside it, half a million JSON deserializations to pick a name.
+    The collision check needs the name column and nothing else.
+    """
+    from sqlmodel import select
+    with Session(graph.engine) as s:
+        return {str(n).lower() for n in s.exec(select(Entity.name)).all() if n}
+
+
 def _anchor_name(graph: WorldGraph, k: ThreadKind, rng: random.Random) -> str:
     noun = rng.choice(_ANCHOR_NOUNS.get(k.place_hint, ["Waypoint"]))
+    taken = _taken_names(graph)
     for _ in range(12):
         name = f"The {rng.choice(_ANCHOR_ADJECTIVES)} {noun}"
-        if not graph.find_entities_by_name(name):
+        if name.lower() not in taken:
             return name
     return f"The {rng.choice(_ANCHOR_ADJECTIVES)} {noun} ({rng.randint(2, 99)})"
 
@@ -569,3 +686,307 @@ def resolve_thread(
             involved=[pc_slug] + [d.slug for d in dsts if d is not None],
         )
     return closed
+
+
+# --------------------------------------------------------------------------
+# Hitching to what the world ALREADY has
+# --------------------------------------------------------------------------
+# The cheapest anchor is one that exists. A village the party watched burn is a
+# better lost home than one invented at character creation: it costs the world
+# no new entity, it sits somewhere with real history, and it ties two players
+# to each other — the same argument `/cc/origins` already makes for offering
+# the homelands the world has before letting somebody invent one.
+#
+# Two ways a thing qualifies. Its STATUS may say so outright (the extractor is
+# told to set 'destroyed' when narration destroys a place, so a burned village
+# is already marked). Or its recorded HISTORY may — an entity named in a
+# WorldEvent whose summary reads like the kind of thing this thread is about.
+# The second is what catches a village the DM burned in prose without the
+# status ever being updated, which is most of them.
+
+# Only offer history the world can still remember clearly.
+CANDIDATE_MAX_AGE_DAYS = 3650
+_CANDIDATE_LIMIT = 12
+
+
+def _recent_events(graph: WorldGraph, limit: int = 400) -> list:
+    from sqlmodel import select
+    from .models import WorldEvent
+    with Session(graph.engine) as s:
+        return list(s.exec(select(WorldEvent)
+                           .order_by(WorldEvent.world_day.desc())
+                           .limit(limit)).all())
+
+
+def candidates_for(
+    graph: WorldGraph, kind_slug: str, *, species: Optional[str] = None,
+    limit: int = _CANDIDATE_LIMIT,
+) -> list[dict]:
+    """What the world already has that could BE this thread's anchor.
+
+    Returns rows carrying the reason each one qualifies, because a player
+    choosing "the village that burned" needs to be told which village and what
+    happened to it — a bare list of names is somebody else's campaign notes.
+    """
+    from sqlmodel import select
+
+    k = kind(kind_slug)
+    if k is None or not k.match_types:
+        return []
+    today = graph.current_day()
+
+    with Session(graph.engine) as s:
+        rows = list(s.exec(select(Entity)
+                           .where(Entity.type.in_(list(k.match_types)))).all())
+        by_id = {e.id: e for e in rows}
+        # Anything already claimed as somebody's anchor is still offerable —
+        # two characters out of the same burned village is the POINT — but a
+        # place invented for one character's backstory is not history the
+        # world made, so it is not offered to the next.
+        claimed_invented = {
+            e.slug for e in rows
+            if isinstance(e.attributes, dict) and e.attributes.get("thread")
+        }
+
+    # Why each one qualifies: its own status first, then its recorded history.
+    reasons: dict[int, tuple[str, int]] = {}
+    for e in rows:
+        st = (e.status or "").lower()
+        if k.match_statuses and st in k.match_statuses:
+            reasons[e.id] = (f"{st} — the world records it", e.created_day or 0)
+
+    if k.match_cues:
+        for ev in _recent_events(graph):
+            if today - (ev.world_day or 0) > CANDIDATE_MAX_AGE_DAYS:
+                continue
+            low = (ev.summary or "").lower()
+            if not any(c in low for c in k.match_cues):
+                continue
+            for eid in (ev.involved or []):
+                if eid in by_id and eid not in reasons:
+                    reasons[eid] = (ev.summary.strip(), ev.world_day or 0)
+
+    out: list[dict] = []
+    for eid, (why, day) in reasons.items():
+        e = by_id[eid]
+        if e.slug in claimed_invented:
+            continue
+        c = geo.coords_from_attrs(e.attributes)
+        fit, note = fit_for(graph, e, species)
+        out.append({
+            "slug": e.slug, "name": e.name, "type": e.type,
+            "status": e.status, "why": why[:160], "day": day,
+            "has_coords": c is not None,
+            "fit": fit, "fit_note": note,
+        })
+    # Ones that FIT first, then freshest — the thing that happened most
+    # recently is the thing a new character is most plausibly walking out of.
+    # An outsider's option is ranked last and never removed: a tiefling raised
+    # among humans is a backstory, not a mistake.
+    out.sort(key=lambda r: (r["fit"] != "native", -r["day"]))
+    return out[:limit]
+
+
+def attach_thread(
+    graph: WorldGraph, pc: Entity, kind_slug: str, summary: str,
+    anchor_ref: str, *, subject: Optional[str] = None,
+) -> Optional[dict]:
+    """Open a thread against something the world ALREADY has.
+
+    The free ride: no place is created, no bearing is rolled, and the anchor
+    keeps whatever history put it there. Everything downstream — the DM lines,
+    the world slice, resolution — reads it exactly as it reads an invented one,
+    because the only difference is who made the entity.
+    """
+    k = kind(kind_slug)
+    if k is None or not (summary or "").strip():
+        return None
+    anchor = graph.get_entity(anchor_ref)
+    if anchor is None:
+        return None
+
+    # The edge points at a PLACE for the same reason `open_threads_for` only
+    # lists places: a thread is one destination. When the world's own answer is
+    # a person or a thing, the destination is wherever it currently is.
+    place = anchor
+    subject_ent = None
+    if anchor.type != EntityType.PLACE:
+        subject_ent = anchor
+        place = graph.location_of(anchor.slug) or anchor
+
+    graph.add_relation(
+        pc.slug, RelationType.UNRESOLVED, place.slug,
+        attributes={"kind": k.slug, "summary": summary.strip(),
+                    "verb": k.verb, "adopted": True},
+    )
+    out: dict = {"kind": k.slug, "summary": summary.strip(),
+                 "place": place.name, "place_slug": place.slug, "adopted": True}
+    if subject_ent is not None:
+        graph.add_relation(
+            pc.slug, RelationType.UNRESOLVED, subject_ent.slug,
+            attributes={"kind": k.slug, "summary": summary.strip(),
+                        "verb": k.verb, "adopted": True},
+        )
+        out["subject"] = subject_ent.name
+        out["subject_slug"] = subject_ent.slug
+    elif (subject or "").strip():
+        # They named somebody the world does not have; that half is still new.
+        ent = graph.create_entity(
+            subject.strip(), k.subject_type or EntityType.NPC, status="active",
+            attributes={"thread": k.slug},
+            tags=["thread", k.slug])
+        graph.add_relation(ent.slug, RelationType.LOCATED_IN, place.slug)
+        graph.add_relation(
+            pc.slug, RelationType.UNRESOLVED, ent.slug,
+            attributes={"kind": k.slug, "summary": summary.strip(),
+                        "verb": k.verb})
+        out["subject"] = ent.name
+        out["subject_slug"] = ent.slug
+    return out
+
+
+# --------------------------------------------------------------------------
+# Does this piece of history fit the character being made?
+# --------------------------------------------------------------------------
+# A tiefling should not be offered "my sister was taken from the wood elf and
+# human village" as though it were the obvious answer. But it must not be
+# REFUSED either — a tiefling raised among humans is one of the oldest
+# backstories there is, and the book's own tieflings are born to human
+# families. So this ranks and ANNOTATES; it never blocks. That is the same
+# line `bastion/build.py` draws between a refusal and a note: something merely
+# unusual gets a remark, and a gate nobody can argue with is a gate nobody
+# uses twice.
+
+# Species words that describe a mixed or unremarkable population — a place
+# recorded as any of these tells us nothing about who would look out of place.
+_MIXED_PEOPLES = {"folk", "people", "peoples", "mixed", "traders", "settlers"}
+
+
+def species_tokens(species: Optional[str]) -> set[str]:
+    """Loose tokens for a species as character creation writes it.
+
+    Arrives as "Elf (Wood Elf)" or "Human"; both the whole name and its
+    lineage matter, and a HALF-species deliberately keeps its parent word so a
+    half-elf reads as at home among elves.
+    """
+    raw = (species or "").strip().lower()
+    if not raw:
+        return set()
+    out = {raw}
+    m = re.match(r"^(.*?)\s*\((.*?)\)\s*$", raw)
+    if m:
+        out |= {m.group(1).strip(), m.group(2).strip()}
+    for tok in list(out):
+        for word in re.split(r"[^a-z]+", tok.replace("-", " ")):
+            if len(word) >= 3 and word not in ("the", "of"):
+                out.add(word)
+    return {t for t in out if t}
+
+
+def _peoples_of(graph: WorldGraph, ent: Entity) -> set[str]:
+    """Who the world records as living at (or being) this entity.
+
+    A PLACE has no population field — `denizens` is the hazard table, wolves
+    and bandits, not the neighbours — so the honest signal is the NPCs the
+    world actually put there, which do carry a race, plus whatever the place's
+    own description says about its people.
+    """
+    from sqlmodel import select
+    from .models import Relation
+
+    words: set[str] = set()
+    attrs = ent.attributes if isinstance(ent.attributes, dict) else {}
+    if ent.type != EntityType.PLACE:
+        words |= species_tokens(str(attrs.get("race") or ""))
+        return {w for w in words if w not in _MIXED_PEOPLES}
+
+    with Session(graph.engine) as s:
+        rels = s.exec(select(Relation).where(
+            Relation.rel_type == RelationType.LOCATED_IN,
+            Relation.dst_id == ent.id,
+            Relation.valid_to.is_(None),   # noqa: E711
+        )).all()
+        for r in rels:
+            e = s.get(Entity, r.src_id)
+            if e is None or e.type != EntityType.NPC:
+                continue
+            a = e.attributes if isinstance(e.attributes, dict) else {}
+            words |= species_tokens(str(a.get("race") or ""))
+    # …and what the place says about itself. Only species the world has heard
+    # of, so a description full of ordinary prose contributes nothing.
+    desc = str(attrs.get("description") or "").lower()
+    for w in re.findall(r"[a-z]+(?:-[a-z]+)?", desc):
+        if w in _KNOWN_PEOPLE_WORDS:
+            words.add(w)
+    return {w for w in words if w not in _MIXED_PEOPLES}
+
+
+# Species words common enough to be worth reading out of loose prose. Kept
+# short on purpose: a miss costs nothing (the candidate is simply not
+# annotated), while a false hit would label somebody an outsider at home.
+_KNOWN_PEOPLE_WORDS = {
+    "human", "humans", "elf", "elves", "dwarf", "dwarves", "halfling",
+    "halflings", "gnome", "gnomes", "orc", "orcs", "tiefling", "tieflings",
+    "dragonborn", "goliath", "goliaths", "aasimar", "genasi", "githyanki",
+    "githzerai", "firbolg", "kenku", "tabaxi", "tortle", "triton", "warforged",
+    "changeling", "kalashtar", "shifter", "goblin", "goblins", "hobgoblin",
+}
+
+
+def fit_for(graph: WorldGraph, ent: Entity, species: Optional[str]) -> tuple[str, str]:
+    """(fit, note) for offering this entity to a character of ``species``.
+
+    "native" means nobody would blink — including the very common case where
+    the world records nothing about who lives there. "outsider" means the
+    world DOES record a people and this character is not one of them, which is
+    a story rather than a problem, so it is said out loud and still offered.
+    """
+    if not (species or "").strip():
+        return "native", ""
+    peoples = _peoples_of(graph, ent)
+    if not peoples:
+        return "native", ""
+    mine = species_tokens(species)
+    if mine & peoples:
+        return "native", ""
+    named = _name_peoples(peoples)
+    if not named:
+        return "native", ""
+    if ent.type == EntityType.PLACE:
+        return "outsider", f"mostly {named} — you would have been an outsider there"
+    return "outsider", f"{named} — not your own people"
+
+
+# The matcher works on loose tokens, so a wood-elf village's people come out as
+# {"elf", "elves", "wood", "wood elf", "elf (wood elf)"}. That set is right for
+# COMPARING and unreadable for SAYING, and printing the first three of it
+# alphabetically cut "humans" off a village that was half human. Display is its
+# own step, over canonical plurals only.
+_PEOPLE_PLURAL = {
+    "human": "humans", "humans": "humans", "elf": "elves", "elves": "elves",
+    "dwarf": "dwarves", "dwarves": "dwarves", "halfling": "halflings",
+    "halflings": "halflings", "gnome": "gnomes", "gnomes": "gnomes",
+    "orc": "orcs", "orcs": "orcs", "tiefling": "tieflings",
+    "tieflings": "tieflings", "dragonborn": "dragonborn",
+    "goliath": "goliaths", "goliaths": "goliaths", "aasimar": "aasimar",
+    "genasi": "genasi", "firbolg": "firbolgs", "kenku": "kenku",
+    "tabaxi": "tabaxi", "tortle": "tortles", "triton": "tritons",
+    "warforged": "warforged", "changeling": "changelings",
+    "kalashtar": "kalashtar", "shifter": "shifters", "goblin": "goblins",
+    "goblins": "goblins", "hobgoblin": "hobgoblins",
+}
+
+
+def _name_peoples(peoples: set[str], limit: int = 2) -> str:
+    """A readable "elves and humans" out of the comparison tokens."""
+    seen: list[str] = []
+    for w in sorted(peoples):
+        canon = _PEOPLE_PLURAL.get(w)
+        if canon and canon not in seen:
+            seen.append(canon)
+    if not seen:
+        return ""
+    if len(seen) == 1:
+        return seen[0]
+    head, tail = seen[:limit][:-1], seen[:limit][-1]
+    return (", ".join(head) + " and " + tail) if head else tail
