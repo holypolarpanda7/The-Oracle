@@ -1815,9 +1815,27 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (wolves, bandits), so the population signal is the races of the NPCs the
   world actually placed there, plus species words in the description.
   Comparison runs on loose tokens (`Elf (Wood Elf)` → elf/wood elf/wood, so a
-  half-elf reads as at home among elves); DISPLAY is a separate step over
-  canonical plurals, because printing the first three tokens alphabetically
-  cut "humans" off a village that was half human.
+  half-elf reads as at home among elves); DISPLAY is a separate step, because
+  printing the first three tokens alphabetically cut "humans" off a village
+  that was half human.
+  **WHICH words name a people is the species roster's question**, not this
+  module's — `people_vocabulary` reads `rules_race` through the graph's own
+  engine (lazy, guarded import: `eight_card_system` depends on `rules`
+  nowhere else, and a checkout with no rules tables must still place threads).
+  A hand-kept list goes stale silently — an owned book's khoravar simply stops
+  being recognised — and it did worse than that: an unnamed people made the
+  display string empty, which `fit_for` read as "nothing to say" and reported
+  as NATIVE, declaring a stranger at home. Only WHOLE species and lineage
+  names enter the vocabulary, never their parts: "Elf" earns "elf" because it
+  is a species, "Wood Elf" earns "wood elf" and NOT "wood", or a wood palisade
+  makes a village of wood-folk. **`lineages` is overloaded and only a LINEAGE
+  lists peoples** — the book says Lineage when the choices are peoples (Elven
+  Lineage → Drow; Shifter Lineage → Beasthide) and Ancestry or Legacy when
+  they are traits (Giant Ancestry → Cloud's Jaunt; Fiendish Legacy →
+  Infernal), so the label is the gate; taking all of them put "cloud's jaunt"
+  in the roster. The plural map that remains is DISPLAY POLISH only — English
+  mangles "elf" — and anything missing from it prints as written rather than
+  vanishing.
   **Placement cost: I guessed wrong and the profiler said so.** The distance
   loop was never the problem — 87% of the time was `_anchor_name` calling
   `graph.find_entities_by_name` twelve times per anchor, and that helper loads

@@ -912,25 +912,120 @@ def _peoples_of(graph: WorldGraph, ent: Entity) -> set[str]:
                 continue
             a = e.attributes if isinstance(e.attributes, dict) else {}
             words |= species_tokens(str(a.get("race") or ""))
-    # …and what the place says about itself. Only species the world has heard
-    # of, so a description full of ordinary prose contributes nothing.
+    # …and what the place says about itself. Only species this world's roster
+    # actually has, so ordinary prose contributes nothing — and matched as
+    # PHRASES on word boundaries, because a lineage is commonly two words
+    # ("wood elf") and scanning single tokens could never see one.
     desc = str(attrs.get("description") or "").lower()
-    for w in re.findall(r"[a-z]+(?:-[a-z]+)?", desc):
-        if w in _KNOWN_PEOPLE_WORDS:
-            words.add(w)
+    if desc:
+        for term in people_vocabulary(graph):
+            if re.search(rf"\b{re.escape(term)}\b", desc):
+                words.add(term)
     return {w for w in words if w not in _MIXED_PEOPLES}
 
 
-# Species words common enough to be worth reading out of loose prose. Kept
-# short on purpose: a miss costs nothing (the candidate is simply not
-# annotated), while a false hit would label somebody an outsider at home.
-_KNOWN_PEOPLE_WORDS = {
+# Which words name a PEOPLE is the species roster's question, not this
+# module's — and the roster grows every time an owned book is imported, so a
+# list written here goes stale silently: an unrecognised species simply stops
+# being read out of a place's description, and nobody sees it happen.
+# `people_vocabulary` reads `rules_race` through the graph's own engine (the
+# rules tables share `oracle.db`), the same argument `pantheon.py` makes for
+# reading the live deity roster out of the graph instead of hard-coding one.
+#
+# The import is lazy and guarded on purpose: `eight_card_system` does not
+# depend on `rules` anywhere else, and a checkout with no rules tables at all
+# must still place threads. The seed below is the FALLBACK, not the source of
+# truth.
+_SEED_PEOPLE_WORDS = frozenset({
     "human", "humans", "elf", "elves", "dwarf", "dwarves", "halfling",
     "halflings", "gnome", "gnomes", "orc", "orcs", "tiefling", "tieflings",
     "dragonborn", "goliath", "goliaths", "aasimar", "genasi", "githyanki",
     "githzerai", "firbolg", "kenku", "tabaxi", "tortle", "triton", "warforged",
     "changeling", "kalashtar", "shifter", "goblin", "goblins", "hobgoblin",
-}
+})
+
+# Cached per database, because the roster only changes on an ingest.
+_VOCAB_CACHE: dict[str, frozenset[str]] = {}
+
+
+def _plural_of(word: str) -> str:
+    """English's usual plural, for MATCHING only.
+
+    Deliberately not used for display: it happily produces "dragonborns", which
+    nobody writes — harmless in a vocabulary (an unused form matches nothing)
+    and wrong on screen, which is why `_name_peoples` has its own curated map.
+    """
+    w = word.strip().lower()
+    if not w:
+        return w
+    if w.endswith("fe"):
+        return w[:-2] + "ves"
+    if w.endswith("f"):
+        return w[:-1] + "ves"
+    if w.endswith(("s", "x", "z", "ch", "sh")):
+        return w + "es"
+    return w + "s"
+
+
+def people_vocabulary(graph: Optional[WorldGraph] = None) -> frozenset[str]:
+    """Every word that names a people, from the species roster this DB carries.
+
+    Only whole species and LINEAGE names count, never their parts: "Elf" earns
+    "elf" because it is a species in its own right, while "Wood Elf" earns
+    "wood elf" and NOT "wood" — a place described as having a wood palisade is
+    not a place of wood-people, and a false hit here labels somebody an
+    outsider in their own home.
+    """
+    if graph is None:
+        return _SEED_PEOPLE_WORDS
+    key = str(getattr(graph.engine, "url", ""))
+    hit = _VOCAB_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    words: set[str] = set(_SEED_PEOPLE_WORDS)
+    try:
+        from sqlmodel import select as _select
+        from rules.models import Race as _Race   # lazy: see the note above
+
+        with Session(graph.engine) as s:
+            rows = s.exec(_select(_Race.name, _Race.lineages,
+                                  _Race.lineage_label)).all()
+        for name, lineages, label in rows:
+            names = [str(name or "")]
+            # `lineages` is the species' sub-choice list and it is OVERLOADED:
+            # the book calls it a Lineage when the choices are peoples (Elven
+            # Lineage -> High Elf, Wood Elf, Drow; Shifter Lineage ->
+            # Beasthide) and an Ancestry or a Legacy when they are traits
+            # (Giant Ancestry -> Cloud's Jaunt; Fiendish Legacy -> Infernal;
+            # Draconic Ancestry -> Black (Acid)). Only the first kind names a
+            # people — taking all of them put "cloud's jaunt" in the roster.
+            if "lineage" in str(label or "").lower():
+                for lin in (lineages or []):
+                    if isinstance(lin, dict) and lin.get("name"):
+                        names.append(str(lin["name"]))
+                    elif isinstance(lin, str):
+                        names.append(lin)
+            for n in names:
+                n = n.strip().lower()
+                # A parenthesised qualifier is not part of the people's name.
+                n = re.sub(r"\s*\(.*?\)\s*", " ", n).strip()
+                # "Custom Lineage" is a character-creation construct that
+                # happens to sit in the species table; nobody is one.
+                if "lineage" in n:
+                    continue
+                if len(n) >= 3:
+                    words.add(n)
+                    words.add(_plural_of(n))
+    except Exception as e:  # noqa: BLE001
+        # No rules tables (an SRD-only or freshly wiped checkout) — the seed
+        # list still covers the common species, and anything it misses is
+        # merely not annotated.
+        print(f"[threads] species roster unavailable, using seed list: {e}")
+
+    out = frozenset(words)
+    _VOCAB_CACHE[key] = out
+    return out
 
 
 def fit_for(graph: WorldGraph, ent: Entity, species: Optional[str]) -> tuple[str, str]:
@@ -949,8 +1044,13 @@ def fit_for(graph: WorldGraph, ent: Entity, species: Optional[str]) -> tuple[str
     mine = species_tokens(species)
     if mine & peoples:
         return "native", ""
-    named = _name_peoples(peoples)
+    named = _name_peoples(peoples, people_vocabulary(graph))
     if not named:
+        # Nothing nameable came back, so we cannot say WHO they would be an
+        # outsider among. Saying it without naming them is worse than not
+        # saying it — but this is now the only path that can swallow a real
+        # mismatch, so it stays deliberately narrow rather than being the
+        # place an unrecognised species quietly lands.
         return "native", ""
     if ent.type == EntityType.PLACE:
         return "outsider", f"mostly {named} — you would have been an outsider there"
@@ -961,7 +1061,13 @@ def fit_for(graph: WorldGraph, ent: Entity, species: Optional[str]) -> tuple[str
 # {"elf", "elves", "wood", "wood elf", "elf (wood elf)"}. That set is right for
 # COMPARING and unreadable for SAYING, and printing the first three of it
 # alphabetically cut "humans" off a village that was half human. Display is its
-# own step, over canonical plurals only.
+# own step.
+#
+# This map is POLISH, not a gate: it exists because English mangles a handful
+# of these ("elf" -> "elves", not "elfs") and for no other reason. A species
+# missing from it is printed as written, so an owned book's khoravar reads
+# "mostly khoravar" rather than vanishing — which is the failure mode a
+# hand-kept list has, and the whole reason the VOCABULARY moved to the roster.
 _PEOPLE_PLURAL = {
     "human": "humans", "humans": "humans", "elf": "elves", "elves": "elves",
     "dwarf": "dwarves", "dwarves": "dwarves", "halfling": "halflings",
@@ -977,12 +1083,33 @@ _PEOPLE_PLURAL = {
 }
 
 
-def _name_peoples(peoples: set[str], limit: int = 2) -> str:
-    """A readable "elves and humans" out of the comparison tokens."""
+def _name_peoples(peoples: set[str], vocab: frozenset[str],
+                  limit: int = 2) -> str:
+    """A readable "elves and humans" out of the comparison tokens.
+
+    The tokens are deliberately over-generated for MATCHING — a race of
+    "Elf (Wood Elf)" yields elf / wood elf / wood — so display filters them
+    against the species roster first. That is what keeps "wood" from being
+    announced as a people, and it is why this cannot simply print whatever it
+    was given.
+
+    A species the curated plural map has never heard of is printed AS WRITTEN
+    rather than dropped. Dropping it is how a hand-maintained list fails
+    silently: `fit_for` reads an empty name as "nothing to say" and reports a
+    stranger as native in somebody else's home.
+    """
+    real = sorted((w for w in peoples if w in vocab), key=len)
+    # Prefer the base species over its lineage — "elves" reads better than
+    # "wood elf", and both describe the same neighbours.
+    kept: list[str] = []
+    for w in real:
+        if any(re.search(rf"\b{re.escape(k)}\b", w) for k in kept):
+            continue
+        kept.append(w)
     seen: list[str] = []
-    for w in sorted(peoples):
-        canon = _PEOPLE_PLURAL.get(w)
-        if canon and canon not in seen:
+    for w in kept:
+        canon = _PEOPLE_PLURAL.get(w, w)
+        if canon not in seen:
             seen.append(canon)
     if not seen:
         return ""

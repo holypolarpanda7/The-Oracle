@@ -287,6 +287,63 @@ def main() -> int:
           len(th.open_threads_for(dm.world, pc4.slug)) == 1
           and len(th.open_threads_for(dm.world, pc3.slug)) == 0)
 
+    # ---------------------------------------------------------------
+    print(f"\n{BOLD}7. who counts as a PEOPLE comes from the species roster{OFF}")
+    vocab = th.people_vocabulary(dm.world)
+    check("the vocabulary is read from this database, not written in code",
+          len(vocab) > len(th._SEED_PEOPLE_WORDS),
+          f"{len(vocab)} terms vs a {len(th._SEED_PEOPLE_WORDS)}-word seed")
+    check("…so an owned book's species are in it",
+          {"khoravar", "kalashtar"} <= vocab or "khoravar" in vocab,
+          "khoravar/kalashtar")
+    check("…and a two-word lineage is a people",
+          "wood elf" in vocab and "high elf" in vocab)
+    check("…while an ANCESTRY's traits are not",
+          not ({"cloud's jaunt", "infernal", "abyssal"} & vocab),
+          "Giant Ancestry / Fiendish Legacy list traits, not peoples")
+    check("…nor is the Custom Lineage construct", "custom lineage" not in vocab)
+    check("a word inside a lineage's name is not itself a people",
+          "wood" not in vocab, "a wood palisade is not wood-folk")
+
+    # The failure the hand-written list was hiding: a species it had never
+    # heard of made _name_peoples return "", which fit_for read as "nothing to
+    # say" and reported as NATIVE — a stranger declared at home.
+    kh = dm.world.create_entity(
+        "Sarn Hollow", EntityType.PLACE, subtype="settlement", status="destroyed",
+        attributes={"description": "A hill village.",
+                    "coords": _geo.coords_attr(45.5, 0.9)})
+    for nm in ("Tavel", "Miri"):
+        n = dm.world.create_entity(nm, EntityType.NPC, attributes={"race": "Khoravar"})
+        dm.world.add_relation(n.slug, RelationType.LOCATED_IN, kh.slug)
+    sarn = [c for c in th.candidates_for(dm.world, "lost-home", species="Tiefling")
+            if c["name"] == "Sarn Hollow"]
+    check("a village of a species the seed list never knew marks an outsider",
+          bool(sarn) and sarn[0]["fit"] == "outsider",
+          str(sarn and sarn[0]["fit_note"]))
+    check("…and NAMES them rather than dropping them",
+          bool(sarn) and "khoravar" in sarn[0]["fit_note"])
+    own = [c for c in th.candidates_for(dm.world, "lost-home", species="Khoravar")
+           if c["name"] == "Sarn Hollow"]
+    check("…and one of their own is at home there",
+          bool(own) and own[0]["fit"] == "native")
+
+    # A place that only DESCRIBES its people, with a two-word lineage in it.
+    dm.world.create_entity(
+        "Elder Reach", EntityType.PLACE, subtype="settlement", status="destroyed",
+        attributes={"description": "A wood elf hamlet behind a wood palisade.",
+                    "coords": _geo.coords_attr(46.4, 2.2)})
+    er = [c for c in th.candidates_for(dm.world, "lost-home", species="Tiefling")
+          if c["name"] == "Elder Reach"]
+    check("a people named only in prose still counts",
+          bool(er) and er[0]["fit"] == "outsider", str(er and er[0]["fit_note"]))
+    check("…and reads as the base species, not the lineage",
+          bool(er) and "elves" in er[0]["fit_note"])
+    erw = [c for c in th.candidates_for(dm.world, "lost-home",
+                                        species="Elf (Wood Elf)")
+           if c["name"] == "Elder Reach"]
+    check("…and a wood elf is at home in it",
+          bool(erw) and erw[0]["fit"] == "native")
+
     print()
     if _fails:
         print(f"{RED}{len(_fails)} check(s) failed:{OFF} " + "; ".join(_fails))
