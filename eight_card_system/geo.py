@@ -106,7 +106,20 @@ def offset_coords(origin: Coords, direction: str, miles: float) -> Coords:
     longitude flipped. Diagonals apply the north-south leg, then the east-west
     leg at the destination latitude.
     """
-    bearing = math.radians(_COMPASS_BEARING.get((direction or "").strip().lower(), 0.0))
+    return offset_bearing(
+        origin, _COMPASS_BEARING.get((direction or "").strip().lower(), 0.0), miles)
+
+
+def offset_bearing(origin: Coords, bearing_deg: float, miles: float) -> Coords:
+    """The same compass walk on a CONTINUOUS bearing rather than one of eight.
+
+    The 8-way form is what a traveller says ("keep going east") and is right
+    for everything the DM narrates. Anything that PLACES many things around
+    the world wants this one instead: eight directions put every anchor on one
+    of eight rays out of the origin, which reads as a star rather than a world
+    (see ``threads.py``, which scatters one anchor per character).
+    """
+    bearing = math.radians(float(bearing_deg))
     d = miles / WORLD_RADIUS_MI  # angular distance (radians)
     lat = math.radians(origin[0]) + d * math.cos(bearing)
     lon = math.radians(origin[1])

@@ -39,6 +39,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from eight_card_system import WorldGraph
 from eight_card_system import entropy as world_entropy
 from eight_card_system import ventures as world_ventures
+from eight_card_system import threads as world_threads
 from eight_card_system.graph import slugify
 from eight_card_system.seed import seed_minimal_world, backfill_coords, place_pc
 from eight_card_system.extraction import extract_and_apply
@@ -787,6 +788,10 @@ class RegisterCharacterRequest(BaseModel):
     homeland_new: Optional[bool] = False
     faction: Optional[str] = None
     faction_new: Optional[bool] = False
+    # Unfinished business they walk in with — the threads a DM can offer back
+    # when the party is casting about. Each entry is
+    # {kind, summary, subject?, place?}; see eight_card_system/threads.py.
+    threads: Optional[List[Dict[str, Any]]] = None
     # Spells chosen at creation — spell slugs. `cantrips` = level-0 picks,
     # `spells` = level-1 picks (both from the class list and/or Magic Initiate).
     # Resolved to display names and stored on Character.spells.
@@ -6480,6 +6485,61 @@ def extract_quest_hooks(text: str) -> tuple[str, list[dict]]:
     return clean, ops
 
 
+THREAD_HOOK_PATTERN = re.compile(r"\[\[THREAD:(.+?)\]\]", re.IGNORECASE)
+_THREAD_HOOK_ACTIONS = {"resolve"}
+
+
+def extract_thread_hooks(text: str) -> tuple[str, list[dict]]:
+    """Pull unfinished-business hooks out of the narration. Returns (clean, ops)."""
+    ops: list[dict] = []
+    for m in THREAD_HOOK_PATTERN.finditer(text):
+        parts = _split_hook(m.group(1))
+        if not parts:
+            continue
+        action = (parts[0] or "").strip().lower()
+        if action not in _THREAD_HOOK_ACTIONS:
+            continue
+        ops.append({"action": action, "args": [p.strip() for p in parts[1:]]})
+    clean = THREAD_HOOK_PATTERN.sub("", text)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, ops
+
+
+def apply_thread_hooks(session_id: str, ops: list[dict]) -> list[str]:
+    """Close a character's unfinished business out.
+
+    Closing is the whole reason a thread is world state rather than a
+    paragraph: prose in a text box goes on saying the village is burned long
+    after the party rebuilt it. Scoped to the ACTING player's PC — one
+    character's past is not another's to settle.
+    """
+    if not ops:
+        return []
+    notes: list[str] = []
+    meta = (_load_session_state(session_id).get("meta") or {})
+    for op in ops:
+        args = op.get("args", [])
+        if not args:
+            continue
+        kind_slug = args[0]
+        outcome = args[1] if len(args) > 1 else ""
+        k = world_threads.kind(kind_slug)
+        if k is None:
+            print(f"[thread] unknown kind {kind_slug!r} — nothing closed")
+            continue
+        for m in _session_members(meta).values():
+            pslug = m.get("pc_slug")
+            if not pslug:
+                continue
+            try:
+                if world_threads.resolve_thread(world, pslug, kind_slug, outcome):
+                    who = m.get("character_name") or "Someone"
+                    notes.append(f"*{who} — {k.label.lower()}: {outcome or 'settled'}.*")
+            except Exception as e:  # noqa: BLE001
+                print(f"[thread] resolve failed for {pslug}: {e}")
+    return notes
+
+
 def _quest_attrs(name: str) -> dict:
     q = world.get_entity(name)
     return dict((getattr(q, "attributes", None) or {})) if q else {}
@@ -11012,6 +11072,39 @@ def _resolve_session_character(session_id: str, user_id: str) -> Optional[int]:
     return char.id
 
 
+# A party at a LOOSE END — the one moment a character's own unfinished
+# business is worth raising. Deliberately gated on the player's MESSAGE alone
+# and not on `_scene_text`, which folds in the location's name and description:
+# a thread is a thing somebody ASKS for, and a tavern that happens to describe
+# itself as somewhere people look for work is not somebody asking.
+_THREAD_KEYWORDS = (
+    "what should we do", "what do we do", "what should i do", "what do i do",
+    "what now", "what next", "what's next", "whats next",
+    "where to now", "where do we go", "where should we go", "where should i go",
+    "any leads", "any ideas", "any rumors", "any rumours", "any work",
+    "looking for work", "nothing to do", "what can we do", "suggestions",
+    "any suggestions", "give us a hook", "what else is there",
+)
+
+_THREAD_GUIDE = (
+    "# Their own unfinished business (optional — only if they are casting about)\n"
+    "These are threads the characters walked in with and have never closed. "
+    "They are REAL places and people in the world, at the distances given, so a "
+    "journey to one can be costed and travelled like any other.\n"
+    "Offer them the way a friend would: a memory surfacing, a letter that "
+    "finds them, a stranger who knew the name, talk in the room that lands "
+    "close to home. NEVER as an instruction, and never more than one at a "
+    "time — a player who wants to leave their past alone is allowed to, and a "
+    "DM who keeps raising it is running their character for them.\n"
+    "A thread is a SEED, not a quest: it becomes one only if they commit, and "
+    "then it is an ordinary [[QUEST: open | ... ]]. When one is finally "
+    "settled — the ruin rebuilt, the sister found, the debt paid — close it "
+    "with [[THREAD: resolve | <kind> | <what happened>]] so the world stops "
+    "offering it. Kinds: "
+    + ", ".join(k.slug for k in world_threads.THREAD_KINDS) + ".\n"
+)
+
+
 def _scene_text(message: str, ctx_obj) -> str:
     """Lowercased blob of the incoming scene (player message + current location's name/
     description + nearby entity names) used to gate optional guides by relevance."""
@@ -11131,6 +11224,32 @@ def assemble_context(session_id: str, message: str, user_id: Optional[str] = Non
                 )
         except Exception as e:
             print(f"[danger assessment error] {e}")
+
+        # Their OWN unfinished business — the personal counterpart to the
+        # local troubles above. That block is built from geography (what is
+        # dangerous near here); this one is built from who the characters are,
+        # and it is the only thing at the table that can answer "what should
+        # we do next" with something that means anything to a particular
+        # player. Gated hard: it appears when somebody ASKS, or when they
+        # bring their own past up by name, and never otherwise.
+        try:
+            low_msg = (message or "").lower()
+            asked = any(k in low_msg for k in _THREAD_KEYWORDS)
+            tlines: list[str] = []
+            for m in (_session_members(meta).values() if meta else []):
+                pslug = m.get("pc_slug")
+                if not pslug:
+                    continue
+                who = m.get("character_name") or m.get("name") or "They"
+                own = world_threads.open_threads_for(world, pslug)
+                if not own:
+                    continue
+                if asked or world_threads.mentions_thread(own, message):
+                    tlines += world_threads.hook_lines(world, pslug, who)
+            if tlines:
+                texts.append(_THREAD_GUIDE + "\n".join(tlines))
+        except Exception as e:
+            print(f"[thread context error] {e}")
 
         # Away-time notice: if world days passed since this PC last acted
         # (another party's bubble, or the wall-clock floor), tell the DM so
@@ -13224,6 +13343,17 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         except Exception as e:
             print(f"[quest] hook processing failed: {e}")
 
+    # Unfinished business: a thread the character walked in with is finally
+    # settled, so the world stops offering it.
+    dm_text, thread_ops = extract_thread_hooks(dm_text)
+    if thread_ops:
+        try:
+            thread_notes = apply_thread_hooks(req.session_id, thread_ops)
+            if thread_notes:
+                dm_text = dm_text.rstrip() + "\n\n" + "\n".join(thread_notes)
+        except Exception as e:
+            print(f"[thread] hook processing failed: {e}")
+
     # Ventures: somebody else's quest — opened, stepped, joined, left or ended.
     # The party's own quest scaffold is untouched by these; a venture belongs to
     # the NPC driving it and keeps moving whether or not the table is there.
@@ -14148,7 +14278,8 @@ def _apply_origin_ties(char: Character, req: RegisterCharacterRequest) -> dict:
     created as a STUB (the frontier-stub pattern) for the world to fill in.
     """
     out: dict = {}
-    if not ((req.homeland or "").strip() or (req.faction or "").strip()):
+    if not ((req.homeland or "").strip() or (req.faction or "").strip()
+            or (req.threads or [])):
         return out
     try:
         pc = world.find_pc(char.discord_user_id, char.name)
@@ -14188,6 +14319,25 @@ def _apply_origin_ties(char: Character, req: RegisterCharacterRequest) -> dict:
                     pc.slug, RelationType.MEMBER_OF, fac.slug,
                     attributes={"note": f"{char.name} belongs to {fac.name}"})
                 out["faction"] = fac.name
+
+        # And the threads they never closed. Each becomes a real place at a
+        # real distance — see threads.py for why it is placed from the
+        # CHARACTER's seed and not beside wherever they start.
+        opened: list[dict] = []
+        for spec in (req.threads or []):
+            if not isinstance(spec, dict):
+                continue
+            made = world_threads.open_thread(
+                world, pc,
+                str(spec.get("kind") or ""),
+                str(spec.get("summary") or ""),
+                subject=str(spec.get("subject") or "") or None,
+                place_name=str(spec.get("place") or "") or None,
+            )
+            if made:
+                opened.append(made)
+        if opened:
+            out["threads"] = opened
     except Exception as e:  # noqa: BLE001
         print(f"[cc] origin ties failed: {e}")
     return out
@@ -14221,6 +14371,7 @@ def _cc_request(user_id: str, p: Dict[str, Any]) -> RegisterCharacterRequest:
         backstory=p.get("backstory"),
         homeland=p.get("homeland"), homeland_new=bool(p.get("homeland_new")),
         faction=p.get("faction"), faction_new=bool(p.get("faction_new")),
+        threads=p.get("threads"),
     )
 
 
@@ -14257,6 +14408,17 @@ def cc_origins(limit: int = 24):
     homelands.sort(key=lambda r: r["name"])
     factions.sort(key=lambda r: r["name"])
     return {"homelands": homelands[:limit], "factions": factions[:limit]}
+
+
+@app.get("/cc/threads")
+def cc_threads():
+    """The unfinished-business questions the background stage asks.
+
+    Served rather than hard-coded in the client for the reason every other CC
+    pool is: the wizard and the server must offer the same list, and the
+    server is the one that has to understand the answer.
+    """
+    return {"threads": world_threads.questions()}
 
 
 @app.post("/register_character")

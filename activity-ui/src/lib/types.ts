@@ -1028,6 +1028,10 @@ export interface CCPayload {
   homeland_new?: boolean;
   faction?: string;
   faction_new?: boolean;
+  /** Unfinished business the character walks in with. Each becomes a real
+   *  place (and person, where one is named) the DM can offer back when the
+   *  party is casting about. */
+  threads?: CCThreadAnswer[];
   deity?: string;
   gender?: string;
   // Spell slugs chosen at creation (class list + Magic Initiate). cantrips =
@@ -1230,4 +1234,26 @@ export interface OriginRow {
 export interface CCOrigins {
   homelands: OriginRow[];
   factions: OriginRow[];
+}
+
+/** One kind of unfinished business the background stage may ask about.
+ *  Served by GET /cc/threads so the wizard and the server offer one list. */
+export interface CCThreadKind {
+  slug: string;
+  label: string;
+  question: string;
+  subject_prompt: string | null;
+  wants_subject: boolean;
+  reach: string;
+  suggestions: string[];
+}
+
+/** What the player answered for one of them. `summary` is their own words and
+ *  is the only required half; `subject` names the person/people/thing when the
+ *  kind asks for one, and `place` lets them name the destination themselves. */
+export interface CCThreadAnswer {
+  kind: string;
+  summary: string;
+  subject?: string;
+  place?: string;
 }

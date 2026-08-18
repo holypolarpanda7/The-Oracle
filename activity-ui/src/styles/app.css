@@ -853,6 +853,64 @@ body {
   white-space: pre-wrap;
 }
 
+/* Unfinished business. Collapsed by default — six open questions under an
+   already-long stage reads as a form to fill in, and every one of them is
+   optional. An answered thread stays open and marked, so a player can see at
+   a glance what they have left behind them. */
+.cf-threads { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.cf-thread {
+  border: 1px solid color-mix(in srgb, var(--brass) 22%, transparent);
+  border-radius: 6px;
+  background: rgba(9, 12, 21, 0.5);
+  overflow: hidden;
+}
+.cf-thread.filled {
+  border-color: color-mix(in srgb, var(--brass) 55%, transparent);
+  background: rgba(9, 12, 21, 0.75);
+}
+.cf-thread-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+}
+.cf-thread-head:hover { background: rgba(255, 255, 255, 0.03); }
+.cf-thread-label { font-size: 13px; }
+.cf-thread-mark {
+  font-family: var(--mono);
+  color: var(--brass);
+  opacity: 0.8;
+  flex: none;
+}
+.cf-thread-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--brass) 18%, transparent);
+}
+.cf-thread-body .cf-hint { margin-top: 6px; }
+.cf-thread-clear {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-style: italic;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.cf-thread-clear:hover { color: var(--text); }
+
 /* The sealing page is the last look a player gets at what they made, so it
    shows the WHOLE sheet — which means the ability row has to be a row. It had
    no styles of its own at all and stacked into eighteen lines on a phone. */

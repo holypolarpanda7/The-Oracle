@@ -228,12 +228,20 @@ class RelationType:
     # smith's guild seat to go to somebody else without hating the smith, and
     # this edge ends when the venture does, where hostility outlives it.
     OPPOSES = "opposes"              # pc -> npc (set against their venture)
+    # A thread a character walked in with and has never closed: a home they
+    # cannot return to, somebody they are looking for, a debt unpaid. Not
+    # INVOLVES (which belongs to a quest that already exists) and not
+    # KNOWS_ABOUT (which is information held, not business outstanding) — the
+    # point of its own edge is that it can be ASKED for: "what has this
+    # character left unfinished" is the question that answers "what could we
+    # do next". Closed the moment it is resolved. See threads.py.
+    UNRESOLVED = "unresolved"        # pc -> place/npc/faction/item
 
     ALL = {
         LOCATED_IN, ADJACENT_TO, PART_OF, MEMBER_OF, ALLIED_WITH,
         HOSTILE_TO, KNOWS, OWNS, INVOLVES, LOCATED_AT,
         WORSHIPS, GOVERNS, SELLS, GIVES_QUEST, KNOWS_ABOUT, TRAVELS_WITH,
-        PURSUES, ACCOMPANIES, OPPOSES,
+        PURSUES, ACCOMPANIES, OPPOSES, UNRESOLVED,
     }
 
     # Relation types that are symmetric (traversed both ways for adjacency logic)

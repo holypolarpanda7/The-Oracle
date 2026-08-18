@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CCOptions, CCOrigins, CCPayload, CCSpells, FeatChoice, FeatPicks,
+import type { CCOptions, CCOrigins, CCPayload, CCSpells, CCThreadAnswer,
+              CCThreadKind, FeatChoice, FeatPicks,
   FeatSpells, Pantheon, Power, SpellBrief } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
@@ -198,6 +199,10 @@ interface Draft {
   homelandNew?: boolean;
   faction?: string;
   factionNew?: boolean;
+  /** Unfinished business, keyed by thread kind. A kind with no entry was not
+   *  answered — every one of these is optional, and a character who walks in
+   *  with nothing left open is a legitimate character. */
+  threads: Record<string, { summary: string; subject?: string; place?: string }>;
   deity?: string;                 // patron god (esp. clerics/paladins/warlocks)
   gender?: string;                // gender identity (free-form)
   name: string;
@@ -206,7 +211,7 @@ interface Draft {
 const freshDraft = (): Draft => ({
   boostMode: "two-one", method: "standard_array", pool: [], assigned: {},
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
-  skills: [], featPicks: {}, speciesPicks: {},
+  skills: [], featPicks: {}, speciesPicks: {}, threads: {},
   cantrips: [], spells: [], miCantrips: [], miSpells: [],
   gearMode: "kit", cart: {}, name: "",
 });
@@ -374,6 +379,7 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
   const [featSpellData, setFeatSpellData] =
     useState<Record<string, FeatSpells>>({});
   const [origins, setOrigins] = useState<CCOrigins | null>(null);
+  const [threadKinds, setThreadKinds] = useState<CCThreadKind[]>([]);
   // Bring the racial-features + lineage panel into view when a species is
   // picked — on a phone it sits below the card grid and is easy to miss.
   const raceDetailRef = useRef<HTMLDivElement>(null);
@@ -389,6 +395,14 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
   useEffect(() => {
     fetch("/cc/origins").then((r) => r.json()).then(setOrigins)
       .catch(() => setOrigins(null));
+  }, []);
+
+  // The unfinished-business questions. Served rather than written here so the
+  // wizard and the server can never offer different lists.
+  useEffect(() => {
+    fetch("/cc/threads").then((r) => r.json())
+      .then((d) => setThreadKinds(d?.threads ?? []))
+      .catch(() => setThreadKinds([]));
   }, []);
 
   // The seal has happened — walk on to the likeness.
@@ -723,6 +737,19 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
         wondrous_name: d.wondrousName?.trim() || undefined,
         wondrous_desc: d.wondrousDesc?.trim() || undefined,
         backstory: d.backstory?.trim() || undefined,
+        // Unfinished business. A kind whose summary is blank was skipped —
+        // every one is optional, so it rides only when it was actually filled.
+        threads: ((): CCThreadAnswer[] | undefined => {
+          const rows = Object.entries(d.threads)
+            .filter(([, v]) => (v?.summary ?? "").trim())
+            .map(([kind, v]) => ({
+              kind,
+              summary: v.summary.trim(),
+              subject: v.subject?.trim() || undefined,
+              place: v.place?.trim() || undefined,
+            }));
+          return rows.length ? rows : undefined;
+        })(),
         homeland: d.homeland?.trim() || undefined,
         homeland_new: d.homeland ? !!d.homelandNew : undefined,
         faction: d.faction?.trim() || undefined,
@@ -895,7 +922,8 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
               </button>
             ))}
             {bg && (
-              <OriginPanel d={d} setD={setD} origins={origins} race={race} />
+              <OriginPanel d={d} setD={setD} origins={origins} race={race}
+                           threadKinds={threadKinds} />
             )}
             <div className="cf-faith">
               <label className="cf-sub-label">Gender</label>
@@ -1290,10 +1318,11 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
  *  faction become real world entities the DM can use, which is why the ones
  *  the world already has are offered first and inventing one says so out loud.
  */
-function OriginPanel({ d, setD, origins, race }: {
+function OriginPanel({ d, setD, origins, race, threadKinds }: {
   d: Draft; setD: (d: Draft) => void;
   origins: CCOrigins | null;
   race?: CCOptions["races"][number];
+  threadKinds: CCThreadKind[];
 }) {
   const [ownHome, setOwnHome] = useState(false);
   const [ownFaction, setOwnFaction] = useState(false);
@@ -1380,6 +1409,105 @@ function OriginPanel({ d, setD, origins, race }: {
         value={d.backstory ?? ""}
         onChange={(e) => setD({ ...d, backstory: e.target.value })}
       />
+
+      {threadKinds.length > 0 && (
+        <ThreadQuestions d={d} setD={setD} kinds={threadKinds} />
+      )}
+    </div>
+  );
+}
+
+/** What the character never finished — the half of a backstory the DM can
+ *  actually offer back. Every question is optional and none of them is a
+ *  mechanic: answering buys nothing on the sheet, and skipping all of them is
+ *  a legitimate character. What an answer DOES buy is a real place in the
+ *  world at a real distance, which is why the words matter more than usual. */
+function ThreadQuestions({ d, setD, kinds }: {
+  d: Draft; setD: (d: Draft) => void; kinds: CCThreadKind[];
+}) {
+  const [open, setOpen] = useState<string | null>(null);
+  const answered = (slug: string) => (d.threads[slug]?.summary ?? "").trim();
+
+  const put = (slug: string, patch: Partial<{ summary: string; subject: string; place: string }>) => {
+    const prev = d.threads[slug] ?? { summary: "" };
+    setD({ ...d, threads: { ...d.threads, [slug]: { ...prev, ...patch } } });
+  };
+  const clear = (slug: string) => {
+    const next = { ...d.threads };
+    delete next[slug];
+    setD({ ...d, threads: next });
+  };
+
+  return (
+    <div className="cf-threads">
+      <label className="cf-sub-label" style={{ marginTop: 16 }}>
+        Unfinished business <span className="cf-req">· all optional</span>
+      </label>
+      <p className="cf-hint">
+        Anything you leave open here becomes a real place in the world, at a
+        real distance — somewhere the DM can point you when you are casting
+        about for something to do. Leave them all blank and nothing is lost.
+      </p>
+
+      {kinds.map((k) => {
+        const isOpen = open === k.slug || !!answered(k.slug);
+        const val = d.threads[k.slug];
+        return (
+          <div key={k.slug} className={`cf-thread ${answered(k.slug) ? "filled" : ""}`}>
+            <button
+              className="cf-thread-head"
+              onClick={() => { uiTick(); setOpen(isOpen && !answered(k.slug) ? null : k.slug); }}
+            >
+              <span className="cf-thread-label">{k.label}</span>
+              <span className="cf-thread-mark">{answered(k.slug) ? "✓" : "+"}</span>
+            </button>
+
+            {isOpen && (
+              <div className="cf-thread-body">
+                <p className="cf-hint">{k.question}</p>
+                <div className="cf-chips">
+                  {k.suggestions.map((sug) => (
+                    <button
+                      key={sug}
+                      className={`cf-chip ${val?.summary === sug ? "picked" : ""}`}
+                      onClick={() => { uiTick(); put(k.slug, { summary: sug }); }}
+                    >{sug}</button>
+                  ))}
+                </div>
+                <input
+                  className="cf-input"
+                  maxLength={200}
+                  placeholder="…or say it in your own words"
+                  value={val?.summary ?? ""}
+                  onChange={(e) => put(k.slug, { summary: e.target.value })}
+                />
+                {k.wants_subject && (
+                  <input
+                    className="cf-input"
+                    maxLength={60}
+                    placeholder={k.subject_prompt ?? "who or what"}
+                    value={val?.subject ?? ""}
+                    onChange={(e) => put(k.slug, { subject: e.target.value })}
+                  />
+                )}
+                <input
+                  className="cf-input"
+                  maxLength={48}
+                  placeholder="name the place, if you know it (optional)"
+                  value={val?.place ?? ""}
+                  onChange={(e) => put(k.slug, { place: e.target.value })}
+                />
+                {answered(k.slug) && (
+                  <button className="cf-thread-clear"
+                          onClick={() => { uiTick(); clear(k.slug); setOpen(null); }}>
+                    clear this one
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
