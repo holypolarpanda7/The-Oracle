@@ -1474,29 +1474,42 @@ function ThreadQuestions({ d, setD, kinds }: {
                     >{sug}</button>
                   ))}
                 </div>
-                <input
-                  className="cf-input"
-                  maxLength={200}
-                  placeholder="…or say it in your own words"
-                  value={val?.summary ?? ""}
-                  onChange={(e) => put(k.slug, { summary: e.target.value })}
-                />
-                {k.wants_subject && (
+                {/* Each field keeps a LABEL. A placeholder disappears the
+                    moment it is filled, so three answered boxes in a row were
+                    three unlabelled boxes — "Ashmere" sitting in a field with
+                    nothing to say it is the place. */}
+                <label className="cf-thread-field">
+                  <span>In your words</span>
                   <input
                     className="cf-input"
-                    maxLength={60}
-                    placeholder={k.subject_prompt ?? "who or what"}
-                    value={val?.subject ?? ""}
-                    onChange={(e) => put(k.slug, { subject: e.target.value })}
+                    maxLength={200}
+                    placeholder="…or say it your own way"
+                    value={val?.summary ?? ""}
+                    onChange={(e) => put(k.slug, { summary: e.target.value })}
                   />
+                </label>
+                {k.wants_subject && (
+                  <label className="cf-thread-field">
+                    <span>{k.subject_prompt ?? "Who or what"}</span>
+                    <input
+                      className="cf-input"
+                      maxLength={60}
+                      placeholder="a name, if they have one"
+                      value={val?.subject ?? ""}
+                      onChange={(e) => put(k.slug, { subject: e.target.value })}
+                    />
+                  </label>
                 )}
-                <input
-                  className="cf-input"
-                  maxLength={48}
-                  placeholder="name the place, if you know it (optional)"
-                  value={val?.place ?? ""}
-                  onChange={(e) => put(k.slug, { place: e.target.value })}
-                />
+                <label className="cf-thread-field">
+                  <span>The place, if you know its name <em>· optional</em></span>
+                  <input
+                    className="cf-input"
+                    maxLength={48}
+                    placeholder="otherwise the world names it for you"
+                    value={val?.place ?? ""}
+                    onChange={(e) => put(k.slug, { place: e.target.value })}
+                  />
+                </label>
                 {answered(k.slug) && (
                   <button className="cf-thread-clear"
                           onClick={() => { uiTick(); clear(k.slug); setOpen(null); }}>

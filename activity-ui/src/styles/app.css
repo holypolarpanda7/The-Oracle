@@ -898,6 +898,19 @@ body {
   border-top: 1px solid color-mix(in srgb, var(--brass) 18%, transparent);
 }
 .cf-thread-body .cf-hint { margin-top: 6px; }
+.cf-thread-field { display: flex; flex-direction: column; gap: 3px; }
+.cf-thread-field > span {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.cf-thread-field > span em { font-style: normal; opacity: 0.65; }
+/* The chips FILL the box below them, so the box repeats whatever was picked.
+   Keep it readable but quiet — at body scale it read as a second, competing
+   answer sitting under the first. */
+.cf-thread-field .cf-input { font-size: 14px; padding: 7px 10px; }
 .cf-thread-clear {
   align-self: flex-start;
   background: none;
