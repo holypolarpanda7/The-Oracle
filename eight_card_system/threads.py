@@ -488,6 +488,18 @@ def open_thread(
         },
         tags=["thread", k.slug, "stub"],
     )
+    # A pin with coordinates is not country. Charter it the way the frontier
+    # stubs are chartered — biome, danger, denizens, motifs, and membership of
+    # a real region — or the place a character came from is somewhere the
+    # scene renderer, the battlemap and the DM's danger assessment can say
+    # nothing about. Late import: `cartographer` imports the graph, and this
+    # module is imported by it in turn through `census`.
+    try:
+        from . import cartographer as _carto
+        _carto.charter_place(graph, anchor.slug, rng=rng)
+    except Exception as e:  # noqa: BLE001
+        print(f"[threads] could not charter {anchor.slug}: {e}")
+
     graph.add_relation(
         pc.slug, RelationType.UNRESOLVED, anchor.slug,
         attributes={
@@ -894,11 +906,25 @@ def _peoples_of(graph: WorldGraph, ent: Entity) -> set[str]:
     from sqlmodel import select
     from .models import Relation
 
+    vocab = people_vocabulary(graph)
+
+    def keep(ws: set[str]) -> set[str]:
+        """Only words the species roster recognises are PEOPLES.
+
+        This filter used to happen at display time, which coupled the verdict
+        to whether the note could be phrased: a race the roster does not carry
+        was still counted as a people here, then silently dropped when the
+        sentence was built, and an empty sentence was read as "native". A
+        record whose race is "Villager" tells us nothing about who lives
+        there, and NOTHING is the honest answer — but it has to be the answer
+        this function gives, not a side effect of the wording step.
+        """
+        return {w for w in ws if w in vocab and w not in _MIXED_PEOPLES}
+
     words: set[str] = set()
     attrs = ent.attributes if isinstance(ent.attributes, dict) else {}
     if ent.type != EntityType.PLACE:
-        words |= species_tokens(str(attrs.get("race") or ""))
-        return {w for w in words if w not in _MIXED_PEOPLES}
+        return keep(species_tokens(str(attrs.get("race") or "")))
 
     with Session(graph.engine) as s:
         rels = s.exec(select(Relation).where(
@@ -918,10 +944,10 @@ def _peoples_of(graph: WorldGraph, ent: Entity) -> set[str]:
     # ("wood elf") and scanning single tokens could never see one.
     desc = str(attrs.get("description") or "").lower()
     if desc:
-        for term in people_vocabulary(graph):
+        for term in vocab:
             if re.search(rf"\b{re.escape(term)}\b", desc):
                 words.add(term)
-    return {w for w in words if w not in _MIXED_PEOPLES}
+    return keep(words)
 
 
 # Which words name a PEOPLE is the species roster's question, not this
@@ -967,6 +993,34 @@ def _plural_of(word: str) -> str:
     return w + "s"
 
 
+# A species' sub-choice list is a LINEAGE when the choices are peoples and an
+# ANCESTRY or LEGACY when they are traits — the book's own words, and on this
+# machine they classify all six rows correctly. The alternates are here because
+# an owned book may say Heritage or Bloodline for the same idea; a label
+# matching NEITHER list is reported rather than guessed, so the next book to
+# invent a word says so out loud instead of quietly losing its peoples.
+_PEOPLE_LABELS = ("lineage", "heritage", "bloodline", "subrace", "kin")
+_TRAIT_LABELS = ("ancestry", "legacy", "gift", "boon", "mark")
+_LABEL_WARNED: set[str] = set()
+
+
+def _label_lists_peoples(label: str, species: str = "") -> bool:
+    low = (label or "").strip().lower()
+    if not low:
+        return False
+    if any(w in low for w in _PEOPLE_LABELS):
+        return True
+    if any(w in low for w in _TRAIT_LABELS):
+        return False
+    if low not in _LABEL_WARNED:
+        _LABEL_WARNED.add(low)
+        print(f"[threads] {species or 'a species'} lists its choices under "
+              f"{label!r}, which is neither a lineage nor an ancestry — its "
+              f"sub-names are being left out of the peoples roster. Add the "
+              f"word to _PEOPLE_LABELS or _TRAIT_LABELS in threads.py.")
+    return False
+
+
 def people_vocabulary(graph: Optional[WorldGraph] = None) -> frozenset[str]:
     """Every word that names a people, from the species roster this DB carries.
 
@@ -1000,7 +1054,7 @@ def people_vocabulary(graph: Optional[WorldGraph] = None) -> frozenset[str]:
             # (Giant Ancestry -> Cloud's Jaunt; Fiendish Legacy -> Infernal;
             # Draconic Ancestry -> Black (Acid)). Only the first kind names a
             # people — taking all of them put "cloud's jaunt" in the roster.
-            if "lineage" in str(label or "").lower():
+            if _label_lists_peoples(str(label or ""), name):
                 for lin in (lineages or []):
                     if isinstance(lin, dict) and lin.get("name"):
                         names.append(str(lin["name"]))
@@ -1098,6 +1152,8 @@ def _name_peoples(peoples: set[str], vocab: frozenset[str],
     silently: `fit_for` reads an empty name as "nothing to say" and reports a
     stranger as native in somebody else's home.
     """
+    # `_peoples_of` has already filtered to the roster, so this is belt and
+    # braces rather than the gate it once was — the verdict does not hang on it.
     real = sorted((w for w in peoples if w in vocab), key=len)
     # Prefer the base species over its lineage — "elves" reads better than
     # "wood elf", and both describe the same neighbours.

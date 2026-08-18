@@ -1785,6 +1785,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   village and the rest of a 50-million-square-mile planet stays empty.
   Deterministic, for the cartographer's reason — a retried registration must
   lay the same map, not a second ruin beside the first.
+  **An anchor is CHARTERED, or it is a pin and not country.** A place with
+  coordinates and a sentence answers none of the questions the rest of the
+  world asks it, and each failure is quiet: `placelore` has no `biome` to
+  derive arrival art, battlemap floor or drawn country from; the DM's danger
+  block skips a place carrying no `danger` or `denizens`; a place in no region
+  has no settlement budget. `cartographer.charter_place` gives it exactly what
+  a frontier stub is born with — biome from the climate band, rolled danger,
+  scale ceiling, motifs, denizens — and PART_OF a real region, founding one
+  when the nearest heart is beyond `REGION_RADIUS_MI`, which out at thread
+  distances it usually is. That is the payoff rather than the cost: one
+  character's past brings a whole region of country with it. Existing values
+  are never overwritten (a persisted biome is what the scene was drawn from).
   **Two threads want a DAY's room, not the cartographer's six miles.** Six
   keeps a ruin out of a village and does nothing about crowding; measured at
   300 characters it left a MEDIAN gap of 16 miles with two thirds of anchors

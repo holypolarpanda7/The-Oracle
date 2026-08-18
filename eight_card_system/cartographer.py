@@ -194,6 +194,78 @@ def _found_region(
     return region
 
 
+def charter_place(
+    graph: WorldGraph, place_ref, *, rng: Optional[random.Random] = None,
+    biome: Optional[str] = None, notes: Optional[list[str]] = None,
+) -> dict:
+    """Give an already-created place the character the rest of the world reads.
+
+    A place with coordinates and a description is a PIN, not country. Every
+    other system asks it questions it cannot answer: `placelore` wants a
+    ``biome`` to derive arrival art, battlemap terrain and drawn map country;
+    the DM's danger assessment wants ``danger`` and ``denizens`` and skips a
+    place carrying neither; the region a place belongs to is what gives it a
+    settlement budget and a name people use. The frontier stubs get all of
+    this at birth (see ``ensure_frontier_around``); anything else that drops a
+    place onto the map — a character's burned village, say — needs the same
+    treatment or it lands somewhere the world cannot describe.
+
+    Existing values are NEVER overwritten. A biome once persisted is the one
+    the scene and the board were drawn from, and re-deriving it per render is
+    exactly the drift `placelore` exists to prevent.
+    """
+    log = notes if notes is not None else []
+    place = graph.get_entity(place_ref)
+    if place is None:
+        return {}
+    coords = geo.coords_from_attrs(place.attributes)
+    if coords is None:
+        return {}
+    rng = rng or random.Random(f"charter:{place.slug}")
+    attrs = dict(place.attributes or {})
+
+    climate = attrs.get("climate") or geo.climate_for(coords)
+    if not biome:
+        biome = attrs.get("biome") or rng.choice(
+            _BIOMES_BY_CLIMATE.get(climate, ["hills"]))
+
+    # The region it falls in — the nearest whose heart is within reach, or a
+    # new one. A thread anchor lands hundreds of miles out on purpose, so this
+    # is usually a founding, which is the point: one character's past brings a
+    # whole region of country with it.
+    with Session(graph.engine) as s:
+        regions = [(e, c) for e, c in _coordful_places(s)
+                   if (e.subtype or "") == PlaceScale.REGION]
+    near = [(geo.distance_mi(coords, c), e) for e, c in regions]
+    near.sort(key=lambda t: t[0])
+    region = next((e for d, e in near if d <= REGION_RADIUS_MI), None)
+    if region is None:
+        region = _found_region(graph, rng, coords, biome,
+                               near[0][1] if near else None, log)
+
+    archetype = (region.attributes or {}).get("archetype", "provinces")
+    fresh = {
+        "biome": biome,
+        "climate": climate,
+        "danger": attrs.get("danger") or _weighted(rng, _DANGERS),
+        "scale_ceiling": attrs.get("scale_ceiling") or _weighted(
+            rng, _CEILING_WEIGHTS.get(archetype, _CEILING_WEIGHTS["provinces"])),
+        "motifs": attrs.get("motifs") or roll_motifs(biome, 3, rng=rng),
+        "denizens": attrs.get("denizens") or census.stub_denizens(biome, rng),
+    }
+    # Merge semantics: upsert unions attributes, so anything already set and
+    # carried through `fresh` above stays exactly as it was.
+    graph.upsert_entity(
+        place.name, place.type, slug=place.slug, subtype=place.subtype,
+        status=place.status, attributes=fresh,
+        tags=sorted(set((place.tags or []) + [biome])),
+    )
+    graph.add_relation(place.slug, RelationType.PART_OF, region.slug)
+    log.append(f"chartered '{place.name}' ({biome}, danger {fresh['danger']}, "
+               f"in {region.name})")
+    return fresh
+
+
 def ensure_frontier_around(graph: WorldGraph, place_ref, *, notes: Optional[list[str]] = None) -> list[str]:
     """Guarantee unexplored, pre-constrained stubs near a place.
 

@@ -344,6 +344,82 @@ def main() -> int:
     check("…and a wood elf is at home in it",
           bool(erw) and erw[0]["fit"] == "native")
 
+    # The verdict must not depend on whether the NOTE can be phrased. It used
+    # to: a race the roster does not carry still counted as a people, was
+    # dropped when the sentence was built, and the empty sentence read as
+    # "native". Right answer, wrong route — and the route is what breaks.
+    def _village(nm, races, lat):
+        pl = dm.world.create_entity(
+            nm, EntityType.PLACE, subtype="settlement", status="destroyed",
+            attributes={"description": "A village.",
+                        "coords": _geo.coords_attr(lat, 1.0)})
+        for i, rc in enumerate(races):
+            n = dm.world.create_entity(f"{nm}-{i}", EntityType.NPC,
+                                       attributes={"race": rc})
+            dm.world.add_relation(n.slug, RelationType.LOCATED_IN, pl.slug)
+        return dm.world.get_entity(pl.slug)
+
+    known = th.fit_for(dm.world, _village("Aldermoor", ["Human", "Elf"], 45.1), "Tiefling")
+    check("a roster species gives a verdict AND a name",
+          known[0] == "outsider" and known[1], known[1])
+    for nm, races, lat, why in (
+            ("Sylvanhome", ["Sylvan Kin", "Sylvan Kin"], 45.4, "a race the roster lacks"),
+            ("Juncroft", ["Villager", "Peasant"], 45.7, "junk in the race field"),
+            ("Emptyfold", [], 46.0, "nothing recorded")):
+        fit, note = th.fit_for(dm.world, _village(nm, races, lat), "Tiefling")
+        check(f"…and {why} says nothing rather than guessing",
+              fit == "native" and not note, f"{fit!r} {note!r}")
+
+    check("a book's 'Heritage' would be read as peoples",
+          th._label_lists_peoples("Aasimar Heritage", "Aasimar"))
+    check("…an 'Ancestry' would not",
+          not th._label_lists_peoples("Draconic Ancestry", "Dragonborn"))
+    check("…and a word neither list knows is reported, not guessed",
+          not th._label_lists_peoples("Weave Attunement", "Somebody"),
+          "prints how to fix it")
+
+    # ---------------------------------------------------------------
+    print(f"\n{BOLD}8. a destination the rest of the world can describe{OFF}")
+    # A place with coordinates and a sentence is a PIN. Every other system
+    # asks it questions it cannot answer, and each one fails quietly: the
+    # scene renderer has no biome to draw, the DM's danger assessment skips a
+    # place carrying no danger or denizens, and a place in no region has no
+    # settlement budget and no name anybody uses.
+    from eight_card_system import placelore as _pl
+    anch = dm.world.get_entity(open_[0]["place_slug"])
+    aat = anch.attributes or {}
+    for field in ("biome", "danger", "denizens", "motifs", "scale_ceiling"):
+        check(f"the anchor carries {field}", bool(aat.get(field)),
+              str(aat.get(field))[:52])
+
+    chx = _pl.character_of(dm.world, anch)
+    check("…so placelore has ONE terrain answer for it",
+          bool(chx.biome) and bool(chx.terrain), f"{chx.terrain}/{chx.biome}")
+    check("…the arrival scene has something to draw", len(chx.scene_look()) > 20)
+    check("…and so does the battlemap floor", len(chx.board_look()) > 20)
+    check("…and the drawn map", len(chx.map_terrain()) > 10)
+
+    check("it qualifies as a hook the DM's danger block would list",
+          bool(str(aat.get("danger") or "")) and bool(aat.get("denizens")),
+          f"danger {aat.get('danger')}, {len(aat.get('denizens') or [])} denizens")
+
+    with Session(dm.world.engine) as s:
+        parents = [s.get(_Ent, r.dst_id) for r in s.exec(select(_Rel).where(
+            _Rel.src_id == anch.id,
+            _Rel.rel_type == RelationType.PART_OF,
+            _Rel.valid_to.is_(None))).all()]  # noqa: E711
+    check("…and it belongs to a real region rather than floating",
+          bool(parents), ", ".join(p.name for p in parents if p))
+    check("…which carries its own settlement budget",
+          bool(parents) and bool((parents[0].attributes or {}).get("settlement_budget")),
+          str(parents and (parents[0].attributes or {}).get("settlement_budget")))
+
+    here = dm.world.get_entity("the-silver-tankard") or dm.world.get_entity("greenfields")
+    hc, ac2 = dm.world.coords_of(here.slug), dm.world.coords_of(anch.slug)
+    check("…and a journey to it can be costed from real coordinates",
+          bool(hc) and bool(ac2) and _geo.distance_mi(hc, ac2) > 1,
+          f"{_geo.distance_mi(hc, ac2):.0f} mi" if hc and ac2 else "no coords")
+
     print()
     if _fails:
         print(f"{RED}{len(_fails)} check(s) failed:{OFF} " + "; ".join(_fails))
