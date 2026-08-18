@@ -6,6 +6,7 @@ import re
 import time
 import base64
 import threading
+import traceback
 from pathlib import Path
 from typing import Dict, List, Literal, TypedDict, Optional
 import uuid
@@ -533,6 +534,46 @@ async def lifespan(app: FastAPI):
                             conn.exec_driver_sql(
                                 f'ALTER TABLE "world_meta" ADD COLUMN {col} {ddl}')
                             print(f"[Startup] Migrated world_meta: added {col}")
+
+                # ---- and then EVERY column, for every table --------------
+                #
+                # Everything above is hand-listed per table, and hand-listing
+                # is why two columns went missing for months: `create_all` does
+                # not ALTER an existing table, so a column added to a model
+                # simply never reached a database that already had the table.
+                # Nothing complains at import; it fails at the INSERT, deep
+                # inside a feature (`combat_combatant.awareness` meant NO FIGHT
+                # COULD START, in the world or in the Grounds, and
+                # `vtt_map.setpieces` meant no board could be read).
+                #
+                # So the last pass is derived rather than written: any column a
+                # model declares and its table lacks is added. Only ever ADD,
+                # and always NULLABLE — SQLite cannot add a NOT NULL column to
+                # a table with rows in it, and the models' own defaults are
+                # applied on write anyway. A column that is genuinely required
+                # and genuinely absent is a data question, not a schema one.
+                for _tname, _table in SQLModel.metadata.tables.items():
+                    try:
+                        have = {r[1] for r in conn.exec_driver_sql(
+                            f'PRAGMA table_info("{_tname}")')}
+                    except Exception:
+                        continue
+                    if not have:
+                        continue          # table absent entirely: create_all's
+                    for _col in _table.columns:
+                        if _col.name in have:
+                            continue
+                        try:
+                            ddl = _col.type.compile(conn.dialect)
+                        except Exception:
+                            ddl = "TEXT"
+                        try:
+                            conn.exec_driver_sql(
+                                f'ALTER TABLE "{_tname}" '
+                                f'ADD COLUMN "{_col.name}" {ddl}')
+                            print(f"[Startup] Migrated {_tname}: added {_col.name}")
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[Startup] Could not add {_tname}.{_col.name}: {e}")
     except Exception as e:
         print(f"[Startup] World schema self-heal skipped: {e}")
 
@@ -23302,1517 +23343,1548 @@ async def activity_ws(ws: WebSocket, channel: str):
     try:
         while True:
             msg = await ws.receive_json()
+            # One bad message must not take the socket down with it.
+            #
+            # This loop caught only WebSocketDisconnect, so ANY other
+            # exception in ANY handler tore the connection down — and a
+            # dead socket looks to a player like a frozen screen, with no
+            # error, on whatever panel they were holding. That is exactly
+            # how a missing `combat_combatant.awareness` column presented:
+            # the Quartermaster took the payment, the fight failed to open,
+            # and the stall sat there saying "The wards close…" forever.
+            # A turn can fail; the table should not have to be rebuilt.
+            try:
 
-            # ---- landing: forge a new character (deterministic CC data) ----
-            if msg.get("t") == "cc_register":
-                p = msg.get("payload") or {}
-                try:
-                    result = await register_character(_cc_request(user_id, p))
-                except HTTPException as e:
-                    await ws.send_json({"t": "cc_error", "detail": e.detail})
-                    continue
-                except Exception as e:
-                    print(f"[activity] cc_register failed: {e}")
-                    await ws.send_json({"t": "cc_error",
-                                        "detail": "Character creation failed."})
-                    continue
-                await ws.send_json({"t": "cc_done",
-                                    "name": req.name,
-                                    "detail": result if isinstance(result, dict) else None})
-                await send_hello()
-                continue
-
-            # ---- the Proving Grounds: practice bouts outside the world ----
-            if str(msg.get("t") or "").startswith("arena"):
-                kind = msg["t"]
-
-                async def send_arena():
-                    await ws.send_json({
-                        "t": "arena",
-                        "state": _arena_state(user_id, session_id)})
-
-                if kind == "arena_state":
-                    await send_arena()
-                    continue
-
-                slot = max(1, min(ARENA_MAX_SLOTS, int(msg.get("slot") or 1)))
-
-                if kind == "arena_create":
+                # ---- landing: forge a new character (deterministic CC data) ----
+                if msg.get("t") == "cc_register":
                     p = msg.get("payload") or {}
-                    _arena_clear_slot(user_id, slot)   # slots are overwritable
+                    cc_req = _cc_request(user_id, p)
                     try:
-                        # The SAME wizard builds a Proving Grounds slot, so it
-                        # is the same request — built in one place so the two
-                        # can't forget different halves of it again.
-                        result = await register_character(_cc_request(user_id, p))
+                        result = await register_character(cc_req)
                     except HTTPException as e:
                         await ws.send_json({"t": "cc_error", "detail": e.detail})
                         continue
                     except Exception as e:
-                        print(f"[arena] slot creation failed: {e}")
+                        print(f"[activity] cc_register failed: {e}")
                         await ws.send_json({"t": "cc_error",
                                             "detail": "Character creation failed."})
                         continue
-                    new_id = (result or {}).get("character_id") if isinstance(result, dict) else None
-                    with Session(engine) as s:
-                        ch = s.get(Character, new_id) if new_id else None
-                        if ch:
-                            ch.arena_slot = slot
-                            s.add(ch)
-                            s.commit()
-                    await send_arena()
+                    # The name comes off the REQUEST, which is the one that was
+                    # trimmed and validated. (`req` was a name from nowhere here
+                    # — the seal raised NameError and took the socket with it.)
+                    await ws.send_json({"t": "cc_done",
+                                        "name": cc_req.name,
+                                        "detail": result if isinstance(result, dict) else None})
+                    await send_hello()
                     continue
 
-                if kind == "arena_delete":
-                    _arena_clear_slot(user_id, slot)
-                    await send_arena()
-                    continue
+                # ---- the Proving Grounds: practice bouts outside the world ----
+                if str(msg.get("t") or "").startswith("arena"):
+                    kind = msg["t"]
 
-                if kind == "arena_begin":
-                    target = max(1, min(20, int(msg.get("level") or 1)))
-                    env_slug = str(msg.get("environment") or "")
-                    tier = str(msg.get("difficulty") or "medium").lower()
-                    if arena_get_environment(env_slug) is None:
-                        await ws.send_json({"t": "cc_error",
-                                            "detail": "Choose somewhere to fight."})
-                        continue
-                    # Fight on with the copy already advanced, or start the
-                    # climb again from level 1 — the level-up flow IS the test.
-                    char = (_arena_run_character(user_id, slot)
-                            if msg.get("reuse") else None)
-                    if char is None or char.level != target:
-                        char = _arena_clone_for_run(user_id, slot)
-                    if char is None:
-                        await ws.send_json({"t": "cc_error",
-                                            "detail": "That slot is empty."})
-                        continue
-                    sid = _arena_session_id(channel, user_id)
-                    await bind_session(sid)
-                    _set_session_meta(sid, {
-                        "user_id": str(user_id),
-                        "character_id": char.id,
-                        "character_name": char.name,
-                        "activity_channel": channel,
-                        "members": {str(user_id): {"character_id": char.id,
-                                                   "character_name": char.name}},
-                        "arena": {"slot": slot, "character_id": char.id,
-                                  "target_level": target, "environment": env_slug,
-                                  "difficulty": tier, "phase": "leveling",
-                                  "fights": 0, "wins": 0,
-                                  "cart": [], "spent": 0.0},
-                    })
-                    _arena_restore(char.id)
-                    # A copy being fought on again keeps its own gear, never the
-                    # last run's conjured loadout.
-                    _arena_strip_loadout(char.id)
-                    await ws.send_json({"t": "entered", "resumed": False,
-                                        "arena": True})
-                    if char.level < target:
-                        with Session(engine) as s:
-                            ch = s.get(Character, char.id)
-                            ch.pending_level_up = True
-                            s.add(ch)
-                            s.commit()
-                        await _activity_broadcast(session_id, {
-                            "t": "narration",
-                            "text": (f"*The Grounds raise {char.name} toward level "
-                                     f"{target}. Choose what they become.*")},
-                            fallback=ws)
-                    else:
+                    async def send_arena():
                         await ws.send_json({
-                            "t": "narration",
-                            "text": _arena_open_stall(session_id)})
-                    await send_state()
-                    await send_arena()
-                    continue
+                            "t": "arena",
+                            "state": _arena_state(user_id, session_id)})
 
-                # Everything below acts on a bout already under way.
-                if session_id is None or not _arena_run(session_id):
-                    await send_arena()
-                    continue
-
-                # ---- the Quartermaster ----
-                if kind == "arena_shop":
-                    # Re-opening the stall between bouts: same stipend, and the
-                    # cart is refunded in full when the next loadout is applied.
-                    await ws.send_json({
-                        "t": "narration",
-                        "text": _arena_open_stall(
-                            session_id,
-                            environment=msg.get("environment") or None,
-                            difficulty=msg.get("difficulty") or None)})
-                    await send_arena()
-                    continue
-
-                if kind == "arena_outfit":
-                    # Only ever from the stall: a stale client must not be able
-                    # to re-kit and restart a bout that is already being fought.
-                    if _arena_run(session_id).get("phase") != "outfitting":
+                    if kind == "arena_state":
                         await send_arena()
                         continue
-                    res = _arena_apply_loadout(
-                        session_id, msg.get("cart") or [], msg.get("equip") or [])
-                    if not res.get("ok"):
-                        await ws.send_json({"t": "narration",
-                                            "text": f"⚠ {res.get('reason')}"})
-                        await send_arena()
-                        continue
-                    bought = [f"{ln['name']}"
-                              + (f" ×{ln['quantity']}" if ln["quantity"] > 1 else "")
-                              for ln in res.get("lines") or []]
-                    note = (f"*You leave the stall carrying {', '.join(bought)} — "
-                            f"{res.get('remaining', 0):g} gp unspent.*"
-                            if bought else
-                            "*You take nothing from the stall and step through as "
-                            "you are.*")
-                    await ws.send_json({"t": "narration", "text": note})
-                    for reason in (res.get("rejected") or [])[:4]:
-                        await ws.send_json({"t": "narration", "text": f"⚠ {reason}"})
-                    sheet = _activity_sheet(session_id, user_id)
-                    if sheet:
-                        await ws.send_json({"t": "sheet", "sheet": sheet})
-                    fight = _arena_open_fight(session_id, user_id)
-                    await ws.send_json({
-                        "t": "narration",
-                        "text": (fight["text"] if fight.get("ok")
-                                 else f"⚠ {fight.get('reason')}")})
-                    await send_state()
-                    await send_arena()
-                    continue
 
-                if kind == "arena_fight":
-                    res = _arena_open_fight(
-                        session_id, user_id,
-                        environment=msg.get("environment") or None,
-                        difficulty=msg.get("difficulty") or None)
-                    if not res.get("ok"):
-                        await ws.send_json({"t": "narration",
-                                            "text": f"⚠ {res.get('reason')}"})
-                    else:
-                        await ws.send_json({"t": "narration", "text": res["text"]})
-                    await send_state()
-                    await send_arena()
-                    continue
+                    slot = max(1, min(ARENA_MAX_SLOTS, int(msg.get("slot") or 1)))
 
-                if kind == "arena_leave":
-                    _arena_leave(session_id)
-                    await send_state()
-                    await send_arena()
-                    continue
-                continue
-
-            # ---- landing: enter the world (resume or begin) ----
-            if msg.get("t") == "enter":
-                char_name = (msg.get("character_name") or "").strip()
-                await ws.send_json({"t": "busy", "on": True})
-
-                # Channel = table: if another player's session is live in this
-                # channel, entering means JOINING it (spatial gate applies) —
-                # unless the client explicitly asked for a solo tale.
-                live_sid = _ACTIVITY_TABLES.get(channel)
-                if live_sid and not _ACTIVITY_SOCKETS.get(live_sid):
-                    live_sid = None  # stale registry entry: table went dark
-                    _ACTIVITY_TABLES.pop(channel, None)
-                if (live_sid and char_name and not msg.get("solo")):
-                    _lm = _session_members(
-                        _load_session_state(live_sid).get("meta", {}) or {})
-                    already = str(user_id) in _lm
-                    if _lm and not already:
-                        res = _activity_join_table(
-                            live_sid, user_id, username, char_name, channel)
-                        if not res.get("ok"):
-                            await ws.send_json({
-                                "t": "join_blocked",
-                                "reason": res.get("reason"),
-                                "travel_days": res.get("travel_days"),
-                                "away_days": res.get("away_days")})
-                            await ws.send_json({"t": "busy", "on": False})
+                    if kind == "arena_create":
+                        p = msg.get("payload") or {}
+                        _arena_clear_slot(user_id, slot)   # slots are overwritable
+                        try:
+                            # The SAME wizard builds a Proving Grounds slot, so it
+                            # is the same request — built in one place so the two
+                            # can't forget different halves of it again.
+                            result = await register_character(_cc_request(user_id, p))
+                        except HTTPException as e:
+                            await ws.send_json({"t": "cc_error", "detail": e.detail})
                             continue
-                        await bind_session(live_sid)
-                        await ws.send_json({"t": "entered", "resumed": True})
-                        await _activity_broadcast(session_id, {
-                            "t": "narration", "text": f"*{res['arrival']}*"})
-                        await send_state()
-                        await ws.send_json({"t": "busy", "on": False})
-                        continue
-                    if already:
-                        await bind_session(live_sid)
-                        await ws.send_json({"t": "entered", "resumed": True})
-                        await send_state()
-                        await ws.send_json({"t": "busy", "on": False})
-                        continue
-
-                resume_sid = None
-                if char_name:
-                    with Session(engine) as s:
-                        resume_sid = _activity_find_session(
-                            s, user_id, channel, char_name)
-                if resume_sid:
-                    await bind_session(resume_sid)
-                    _ACTIVITY_TABLES.setdefault(channel, session_id)
-                    state = _load_session_state(session_id)
-                    recap = [t for t in (state.get("recent_turns") or [])
-                             if getattr(t, "role", None) == "dm"
-                             or (isinstance(t, dict) and t.get("role") == "dm")]
-                    last = recap[-1] if recap else None
-                    last_text = (last.get("content") if isinstance(last, dict)
-                                 else getattr(last, "content", "")) if last else ""
-                    await ws.send_json({"t": "entered", "resumed": True})
-                    if last_text:
-                        await ws.send_json({
-                            "t": "narration",
-                            "text": "*The tale resumes where it left off…*\n\n"
-                                    + last_text})
-                else:
-                    try:
-                        er = await enter_world(EnterRequest(
-                            user_id=user_id, username=username,
-                            guild_id=f"activity-{channel}",
-                            character_name=char_name or None))
-                    except Exception as e:
-                        print(f"[activity] enterworld failed: {e}")
-                        await ws.send_json({"t": "cc_error",
-                                            "detail": "Could not enter the world."})
-                        await ws.send_json({"t": "busy", "on": False})
-                        continue
-                    if er.status != "ok" or not er.session_id:
-                        await ws.send_json({"t": "cc_error", "detail": er.message})
-                        await ws.send_json({"t": "busy", "on": False})
-                        continue
-                    await bind_session(er.session_id)
-                    # Merge (never replace) so enterworld's meta survives;
-                    # seed the members map with the table's founder.
-                    _state = _load_session_state(session_id)
-                    _meta = dict(_state.get("meta") or {})
-                    _meta["activity_channel"] = channel
-                    if _meta.get("character_id"):
-                        _meta["members"] = {str(user_id): {
-                            "character_id": _meta.get("character_id"),
-                            "character_name": _meta.get("character_name"),
-                            "pc_slug": _meta.get("pc_slug"),
-                        }}
-                    _set_session_meta(session_id, _meta)
-                    _ACTIVITY_TABLES.setdefault(channel, session_id)
-                    await ws.send_json({"t": "entered", "resumed": False})
-                    # Opening ambient-music cue (the bot polls and switches).
-                    _set_activity_music(channel, er.music)
-                    if er.intro:
-                        await ws.send_json({"t": "narration", "text": er.intro})
-                    # Opening establishing scene (guaranteed by enter_world).
-                    for img in er.images or []:
-                        if img.get("b64"):
-                            await ws.send_json({
-                                "t": "scene",
-                                "url": f"data:{img.get('mime', 'image/webp')};base64,{img['b64']}",
-                            })
-                    # Merge-invite: another live table at the same place is an
-                    # invitation, not a contradiction.
-                    try:
-                        my_loc = world.location_of(_meta.get("pc_slug"))
-                        for other_ch, other_sid in _ACTIVITY_TABLES.items():
-                            if other_sid == session_id or not _ACTIVITY_SOCKETS.get(other_sid):
-                                continue
-                            om = _session_members(_load_session_state(
-                                other_sid).get("meta", {}) or {})
-                            owner = next(iter(om.values()), None)
-                            if not (owner and owner.get("pc_slug") and my_loc):
-                                continue
-                            other_loc = world.location_of(owner["pc_slug"])
-                            if other_loc and other_loc.slug == my_loc.slug:
-                                await ws.send_json({
-                                    "t": "table_invite",
-                                    "place": my_loc.name,
-                                    "channel": other_ch})
-                                break
-                    except Exception as e:
-                        print(f"[activity] merge-invite scan failed: {e}")
-                await send_state()
-                await ws.send_json({"t": "busy", "on": False})
-                continue
-
-            # Everything below requires a bound session.
-            if session_id is None:
-                continue
-
-            if msg.get("t") == "levelup_apply":
-                char_id = _activity_char_id(session_id, user_id)
-                if not char_id:
-                    continue
-                pick_cantrips = [str(s) for s in (msg.get("cantrips") or [])]
-                pick_spells = [str(s) for s in (msg.get("spells") or [])]
-                swap_out = (msg.get("swap_out") or "").strip()
-                swap_in = (msg.get("swap_in") or "").strip()
-                # Gate on required spell picks (like the subclass gate) so the
-                # level isn't applied until the player has chosen their spells.
-                due = (_activity_levelup(session_id, user_id) or {}).get("spells_due")
-                if due and (len(pick_cantrips) < due["cantrips"]
-                            or len(pick_spells) < due["spells"]):
-                    await send_levelup()
-                    continue
-                # Ability Score Improvement: either a score spread or a feat
-                # (with the feat's own choices already resolved client-side).
-                raw_inc = msg.get("ability_increases") or None
-                increases = ({str(k): int(v) for k, v in raw_inc.items()}
-                             if isinstance(raw_inc, dict) else None)
-                try:
-                    result = await level_up(LevelUpRequest(
-                        character_id=char_id, subclass=msg.get("subclass"),
-                        ability_increases=increases,
-                        feat=(msg.get("feat") or None),
-                        feat_choices=(msg.get("feat_choices") or None)))
-                except HTTPException as e:
-                    await ws.send_json({"t": "narration", "text": f"⚠ {e.detail}"})
-                    await send_levelup()
-                    continue
-                if result.get("applied"):
-                    # Learn/prepare the newly chosen spells + apply an optional swap.
-                    if pick_cantrips or pick_spells or (swap_out and swap_in):
+                        except Exception as e:
+                            print(f"[arena] slot creation failed: {e}")
+                            await ws.send_json({"t": "cc_error",
+                                                "detail": "Character creation failed."})
+                            continue
+                        new_id = (result or {}).get("character_id") if isinstance(result, dict) else None
                         with Session(engine) as s:
-                            ch = s.get(Character, char_id)
+                            ch = s.get(Character, new_id) if new_id else None
                             if ch:
-                                if pick_cantrips or pick_spells:
-                                    _add_spells_to_character(ch, pick_cantrips + pick_spells)
-                                if swap_out and swap_in:
-                                    _swap_character_spell(ch, swap_out, swap_in)
+                                ch.arena_slot = slot
                                 s.add(ch)
                                 s.commit()
-                    sub = f" — {result['subclass']}" if result.get("subclass") else ""
-                    gains = result.get("asi_notes") or []
-                    await _activity_broadcast(session_id, {
-                        "t": "narration",
-                        "text": (f"{result['name']} rises to level "
-                                 f"{result['current_level']}{sub}. "
-                                 "New strength settles into old scars."
-                                 + (" " + " ".join(gains) if gains else "")),
-                    }, fallback=ws)
-                    await ws.send_json({"t": "levelup", "data": None})
-                    sheet = _activity_sheet(session_id, user_id)
-                    if sheet:
-                        await ws.send_json({"t": "sheet", "sheet": sheet})
-                    # In the Proving Grounds the climb continues until the
-                    # chosen level, and then the Quartermaster's stall opens.
-                    run = _arena_run(session_id)
-                    if run.get("phase") == "leveling":
-                        target = int(run.get("target_level") or 1)
-                        with Session(engine) as s:
-                            ch = s.get(Character, char_id)
-                            more = bool(ch and ch.level < target)
-                            if more:
+                        await send_arena()
+                        continue
+
+                    if kind == "arena_delete":
+                        _arena_clear_slot(user_id, slot)
+                        await send_arena()
+                        continue
+
+                    if kind == "arena_begin":
+                        target = max(1, min(20, int(msg.get("level") or 1)))
+                        env_slug = str(msg.get("environment") or "")
+                        tier = str(msg.get("difficulty") or "medium").lower()
+                        if arena_get_environment(env_slug) is None:
+                            await ws.send_json({"t": "cc_error",
+                                                "detail": "Choose somewhere to fight."})
+                            continue
+                        # Fight on with the copy already advanced, or start the
+                        # climb again from level 1 — the level-up flow IS the test.
+                        char = (_arena_run_character(user_id, slot)
+                                if msg.get("reuse") else None)
+                        if char is None or char.level != target:
+                            char = _arena_clone_for_run(user_id, slot)
+                        if char is None:
+                            await ws.send_json({"t": "cc_error",
+                                                "detail": "That slot is empty."})
+                            continue
+                        sid = _arena_session_id(channel, user_id)
+                        await bind_session(sid)
+                        _set_session_meta(sid, {
+                            "user_id": str(user_id),
+                            "character_id": char.id,
+                            "character_name": char.name,
+                            "activity_channel": channel,
+                            "members": {str(user_id): {"character_id": char.id,
+                                                       "character_name": char.name}},
+                            "arena": {"slot": slot, "character_id": char.id,
+                                      "target_level": target, "environment": env_slug,
+                                      "difficulty": tier, "phase": "leveling",
+                                      "fights": 0, "wins": 0,
+                                      "cart": [], "spent": 0.0},
+                        })
+                        _arena_restore(char.id)
+                        # A copy being fought on again keeps its own gear, never the
+                        # last run's conjured loadout.
+                        _arena_strip_loadout(char.id)
+                        await ws.send_json({"t": "entered", "resumed": False,
+                                            "arena": True})
+                        if char.level < target:
+                            with Session(engine) as s:
+                                ch = s.get(Character, char.id)
                                 ch.pending_level_up = True
                                 s.add(ch)
                                 s.commit()
-                        if more:
-                            await send_levelup()
+                            await _activity_broadcast(session_id, {
+                                "t": "narration",
+                                "text": (f"*The Grounds raise {char.name} toward level "
+                                         f"{target}. Choose what they become.*")},
+                                fallback=ws)
                         else:
-                            _arena_restore(char_id)
                             await ws.send_json({
                                 "t": "narration",
                                 "text": _arena_open_stall(session_id)})
+                        await send_state()
+                        await send_arena()
+                        continue
+
+                    # Everything below acts on a bout already under way.
+                    if session_id is None or not _arena_run(session_id):
+                        await send_arena()
+                        continue
+
+                    # ---- the Quartermaster ----
+                    if kind == "arena_shop":
+                        # Re-opening the stall between bouts: same stipend, and the
+                        # cart is refunded in full when the next loadout is applied.
+                        await ws.send_json({
+                            "t": "narration",
+                            "text": _arena_open_stall(
+                                session_id,
+                                environment=msg.get("environment") or None,
+                                difficulty=msg.get("difficulty") or None)})
+                        await send_arena()
+                        continue
+
+                    if kind == "arena_outfit":
+                        # Only ever from the stall: a stale client must not be able
+                        # to re-kit and restart a bout that is already being fought.
+                        if _arena_run(session_id).get("phase") != "outfitting":
+                            await send_arena()
+                            continue
+                        res = _arena_apply_loadout(
+                            session_id, msg.get("cart") or [], msg.get("equip") or [])
+                        if not res.get("ok"):
+                            await ws.send_json({"t": "narration",
+                                                "text": f"⚠ {res.get('reason')}"})
+                            await send_arena()
+                            continue
+                        bought = [f"{ln['name']}"
+                                  + (f" ×{ln['quantity']}" if ln["quantity"] > 1 else "")
+                                  for ln in res.get("lines") or []]
+                        note = (f"*You leave the stall carrying {', '.join(bought)} — "
+                                f"{res.get('remaining', 0):g} gp unspent.*"
+                                if bought else
+                                "*You take nothing from the stall and step through as "
+                                "you are.*")
+                        await ws.send_json({"t": "narration", "text": note})
+                        for reason in (res.get("rejected") or [])[:4]:
+                            await ws.send_json({"t": "narration", "text": f"⚠ {reason}"})
+                        sheet = _activity_sheet(session_id, user_id)
+                        if sheet:
+                            await ws.send_json({"t": "sheet", "sheet": sheet})
+                        fight = _arena_open_fight(session_id, user_id)
+                        await ws.send_json({
+                            "t": "narration",
+                            "text": (fight["text"] if fight.get("ok")
+                                     else f"⚠ {fight.get('reason')}")})
+                        await send_state()
+                        await send_arena()
+                        continue
+
+                    if kind == "arena_fight":
+                        res = _arena_open_fight(
+                            session_id, user_id,
+                            environment=msg.get("environment") or None,
+                            difficulty=msg.get("difficulty") or None)
+                        if not res.get("ok"):
+                            await ws.send_json({"t": "narration",
+                                                "text": f"⚠ {res.get('reason')}"})
+                        else:
+                            await ws.send_json({"t": "narration", "text": res["text"]})
+                        await send_state()
+                        await send_arena()
+                        continue
+
+                    if kind == "arena_leave":
+                        _arena_leave(session_id)
+                        await send_state()
+                        await send_arena()
+                        continue
+                    continue
+
+                # ---- landing: enter the world (resume or begin) ----
+                if msg.get("t") == "enter":
+                    char_name = (msg.get("character_name") or "").strip()
+                    await ws.send_json({"t": "busy", "on": True})
+
+                    # Channel = table: if another player's session is live in this
+                    # channel, entering means JOINING it (spatial gate applies) —
+                    # unless the client explicitly asked for a solo tale.
+                    live_sid = _ACTIVITY_TABLES.get(channel)
+                    if live_sid and not _ACTIVITY_SOCKETS.get(live_sid):
+                        live_sid = None  # stale registry entry: table went dark
+                        _ACTIVITY_TABLES.pop(channel, None)
+                    if (live_sid and char_name and not msg.get("solo")):
+                        _lm = _session_members(
+                            _load_session_state(live_sid).get("meta", {}) or {})
+                        already = str(user_id) in _lm
+                        if _lm and not already:
+                            res = _activity_join_table(
+                                live_sid, user_id, username, char_name, channel)
+                            if not res.get("ok"):
+                                await ws.send_json({
+                                    "t": "join_blocked",
+                                    "reason": res.get("reason"),
+                                    "travel_days": res.get("travel_days"),
+                                    "away_days": res.get("away_days")})
+                                await ws.send_json({"t": "busy", "on": False})
+                                continue
+                            await bind_session(live_sid)
+                            await ws.send_json({"t": "entered", "resumed": True})
+                            await _activity_broadcast(session_id, {
+                                "t": "narration", "text": f"*{res['arrival']}*"})
                             await send_state()
+                            await ws.send_json({"t": "busy", "on": False})
+                            continue
+                        if already:
+                            await bind_session(live_sid)
+                            await ws.send_json({"t": "entered", "resumed": True})
+                            await send_state()
+                            await ws.send_json({"t": "busy", "on": False})
+                            continue
+
+                    resume_sid = None
+                    if char_name:
+                        with Session(engine) as s:
+                            resume_sid = _activity_find_session(
+                                s, user_id, channel, char_name)
+                    if resume_sid:
+                        await bind_session(resume_sid)
+                        _ACTIVITY_TABLES.setdefault(channel, session_id)
+                        state = _load_session_state(session_id)
+                        recap = [t for t in (state.get("recent_turns") or [])
+                                 if getattr(t, "role", None) == "dm"
+                                 or (isinstance(t, dict) and t.get("role") == "dm")]
+                        last = recap[-1] if recap else None
+                        last_text = (last.get("content") if isinstance(last, dict)
+                                     else getattr(last, "content", "")) if last else ""
+                        await ws.send_json({"t": "entered", "resumed": True})
+                        if last_text:
                             await ws.send_json({
-                                "t": "arena",
-                                "state": _arena_state(user_id, session_id)})
-                else:
-                    await send_levelup()  # subclass still required
-                continue
-
-            # ---- caster: re-prepare spells (on a long rest) ----
-            # Prepared casters (cleric/druid/paladin/artificer) prepare from the
-            # whole class list; a WIZARD prepares from the spells IN THEIR
-            # SPELLBOOK — and with no spellbook item, has nothing to prepare.
-            if msg.get("t") == "reprepare":
-                cid = _activity_char_id(session_id, user_id)
-                if not cid:
-                    continue
-                payload = None
-                with Session(engine) as s:
-                    ch = s.get(Character, cid)
-                    if not ch:
-                        continue
-                    mode = leveling.caster_mode(ch.char_class)
-                    if mode not in ("prepared", "spellbook"):
-                        continue
-                    # Hard gate: preparation is only available right after a long
-                    # rest (or the initial one at creation).
-                    if not getattr(ch, "pending_reprepare", False):
-                        await ws.send_json({"t": "narration",
-                            "text": "*You can only prepare spells after a long rest.*"})
-                        continue
-                    max_lvl = _max_spell_level(ch.char_class, ch.level)
-                    if mode == "spellbook":   # wizard
-                        has_book = _has_spellbook_item(ch)
-                        options = []
-                        if has_book:
-                            for sl in _character_leveled_slugs(ch):  # spellbook contents
-                                sp = rules_lib.get_spell(sl)
-                                if sp:
-                                    options.append(_spell_brief_dict(sp))
-                        count = min(leveling.prepared_count(ch.char_class, ch.level),
-                                    len(options))
-                        current = _names_to_slugs(ch.prepared_spells)
-                        payload = {"count": count, "max_spell_level": max_lvl,
-                                   "class": ch.char_class, "current": current,
-                                   "options": options, "no_spellbook": not has_book,
-                                   "source": "spellbook"}
-                    else:                     # prepared: whole class list
-                        count = leveling.spells_count(ch.char_class, ch.level)
-                        options = [_spell_brief_dict(sp) for sp in rules_lib.legal_spells_for(
-                            ch.char_class, max_level=max(1, max_lvl), include_cantrips=False)]
-                        payload = {"count": count, "max_spell_level": max_lvl,
-                                   "class": ch.char_class,
-                                   "current": _character_leveled_slugs(ch),
-                                   "options": options, "no_spellbook": False,
-                                   "source": "class"}
-                await ws.send_json({"t": "reprepare_data", **payload})
-                continue
-
-            if msg.get("t") == "reprepare_apply":
-                cid = _activity_char_id(session_id, user_id)
-                if not cid:
-                    continue
-                picks = [str(x) for x in (msg.get("spells") or [])]
-                applied = False
-                with Session(engine) as s:
-                    ch = s.get(Character, cid)
-                    if not ch:
-                        continue
-                    mode = leveling.caster_mode(ch.char_class)
-                    if not getattr(ch, "pending_reprepare", False):
-                        continue   # gate: only right after a long rest
-                    if mode == "spellbook":   # wizard prepares a subset of the book
-                        book = set(_character_leveled_slugs(ch))
-                        picks = [p for p in picks if p in book]
-                        count = min(leveling.prepared_count(ch.char_class, ch.level), len(book))
-                        if len(picks) != count:
-                            continue
-                        ch.prepared_spells = [(rules_lib.get_spell(p).name
-                                               if rules_lib.get_spell(p) else p) for p in picks]
-                        ch.pending_reprepare = False   # consume the window
-                        s.add(ch); s.commit(); applied = True
-                    elif mode == "prepared":
-                        count = leveling.spells_count(ch.char_class, ch.level)
-                        if len(picks) != count:
-                            continue
-                        _set_prepared_spells(ch, picks)
-                        ch.pending_reprepare = False   # consume the window
-                        s.add(ch); s.commit(); applied = True
-                if not applied:
-                    continue
-                await ws.send_json({"t": "narration",
-                                    "text": f"*{ch.name} prepares a fresh set of spells.*"})
-                sheet = _activity_sheet(session_id, user_id)
-                if sheet:
-                    await ws.send_json({"t": "sheet", "sheet": sheet})
-                continue
-
-            # ---- inspect an inventory item (focused window: detail + art) ----
-            if msg.get("t") == "inspect_item":
-                name = (msg.get("name") or "").strip()
-                cid = _activity_char_id(session_id, user_id) if session_id else None
-                if not name or not cid:
-                    continue
-                with Session(engine) as s:
-                    ch = s.get(Character, cid)
-                    detail = _activity_item_detail(ch, name) if ch else None
-                if detail is None:
-                    continue
-                await ws.send_json({"t": "item_detail", "item": detail})
-                # The picture is fetched off the event loop and pushed in when
-                # ready, so the modal opens instantly and the art fills in.
-                if get_config().imagery.enabled:
-                    with Session(engine) as s:
-                        ch = s.get(Character, cid)
-                        state = _item_art_state(ch, name) if ch else "pending"
-                        ref, desc = _item_art_ref(ch, name) if ch else (name, None)
-                        base = _item_base_name(ch, name) if ch else name
-                    if state in ("have", "render"):
-                        async def _gen_item_art(nm=name, rf=ref, bs=base, ds=desc):
-                            try:
-                                loop = asyncio.get_event_loop()
-                                res = await loop.run_in_executor(
-                                    None, lambda: _item_art(rf, bs, describe=ds))
-                                if res and not getattr(res, "offline", False):
-                                    await ws.send_json({"t": "item_image", "name": nm,
-                                                        "url": _img_data_url(res)})
-                            except Exception as e:
-                                print(f"[activity] item art gen: {e}")
-                        asyncio.create_task(_gen_item_art())
+                                "t": "narration",
+                                "text": "*The tale resumes where it left off…*\n\n"
+                                        + last_text})
                     else:
-                        # No GPU work: either the batch owes us this one, or it
-                        # is the player's own item and only they can say what it
-                        # looks like.
-                        await ws.send_json({"t": "item_art_state",
-                                            "name": name, "state": state})
-                continue
-
-            # ---- the forge: reforge one property out of a piece ---------------
-            # Their deepest system, rebuilt: rarity buys SLOTS, and tempering
-            # rerolls one of them. The replacement is a fresh roll of the same
-            # grade and may be worse — that gamble is the point of the forge.
-            # The server prices it and takes the coin; the client never does.
-            if msg.get("t") == "temper_item":
-                name = (msg.get("name") or "").strip()
-                slug = (msg.get("affix") or "").strip()
-                cid = _activity_char_id(session_id, user_id) if session_id else None
-                if not name or not slug or not cid:
-                    continue
-                from loot import (affix_by_slug, describe_affixes, display_name,
-                                  temper_cost_gp, temper_swap)
-                from economy.currency import can_afford, gp_to_cp, subtract_cost
-                # A forge is a place you go to, not a button you own.
-                smith = _forge_here(session_id, user_id)
-                if not smith:
-                    await ws.send_json({
-                        "t": "item_error", "name": name,
-                        "detail": "There is no one here who could do this work. "
-                                  "Find a smith."})
-                    continue
-                with Session(engine) as s_:
-                    ch = s_.get(Character, cid)
-                    entry = _item_entry(ch, name) if ch else None
-                    if not ch or entry is None or not entry.get("affixes"):
-                        await ws.send_json({"t": "item_error", "name": name,
-                                            "detail": "There is nothing here to reforge."})
-                        continue
-                    if slug not in (entry.get("affixes") or []):
-                        await ws.send_json({"t": "item_error", "name": name,
-                                            "detail": "That property is not on this piece."})
-                        continue
-                    aff = affix_by_slug(slug)
-                    rarity = entry.get("rarity")
-                    cost_gp = temper_cost_gp(rarity, aff.tier if aff else 1)
-                    purse = _purse_of(ch)
-                    if not can_afford(purse, gp_to_cp(cost_gp)):
-                        await ws.send_json({
-                            "t": "item_error", "name": name,
-                            "detail": f"The smith wants {cost_gp} gp, and you cannot cover it."})
-                        continue
-                    base = str(entry.get("base") or entry.get("name") or name)
-                    try:
-                        row = rules_lib.get_item(base)
-                    except Exception:
-                        row = None
-                    new_slugs = temper_swap(
-                        list(entry["affixes"]), slug, item_name=base, rarity=rarity,
-                        item_type=getattr(row, "item_type", None),
-                        category=getattr(row, "category", None),
-                        seed=f"temper:{cid}:{base}:{slug}:{world.current_day()}:{len(ch.inventory or [])}")
-                    if new_slugs == list(entry["affixes"]):
-                        await ws.send_json({
-                            "t": "item_error", "name": name,
-                            "detail": "The smith turns it over and shakes their head — "
-                                      "nothing else of that grade will take on this piece."})
-                        continue
-                    _write_purse(ch, subtract_cost(purse, gp_to_cp(cost_gp)))
-                    new_name = display_name(base, new_slugs)
-                    inv = list(ch.inventory or [])
-                    for i, raw in enumerate(inv):
-                        if not isinstance(raw, dict):
+                        try:
+                            er = await enter_world(EnterRequest(
+                                user_id=user_id, username=username,
+                                guild_id=f"activity-{channel}",
+                                character_name=char_name or None))
+                        except Exception as e:
+                            print(f"[activity] enterworld failed: {e}")
+                            await ws.send_json({"t": "cc_error",
+                                                "detail": "Could not enter the world."})
+                            await ws.send_json({"t": "busy", "on": False})
                             continue
-                        if _normalize_item_name(raw.get("name")) != _normalize_item_name(entry.get("name")):
+                        if er.status != "ok" or not er.session_id:
+                            await ws.send_json({"t": "cc_error", "detail": er.message})
+                            await ws.send_json({"t": "busy", "on": False})
                             continue
-                        upd = dict(raw)
-                        upd["affixes"] = new_slugs
-                        upd["base"] = base
-                        upd["name"] = new_name
-                        inv[i] = upd
-                        break
-                    ch.inventory = inv
-                    s_.add(ch)
-                    s_.commit()
-                gained = [p for p in describe_affixes(new_slugs)
-                          if p["slug"] not in (entry.get("affixes") or [])]
-                await ws.send_json({
-                    "t": "narration",
-                    "text": (f"*{smith} takes {cost_gp} gp and an afternoon. "
-                             f"The {aff.name if aff else 'old property'} is beaten out of it; "
-                             + (f"it comes back **{gained[0]['name']}**." if gained
-                                else "it comes back changed.")
-                             + f" You are carrying **{new_name}**.*")})
-                sheet = _activity_sheet(session_id, user_id)
-                if sheet:
-                    await ws.send_json({"t": "sheet", "sheet": sheet})
-                await ws.send_json({"t": "item_gone", "name": name})
-                continue
-
-            # ---- name and describe a piece, and have it drawn -----------------
-            # The catalog is pre-rendered in bulk and shared by everyone; this is
-            # the ONE path that spends GPU time during play. It is offered for
-            # any item the character holds — a bought longsword can become
-            # Dawnbreaker — and always produces a picture that belongs to this
-            # character alone, leaving the shared catalog art untouched.
-            if msg.get("t") == "describe_item":
-                name = (msg.get("name") or "").strip()
-                text = (msg.get("text") or "").strip()
-                title = (msg.get("title") or "").strip()
-                cid = _activity_char_id(session_id, user_id) if session_id else None
-                if not name or not cid:
-                    continue
-                if not get_config().imagery.enabled:
-                    await ws.send_json({"t": "item_error", "name": name,
-                                        "detail": "The Oracle draws nothing today."})
-                    continue
-                if len(text) < 8:
-                    await ws.send_json({"t": "item_error", "name": name,
-                                        "detail": "Tell the Oracle a little more."})
-                    continue
-                with Session(engine) as s:
-                    ch = s.get(Character, cid)
-                    if not ch or not _has_inventory_item(ch, name):
-                        await ws.send_json({"t": "item_error", "name": name,
-                                            "detail": "You are not carrying that."})
-                        continue
-                    new_name, ref = _name_and_describe_item(ch, name, text, title)
-                    base = _item_base_name(ch, new_name)
-                    s.add(ch)
-                    s.commit()
-                sheet = _activity_sheet(session_id, user_id)
-                if sheet:
-                    await ws.send_json({"t": "sheet", "sheet": sheet})
-
-                async def _gen_described(nm=new_name, rf=ref, bs=base, desc=text):
-                    try:
-                        loop = asyncio.get_event_loop()
-                        res = await loop.run_in_executor(
-                            None, lambda: _item_art(rf, bs, describe=desc))
-                        if res and not getattr(res, "offline", False):
-                            await ws.send_json({"t": "item_image", "name": nm,
-                                                "url": _img_data_url(res)})
-                        else:
-                            await ws.send_json({"t": "item_error", "name": nm,
-                                                "detail": "The vision would not come."})
-                    except Exception as e:
-                        print(f"[activity] described item art: {e}")
-                        await ws.send_json({"t": "item_error", "name": nm,
-                                            "detail": "The vision would not come."})
-                asyncio.create_task(_gen_described())
-                continue
-
-            # ---- inscribe a spell into a spellbook (wizard etc.) ----
-            if msg.get("t") == "inscribe_spell":
-                spell = (msg.get("spell") or "").strip()
-                book = (msg.get("book") or "Spellbook").strip()
-                cid = _activity_char_id(session_id, user_id) if session_id else None
-                if not spell or not cid:
-                    continue
-                with Session(engine) as s:
-                    ch = s.get(Character, cid)
-                    if not ch:
-                        continue
-                    if not _can_inscribe(ch):
-                        await ws.send_json({"t": "item_error",
-                            "detail": "Only a wizard — or one trained to keep a "
-                                      "spellbook — can inscribe spells."})
-                        continue
-                    valid = None
-                    try:
-                        valid = rules_lib.get_spell(spell)
-                    except Exception:
-                        pass
-                    if valid is None:
-                        await ws.send_json({"t": "item_error",
-                            "detail": f"No spell named “{spell}” found in the tomes."})
-                        continue
-                    spell_name = getattr(valid, "name", spell)
-                    spells = list(ch.spells or [])
-                    have = {(x if isinstance(x, str) else (x.get("name") or "")).lower()
-                            for x in spells}
-                    if spell_name.lower() in have:
-                        await ws.send_json({"t": "item_error",
-                            "detail": f"{spell_name} is already inscribed here."})
-                        continue
-                    spells.append(spell_name)
-                    ch.spells = spells
-                    s.add(ch); s.commit(); s.refresh(ch)
-                    detail = _activity_item_detail(ch, book)
-                await ws.send_json({"t": "item_detail", "item": detail})
-                refreshed = _activity_sheet(session_id, user_id)
-                if refreshed:
-                    await ws.send_json({"t": "sheet", "sheet": refreshed})
-                continue
-
-            # ---- portrait looks: regear from gear, switch look, or delete one ----
-            if msg.get("t") == "set_dnr":
-                cid = _activity_char_id(session_id, user_id) if session_id else None
-                if cid:
-                    with Session(engine) as s:
-                        ch = s.get(Character, cid)
-                        if ch:
-                            ch.dnr = bool(msg.get("dnr"))
-                            s.add(ch)
-                            s.commit()
-                    refreshed = _activity_sheet(session_id, user_id)
-                    if refreshed:
-                        await ws.send_json({"t": "sheet", "sheet": refreshed})
-                continue
-
-            if msg.get("t") == "portrait_action":
-                action = (msg.get("action") or "").strip()
-                cid = _activity_char_id(session_id, user_id) if session_id else None
-                if not cid or action not in ("regear", "select", "delete"):
-                    continue
-
-                if action == "select":
-                    ctx = (msg.get("context") or "").strip() or image_store.BASE_CONTEXT
-                    with Session(engine) as s:
-                        ch = s.get(Character, cid)
-                        if not ch:
-                            continue
-                        valid = {image_store.BASE_CONTEXT} | {
-                            l["context"] for l in image_store.portrait_looks(ch.name)}
-                        if ctx not in valid:
-                            await ws.send_json({"t": "item_error",
-                                                "detail": "No such saved look."})
-                            continue
-                        ch.active_portrait = (None if ctx == image_store.BASE_CONTEXT
-                                              else ctx)
-                        s.add(ch); s.commit()
-                    refreshed = _activity_sheet(session_id, user_id)
-                    if refreshed:
-                        await ws.send_json({"t": "sheet", "sheet": refreshed})
-                    continue
-
-                if action == "delete":
-                    ctx = (msg.get("context") or "").strip()
-                    if ctx == image_store.BASE_CONTEXT \
-                            or not ctx.startswith(image_store.LOOK_PREFIX):
-                        await ws.send_json({"t": "item_error",
-                            "detail": "The base portrait can't be deleted."})
-                        continue
-                    with Session(engine) as s:
-                        ch = s.get(Character, cid)
-                        if not ch:
-                            continue
-                        image_store.delete_look(ch.name, ctx)
-                        if (getattr(ch, "active_portrait", None) or "") == ctx:
-                            ch.active_portrait = None
-                            s.add(ch); s.commit()
-                    refreshed = _activity_sheet(session_id, user_id)
-                    if refreshed:
-                        await ws.send_json({"t": "sheet", "sheet": refreshed})
-                    continue
-
-                # action == "regear": render off the event loop, then push sheet.
-                if not get_config().imagery.enabled:
-                    await ws.send_json({"t": "item_error",
-                                        "detail": "Imagery is disabled."})
-                    continue
-                detail = (msg.get("detail") or "").strip()
-                replace_ctx = (msg.get("replace_context") or "").strip() or None
-                _unload_local_llm()
-                _mark_diffusion_dirty()
-
-                async def _regear(cid=cid, detail=detail, replace_ctx=replace_ctx):
-                    try:
-                        def _work():
-                            with Session(engine) as s:
-                                ch = s.get(Character, cid)
-                                if not ch:
-                                    return {"status": "missing"}
-                                return _do_regear(s, ch, extra_desc=detail,
-                                                  replace_context=replace_ctx)
-                        loop = asyncio.get_event_loop()
-                        result = await loop.run_in_executor(None, _work)
-                        status = result.get("status")
-                        if status == "ok":
-                            refreshed = _activity_sheet(session_id, user_id)
-                            if refreshed:
-                                await ws.send_json({"t": "sheet", "sheet": refreshed})
-                        elif status == "choose_deletion":
-                            saved = ", ".join(l["label"] for l in result["looks"])
-                            await ws.send_json({"t": "item_error",
-                                "detail": f"Already at {MAX_PORTRAIT_LOOKS} gear "
-                                          f"looks ({saved}). Delete one first."})
-                        elif status == "offline":
-                            await ws.send_json({"t": "item_error",
-                                "detail": "The portrait artist is offline right now."})
-                        elif status == "disabled":
-                            await ws.send_json({"t": "item_error",
-                                                "detail": "Imagery is disabled."})
-                    except Exception as e:
-                        print(f"[activity] portrait regear: {e}")
-                asyncio.create_task(_regear())
-                continue
-
-            # ---- act on an item: equip/attune/expend/use (interactive items) ----
-            if msg.get("t") == "item_action":
-                name = (msg.get("name") or "").strip()
-                action = (msg.get("action") or "").strip()
-                cid = _activity_char_id(session_id, user_id) if session_id else None
-                if not name or not action or not cid:
-                    continue
-                gone = False
-                use_roll = None
-                use_narration = None
-                with Session(engine) as s:
-                    ch = s.get(Character, cid)
-                    if not ch:
-                        continue
-                    inv = list(ch.inventory or [])
-                    idx = None
-                    for i, raw in enumerate(inv):
-                        rn = raw if isinstance(raw, str) else (raw.get("name") or raw.get("item"))
-                        if _normalize_item_name(rn) == _normalize_item_name(name):
-                            idx = i
-                            break
-                    if idx is None:
-                        await ws.send_json({"t": "item_error",
-                                            "detail": "That item isn't in your pack."})
-                        continue
-                    raw = inv[idx]
-                    item = {"name": name, "quantity": 1} if isinstance(raw, str) else dict(raw)
-                    try:
-                        row = rules_lib.get_item(name)
-                    except Exception:
-                        row = None
-                    desc = getattr(row, "desc", "") if row else ""
-                    err = None
-                    if action in ("equip", "unequip") or action.startswith("grip_"):
-                        # Hands and armour go through the loadout model, never
-                        # a bare flag: strapping on a greatsword has to put the
-                        # shield away, and only one thing knows that.
-                        inv = [(dict(r) if isinstance(r, dict)
-                                else {"name": r, "quantity": 1}) for r in inv]
-                        want = {"grip_main": "main", "grip_off": "off",
-                                "grip_both": "both"}.get(action)
-                        if action == "unequip":
-                            plan = gear.plan_stow(inv, name, _item_row)
-                        else:
-                            plan = gear.plan_equip(inv, name, _item_row, grip=want)
-                        if not plan.ok:
-                            await ws.send_json({"t": "item_error",
-                                                "detail": plan.error})
-                            continue
-                        plan.apply(inv)
-                        item = inv[idx]          # the tail rewrite is a no-op
-                    elif action == "attune":
-                        if not item.get("attuned") and _attuned_count(ch) >= 3:
-                            err = "You can be attuned to only three items at once."
-                        else:
-                            item["attuned"] = True
-                    elif action == "unattune":
-                        item["attuned"] = False
-                    elif action == "expend":
-                        cmax = _detect_charges(desc) or 0
-                        cur = int(item.get("charges_current", cmax))
-                        if cur <= 0:
-                            err = "No charges remain."
-                        else:
-                            item["charges_current"] = cur - 1
-                    elif action == "recharge":
-                        cmax = _detect_charges(desc)
-                        if cmax:
-                            item["charges_current"] = cmax
-                    elif action == "use":
-                        qty = int(item.get("quantity", 1) or 1)
-                        eff = _consumable_effect(name)
-                        low = name.lower()
-                        verb = (f"{ch.name} drinks the {name}"
-                                if any(w in low for w in ("potion", "elixir", "antitoxin"))
-                                else f"{ch.name} uses the {name}")
-                        if eff and eff.get("heal"):
-                            from dice.roller import roll as _dice_roll
-                            r = _dice_roll(eff["heal"])
-                            before = ch.current_hp
-                            ch.current_hp = min(ch.max_hp, ch.current_hp + r.total)
-                            gained = ch.current_hp - before
-                            use_narration = (f"{verb} and regains {gained} "
-                                             f"hit point{'s' if gained != 1 else ''}.")
-                            use_roll = {"expr": eff["heal"], "label": name,
-                                        "total": r.total, "detail": r.detail}
-                        elif eff:
-                            if eff.get("temp_hp"):
-                                # Temp HP doesn't stack — keep the larger pool.
-                                ch.temp_hp = max(int(getattr(ch, "temp_hp", 0) or 0), int(eff["temp_hp"]))
-                            for op in eff.get("conditions", []):
-                                _apply_condition_op(ch, op)
-                            if eff.get("remove_conditions"):
-                                _apply_condition_op(ch, {"action": "clear"})
-                            use_narration = f"{verb} and {eff.get('narration', 'feels its magic take hold')}."
-                        else:
-                            use_narration = f"{verb}."
-                        if qty <= 1:
-                            inv.pop(idx)
-                            gone = True
-                        else:
-                            item["quantity"] = qty - 1
-                    elif action in ("store", "take_out"):
-                        target = (msg.get("target") or "").strip()
-                        contents = list(item.get("contents") or [])
-                        if not target:
-                            err = "Choose an item."
-                        elif action == "store":
-                            tidx = None
-                            for j, r2 in enumerate(inv):
-                                if j == idx:
+                        await bind_session(er.session_id)
+                        # Merge (never replace) so enterworld's meta survives;
+                        # seed the members map with the table's founder.
+                        _state = _load_session_state(session_id)
+                        _meta = dict(_state.get("meta") or {})
+                        _meta["activity_channel"] = channel
+                        if _meta.get("character_id"):
+                            _meta["members"] = {str(user_id): {
+                                "character_id": _meta.get("character_id"),
+                                "character_name": _meta.get("character_name"),
+                                "pc_slug": _meta.get("pc_slug"),
+                            }}
+                        _set_session_meta(session_id, _meta)
+                        _ACTIVITY_TABLES.setdefault(channel, session_id)
+                        await ws.send_json({"t": "entered", "resumed": False})
+                        # Opening ambient-music cue (the bot polls and switches).
+                        _set_activity_music(channel, er.music)
+                        if er.intro:
+                            await ws.send_json({"t": "narration", "text": er.intro})
+                        # Opening establishing scene (guaranteed by enter_world).
+                        for img in er.images or []:
+                            if img.get("b64"):
+                                await ws.send_json({
+                                    "t": "scene",
+                                    "url": f"data:{img.get('mime', 'image/webp')};base64,{img['b64']}",
+                                })
+                        # Merge-invite: another live table at the same place is an
+                        # invitation, not a contradiction.
+                        try:
+                            my_loc = world.location_of(_meta.get("pc_slug"))
+                            for other_ch, other_sid in _ACTIVITY_TABLES.items():
+                                if other_sid == session_id or not _ACTIVITY_SOCKETS.get(other_sid):
                                     continue
-                                rn2 = r2 if isinstance(r2, str) else (r2.get("name") or r2.get("item"))
-                                if _normalize_item_name(rn2) == _normalize_item_name(target):
-                                    tidx = j
+                                om = _session_members(_load_session_state(
+                                    other_sid).get("meta", {}) or {})
+                                owner = next(iter(om.values()), None)
+                                if not (owner and owner.get("pc_slug") and my_loc):
+                                    continue
+                                other_loc = world.location_of(owner["pc_slug"])
+                                if other_loc and other_loc.slug == my_loc.slug:
+                                    await ws.send_json({
+                                        "t": "table_invite",
+                                        "place": my_loc.name,
+                                        "channel": other_ch})
                                     break
-                            if tidx is None:
-                                err = f"You aren't carrying {target}."
+                        except Exception as e:
+                            print(f"[activity] merge-invite scan failed: {e}")
+                    await send_state()
+                    await ws.send_json({"t": "busy", "on": False})
+                    continue
+
+                # Everything below requires a bound session.
+                if session_id is None:
+                    continue
+
+                if msg.get("t") == "levelup_apply":
+                    char_id = _activity_char_id(session_id, user_id)
+                    if not char_id:
+                        continue
+                    pick_cantrips = [str(s) for s in (msg.get("cantrips") or [])]
+                    pick_spells = [str(s) for s in (msg.get("spells") or [])]
+                    swap_out = (msg.get("swap_out") or "").strip()
+                    swap_in = (msg.get("swap_in") or "").strip()
+                    # Gate on required spell picks (like the subclass gate) so the
+                    # level isn't applied until the player has chosen their spells.
+                    due = (_activity_levelup(session_id, user_id) or {}).get("spells_due")
+                    if due and (len(pick_cantrips) < due["cantrips"]
+                                or len(pick_spells) < due["spells"]):
+                        await send_levelup()
+                        continue
+                    # Ability Score Improvement: either a score spread or a feat
+                    # (with the feat's own choices already resolved client-side).
+                    raw_inc = msg.get("ability_increases") or None
+                    increases = ({str(k): int(v) for k, v in raw_inc.items()}
+                                 if isinstance(raw_inc, dict) else None)
+                    try:
+                        result = await level_up(LevelUpRequest(
+                            character_id=char_id, subclass=msg.get("subclass"),
+                            ability_increases=increases,
+                            feat=(msg.get("feat") or None),
+                            feat_choices=(msg.get("feat_choices") or None)))
+                    except HTTPException as e:
+                        await ws.send_json({"t": "narration", "text": f"⚠ {e.detail}"})
+                        await send_levelup()
+                        continue
+                    if result.get("applied"):
+                        # Learn/prepare the newly chosen spells + apply an optional swap.
+                        if pick_cantrips or pick_spells or (swap_out and swap_in):
+                            with Session(engine) as s:
+                                ch = s.get(Character, char_id)
+                                if ch:
+                                    if pick_cantrips or pick_spells:
+                                        _add_spells_to_character(ch, pick_cantrips + pick_spells)
+                                    if swap_out and swap_in:
+                                        _swap_character_spell(ch, swap_out, swap_in)
+                                    s.add(ch)
+                                    s.commit()
+                        sub = f" — {result['subclass']}" if result.get("subclass") else ""
+                        gains = result.get("asi_notes") or []
+                        await _activity_broadcast(session_id, {
+                            "t": "narration",
+                            "text": (f"{result['name']} rises to level "
+                                     f"{result['current_level']}{sub}. "
+                                     "New strength settles into old scars."
+                                     + (" " + " ".join(gains) if gains else "")),
+                        }, fallback=ws)
+                        await ws.send_json({"t": "levelup", "data": None})
+                        sheet = _activity_sheet(session_id, user_id)
+                        if sheet:
+                            await ws.send_json({"t": "sheet", "sheet": sheet})
+                        # In the Proving Grounds the climb continues until the
+                        # chosen level, and then the Quartermaster's stall opens.
+                        run = _arena_run(session_id)
+                        if run.get("phase") == "leveling":
+                            target = int(run.get("target_level") or 1)
+                            with Session(engine) as s:
+                                ch = s.get(Character, char_id)
+                                more = bool(ch and ch.level < target)
+                                if more:
+                                    ch.pending_level_up = True
+                                    s.add(ch)
+                                    s.commit()
+                            if more:
+                                await send_levelup()
                             else:
-                                tr = inv[tidx]
-                                titem = {"name": target, "quantity": 1} if isinstance(tr, str) else dict(tr)
-                                tq = int(titem.get("quantity", 1) or 1)
-                                merged = False
-                                for cs in contents:
-                                    if isinstance(cs, dict) and _normalize_item_name(cs.get("name")) == _normalize_item_name(target):
-                                        cs["qty"] = int(cs.get("qty", 1) or 1) + 1
-                                        merged = True
-                                        break
-                                if not merged:
-                                    contents.append({"name": titem.get("name", target), "qty": 1})
-                                item["contents"] = contents
-                                if tq <= 1:
-                                    inv.pop(tidx)
-                                    if tidx < idx:
-                                        idx -= 1
-                                else:
-                                    titem["quantity"] = tq - 1
-                                    inv[tidx] = titem
-                                inv[idx] = item
-                        else:  # take_out
-                            cidx = None
-                            for k, cs in enumerate(contents):
-                                csn = cs if isinstance(cs, str) else cs.get("name")
-                                if _normalize_item_name(csn) == _normalize_item_name(target):
-                                    cidx = k
-                                    break
-                            if cidx is None:
-                                err = f"{target} isn't in this container."
-                            else:
-                                cs = contents[cidx]
-                                cq = 1 if isinstance(cs, str) else int(cs.get("qty", 1) or 1)
-                                if cq <= 1:
-                                    contents.pop(cidx)
-                                else:
-                                    cs["qty"] = cq - 1
-                                item["contents"] = contents
-                                mfound = False
-                                for r2 in inv:
-                                    if isinstance(r2, dict) and _normalize_item_name(r2.get("name")) == _normalize_item_name(target):
-                                        r2["quantity"] = int(r2.get("quantity", 1) or 1) + 1
-                                        mfound = True
-                                        break
-                                if not mfound:
-                                    inv.append({"name": target, "quantity": 1})
-                                inv[idx] = item
+                                _arena_restore(char_id)
+                                await ws.send_json({
+                                    "t": "narration",
+                                    "text": _arena_open_stall(session_id)})
+                                await send_state()
+                                await ws.send_json({
+                                    "t": "arena",
+                                    "state": _arena_state(user_id, session_id)})
                     else:
-                        err = "That item can't do that."
-                    if err:
-                        await ws.send_json({"t": "item_error", "detail": err})
+                        await send_levelup()  # subclass still required
+                    continue
+
+                # ---- caster: re-prepare spells (on a long rest) ----
+                # Prepared casters (cleric/druid/paladin/artificer) prepare from the
+                # whole class list; a WIZARD prepares from the spells IN THEIR
+                # SPELLBOOK — and with no spellbook item, has nothing to prepare.
+                if msg.get("t") == "reprepare":
+                    cid = _activity_char_id(session_id, user_id)
+                    if not cid:
                         continue
-                    if not gone:
-                        inv[idx] = item
-                    ch.inventory = inv
-                    s.add(ch); s.commit(); s.refresh(ch)
-                    detail = None if gone else _activity_item_detail(ch, name)
-                if use_roll:
-                    await _activity_broadcast(session_id, {"t": "roll", "roll": use_roll},
-                                              fallback=ws)
-                if use_narration:
-                    await _activity_broadcast(session_id, {"t": "narration",
-                                                           "text": use_narration}, fallback=ws)
-                if gone:
-                    await ws.send_json({"t": "item_gone", "name": name})
-                else:
-                    await ws.send_json({"t": "item_detail", "item": detail})
-                refreshed = _activity_sheet(session_id, user_id)
-                if refreshed:
-                    await ws.send_json({"t": "sheet", "sheet": refreshed})
-                continue
-
-            # ---- tactical board: the player's own token on the grid ----
-            if str(msg.get("t") or "").startswith("vtt_"):
-                kind = msg["t"]
-                scene = (vtt_engine.active_scene(session_id)
-                         if (session_id and _vtt_on()) else None)
-                if scene is None:
-                    await ws.send_json({"t": "vtt", "scene": None})
+                    payload = None
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        if not ch:
+                            continue
+                        mode = leveling.caster_mode(ch.char_class)
+                        if mode not in ("prepared", "spellbook"):
+                            continue
+                        # Hard gate: preparation is only available right after a long
+                        # rest (or the initial one at creation).
+                        if not getattr(ch, "pending_reprepare", False):
+                            await ws.send_json({"t": "narration",
+                                "text": "*You can only prepare spells after a long rest.*"})
+                            continue
+                        max_lvl = _max_spell_level(ch.char_class, ch.level)
+                        if mode == "spellbook":   # wizard
+                            has_book = _has_spellbook_item(ch)
+                            options = []
+                            if has_book:
+                                for sl in _character_leveled_slugs(ch):  # spellbook contents
+                                    sp = rules_lib.get_spell(sl)
+                                    if sp:
+                                        options.append(_spell_brief_dict(sp))
+                            count = min(leveling.prepared_count(ch.char_class, ch.level),
+                                        len(options))
+                            current = _names_to_slugs(ch.prepared_spells)
+                            payload = {"count": count, "max_spell_level": max_lvl,
+                                       "class": ch.char_class, "current": current,
+                                       "options": options, "no_spellbook": not has_book,
+                                       "source": "spellbook"}
+                        else:                     # prepared: whole class list
+                            count = leveling.spells_count(ch.char_class, ch.level)
+                            options = [_spell_brief_dict(sp) for sp in rules_lib.legal_spells_for(
+                                ch.char_class, max_level=max(1, max_lvl), include_cantrips=False)]
+                            payload = {"count": count, "max_spell_level": max_lvl,
+                                       "class": ch.char_class,
+                                       "current": _character_leveled_slugs(ch),
+                                       "options": options, "no_spellbook": False,
+                                       "source": "class"}
+                    await ws.send_json({"t": "reprepare_data", **payload})
                     continue
 
-                if kind == "vtt_ping":
-                    sq = (int(msg.get("x", 0)), int(msg.get("y", 0)))
-                    await _activity_broadcast(session_id, {
-                        "t": "vtt_ping", "x": sq[0], "y": sq[1],
-                        "label": (msg.get("label") or username)[:40],
-                    }, fallback=ws)
-                    continue
-
-                tok = None
-                if msg.get("token_id") is not None:
-                    tok = vtt_engine.get_token(int(msg["token_id"]))
-                if tok is None or tok.map_id != scene.id:
-                    await ws.send_json({"t": "vtt_error",
-                                        "detail": "That token isn't on this board."})
-                    continue
-
-                if kind == "vtt_options":
-                    await ws.send_json({
-                        "t": "vtt_options",
-                        **vtt_engine.movement_options(
-                            tok.id, dash=bool(msg.get("dash")))})
-                    continue
-                if kind == "vtt_preview":
-                    await ws.send_json({
-                        "t": "vtt_preview", "token_id": tok.id,
-                        **vtt_engine.path_preview(tok.id, int(msg.get("x", 0)),
-                                                  int(msg.get("y", 0)))})
-                    continue
-
-                # Who this creature may legally hit with the action the player
-                # has picked up. Read-only and cheap, so it is not gated on
-                # whose turn it is: seeing what a spell WOULD reach is how you
-                # decide whether to walk first, and refusing to answer until
-                # your turn is how a player ends up guessing.
-                if kind == "vtt_targets":
-                    rng = msg.get("range_ft")
-                    await ws.send_json({
-                        "t": "vtt_targets",
-                        "action_id": msg.get("action_id"),
-                        **vtt_engine.targets_for(
-                            scene.id, tok.name,
-                            range_ft=None if rng is None else int(rng),
-                            needs_sight=bool(msg.get("needs_sight", True)),
-                            include_self=bool(msg.get("include_self")),
-                        )})
-                    continue
-
-                if kind == "vtt_area":
-                    rng = msg.get("range_ft")
-                    await ws.send_json({
-                        "t": "vtt_area",
-                        "action_id": msg.get("action_id"),
-                        **vtt_engine.area_preview(
-                            scene.id, tok.name,
-                            int(msg.get("x", 0)), int(msg.get("y", 0)),
-                            shape=str(msg.get("shape") or "sphere"),
-                            radius_ft=int(msg.get("radius_ft") or 0),
-                            length_ft=int(msg.get("length_ft") or 0),
-                            width_ft=int(msg.get("width_ft") or 5),
-                            range_ft=None if rng is None else int(rng),
-                        )})
-                    continue
-
-                if kind == "vtt_stairs":
-                    # Changing floor is movement, so it goes through the same
-                    # gate as movement: whose turn it is, and whose token this
-                    # is. The engine still refuses if they aren't standing on
-                    # a connector — the client only ever offers the button when
-                    # they are, but the client is not the authority.
-                    ok, why = _vtt_may_move(session_id, user_id, scene, tok)
-                    if not ok:
-                        await ws.send_json({"t": "vtt_error", "detail": why})
+                if msg.get("t") == "reprepare_apply":
+                    cid = _activity_char_id(session_id, user_id)
+                    if not cid:
                         continue
-                    res = vtt_engine.take_stairs(scene.id, tok.name)
-                    if not res.get("ok"):
-                        await ws.send_json({
-                            "t": "vtt_error",
-                            "detail": res.get("reason", "There's no way up from here.")})
+                    picks = [str(x) for x in (msg.get("spells") or [])]
+                    applied = False
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        if not ch:
+                            continue
+                        mode = leveling.caster_mode(ch.char_class)
+                        if not getattr(ch, "pending_reprepare", False):
+                            continue   # gate: only right after a long rest
+                        if mode == "spellbook":   # wizard prepares a subset of the book
+                            book = set(_character_leveled_slugs(ch))
+                            picks = [p for p in picks if p in book]
+                            count = min(leveling.prepared_count(ch.char_class, ch.level), len(book))
+                            if len(picks) != count:
+                                continue
+                            ch.prepared_spells = [(rules_lib.get_spell(p).name
+                                                   if rules_lib.get_spell(p) else p) for p in picks]
+                            ch.pending_reprepare = False   # consume the window
+                            s.add(ch); s.commit(); applied = True
+                        elif mode == "prepared":
+                            count = leveling.spells_count(ch.char_class, ch.level)
+                            if len(picks) != count:
+                                continue
+                            _set_prepared_spells(ch, picks)
+                            ch.pending_reprepare = False   # consume the window
+                            s.add(ch); s.commit(); applied = True
+                    if not applied:
                         continue
-                    try:
-                        vtt_bridge.sync_bands(vtt_engine, scene.id, tracker=combat)
-                    except Exception as e:
-                        print(f"[activity] band sync after stairs failed: {e}")
-                    await _activity_broadcast(session_id, {
-                        "t": "vtt", "scene": _vtt_scene_payload(session_id)},
-                        fallback=ws)
-                    await _activity_broadcast(session_id, {
-                        "t": "narration", "text": f"*{res.get('detail', '')}*"},
-                        fallback=ws)
-                    continue
-
-                if kind == "vtt_move":
-                    ok, why = _vtt_may_move(session_id, user_id, scene, tok)
-                    if not ok:
-                        await ws.send_json({"t": "vtt_error", "detail": why})
-                        continue
-                    res = vtt_engine.move_token(
-                        tok.id, int(msg.get("x", 0)), int(msg.get("y", 0)),
-                        enforce_speed=bool(getattr(_vtt_cfg(), "enforce_movement", True)))
-                    if not res.get("ok"):
-                        await ws.send_json({"t": "vtt_error",
-                                            "detail": res.get("reason", "You can't move there.")})
-                        continue
-                    try:
-                        vtt_bridge.sync_bands(vtt_engine, scene.id, tracker=combat)
-                    except Exception as e:
-                        print(f"[activity] band sync after move failed: {e}")
-                    await _activity_broadcast(session_id, {
-                        "t": "vtt", "scene": _vtt_scene_payload(session_id)},
-                        fallback=ws)
-                    if res.get("opportunity"):
-                        who = ", ".join(o["name"] for o in res["opportunity"])
-                        await _activity_broadcast(session_id, {
-                            "t": "narration",
-                            "text": (f"*{tok.name} breaks away from {who} — "
-                                     "an opportunity attack follows.*")}, fallback=ws)
-                    if res.get("fall_ft"):
-                        await _activity_broadcast(session_id, {
-                            "t": "narration",
-                            "text": (f"*{tok.name} drops {res['fall_ft']} ft from "
-                                     "the ledge.*")}, fallback=ws)
-                    for hz in res.get("hazards") or []:
-                        await ws.send_json({
-                            "t": "narration",
-                            "text": f"*{tok.name} crosses {hz.get('name')}.*"})
-                    continue
-                continue
-
-            # The Chronicle: the party's own record (what happened, what's still
-            # open) and the people who have an opinion of them. Both are reads of
-            # state the world already keeps, so it is fetched on demand rather
-            # than pushed on every turn.
-            if msg.get("t") == "chronicle":
-                try:
-                    jr = _activity_journal(session_id, user_id)
-                    await ws.send_json({"t": "chronicle_data",
-                                        "entries": jr["entries"],
-                                        "quests": jr["quests"],
-                                        "ventures": jr.get("ventures") or [],
-                                        "bonds": _activity_bonds(session_id, user_id),
-                                        "standing": _activity_standing(session_id, user_id),
-                                        "codex": _activity_codex(session_id, user_id)})
-                except Exception as e:
-                    print(f"[activity] chronicle failed: {e}")
-                    await ws.send_json({"t": "chronicle_data", "entries": [],
-                                        "quests": [], "ventures": [], "bonds": [],
-                                        "standing": [], "codex": [],
-                                        "error": "The Chronicle is closed to you."})
-                continue
-
-            # What this character can do right now. A pure read of state the
-            # server already computes, so it is fetched on demand like the
-            # Chronicle rather than pushed on every turn.
-            if msg.get("t") == "actions":
-                try:
-                    await ws.send_json({"t": "actions",
-                                        "data": _activity_actions(session_id, user_id)})
-                except Exception as e:
-                    print(f"[activity] action bar failed: {e}")
-                    await ws.send_json({"t": "actions", "data": None})
-                continue
-
-            # ---- the bastion builder: what you may raise, and raising it ----
-            if msg.get("t") == "bastion_plan":
-                try:
-                    await ws.send_json({"t": "bastion", "plan": await asyncio.to_thread(
-                        _activity_bastion, session_id, user_id)})
-                except Exception as e:
-                    print(f"[activity] bastion plan failed: {e}")
-                    await ws.send_json({"t": "bastion", "plan": None})
-                continue
-            if msg.get("t") == "bastion_build":
-                try:
-                    res = await asyncio.to_thread(
-                        _activity_bastion_build, session_id, user_id,
-                        dict(msg.get("choice") or {}))
-                except Exception as e:
-                    print(f"[activity] bastion build failed: {e}")
-                    res = {"ok": False, "detail": "The work could not be begun."}
-                await ws.send_json({"t": "bastion_built", **res})
-                if res.get("ok"):
-                    b = res["bastion"]
-                    # Raising a stronghold is a world event, so the table hears
-                    # it the way it hears a deal struck.
-                    await _activity_broadcast(session_id, {
-                        "t": "narration",
-                        "text": (f"*({b['name']} grows — {b['cost_gp']:g} gp.)*"
-                                 if res.get("added") else
-                                 f"*({b['name']} is raised — "
-                                 f"{b['cost_gp']:g} gp.)*")},
-                        fallback=ws)
-                    try:
-                        sheet = await asyncio.to_thread(
-                            _activity_sheet, session_id, user_id)
-                        if sheet:
-                            await ws.send_json({"t": "sheet", "sheet": sheet})
-                        await ws.send_json({"t": "bastion", "plan": await asyncio.to_thread(
-                            _activity_bastion, session_id, user_id)})
-                    except Exception as e:
-                        print(f"[activity] bastion refresh failed: {e}")
-                continue
-
-            # Enlarging one: ordered and PAID here, finished on a bastion turn.
-            if msg.get("t") == "bastion_enlarge":
-                try:
-                    res = await asyncio.to_thread(
-                        _activity_bastion_enlarge, session_id, user_id,
-                        int(msg.get("facility_id") or 0))
-                except Exception as e:
-                    print(f"[activity] bastion enlarge failed: {e}")
-                    res = {"ok": False, "detail": "The work could not be begun."}
-                await ws.send_json({"t": "bastion_works", **res})
-                if res.get("ok"):
-                    w = res["works"]
-                    await _activity_broadcast(session_id, {
-                        "t": "narration",
-                        "text": (f"*(Work begins on {w['name']}: {w['from']} "
-                                 f"to {w['to']}, {w['cost_gp']:g} gp, "
-                                 f"{w['turns']} bastion turn"
-                                 f"{'' if w['turns'] == 1 else 's'}.)*")},
-                        fallback=ws)
-                    try:
-                        sheet = await asyncio.to_thread(
-                            _activity_sheet, session_id, user_id)
-                        if sheet:
-                            await ws.send_json({"t": "sheet", "sheet": sheet})
-                        await ws.send_json({"t": "bastion", "plan": await asyncio.to_thread(
-                            _activity_bastion, session_id, user_id)})
-                    except Exception as e:
-                        print(f"[activity] bastion refresh failed: {e}")
-                continue
-
-            # ---- the stall: what the people standing here actually sell ----
-            # Browsing is per PLAYER (their purse, their socket); BUYING is a
-            # world event, so its note goes to the table the way a narrated deal
-            # always has.
-            if msg.get("t") == "shop":
-                try:
-                    await ws.send_json({"t": "shop", "shop": await asyncio.to_thread(
-                        _activity_shop, session_id, user_id)})
-                except Exception as e:
-                    print(f"[activity] shop failed: {e}")
-                    await ws.send_json({"t": "shop", "shop": None})
-                continue
-            if msg.get("t") == "shop_buy":
-                try:
-                    notes = await asyncio.to_thread(
-                        _activity_shop_buy, session_id, user_id,
-                        str(msg.get("item") or ""))
-                except Exception as e:
-                    print(f"[activity] shop buy failed: {e}")
-                    notes = []
-                for note in notes:
-                    await _activity_broadcast(session_id,
-                                              {"t": "narration", "text": note},
-                                              fallback=ws)
-                if not notes:
-                    await ws.send_json({
-                        "t": "narration",
-                        "text": "*(Nobody here has that to sell.)*"})
-                try:
-                    await ws.send_json({"t": "shop", "shop": await asyncio.to_thread(
-                        _activity_shop, session_id, user_id)})
-                    sheet = await asyncio.to_thread(
-                        _activity_sheet, session_id, user_id)
+                    await ws.send_json({"t": "narration",
+                                        "text": f"*{ch.name} prepares a fresh set of spells.*"})
+                    sheet = _activity_sheet(session_id, user_id)
                     if sheet:
                         await ws.send_json({"t": "sheet", "sheet": sheet})
-                except Exception as e:
-                    print(f"[activity] shop refresh failed: {e}")
-                continue
-
-            # ---- the action bar: an act CHOSEN on the board, not typed ----
-            # It becomes an ordinary player action carrying pre-built intents,
-            # so everything downstream — the echo, the rate limit, the chat
-            # call, the narration, the sheet refresh — is the path a typed
-            # sentence already takes. Only the parse is skipped.
-            bar_intents: Optional[list[dict]] = None
-            if msg.get("t") == "board_action":
-                try:
-                    bar_intents, sentence, err = _board_action_plan(
-                        session_id, user_id, msg)
-                except Exception as e:
-                    print(f"[activity] board action failed: {e}")
-                    bar_intents, sentence, err = None, "", "That act won't resolve."
-                if err:
-                    await ws.send_json({"t": "vtt_error", "detail": err})
                     continue
-                msg = {"t": "action", "text": sentence}
 
-            if msg.get("t") != "action" or not (msg.get("text") or "").strip():
-                continue
-            text = msg["text"].strip()
-            # A secret action: the player acted covertly (the UI's "secret" toggle).
-            # The input echo and the DM's reply go to THIS player alone; the table
-            # sees only a sanitized [[PUBLIC]] line the DM may add.
-            is_private = bool(msg.get("private"))
-
-            # Table-only rate limit: shared narration is a commons; one player
-            # can't monopolize it. Solo sessions are never limited.
-            _members_now = _session_members(
-                _load_session_state(session_id).get("meta", {}) or {})
-            if len(_members_now) > 1:
-                import time as _time
-                key = (session_id, str(user_id))
-                log = [t for t in _ACTIVITY_ACTION_LOG.get(key, [])
-                       if _time.time() - t < ACTIVITY_RATE_WINDOW_S]
-                if len(log) >= ACTIVITY_RATE_BURST:
-                    wait = int(ACTIVITY_RATE_WINDOW_S - (_time.time() - log[0])) + 1
-                    await ws.send_json({"t": "rate_limited", "wait": wait})
+                # ---- inspect an inventory item (focused window: detail + art) ----
+                if msg.get("t") == "inspect_item":
+                    name = (msg.get("name") or "").strip()
+                    cid = _activity_char_id(session_id, user_id) if session_id else None
+                    if not name or not cid:
+                        continue
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        detail = _activity_item_detail(ch, name) if ch else None
+                    if detail is None:
+                        continue
+                    await ws.send_json({"t": "item_detail", "item": detail})
+                    # The picture is fetched off the event loop and pushed in when
+                    # ready, so the modal opens instantly and the art fills in.
+                    if get_config().imagery.enabled:
+                        with Session(engine) as s:
+                            ch = s.get(Character, cid)
+                            state = _item_art_state(ch, name) if ch else "pending"
+                            ref, desc = _item_art_ref(ch, name) if ch else (name, None)
+                            base = _item_base_name(ch, name) if ch else name
+                        if state in ("have", "render"):
+                            async def _gen_item_art(nm=name, rf=ref, bs=base, ds=desc):
+                                try:
+                                    loop = asyncio.get_event_loop()
+                                    res = await loop.run_in_executor(
+                                        None, lambda: _item_art(rf, bs, describe=ds))
+                                    if res and not getattr(res, "offline", False):
+                                        await ws.send_json({"t": "item_image", "name": nm,
+                                                            "url": _img_data_url(res)})
+                                except Exception as e:
+                                    print(f"[activity] item art gen: {e}")
+                            asyncio.create_task(_gen_item_art())
+                        else:
+                            # No GPU work: either the batch owes us this one, or it
+                            # is the player's own item and only they can say what it
+                            # looks like.
+                            await ws.send_json({"t": "item_art_state",
+                                                "name": name, "state": state})
                     continue
-                log.append(_time.time())
-                _ACTIVITY_ACTION_LOG[key] = log
 
-            await _activity_broadcast(session_id, {"t": "busy", "on": True},
-                                      fallback=ws)
-            # Echo the player's line. A secret action is shown only back to the
-            # actor (marked secret); a normal one is echoed to the whole table.
-            if is_private:
-                await ws.send_json({"t": "player", "text": text, "who": username,
-                                    "secret": True})
-            else:
-                await _activity_broadcast(session_id, {
-                    "t": "player", "text": text, "who": username}, fallback=ws)
-
-            rolls: list[dict] = []
-            token = _ACTIVITY_ROLLS.set(rolls)
-            # Live narration. The DM call runs in a worker THREAD, so the sink
-            # is a thread-safe queue and a task on the loop drains it — a
-            # coroutine cannot be awaited from over there, and calling
-            # `send_json` from the worker would touch the socket off-loop.
-            deltas: "queue.Queue[Optional[str]]" = queue.Queue()
-            stream_token = None
-            drain = None
-            if LLM_STREAM:
-                stream_token = _ACTIVITY_STREAM.set(deltas.put_nowait)
-
-                async def _drain() -> None:
-                    while True:
-                        piece = await asyncio.to_thread(deltas.get)
-                        if piece is None:
-                            return
+                # ---- the forge: reforge one property out of a piece ---------------
+                # Their deepest system, rebuilt: rarity buys SLOTS, and tempering
+                # rerolls one of them. The replacement is a fresh roll of the same
+                # grade and may be worse — that gamble is the point of the forge.
+                # The server prices it and takes the coin; the client never does.
+                if msg.get("t") == "temper_item":
+                    name = (msg.get("name") or "").strip()
+                    slug = (msg.get("affix") or "").strip()
+                    cid = _activity_char_id(session_id, user_id) if session_id else None
+                    if not name or not slug or not cid:
+                        continue
+                    from loot import (affix_by_slug, describe_affixes, display_name,
+                                      temper_cost_gp, temper_swap)
+                    from economy.currency import can_afford, gp_to_cp, subtract_cost
+                    # A forge is a place you go to, not a button you own.
+                    smith = _forge_here(session_id, user_id)
+                    if not smith:
+                        await ws.send_json({
+                            "t": "item_error", "name": name,
+                            "detail": "There is no one here who could do this work. "
+                                      "Find a smith."})
+                        continue
+                    with Session(engine) as s_:
+                        ch = s_.get(Character, cid)
+                        entry = _item_entry(ch, name) if ch else None
+                        if not ch or entry is None or not entry.get("affixes"):
+                            await ws.send_json({"t": "item_error", "name": name,
+                                                "detail": "There is nothing here to reforge."})
+                            continue
+                        if slug not in (entry.get("affixes") or []):
+                            await ws.send_json({"t": "item_error", "name": name,
+                                                "detail": "That property is not on this piece."})
+                            continue
+                        aff = affix_by_slug(slug)
+                        rarity = entry.get("rarity")
+                        cost_gp = temper_cost_gp(rarity, aff.tier if aff else 1)
+                        purse = _purse_of(ch)
+                        if not can_afford(purse, gp_to_cp(cost_gp)):
+                            await ws.send_json({
+                                "t": "item_error", "name": name,
+                                "detail": f"The smith wants {cost_gp} gp, and you cannot cover it."})
+                            continue
+                        base = str(entry.get("base") or entry.get("name") or name)
                         try:
-                            await _activity_broadcast(
-                                session_id,
-                                {"t": "narration_delta", "text": piece},
-                                fallback=ws)
+                            row = rules_lib.get_item(base)
                         except Exception:
-                            return
-                drain = asyncio.create_task(_drain())
-            async def _end_stream() -> None:
-                """Stop the preview, whatever happened to the turn.
+                            row = None
+                        new_slugs = temper_swap(
+                            list(entry["affixes"]), slug, item_name=base, rarity=rarity,
+                            item_type=getattr(row, "item_type", None),
+                            category=getattr(row, "category", None),
+                            seed=f"temper:{cid}:{base}:{slug}:{world.current_day()}:{len(ch.inventory or [])}")
+                        if new_slugs == list(entry["affixes"]):
+                            await ws.send_json({
+                                "t": "item_error", "name": name,
+                                "detail": "The smith turns it over and shakes their head — "
+                                          "nothing else of that grade will take on this piece."})
+                            continue
+                        _write_purse(ch, subtract_cost(purse, gp_to_cp(cost_gp)))
+                        new_name = display_name(base, new_slugs)
+                        inv = list(ch.inventory or [])
+                        for i, raw in enumerate(inv):
+                            if not isinstance(raw, dict):
+                                continue
+                            if _normalize_item_name(raw.get("name")) != _normalize_item_name(entry.get("name")):
+                                continue
+                            upd = dict(raw)
+                            upd["affixes"] = new_slugs
+                            upd["base"] = base
+                            upd["name"] = new_name
+                            inv[i] = upd
+                            break
+                        ch.inventory = inv
+                        s_.add(ch)
+                        s_.commit()
+                    gained = [p for p in describe_affixes(new_slugs)
+                              if p["slug"] not in (entry.get("affixes") or [])]
+                    await ws.send_json({
+                        "t": "narration",
+                        "text": (f"*{smith} takes {cost_gp} gp and an afternoon. "
+                                 f"The {aff.name if aff else 'old property'} is beaten out of it; "
+                                 + (f"it comes back **{gained[0]['name']}**." if gained
+                                    else "it comes back changed.")
+                                 + f" You are carrying **{new_name}**.*")})
+                    sheet = _activity_sheet(session_id, user_id)
+                    if sheet:
+                        await ws.send_json({"t": "sheet", "sheet": sheet})
+                    await ws.send_json({"t": "item_gone", "name": name})
+                    continue
 
-                Always sent when one was started, and always BEFORE the real
-                narration — the client throws the preview away rather than
-                keeping it, because the authoritative text differs from what was
-                streamed (dice resolved inline, speech split into its own cards)
-                and two versions of the same paragraph is worse than a wait.
-                """
-                if stream_token is not None:
-                    _ACTIVITY_STREAM.reset(stream_token)
-                if drain is not None:
-                    deltas.put_nowait(None)
+                # ---- name and describe a piece, and have it drawn -----------------
+                # The catalog is pre-rendered in bulk and shared by everyone; this is
+                # the ONE path that spends GPU time during play. It is offered for
+                # any item the character holds — a bought longsword can become
+                # Dawnbreaker — and always produces a picture that belongs to this
+                # character alone, leaving the shared catalog art untouched.
+                if msg.get("t") == "describe_item":
+                    name = (msg.get("name") or "").strip()
+                    text = (msg.get("text") or "").strip()
+                    title = (msg.get("title") or "").strip()
+                    cid = _activity_char_id(session_id, user_id) if session_id else None
+                    if not name or not cid:
+                        continue
+                    if not get_config().imagery.enabled:
+                        await ws.send_json({"t": "item_error", "name": name,
+                                            "detail": "The Oracle draws nothing today."})
+                        continue
+                    if len(text) < 8:
+                        await ws.send_json({"t": "item_error", "name": name,
+                                            "detail": "Tell the Oracle a little more."})
+                        continue
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        if not ch or not _has_inventory_item(ch, name):
+                            await ws.send_json({"t": "item_error", "name": name,
+                                                "detail": "You are not carrying that."})
+                            continue
+                        new_name, ref = _name_and_describe_item(ch, name, text, title)
+                        base = _item_base_name(ch, new_name)
+                        s.add(ch)
+                        s.commit()
+                    sheet = _activity_sheet(session_id, user_id)
+                    if sheet:
+                        await ws.send_json({"t": "sheet", "sheet": sheet})
+
+                    async def _gen_described(nm=new_name, rf=ref, bs=base, desc=text):
+                        try:
+                            loop = asyncio.get_event_loop()
+                            res = await loop.run_in_executor(
+                                None, lambda: _item_art(rf, bs, describe=desc))
+                            if res and not getattr(res, "offline", False):
+                                await ws.send_json({"t": "item_image", "name": nm,
+                                                    "url": _img_data_url(res)})
+                            else:
+                                await ws.send_json({"t": "item_error", "name": nm,
+                                                    "detail": "The vision would not come."})
+                        except Exception as e:
+                            print(f"[activity] described item art: {e}")
+                            await ws.send_json({"t": "item_error", "name": nm,
+                                                "detail": "The vision would not come."})
+                    asyncio.create_task(_gen_described())
+                    continue
+
+                # ---- inscribe a spell into a spellbook (wizard etc.) ----
+                if msg.get("t") == "inscribe_spell":
+                    spell = (msg.get("spell") or "").strip()
+                    book = (msg.get("book") or "Spellbook").strip()
+                    cid = _activity_char_id(session_id, user_id) if session_id else None
+                    if not spell or not cid:
+                        continue
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        if not ch:
+                            continue
+                        if not _can_inscribe(ch):
+                            await ws.send_json({"t": "item_error",
+                                "detail": "Only a wizard — or one trained to keep a "
+                                          "spellbook — can inscribe spells."})
+                            continue
+                        valid = None
+                        try:
+                            valid = rules_lib.get_spell(spell)
+                        except Exception:
+                            pass
+                        if valid is None:
+                            await ws.send_json({"t": "item_error",
+                                "detail": f"No spell named “{spell}” found in the tomes."})
+                            continue
+                        spell_name = getattr(valid, "name", spell)
+                        spells = list(ch.spells or [])
+                        have = {(x if isinstance(x, str) else (x.get("name") or "")).lower()
+                                for x in spells}
+                        if spell_name.lower() in have:
+                            await ws.send_json({"t": "item_error",
+                                "detail": f"{spell_name} is already inscribed here."})
+                            continue
+                        spells.append(spell_name)
+                        ch.spells = spells
+                        s.add(ch); s.commit(); s.refresh(ch)
+                        detail = _activity_item_detail(ch, book)
+                    await ws.send_json({"t": "item_detail", "item": detail})
+                    refreshed = _activity_sheet(session_id, user_id)
+                    if refreshed:
+                        await ws.send_json({"t": "sheet", "sheet": refreshed})
+                    continue
+
+                # ---- portrait looks: regear from gear, switch look, or delete one ----
+                if msg.get("t") == "set_dnr":
+                    cid = _activity_char_id(session_id, user_id) if session_id else None
+                    if cid:
+                        with Session(engine) as s:
+                            ch = s.get(Character, cid)
+                            if ch:
+                                ch.dnr = bool(msg.get("dnr"))
+                                s.add(ch)
+                                s.commit()
+                        refreshed = _activity_sheet(session_id, user_id)
+                        if refreshed:
+                            await ws.send_json({"t": "sheet", "sheet": refreshed})
+                    continue
+
+                if msg.get("t") == "portrait_action":
+                    action = (msg.get("action") or "").strip()
+                    cid = _activity_char_id(session_id, user_id) if session_id else None
+                    if not cid or action not in ("regear", "select", "delete"):
+                        continue
+
+                    if action == "select":
+                        ctx = (msg.get("context") or "").strip() or image_store.BASE_CONTEXT
+                        with Session(engine) as s:
+                            ch = s.get(Character, cid)
+                            if not ch:
+                                continue
+                            valid = {image_store.BASE_CONTEXT} | {
+                                l["context"] for l in image_store.portrait_looks(ch.name)}
+                            if ctx not in valid:
+                                await ws.send_json({"t": "item_error",
+                                                    "detail": "No such saved look."})
+                                continue
+                            ch.active_portrait = (None if ctx == image_store.BASE_CONTEXT
+                                                  else ctx)
+                            s.add(ch); s.commit()
+                        refreshed = _activity_sheet(session_id, user_id)
+                        if refreshed:
+                            await ws.send_json({"t": "sheet", "sheet": refreshed})
+                        continue
+
+                    if action == "delete":
+                        ctx = (msg.get("context") or "").strip()
+                        if ctx == image_store.BASE_CONTEXT \
+                                or not ctx.startswith(image_store.LOOK_PREFIX):
+                            await ws.send_json({"t": "item_error",
+                                "detail": "The base portrait can't be deleted."})
+                            continue
+                        with Session(engine) as s:
+                            ch = s.get(Character, cid)
+                            if not ch:
+                                continue
+                            image_store.delete_look(ch.name, ctx)
+                            if (getattr(ch, "active_portrait", None) or "") == ctx:
+                                ch.active_portrait = None
+                                s.add(ch); s.commit()
+                        refreshed = _activity_sheet(session_id, user_id)
+                        if refreshed:
+                            await ws.send_json({"t": "sheet", "sheet": refreshed})
+                        continue
+
+                    # action == "regear": render off the event loop, then push sheet.
+                    if not get_config().imagery.enabled:
+                        await ws.send_json({"t": "item_error",
+                                            "detail": "Imagery is disabled."})
+                        continue
+                    detail = (msg.get("detail") or "").strip()
+                    replace_ctx = (msg.get("replace_context") or "").strip() or None
+                    _unload_local_llm()
+                    _mark_diffusion_dirty()
+
+                    async def _regear(cid=cid, detail=detail, replace_ctx=replace_ctx):
+                        try:
+                            def _work():
+                                with Session(engine) as s:
+                                    ch = s.get(Character, cid)
+                                    if not ch:
+                                        return {"status": "missing"}
+                                    return _do_regear(s, ch, extra_desc=detail,
+                                                      replace_context=replace_ctx)
+                            loop = asyncio.get_event_loop()
+                            result = await loop.run_in_executor(None, _work)
+                            status = result.get("status")
+                            if status == "ok":
+                                refreshed = _activity_sheet(session_id, user_id)
+                                if refreshed:
+                                    await ws.send_json({"t": "sheet", "sheet": refreshed})
+                            elif status == "choose_deletion":
+                                saved = ", ".join(l["label"] for l in result["looks"])
+                                await ws.send_json({"t": "item_error",
+                                    "detail": f"Already at {MAX_PORTRAIT_LOOKS} gear "
+                                              f"looks ({saved}). Delete one first."})
+                            elif status == "offline":
+                                await ws.send_json({"t": "item_error",
+                                    "detail": "The portrait artist is offline right now."})
+                            elif status == "disabled":
+                                await ws.send_json({"t": "item_error",
+                                                    "detail": "Imagery is disabled."})
+                        except Exception as e:
+                            print(f"[activity] portrait regear: {e}")
+                    asyncio.create_task(_regear())
+                    continue
+
+                # ---- act on an item: equip/attune/expend/use (interactive items) ----
+                if msg.get("t") == "item_action":
+                    name = (msg.get("name") or "").strip()
+                    action = (msg.get("action") or "").strip()
+                    cid = _activity_char_id(session_id, user_id) if session_id else None
+                    if not name or not action or not cid:
+                        continue
+                    gone = False
+                    use_roll = None
+                    use_narration = None
+                    with Session(engine) as s:
+                        ch = s.get(Character, cid)
+                        if not ch:
+                            continue
+                        inv = list(ch.inventory or [])
+                        idx = None
+                        for i, raw in enumerate(inv):
+                            rn = raw if isinstance(raw, str) else (raw.get("name") or raw.get("item"))
+                            if _normalize_item_name(rn) == _normalize_item_name(name):
+                                idx = i
+                                break
+                        if idx is None:
+                            await ws.send_json({"t": "item_error",
+                                                "detail": "That item isn't in your pack."})
+                            continue
+                        raw = inv[idx]
+                        item = {"name": name, "quantity": 1} if isinstance(raw, str) else dict(raw)
+                        try:
+                            row = rules_lib.get_item(name)
+                        except Exception:
+                            row = None
+                        desc = getattr(row, "desc", "") if row else ""
+                        err = None
+                        if action in ("equip", "unequip") or action.startswith("grip_"):
+                            # Hands and armour go through the loadout model, never
+                            # a bare flag: strapping on a greatsword has to put the
+                            # shield away, and only one thing knows that.
+                            inv = [(dict(r) if isinstance(r, dict)
+                                    else {"name": r, "quantity": 1}) for r in inv]
+                            want = {"grip_main": "main", "grip_off": "off",
+                                    "grip_both": "both"}.get(action)
+                            if action == "unequip":
+                                plan = gear.plan_stow(inv, name, _item_row)
+                            else:
+                                plan = gear.plan_equip(inv, name, _item_row, grip=want)
+                            if not plan.ok:
+                                await ws.send_json({"t": "item_error",
+                                                    "detail": plan.error})
+                                continue
+                            plan.apply(inv)
+                            item = inv[idx]          # the tail rewrite is a no-op
+                        elif action == "attune":
+                            if not item.get("attuned") and _attuned_count(ch) >= 3:
+                                err = "You can be attuned to only three items at once."
+                            else:
+                                item["attuned"] = True
+                        elif action == "unattune":
+                            item["attuned"] = False
+                        elif action == "expend":
+                            cmax = _detect_charges(desc) or 0
+                            cur = int(item.get("charges_current", cmax))
+                            if cur <= 0:
+                                err = "No charges remain."
+                            else:
+                                item["charges_current"] = cur - 1
+                        elif action == "recharge":
+                            cmax = _detect_charges(desc)
+                            if cmax:
+                                item["charges_current"] = cmax
+                        elif action == "use":
+                            qty = int(item.get("quantity", 1) or 1)
+                            eff = _consumable_effect(name)
+                            low = name.lower()
+                            verb = (f"{ch.name} drinks the {name}"
+                                    if any(w in low for w in ("potion", "elixir", "antitoxin"))
+                                    else f"{ch.name} uses the {name}")
+                            if eff and eff.get("heal"):
+                                from dice.roller import roll as _dice_roll
+                                r = _dice_roll(eff["heal"])
+                                before = ch.current_hp
+                                ch.current_hp = min(ch.max_hp, ch.current_hp + r.total)
+                                gained = ch.current_hp - before
+                                use_narration = (f"{verb} and regains {gained} "
+                                                 f"hit point{'s' if gained != 1 else ''}.")
+                                use_roll = {"expr": eff["heal"], "label": name,
+                                            "total": r.total, "detail": r.detail}
+                            elif eff:
+                                if eff.get("temp_hp"):
+                                    # Temp HP doesn't stack — keep the larger pool.
+                                    ch.temp_hp = max(int(getattr(ch, "temp_hp", 0) or 0), int(eff["temp_hp"]))
+                                for op in eff.get("conditions", []):
+                                    _apply_condition_op(ch, op)
+                                if eff.get("remove_conditions"):
+                                    _apply_condition_op(ch, {"action": "clear"})
+                                use_narration = f"{verb} and {eff.get('narration', 'feels its magic take hold')}."
+                            else:
+                                use_narration = f"{verb}."
+                            if qty <= 1:
+                                inv.pop(idx)
+                                gone = True
+                            else:
+                                item["quantity"] = qty - 1
+                        elif action in ("store", "take_out"):
+                            target = (msg.get("target") or "").strip()
+                            contents = list(item.get("contents") or [])
+                            if not target:
+                                err = "Choose an item."
+                            elif action == "store":
+                                tidx = None
+                                for j, r2 in enumerate(inv):
+                                    if j == idx:
+                                        continue
+                                    rn2 = r2 if isinstance(r2, str) else (r2.get("name") or r2.get("item"))
+                                    if _normalize_item_name(rn2) == _normalize_item_name(target):
+                                        tidx = j
+                                        break
+                                if tidx is None:
+                                    err = f"You aren't carrying {target}."
+                                else:
+                                    tr = inv[tidx]
+                                    titem = {"name": target, "quantity": 1} if isinstance(tr, str) else dict(tr)
+                                    tq = int(titem.get("quantity", 1) or 1)
+                                    merged = False
+                                    for cs in contents:
+                                        if isinstance(cs, dict) and _normalize_item_name(cs.get("name")) == _normalize_item_name(target):
+                                            cs["qty"] = int(cs.get("qty", 1) or 1) + 1
+                                            merged = True
+                                            break
+                                    if not merged:
+                                        contents.append({"name": titem.get("name", target), "qty": 1})
+                                    item["contents"] = contents
+                                    if tq <= 1:
+                                        inv.pop(tidx)
+                                        if tidx < idx:
+                                            idx -= 1
+                                    else:
+                                        titem["quantity"] = tq - 1
+                                        inv[tidx] = titem
+                                    inv[idx] = item
+                            else:  # take_out
+                                cidx = None
+                                for k, cs in enumerate(contents):
+                                    csn = cs if isinstance(cs, str) else cs.get("name")
+                                    if _normalize_item_name(csn) == _normalize_item_name(target):
+                                        cidx = k
+                                        break
+                                if cidx is None:
+                                    err = f"{target} isn't in this container."
+                                else:
+                                    cs = contents[cidx]
+                                    cq = 1 if isinstance(cs, str) else int(cs.get("qty", 1) or 1)
+                                    if cq <= 1:
+                                        contents.pop(cidx)
+                                    else:
+                                        cs["qty"] = cq - 1
+                                    item["contents"] = contents
+                                    mfound = False
+                                    for r2 in inv:
+                                        if isinstance(r2, dict) and _normalize_item_name(r2.get("name")) == _normalize_item_name(target):
+                                            r2["quantity"] = int(r2.get("quantity", 1) or 1) + 1
+                                            mfound = True
+                                            break
+                                    if not mfound:
+                                        inv.append({"name": target, "quantity": 1})
+                                    inv[idx] = item
+                        else:
+                            err = "That item can't do that."
+                        if err:
+                            await ws.send_json({"t": "item_error", "detail": err})
+                            continue
+                        if not gone:
+                            inv[idx] = item
+                        ch.inventory = inv
+                        s.add(ch); s.commit(); s.refresh(ch)
+                        detail = None if gone else _activity_item_detail(ch, name)
+                    if use_roll:
+                        await _activity_broadcast(session_id, {"t": "roll", "roll": use_roll},
+                                                  fallback=ws)
+                    if use_narration:
+                        await _activity_broadcast(session_id, {"t": "narration",
+                                                               "text": use_narration}, fallback=ws)
+                    if gone:
+                        await ws.send_json({"t": "item_gone", "name": name})
+                    else:
+                        await ws.send_json({"t": "item_detail", "item": detail})
+                    refreshed = _activity_sheet(session_id, user_id)
+                    if refreshed:
+                        await ws.send_json({"t": "sheet", "sheet": refreshed})
+                    continue
+
+                # ---- tactical board: the player's own token on the grid ----
+                if str(msg.get("t") or "").startswith("vtt_"):
+                    kind = msg["t"]
+                    scene = (vtt_engine.active_scene(session_id)
+                             if (session_id and _vtt_on()) else None)
+                    if scene is None:
+                        await ws.send_json({"t": "vtt", "scene": None})
+                        continue
+
+                    if kind == "vtt_ping":
+                        sq = (int(msg.get("x", 0)), int(msg.get("y", 0)))
+                        await _activity_broadcast(session_id, {
+                            "t": "vtt_ping", "x": sq[0], "y": sq[1],
+                            "label": (msg.get("label") or username)[:40],
+                        }, fallback=ws)
+                        continue
+
+                    tok = None
+                    if msg.get("token_id") is not None:
+                        tok = vtt_engine.get_token(int(msg["token_id"]))
+                    if tok is None or tok.map_id != scene.id:
+                        await ws.send_json({"t": "vtt_error",
+                                            "detail": "That token isn't on this board."})
+                        continue
+
+                    if kind == "vtt_options":
+                        await ws.send_json({
+                            "t": "vtt_options",
+                            **vtt_engine.movement_options(
+                                tok.id, dash=bool(msg.get("dash")))})
+                        continue
+                    if kind == "vtt_preview":
+                        await ws.send_json({
+                            "t": "vtt_preview", "token_id": tok.id,
+                            **vtt_engine.path_preview(tok.id, int(msg.get("x", 0)),
+                                                      int(msg.get("y", 0)))})
+                        continue
+
+                    # Who this creature may legally hit with the action the player
+                    # has picked up. Read-only and cheap, so it is not gated on
+                    # whose turn it is: seeing what a spell WOULD reach is how you
+                    # decide whether to walk first, and refusing to answer until
+                    # your turn is how a player ends up guessing.
+                    if kind == "vtt_targets":
+                        rng = msg.get("range_ft")
+                        await ws.send_json({
+                            "t": "vtt_targets",
+                            "action_id": msg.get("action_id"),
+                            **vtt_engine.targets_for(
+                                scene.id, tok.name,
+                                range_ft=None if rng is None else int(rng),
+                                needs_sight=bool(msg.get("needs_sight", True)),
+                                include_self=bool(msg.get("include_self")),
+                            )})
+                        continue
+
+                    if kind == "vtt_area":
+                        rng = msg.get("range_ft")
+                        await ws.send_json({
+                            "t": "vtt_area",
+                            "action_id": msg.get("action_id"),
+                            **vtt_engine.area_preview(
+                                scene.id, tok.name,
+                                int(msg.get("x", 0)), int(msg.get("y", 0)),
+                                shape=str(msg.get("shape") or "sphere"),
+                                radius_ft=int(msg.get("radius_ft") or 0),
+                                length_ft=int(msg.get("length_ft") or 0),
+                                width_ft=int(msg.get("width_ft") or 5),
+                                range_ft=None if rng is None else int(rng),
+                            )})
+                        continue
+
+                    if kind == "vtt_stairs":
+                        # Changing floor is movement, so it goes through the same
+                        # gate as movement: whose turn it is, and whose token this
+                        # is. The engine still refuses if they aren't standing on
+                        # a connector — the client only ever offers the button when
+                        # they are, but the client is not the authority.
+                        ok, why = _vtt_may_move(session_id, user_id, scene, tok)
+                        if not ok:
+                            await ws.send_json({"t": "vtt_error", "detail": why})
+                            continue
+                        res = vtt_engine.take_stairs(scene.id, tok.name)
+                        if not res.get("ok"):
+                            await ws.send_json({
+                                "t": "vtt_error",
+                                "detail": res.get("reason", "There's no way up from here.")})
+                            continue
+                        try:
+                            vtt_bridge.sync_bands(vtt_engine, scene.id, tracker=combat)
+                        except Exception as e:
+                            print(f"[activity] band sync after stairs failed: {e}")
+                        await _activity_broadcast(session_id, {
+                            "t": "vtt", "scene": _vtt_scene_payload(session_id)},
+                            fallback=ws)
+                        await _activity_broadcast(session_id, {
+                            "t": "narration", "text": f"*{res.get('detail', '')}*"},
+                            fallback=ws)
+                        continue
+
+                    if kind == "vtt_move":
+                        ok, why = _vtt_may_move(session_id, user_id, scene, tok)
+                        if not ok:
+                            await ws.send_json({"t": "vtt_error", "detail": why})
+                            continue
+                        res = vtt_engine.move_token(
+                            tok.id, int(msg.get("x", 0)), int(msg.get("y", 0)),
+                            enforce_speed=bool(getattr(_vtt_cfg(), "enforce_movement", True)))
+                        if not res.get("ok"):
+                            await ws.send_json({"t": "vtt_error",
+                                                "detail": res.get("reason", "You can't move there.")})
+                            continue
+                        try:
+                            vtt_bridge.sync_bands(vtt_engine, scene.id, tracker=combat)
+                        except Exception as e:
+                            print(f"[activity] band sync after move failed: {e}")
+                        await _activity_broadcast(session_id, {
+                            "t": "vtt", "scene": _vtt_scene_payload(session_id)},
+                            fallback=ws)
+                        if res.get("opportunity"):
+                            who = ", ".join(o["name"] for o in res["opportunity"])
+                            await _activity_broadcast(session_id, {
+                                "t": "narration",
+                                "text": (f"*{tok.name} breaks away from {who} — "
+                                         "an opportunity attack follows.*")}, fallback=ws)
+                        if res.get("fall_ft"):
+                            await _activity_broadcast(session_id, {
+                                "t": "narration",
+                                "text": (f"*{tok.name} drops {res['fall_ft']} ft from "
+                                         "the ledge.*")}, fallback=ws)
+                        for hz in res.get("hazards") or []:
+                            await ws.send_json({
+                                "t": "narration",
+                                "text": f"*{tok.name} crosses {hz.get('name')}.*"})
+                        continue
+                    continue
+
+                # The Chronicle: the party's own record (what happened, what's still
+                # open) and the people who have an opinion of them. Both are reads of
+                # state the world already keeps, so it is fetched on demand rather
+                # than pushed on every turn.
+                if msg.get("t") == "chronicle":
                     try:
-                        await asyncio.wait_for(drain, timeout=5)
-                    except Exception:
-                        drain.cancel()
-                    await _activity_broadcast(session_id,
-                                              {"t": "narration_end"}, fallback=ws)
+                        jr = _activity_journal(session_id, user_id)
+                        await ws.send_json({"t": "chronicle_data",
+                                            "entries": jr["entries"],
+                                            "quests": jr["quests"],
+                                            "ventures": jr.get("ventures") or [],
+                                            "bonds": _activity_bonds(session_id, user_id),
+                                            "standing": _activity_standing(session_id, user_id),
+                                            "codex": _activity_codex(session_id, user_id)})
+                    except Exception as e:
+                        print(f"[activity] chronicle failed: {e}")
+                        await ws.send_json({"t": "chronicle_data", "entries": [],
+                                            "quests": [], "ventures": [], "bonds": [],
+                                            "standing": [], "codex": [],
+                                            "error": "The Chronicle is closed to you."})
+                    continue
 
-            try:
-                bt = BackgroundTasks()
-                req = ChatRequest(session_id=session_id, user_id=user_id,
-                                  username=username, message=text,
-                                  private=is_private, intents=bar_intents)
-                # Sync endpoint with blocking I/O: run in a worker thread
-                # (contextvars propagate, so the roll collector works).
-                resp = await asyncio.to_thread(chat_endpoint, req, bt)
-            except HTTPException as e:
+                # What this character can do right now. A pure read of state the
+                # server already computes, so it is fetched on demand like the
+                # Chronicle rather than pushed on every turn.
+                if msg.get("t") == "actions":
+                    try:
+                        await ws.send_json({"t": "actions",
+                                            "data": _activity_actions(session_id, user_id)})
+                    except Exception as e:
+                        print(f"[activity] action bar failed: {e}")
+                        await ws.send_json({"t": "actions", "data": None})
+                    continue
+
+                # ---- the bastion builder: what you may raise, and raising it ----
+                if msg.get("t") == "bastion_plan":
+                    try:
+                        await ws.send_json({"t": "bastion", "plan": await asyncio.to_thread(
+                            _activity_bastion, session_id, user_id)})
+                    except Exception as e:
+                        print(f"[activity] bastion plan failed: {e}")
+                        await ws.send_json({"t": "bastion", "plan": None})
+                    continue
+                if msg.get("t") == "bastion_build":
+                    try:
+                        res = await asyncio.to_thread(
+                            _activity_bastion_build, session_id, user_id,
+                            dict(msg.get("choice") or {}))
+                    except Exception as e:
+                        print(f"[activity] bastion build failed: {e}")
+                        res = {"ok": False, "detail": "The work could not be begun."}
+                    await ws.send_json({"t": "bastion_built", **res})
+                    if res.get("ok"):
+                        b = res["bastion"]
+                        # Raising a stronghold is a world event, so the table hears
+                        # it the way it hears a deal struck.
+                        await _activity_broadcast(session_id, {
+                            "t": "narration",
+                            "text": (f"*({b['name']} grows — {b['cost_gp']:g} gp.)*"
+                                     if res.get("added") else
+                                     f"*({b['name']} is raised — "
+                                     f"{b['cost_gp']:g} gp.)*")},
+                            fallback=ws)
+                        try:
+                            sheet = await asyncio.to_thread(
+                                _activity_sheet, session_id, user_id)
+                            if sheet:
+                                await ws.send_json({"t": "sheet", "sheet": sheet})
+                            await ws.send_json({"t": "bastion", "plan": await asyncio.to_thread(
+                                _activity_bastion, session_id, user_id)})
+                        except Exception as e:
+                            print(f"[activity] bastion refresh failed: {e}")
+                    continue
+
+                # Enlarging one: ordered and PAID here, finished on a bastion turn.
+                if msg.get("t") == "bastion_enlarge":
+                    try:
+                        res = await asyncio.to_thread(
+                            _activity_bastion_enlarge, session_id, user_id,
+                            int(msg.get("facility_id") or 0))
+                    except Exception as e:
+                        print(f"[activity] bastion enlarge failed: {e}")
+                        res = {"ok": False, "detail": "The work could not be begun."}
+                    await ws.send_json({"t": "bastion_works", **res})
+                    if res.get("ok"):
+                        w = res["works"]
+                        await _activity_broadcast(session_id, {
+                            "t": "narration",
+                            "text": (f"*(Work begins on {w['name']}: {w['from']} "
+                                     f"to {w['to']}, {w['cost_gp']:g} gp, "
+                                     f"{w['turns']} bastion turn"
+                                     f"{'' if w['turns'] == 1 else 's'}.)*")},
+                            fallback=ws)
+                        try:
+                            sheet = await asyncio.to_thread(
+                                _activity_sheet, session_id, user_id)
+                            if sheet:
+                                await ws.send_json({"t": "sheet", "sheet": sheet})
+                            await ws.send_json({"t": "bastion", "plan": await asyncio.to_thread(
+                                _activity_bastion, session_id, user_id)})
+                        except Exception as e:
+                            print(f"[activity] bastion refresh failed: {e}")
+                    continue
+
+                # ---- the stall: what the people standing here actually sell ----
+                # Browsing is per PLAYER (their purse, their socket); BUYING is a
+                # world event, so its note goes to the table the way a narrated deal
+                # always has.
+                if msg.get("t") == "shop":
+                    try:
+                        await ws.send_json({"t": "shop", "shop": await asyncio.to_thread(
+                            _activity_shop, session_id, user_id)})
+                    except Exception as e:
+                        print(f"[activity] shop failed: {e}")
+                        await ws.send_json({"t": "shop", "shop": None})
+                    continue
+                if msg.get("t") == "shop_buy":
+                    try:
+                        notes = await asyncio.to_thread(
+                            _activity_shop_buy, session_id, user_id,
+                            str(msg.get("item") or ""))
+                    except Exception as e:
+                        print(f"[activity] shop buy failed: {e}")
+                        notes = []
+                    for note in notes:
+                        await _activity_broadcast(session_id,
+                                                  {"t": "narration", "text": note},
+                                                  fallback=ws)
+                    if not notes:
+                        await ws.send_json({
+                            "t": "narration",
+                            "text": "*(Nobody here has that to sell.)*"})
+                    try:
+                        await ws.send_json({"t": "shop", "shop": await asyncio.to_thread(
+                            _activity_shop, session_id, user_id)})
+                        sheet = await asyncio.to_thread(
+                            _activity_sheet, session_id, user_id)
+                        if sheet:
+                            await ws.send_json({"t": "sheet", "sheet": sheet})
+                    except Exception as e:
+                        print(f"[activity] shop refresh failed: {e}")
+                    continue
+
+                # ---- the action bar: an act CHOSEN on the board, not typed ----
+                # It becomes an ordinary player action carrying pre-built intents,
+                # so everything downstream — the echo, the rate limit, the chat
+                # call, the narration, the sheet refresh — is the path a typed
+                # sentence already takes. Only the parse is skipped.
+                bar_intents: Optional[list[dict]] = None
+                if msg.get("t") == "board_action":
+                    try:
+                        bar_intents, sentence, err = _board_action_plan(
+                            session_id, user_id, msg)
+                    except Exception as e:
+                        print(f"[activity] board action failed: {e}")
+                        bar_intents, sentence, err = None, "", "That act won't resolve."
+                    if err:
+                        await ws.send_json({"t": "vtt_error", "detail": err})
+                        continue
+                    msg = {"t": "action", "text": sentence}
+
+                if msg.get("t") != "action" or not (msg.get("text") or "").strip():
+                    continue
+                text = msg["text"].strip()
+                # A secret action: the player acted covertly (the UI's "secret" toggle).
+                # The input echo and the DM's reply go to THIS player alone; the table
+                # sees only a sanitized [[PUBLIC]] line the DM may add.
+                is_private = bool(msg.get("private"))
+
+                # Table-only rate limit: shared narration is a commons; one player
+                # can't monopolize it. Solo sessions are never limited.
+                _members_now = _session_members(
+                    _load_session_state(session_id).get("meta", {}) or {})
+                if len(_members_now) > 1:
+                    import time as _time
+                    key = (session_id, str(user_id))
+                    log = [t for t in _ACTIVITY_ACTION_LOG.get(key, [])
+                           if _time.time() - t < ACTIVITY_RATE_WINDOW_S]
+                    if len(log) >= ACTIVITY_RATE_BURST:
+                        wait = int(ACTIVITY_RATE_WINDOW_S - (_time.time() - log[0])) + 1
+                        await ws.send_json({"t": "rate_limited", "wait": wait})
+                        continue
+                    log.append(_time.time())
+                    _ACTIVITY_ACTION_LOG[key] = log
+
+                await _activity_broadcast(session_id, {"t": "busy", "on": True},
+                                          fallback=ws)
+                # Echo the player's line. A secret action is shown only back to the
+                # actor (marked secret); a normal one is echoed to the whole table.
+                if is_private:
+                    await ws.send_json({"t": "player", "text": text, "who": username,
+                                        "secret": True})
+                else:
+                    await _activity_broadcast(session_id, {
+                        "t": "player", "text": text, "who": username}, fallback=ws)
+
+                rolls: list[dict] = []
+                token = _ACTIVITY_ROLLS.set(rolls)
+                # Live narration. The DM call runs in a worker THREAD, so the sink
+                # is a thread-safe queue and a task on the loop drains it — a
+                # coroutine cannot be awaited from over there, and calling
+                # `send_json` from the worker would touch the socket off-loop.
+                deltas: "queue.Queue[Optional[str]]" = queue.Queue()
+                stream_token = None
+                drain = None
+                if LLM_STREAM:
+                    stream_token = _ACTIVITY_STREAM.set(deltas.put_nowait)
+
+                    async def _drain() -> None:
+                        while True:
+                            piece = await asyncio.to_thread(deltas.get)
+                            if piece is None:
+                                return
+                            try:
+                                await _activity_broadcast(
+                                    session_id,
+                                    {"t": "narration_delta", "text": piece},
+                                    fallback=ws)
+                            except Exception:
+                                return
+                    drain = asyncio.create_task(_drain())
+                async def _end_stream() -> None:
+                    """Stop the preview, whatever happened to the turn.
+
+                    Always sent when one was started, and always BEFORE the real
+                    narration — the client throws the preview away rather than
+                    keeping it, because the authoritative text differs from what was
+                    streamed (dice resolved inline, speech split into its own cards)
+                    and two versions of the same paragraph is worse than a wait.
+                    """
+                    if stream_token is not None:
+                        _ACTIVITY_STREAM.reset(stream_token)
+                    if drain is not None:
+                        deltas.put_nowait(None)
+                        try:
+                            await asyncio.wait_for(drain, timeout=5)
+                        except Exception:
+                            drain.cancel()
+                        await _activity_broadcast(session_id,
+                                                  {"t": "narration_end"}, fallback=ws)
+
+                try:
+                    bt = BackgroundTasks()
+                    req = ChatRequest(session_id=session_id, user_id=user_id,
+                                      username=username, message=text,
+                                      private=is_private, intents=bar_intents)
+                    # Sync endpoint with blocking I/O: run in a worker thread
+                    # (contextvars propagate, so the roll collector works).
+                    resp = await asyncio.to_thread(chat_endpoint, req, bt)
+                except HTTPException as e:
+                    await _end_stream()
+                    await ws.send_json({"t": "narration", "text": f"⚠ {e.detail}"})
+                    await ws.send_json({"t": "busy", "on": False})
+                    _ACTIVITY_ROLLS.reset(token)
+                    continue
+                except Exception as e:
+                    print(f"[activity] chat failed: {e}")
+                    await _end_stream()
+                    await ws.send_json({"t": "narration",
+                                        "text": "⚠ The Oracle's vision clouds. Try again."})
+                    await ws.send_json({"t": "busy", "on": False})
+                    _ACTIVITY_ROLLS.reset(token)
+                    continue
                 await _end_stream()
-                await ws.send_json({"t": "narration", "text": f"⚠ {e.detail}"})
-                await ws.send_json({"t": "busy", "on": False})
                 _ACTIVITY_ROLLS.reset(token)
-                continue
-            except Exception as e:
-                print(f"[activity] chat failed: {e}")
-                await _end_stream()
-                await ws.send_json({"t": "narration",
-                                    "text": "⚠ The Oracle's vision clouds. Try again."})
-                await ws.send_json({"t": "busy", "on": False})
-                _ACTIVITY_ROLLS.reset(token)
-                continue
-            await _end_stream()
-            _ACTIVITY_ROLLS.reset(token)
 
-            # Relay the DM's scene music cue to the bot (voice channel = channel).
-            _set_activity_music(channel, resp.music)
+                # Relay the DM's scene music cue to the bot (voice channel = channel).
+                _set_activity_music(channel, resp.music)
 
-            pc_name = (sheet or {}).get("name")
-            lex = _activity_lexicon(session_id, pc_name, resp.reply,
-                                    (sheet or {}).get("race"))
-            if lex:
-                await _activity_broadcast(session_id, {"t": "lexicon",
-                                                       "entries": lex},
+                pc_name = (sheet or {}).get("name")
+                lex = _activity_lexicon(session_id, pc_name, resp.reply,
+                                        (sheet or {}).get("race"))
+                if lex:
+                    await _activity_broadcast(session_id, {"t": "lexicon",
+                                                           "entries": lex},
+                                              fallback=ws)
+
+                # The narration. On a secret turn it's the actor's alone (their own
+                # socket); the table sees only resp.public. Otherwise broadcast it.
+                # The lexicon's people are exactly the pool of possible speakers:
+                # the PC plus whoever the world slice put in the scene.
+                speaker_names = [e["text"] for e in lex if e.get("kind") == "name"]
+                speaker_scripts = {e["text"]: e["script"] for e in lex if e.get("script")}
+                for ev in _activity_segments(resp.reply, rolls, speaker_names,
+                                             speaker_scripts):
+                    if is_private:
+                        ev = {**ev, "secret": True}
+                        await ws.send_json(ev)
+                    else:
+                        await _activity_broadcast(session_id, ev, fallback=ws)
+                if is_private and resp.public:
+                    for ev in _activity_segments(resp.public, [], speaker_names,
+                                                 speaker_scripts):
+                        await _activity_broadcast(session_id, ev, fallback=ws)
+
+                # Suggested next actions. They follow the narration's audience: on a
+                # secret turn only the actor sees them, since they describe a scene
+                # the rest of the table was not shown.
+                _routes = {"t": "routes", "routes": resp.routes or []}
+                if is_private:
+                    await ws.send_json(_routes)
+                else:
+                    await _activity_broadcast(session_id, _routes, fallback=ws)
+
+                _sugg = {"t": "suggest", "actions": resp.suggestions or []}
+                if is_private:
+                    await ws.send_json(_sugg)
+                else:
+                    await _activity_broadcast(session_id, _sugg, fallback=ws)
+
+                # Whispers: push each private note to only its recipient's screen(s).
+                for note in (resp.whisper or []):
+                    await _activity_whisper(
+                        session_id, note.get("user_id", ""),
+                        {"t": "whisper", "text": note.get("text", "")})
+
+                for img in resp.images or []:
+                    if img.get("b64"):
+                        await _activity_broadcast(session_id, {
+                            "t": "scene",
+                            "url": f"data:{img.get('mime', 'image/webp')};base64,{img['b64']}",
+                        }, fallback=ws)
+
+                await send_state()
+
+                # A practice bout ends the moment one side is down — the Grounds
+                # call it, not the narration, so a fight can't limp on past its end.
+                _run = _arena_run(session_id)
+                if _run.get("phase") == "fighting":
+                    _outcome = _arena_outcome(session_id)
+                    if _outcome:
+                        _arena_finish_fight(session_id, _outcome)
+                        await ws.send_json({"t": "narration", "text": {
+                            "victory": ("*The last of them goes down. The wards dim, "
+                                        "and the Grounds go quiet — you are whole "
+                                        "again, and ready for the next.*"),
+                            "defeat": ("*You fall. The wards catch you before the "
+                                       "ground does; the Grounds do not keep the "
+                                       "dead. You come back up whole.*"),
+                        }.get(_outcome, "*The bout is called off.*")})
+                        await send_state()
+                        await ws.send_json({
+                            "t": "arena", "state": _arena_state(user_id, session_id)})
+
+                await _activity_broadcast(session_id, {"t": "busy", "on": False},
                                           fallback=ws)
 
-            # The narration. On a secret turn it's the actor's alone (their own
-            # socket); the table sees only resp.public. Otherwise broadcast it.
-            # The lexicon's people are exactly the pool of possible speakers:
-            # the PC plus whoever the world slice put in the scene.
-            speaker_names = [e["text"] for e in lex if e.get("kind") == "name"]
-            speaker_scripts = {e["text"]: e["script"] for e in lex if e.get("script")}
-            for ev in _activity_segments(resp.reply, rolls, speaker_names,
-                                         speaker_scripts):
-                if is_private:
-                    ev = {**ev, "secret": True}
-                    await ws.send_json(ev)
-                else:
-                    await _activity_broadcast(session_id, ev, fallback=ws)
-            if is_private and resp.public:
-                for ev in _activity_segments(resp.public, [], speaker_names,
-                                             speaker_scripts):
-                    await _activity_broadcast(session_id, ev, fallback=ws)
-
-            # Suggested next actions. They follow the narration's audience: on a
-            # secret turn only the actor sees them, since they describe a scene
-            # the rest of the table was not shown.
-            _routes = {"t": "routes", "routes": resp.routes or []}
-            if is_private:
-                await ws.send_json(_routes)
-            else:
-                await _activity_broadcast(session_id, _routes, fallback=ws)
-
-            _sugg = {"t": "suggest", "actions": resp.suggestions or []}
-            if is_private:
-                await ws.send_json(_sugg)
-            else:
-                await _activity_broadcast(session_id, _sugg, fallback=ws)
-
-            # Whispers: push each private note to only its recipient's screen(s).
-            for note in (resp.whisper or []):
-                await _activity_whisper(
-                    session_id, note.get("user_id", ""),
-                    {"t": "whisper", "text": note.get("text", "")})
-
-            for img in resp.images or []:
-                if img.get("b64"):
-                    await _activity_broadcast(session_id, {
-                        "t": "scene",
-                        "url": f"data:{img.get('mime', 'image/webp')};base64,{img['b64']}",
-                    }, fallback=ws)
-
-            await send_state()
-
-            # A practice bout ends the moment one side is down — the Grounds
-            # call it, not the narration, so a fight can't limp on past its end.
-            _run = _arena_run(session_id)
-            if _run.get("phase") == "fighting":
-                _outcome = _arena_outcome(session_id)
-                if _outcome:
-                    _arena_finish_fight(session_id, _outcome)
-                    await ws.send_json({"t": "narration", "text": {
-                        "victory": ("*The last of them goes down. The wards dim, "
-                                    "and the Grounds go quiet — you are whole "
-                                    "again, and ready for the next.*"),
-                        "defeat": ("*You fall. The wards catch you before the "
-                                   "ground does; the Grounds do not keep the "
-                                   "dead. You come back up whole.*"),
-                    }.get(_outcome, "*The bout is called off.*")})
-                    await send_state()
+                # Post-reply pipeline work (world extraction, compaction).
+                try:
+                    await bt()
+                except Exception as e:
+                    print(f"[activity] background tasks failed: {e}")
+            except WebSocketDisconnect:
+                raise
+            except Exception as e:  # noqa: BLE001
+                traceback.print_exc()
+                print(f"[activity] {msg.get('t')!r} failed: {e}")
+                # Say so where the player is looking, and put the busy
+                # spinner down — a silent failure is the frozen screen.
+                try:
+                    await ws.send_json({"t": "busy", "on": False})
                     await ws.send_json({
-                        "t": "arena", "state": _arena_state(user_id, session_id)})
-
-            await _activity_broadcast(session_id, {"t": "busy", "on": False},
-                                      fallback=ws)
-
-            # Post-reply pipeline work (world extraction, compaction).
-            try:
-                await bt()
-            except Exception as e:
-                print(f"[activity] background tasks failed: {e}")
+                        "t": "narration",
+                        "text": ("⚠ Something went wrong handling that "
+                                 f"({type(e).__name__}). Nothing was lost — "
+                                 "try again, or tell the Oracle's keeper.")})
+                except Exception:
+                    raise WebSocketDisconnect(1011) from e
     except WebSocketDisconnect:
         pass
     finally:

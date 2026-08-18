@@ -9,44 +9,106 @@ export interface Connection {
   isOpen(): boolean;
 }
 
+/** Whether the table is still talking to the Oracle.
+ *
+ *  `lost` is a socket that WAS open and isn't any more. It used to be silent:
+ *  `onclose` did nothing once `opened` was true, every later `send` no-op'd on
+ *  a closed socket, and the screen the player happened to be holding simply
+ *  stopped responding. A frozen panel with no message is the worst possible
+ *  way to say "the connection dropped". */
+export type ConnStatus = "open" | "lost" | "reconnecting" | "demo";
+
+/** How long to wait before each reconnect attempt (ms), then every 10s. */
+const RETRY_MS = [1000, 2000, 4000, 8000];
+
 /** Connect to the backend session socket; if unreachable, fall back to the
-    scripted demo feed so the UI is explorable standalone. */
+    scripted demo feed so the UI is explorable standalone.
+
+    A socket that drops after opening is RECONNECTED, with the status reported
+    so the surface can say so and the caller can re-enter the world it was in
+    (a fresh socket is bound to no session until somebody enters). */
 export function connect(
   onEvent: (ev: ServerEvent) => void,
   channel: string,
   userId: string,
   username: string,
+  onStatus?: (s: ConnStatus) => void,
 ): Connection {
   let demo = false;
+  let closed = false;          // close() was called: stop trying
+  let everHeard = false;       // ...and something on the other end SPOKE
+  let attempt = 0;
+  let ws: WebSocket | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const q = new URLSearchParams({ user_id: userId, username });
-  const ws = new WebSocket(
-    `${proto}://${location.host}/ws/activity/${channel}?${q}`);
-  let opened = false;
+  const url = `${proto}://${location.host}/ws/activity/${channel}?${q}`;
 
-  ws.onopen = () => { opened = true; };
-  ws.onmessage = (m) => {
-    try {
-      onEvent(JSON.parse(m.data) as ServerEvent);
-    } catch { /* ignore malformed frames */ }
+  const goDemo = () => {
+    if (demo || closed) return;
+    demo = true;
+    if (timer) { clearTimeout(timer); timer = null; }
+    try { ws?.close(); } catch { /* already gone */ }
+    ws = null;
+    onStatus?.("demo");
+    runDemo(onEvent);
   };
-  ws.onerror = ws.onclose = () => {
-    if (!opened && !demo) {
-      demo = true;
-      runDemo(onEvent);
-    }
+
+  const open = () => {
+    if (closed || demo) return;
+    const sock = new WebSocket(url);
+    ws = sock;
+    let opened = false;
+    let done = false;          // error AND close both fire; retry once
+    sock.onopen = () => {
+      opened = true; attempt = 0;
+      onStatus?.("open");
+    };
+    sock.onmessage = (m) => {
+      let ev: unknown;
+      try {
+        ev = JSON.parse(m.data);
+      } catch { return; }        // not JSON at all: not ours
+      // Only a frame in OUR protocol counts as having been ANSWERED. A dev
+      // server's own HMR socket accepts any upgrade and then sends its own
+      // chatter down it, which parses as JSON and means nothing here; counting
+      // it would make a page with no backend look like a live table.
+      if (!ev || typeof (ev as { t?: unknown }).t !== "string") return;
+      everHeard = true;
+      onEvent(ev as ServerEvent);
+    };
+    sock.onerror = sock.onclose = () => {
+      if (closed || done || sock !== ws) return;
+      done = true;
+      if (!everHeard) {
+        // Nobody ever answered on this URL: a standalone browser, or a page
+        // served without its backend. The scripted demo feed is the right
+        // answer there, not a retry loop against nothing.
+        goDemo();
+        return;
+      }
+      onStatus?.(attempt === 0 ? "lost" : "reconnecting");
+      const wait = RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)] ?? 10000;
+      attempt += 1;
+      timer = setTimeout(open, wait);
+    };
   };
+  open();
 
   return {
     send(ev) {
       if (demo) {
         demoRespond(ev, onEvent);
-      } else if (ws.readyState === WebSocket.OPEN) {
+      } else if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(ev));
       }
     },
-    close() { ws.close(); },
-    isOpen() { return demo || ws.readyState === WebSocket.OPEN; },
+    close() {
+      closed = true;
+      if (timer) clearTimeout(timer);
+      ws?.close();
+    },
+    isOpen() { return demo || !!ws && ws.readyState === WebSocket.OPEN; },
   };
 }
 

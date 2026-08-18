@@ -264,7 +264,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Loot / affix demo: `uv run python -m loot.demo`
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
-  level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed)
+  level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed;
+  plus the three things a frozen Quartermaster turned out to be — a LEVEL-1
+  bout, which opens the stall with no climb before it, going through to the
+  sand; a column a model declares reaching a database that already had the
+  table; and a handler that throws not taking the socket down with it)
 - Feat smoke test: `uv run python scripts/feats_smoke.py` (a feat's questions,
   its grants, its named options, the resource it hands over, the at-will spell
   it grants, and an OPTION that asks its own questions — all the way to what
@@ -979,6 +983,35 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `state()["last_move"]` carries the newest one and the client animates along
   it. A straight lerp between two squares draws a creature strolling through
   masonry, which was tolerable when walls were flat shading and is not now.
+- **A frozen panel is a DEAD SOCKET, and it was three bugs stacked.** Reported
+  as "the equipment screen just froze". None of the three was in that screen.
+  **`create_all` never ALTERs an existing table**, so a column added to a model
+  never reached a database that already had the table — `combat_combatant.
+  awareness` and `vtt_map.setpieces` had been missing for months, which means
+  NO FIGHT COULD START AT ALL, in the world or in the Grounds. Nothing complains
+  at import; it fails at the INSERT, deep inside a feature. The startup
+  self-heal used to hand-list columns per table, which is exactly how two went
+  missing, so the last pass is now DERIVED: any column a model declares and its
+  table lacks is added, always nullable (SQLite cannot add NOT NULL to a table
+  with rows, and the models apply their own defaults on write).
+  **The Activity WebSocket loop caught only `WebSocketDisconnect`**, so that
+  exception tore down the whole connection — and to a player a dead socket is
+  not an error, it is the screen they were holding refusing to respond. Each
+  message is now handled inside its own `try`, which reports the failure where
+  the player is looking and puts the busy spinner down. A turn may fail; the
+  table should not have to be rebuilt.
+  **And the client said nothing about it**: `onclose` did nothing once the
+  socket had opened, and every later `send` silently no-op'd on a closed one.
+  `connect()` reconnects with backoff and reports a `ConnStatus`; the surface
+  shows a banner, and re-entering on reconnect goes through the same
+  `pendingEnterRef` the seal already uses (a fresh socket is bound to no
+  session). Only a frame carrying a `t` counts as having been ANSWERED — a dev
+  server's HMR socket accepts any upgrade and sends its own JSON down it, and
+  counting that would make a page with no backend look like a live table.
+  (Related, and worth knowing when a demo-fed harness suddenly fails: `vite
+  preview` PROXIES `/ws` to the backend, so the offline demo feed only engages
+  when the backend is actually down. Serve `dist` with a plain static server to
+  exercise it while the backend is up.)
 - **The isometric camera is ORTHOGRAPHIC and never rotates, and that buys
   three things.** The projection is a plain affine map, so it inverts in closed
   form and picking is arithmetic; pan and zoom are a translate-and-scale, so

@@ -1103,3 +1103,32 @@ body {
 .portrait-step.ps-inline .ps-head { text-align: left; }
 .portrait-step.ps-inline .ps-head h2 { font-size: 1.2rem; }
 .portrait-step.ps-inline .ps-frame { max-width: 220px; }
+
+
+/* ---- the link, when it isn't there ------------------------------------- */
+/* Every panel here is driven by the socket, so a dropped one presented as
+   whatever screen you were holding refusing to respond: no error, no way out.
+   This sits above everything, including the overlays, because the overlay is
+   exactly what you are most likely to be stuck inside. */
+.link-lost {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  z-index: 100;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px;
+  background: rgba(9, 12, 21, 0.95);
+  border: 1px solid var(--oxblood); border-radius: var(--radius);
+  color: var(--parchment); font-size: 13px;
+  box-shadow: 0 6px 24px #000a;
+}
+.link-lost .link-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--oxblood);
+  animation: link-pulse 1.2s ease-in-out infinite;
+}
+@keyframes link-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+.link-lost button {
+  background: transparent; color: var(--brass);
+  border: 1px solid var(--brass); border-radius: var(--radius);
+  padding: 3px 10px; cursor: pointer; font: inherit;
+}
+.link-lost button:hover { background: color-mix(in srgb, var(--brass) 14%, transparent); }

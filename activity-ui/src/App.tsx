@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { connect, type Connection } from "./lib/connection";
+import { connect, type ConnStatus, type Connection } from "./lib/connection";
 import type {
   ActionBarData, Ally, ArenaState, BarAction, CCPayload, CharacterSummary,
   CombatState, LevelUpData, LexEntry,
@@ -98,6 +98,9 @@ export default function App({ session }: { session: Session }) {
     | { kind: "invite"; place: string; channel: string }
     | null>(null);
   const [rateWait, setRateWait] = useState(0);
+  // Whether the Oracle is still on the other end of the wire. A dropped socket
+  // used to be silent, and silence reads as a frozen screen.
+  const [link, setLink] = useState<ConnStatus>("open");
   const [newChar, setNewChar] = useState<{ name: string; id: number | null } | null>(null);
   const [input, setInput] = useState("");
   const [itemView, setItemView] = useState<ItemView | null>(null);
@@ -384,7 +387,14 @@ export default function App({ session }: { session: Session }) {
           setBusy(ev.on);
           break;
       }
-    }, channel, session.userId, session.username);
+    }, channel, session.userId, session.username, (st) => {
+      setLink(st);
+      // A fresh socket is bound to no session, so coming back means entering
+      // again — the same path `hello` already uses when creation hands over.
+      if (st === "open" && screenRef.current === "play" && lastEnterRef.current) {
+        pendingEnterRef.current = lastEnterRef.current;
+      }
+    });
     connRef.current = conn;
     return () => conn.close();
   }, []);
@@ -445,6 +455,19 @@ export default function App({ session }: { session: Session }) {
     <div className="table">
       <div className={`frame${screen === "play" ? " playing" : ""}`}>
         <Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" />
+
+        {/* The link, when it isn't there. Every panel in this app is driven by
+            the socket, so a dropped one used to present as whatever screen you
+            were holding simply refusing to respond — no error, no way out. */}
+        {(link === "lost" || link === "reconnecting") && (
+          <div className="link-lost">
+            <span className="link-dot" />
+            {link === "lost"
+              ? "Lost the link to the Oracle — reconnecting…"
+              : "Still reconnecting…"}
+            <button onClick={() => location.reload()}>Reload</button>
+          </div>
+        )}
 
         {screen === "landing" && (
           <Landing

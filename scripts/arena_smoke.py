@@ -578,12 +578,106 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
     check("leaving ends the run", (final.get("run") or {}).get("phase") == "idle",
           str((final.get("run") or {}).get("phase")))
 
+    # ---- 11. a LEVEL-1 bout: the stall, then the sand ---------------------
+    # The path a player takes first, and the one the climb tests never walk:
+    # no level-up, so the stall opens straight out of `arena_begin`. It froze
+    # there — the loadout was taken, the fight failed to open, and the panel
+    # sat saying "the wards close" because the socket had died under it.
+    print("\n\033[1m11. level 1: buy a couple of things and step through\033[0m")
+    sent = _run_socket(m, channel="lvl1-smoke", user_id=user_id, script=[
+        {"t": "arena_create", "slot": 2, "payload": {
+            "name": "Sand Novice", "race": "Human", "char_class": "Fighter",
+            "background": "Soldier",
+            "stats": {"strength": 16, "dexterity": 14, "constitution": 14,
+                      "intelligence": 10, "wisdom": 12, "charisma": 8}}},
+        {"t": "arena_begin", "slot": 2, "environment": "training-yard",
+         "level": 1, "difficulty": "easy"},
+        # Bought, not spent out: money left in the purse is not a reason to stall.
+        {"t": "arena_outfit",
+         "cart": [{"slug": "smoke-shield", "quantity": 1, "equipped": True}],
+         "equip": []},
+    ])
+    lvl1 = [e["state"] for e in sent if e["t"] == "arena"]
+    check("a level-1 run opens the stall with no climb first",
+          any((a.get("run") or {}).get("phase") == "outfitting" for a in lvl1))
+    check("stepping through the gate starts the bout",
+          (lvl1[-1].get("run") or {}).get("phase") == "fighting" if lvl1 else False,
+          str((lvl1[-1].get("run") or {}).get("phase") if lvl1 else None))
+    check("...and the socket lived to say so",
+          any(e["t"] == "combat" and e.get("encounter") for e in sent))
+
+    # ---- 12. the schema self-heals for EVERY model column -----------------
+    # `create_all` never ALTERs an existing table, so a column added to a model
+    # simply never reached a database that already had that table — and the
+    # failure surfaces at an INSERT deep inside a feature. Two had been missing
+    # for months: no fight could start at all, in the world or in the Grounds.
+    print("\n\033[1m12. a column added to a model reaches an old database\033[0m")
+    from sqlmodel import SQLModel as _SQLModel
+    with m.engine.begin() as conn:
+        conn.exec_driver_sql(
+            "ALTER TABLE combat_combatant DROP COLUMN awareness")
+        gone = {r[1] for r in conn.exec_driver_sql(
+            'PRAGMA table_info("combat_combatant")')}
+    check("a database can be missing a column the model declares",
+          "awareness" not in gone)
+    asyncio.run(_boot_lifespan(m))
+    with m.engine.begin() as conn:
+        back = {r[1] for r in conn.exec_driver_sql(
+            'PRAGMA table_info("combat_combatant")')}
+    check("startup puts it back", "awareness" in back)
+    missing = {}
+    with m.engine.begin() as conn:
+        for tname, table in _SQLModel.metadata.tables.items():
+            have = {r[1] for r in conn.exec_driver_sql(
+                f'PRAGMA table_info("{tname}")')}
+            if not have:
+                continue
+            gap = {c.name for c in table.columns} - have
+            if gap:
+                missing[tname] = sorted(gap)
+    check("and NO table is short of a column its model declares",
+          not missing, str(missing))
+
+    # ---- 13. one bad message does not take the socket down ----------------
+    # A dead socket looks to a player like a frozen screen, with no error, on
+    # whatever panel they were holding.
+    print("\n\033[1m13. a handler that throws does not end the table\033[0m")
+    real_state = m._arena_state
+    calls = {"n": 0}
+
+    def _boom(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("a handler blew up")
+        return real_state(*a, **k)
+
+    m._arena_state = _boom
+    try:
+        sent = _run_socket(m, channel="boom-smoke", user_id=user_id, script=[
+            {"t": "arena_state"},        # this one throws
+            {"t": "arena_state"},        # the table is still here
+        ])
+    finally:
+        m._arena_state = real_state
+    check("the failure is reported where the player is looking",
+          any(e["t"] == "narration" and "went wrong" in (e.get("text") or "")
+              for e in sent))
+    check("...the spinner is put down with it",
+          any(e["t"] == "busy" and e.get("on") is False for e in sent))
+    check("...and the next message is still answered",
+          any(e["t"] == "arena" for e in sent))
+
     print()
     if FAILS:
         print(f"\033[31m{len(FAILS)} check(s) failed:\033[0m " + ", ".join(FAILS))
         return 1
     print("\033[32mthe whole loop holds\033[0m")
     return 0
+
+
+async def _boot_lifespan(m) -> None:
+    """Run the real startup, which is where the schema self-heal lives."""
+    await m.lifespan(m.app).__aenter__()
 
 
 if __name__ == "__main__":
