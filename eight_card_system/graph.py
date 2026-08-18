@@ -546,15 +546,34 @@ class WorldGraph:
             return rows[0] if rows else None
 
     def find_entities_by_name(self, name: str) -> list[Entity]:
-        """Every entity wearing this name (or exact slug) — may be several."""
+        """Every entity wearing this name (or exact slug) — may be several.
+
+        The name half is matched over TWO COLUMNS and then confirmed in
+        Python. It used to build a full ORM object for every entity in the
+        world — deserializing each one's attribute JSON — to compare a string,
+        which cost ~20 ms per call at 2,000 entities and is why placing a
+        thread anchor spent 87% of its time here.
+
+        The comparison stays in Python deliberately. SQLite's ``lower()`` only
+        folds A-Z, so pushing it into SQL would quietly stop matching a name
+        that differs by case outside ASCII — and this is the function that
+        decides whether two records are the SAME person, where a false miss
+        creates a duplicate rather than raising anything.
+        """
         with Session(self.engine) as s:
             out: dict[int, Entity] = {}
             by_slug = s.exec(select(Entity).where(Entity.slug == name)).first()
             if by_slug is not None:
                 out[by_slug.id] = by_slug
             low = (name or "").strip().lower()
-            for e in s.exec(select(Entity)).all():
-                if e.name.lower() == low:
+            # NOT stripped on the stored side — the original compared the
+            # name as written, and loosening that here would merge two
+            # records this function is meant to keep apart.
+            ids = [eid for eid, nm in s.exec(select(Entity.id, Entity.name)).all()
+                   if (nm or "").lower() == low]
+            ids = [i for i in ids if i not in out]
+            if ids:
+                for e in s.exec(select(Entity).where(Entity.id.in_(ids))).all():
                     out[e.id] = e
             return list(out.values())
 

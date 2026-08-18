@@ -334,6 +334,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `skins` (what a square is MADE of versus what it DOES: a skin changes no
   rule, may reshape a quoted height but never restate it, a tent you can walk
   into, a watchtower top that is a real storey, a hold at -8 ft)
+- Entity-identity smoke test: `uv run python scripts/graph_identity_smoke.py`
+  (case-insensitive name lookup, two people sharing a name, a slug sorting
+  first, and non-ASCII case-folding — the check that fails if the comparison
+  is ever pushed into SQL)
 - Unfinished-business smoke test: `uv run python scripts/threads_smoke.py` (a
   thread survives creation as real world state; anchors scatter from the
   character's own seed rather than beside the party, and a retry lays the same
@@ -1822,7 +1826,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   into one two-column `_placed_world`, took 800 anchors from **367 ms to 14
   ms** and 2,000 anchors to 39 ms. The lat/lon grid is kept — it is why
   distance no longer appears in the profile at all — but it bought ~10% on its
-  own. `find_entities_by_name` is still O(world) for every caller.
+  own.
   **The DM block is gated on the player's MESSAGE alone**, not on
   `_scene_text` — that helper folds in the location's name and description,
   and a thread is something somebody ASKS for, so a tavern describing itself
@@ -2227,6 +2231,25 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   Rune Carver fighter out of the feat their own background grants. It resolves
   prerequisite feats, feat options ("Strike of the Giants (Fire Strike)"),
   backgrounds, and dragonmark exclusivity; anything it can't parse is allowed.
+- **`find_entities_by_name` decides whether two records are the SAME person,
+  and both ways of being wrong are silent.** A false MISS creates a second Kara
+  standing beside the first; a false HIT merges two people into one record.
+  Nothing raises either way, which is why the contract is pinned in
+  `scripts/graph_identity_smoke.py` rather than left to its six callers
+  (extraction, hoards, pantheon, the origin ties, the goal resolver).
+  It used to build a full ORM object for EVERY entity in the world —
+  deserializing each one's attribute JSON — to compare one string: ~20 ms per
+  call at 2,000 entities. It now narrows over two columns (`id`, `name`) and
+  loads only the matches: **2.3 ms**, byte-identical results on every probe.
+  **The comparison stays in PYTHON on purpose.** SQLite's `lower()` folds A-Z
+  and nothing else, so pushing it into SQL silently stops matching a stored
+  name whose odd case is outside ASCII — "Ærik" never meets "ærik", and the
+  consequence is an invented duplicate rather than an error. The smoke test
+  was written once with the wrong probe and PASSED against that regression:
+  the caller's string is folded by Python before it reaches the database, so
+  a query of "KAËLITH" arrives already lowercased and proves nothing. The
+  STORED name has to carry the uppercase non-ASCII letter for the check to
+  bite.
 - **NEVER delete `oracle.db` to wipe the world.** Use
   `uv run python scripts/world_wipe.py` (prints a plan; `--yes` applies). One
   database holds three lifecycles, and the file-delete cannot tell them apart:
