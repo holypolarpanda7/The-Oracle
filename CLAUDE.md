@@ -275,7 +275,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   back in cancels it, and a table nobody sat at is still swept)
 - Creation-story smoke test: `uv run python scripts/cc_story_smoke.py` (the CC
   payload survives the wire — spells, tools, languages, feat picks — a keepsake
-  renamed keeps its `base`, and an origin becomes real world entities and edges)
+  renamed keeps its `base`, an origin becomes real world entities and edges, a
+  likeness drawn before the seal is ADOPTED by it and its rolled face pinned,
+  words with no picture are still kept, and a spell picker ships the whole
+  spell rather than one sentence of it)
 - Species-choice smoke test: `uv run python scripts/species_choices_smoke.py`
   (a species asks what its traits promise — languages read off its own line, a
   skill, an either/or gift — and the answers reach the sheet as real tags; plus
@@ -371,7 +374,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   gate the Spells stage separately; the landing's way out asks first),
   `cc-story` (a feat that builds on another stays locked without it; the
   background's story panel; a keepsake named and described; the review page
-  showing the whole character; the Likeness stage), `pframe-shot`
+  showing the whole character; the Likeness stage, reached BEFORE the seal),
+  `spell-detail` (the pane carries the whole spell — casting time, range,
+  components with the material, concentration folded into the duration, the
+  upcast rule — pointing at one does not take it, and a card the grid has
+  locked can still be read), `pframe-shot`
   (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
   at desktop and phone: status bar, "here & now" rail, narration column, roll
   card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
@@ -1539,12 +1546,50 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   it; `place_pc` finds that same entity by (owner, name) later, so it is the
   same character rather than a second one. The BACKSTORY beside it is text and
   stays text — `Character.backstory`, shown to the DM with the sheet.
-- **The likeness is the last STAGE of creation, not a screen after it.** A
-  portrait needs a sealed character to draw against, so it comes after the
-  seal — but inside the same wizard, with the same stage rail, so a player does
-  all their making in one place. The footer is hidden there (the step carries
-  its own buttons and there is nothing after it), and once sealed a `cc_error`
-  is the world ENTRY failing rather than creation.
+- **The likeness comes BEFORE the seal, and that needed a DRAFT portrait.** It
+  used to be the last stage, on the reasoning that a portrait needs a sealed
+  character to draw against — true of the ENDPOINT, and it made the face read
+  as a screen bolted onto the end: a character could be sealed with no likeness
+  at all and nothing said so. So the wizard mints a token per run
+  (`Draft.portraitToken`), `/cc/portrait/draft` renders against a
+  character-shaped STAND-IN built from the draft (`_draft_character` — never
+  added to a session, because `_portrait_base_look` and `_portrait_face` want
+  attributes and not a row), the picture is filed under `cc-draft-<token>`, and
+  `register_character` ADOPTS it: `ImageStore.adopt_portrait_draft` renames the
+  subject onto the character. Two things ride with it and must. A face nobody
+  DESCRIBED is rolled off the draft token, which does not survive
+  registration — so the rolled clause is PINNED as `Character.appearance`, or
+  the next render (a gear look) rolls a different key and hands back a stranger
+  in the right armour. And the player's WORDS are kept whether or not a picture
+  came back, since a description typed while ComfyUI was down is still what
+  every later likeness is built from. Sealing is now the LAST thing creation
+  does, so Name & Seal becomes the way into the world and the stage rail locks
+  once sealed; a `cc_error` after the seal is the world ENTRY failing.
+- **A spell is not choosable off one sentence.** `_spell_brief_dict` sent a
+  slug, a name, a school and the description's first sentence cut at 140
+  characters, and the detail pane — which carries a species' whole trait list,
+  a background's whole grant and a keepsake's whole text — had no branch for a
+  spell at all, so the Spells stage showed "The ledger awaits your choices".
+  The row now rides along whole (casting time, range, components WITH the
+  material, duration, save/attack, description, upcast rule), which costs ~22-64
+  KB at creation and ~335 KB for a level-17 wizard's full list — paid once per
+  picker, against a round trip per hover. `SpellEntry` lives in
+  `FeatChoices.tsx` beside the other pickers creation and level-up share, and
+  the level-up overlay (which has no side pane) opens it under its own grid.
+  A card the grid has LOCKED is dimmed rather than `disabled`, because a
+  disabled button takes no pointer events and the spell you cannot take is the
+  one you most want to read before swapping.
+- **The seal page shows the WHOLE character, because it is the last look.** It
+  listed race/class/background, the six scores, skills and a gear COUNT — a
+  receipt, not something a player can check their work against. It now carries
+  the level-1 numbers (HP, speed, initiative, proficiency, hit die,
+  darkvision), saving throws with their totals, species and lineage traits in
+  full, each feat WITH what it does and what it was answered, the background's
+  feature and tool, gear itemised, the keepsake's own words, the origin ties,
+  the unfinished business and the face. A SKILL's modifier is deliberately
+  absent: the skill -> ability table is `rules/checks.py`'s and exists so
+  nothing else computes a check, and a copy of it in the browser is a second
+  answer waiting to drift.
 - **A choice you can't see the whole of isn't a choice.** Two surfaces the CC
   never gave the player. A background card showed two skills, so its Origin
   feat, its tool, its feature and its gear were invisible until after the

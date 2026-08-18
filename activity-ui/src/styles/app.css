@@ -996,4 +996,110 @@ body {
 .cf-summary .inv-line { margin: 5px 0; line-height: 1.5; }
 @media (max-width: 420px) {
   .cf-summary .stat-grid { grid-template-columns: repeat(3, 1fr); }
+  .cf-summary .cf-vitals { grid-template-columns: repeat(2, 1fr); }
 }
+/* A save-proficient ability is marked on the score itself: it is the one
+   thing about the row a player cannot work out from the number. */
+.cf-summary .stat.saved { border-color: var(--brass); }
+.cf-summary .stat.saved .k { color: var(--brass); }
+
+.cf-rev-head { display: flex; gap: 12px; align-items: flex-start; }
+.cf-rev-face {
+  width: 76px; height: 76px; object-fit: cover; flex: 0 0 auto;
+  border: 1px solid var(--brass); border-radius: var(--radius);
+}
+.cf-rev-title { margin: 0 0 3px; font-size: 15px; color: var(--parchment); }
+.cf-vitals {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  margin: 12px 0 4px;
+}
+.cf-vitals .vital {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 7px 2px 6px;
+  background: rgba(8, 11, 20, 0.5);
+  border: 1px solid var(--panel-edge); border-radius: var(--radius);
+}
+.cf-vitals .k {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em;
+  color: var(--text-faint); text-transform: uppercase;
+}
+.cf-vitals .v { font-size: 16px; color: var(--parchment); }
+.cf-rev-block {
+  margin: 12px 0 0; padding-top: 10px;
+  border-top: 1px solid var(--panel-edge);
+}
+.cf-rev-list { margin: 6px 0 0; padding-left: 16px; font-size: 12.5px;
+  line-height: 1.5; }
+.cf-rev-list li { margin-bottom: 5px; }
+.cf-rev-quote { font-style: italic; color: var(--text-dim); }
+.cf-sealed {
+  border: 1px solid var(--brass); border-radius: var(--radius);
+  background: linear-gradient(color-mix(in srgb, var(--brass) 9%, transparent),
+                              color-mix(in srgb, var(--brass) 9%, transparent)),
+              rgba(9, 12, 21, 0.88);
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.cf-sealed h3 { margin: 0; color: var(--parchment); font-weight: 500; }
+
+/* The keepsake's own panel. It sits under three dozen cards, and the one thing
+   on the stage a player can make THEIRS was reading as absent — so it is a
+   panel with a rule around it, and picking an item scrolls it into view. */
+.cf-keepsake {
+  grid-column: 1 / -1; margin-top: 18px; padding: 12px 14px;
+  border: 1px solid var(--brass); border-radius: var(--radius);
+  /* Opaque enough to READ over: the wizard's backdrop is a painting, and the
+     italic hints in here were sitting on a lit rock face. */
+  background: linear-gradient(color-mix(in srgb, var(--brass) 7%, transparent),
+                              color-mix(in srgb, var(--brass) 7%, transparent)),
+              rgba(9, 12, 21, 0.88);
+}
+.cf-keepsake .cf-hint { margin-top: 6px; }
+.cf-keepsake .cf-input { margin-top: 8px; }
+
+/* A spell you can no longer take is still one worth reading, so the card is
+   dimmed rather than disabled — a disabled button takes no pointer events and
+   so can never reach the detail pane. */
+.cf-card.locked { opacity: 0.45; }
+.cf-card.locked:hover { opacity: 0.7; }
+
+/* The spell entry, beside the grid. */
+.cf-spell-detail p { margin: 0 0 8px; }
+.cf-spell-stats {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 10px;
+  margin: 0 0 10px; font-size: 12px;
+}
+.cf-spell-stats dt {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-faint); padding-top: 2px;
+}
+.cf-spell-stats dd { margin: 0; color: var(--text); }
+.cf-spell-upcast {
+  margin-top: 10px; padding-top: 8px;
+  border-top: 1px solid var(--panel-edge); color: var(--text-dim);
+}
+
+/* The level-up overlay has no side pane, so the entry opens under its grid. */
+.lu-spell-entry {
+  margin: 8px 0 4px; padding: 10px 12px;
+  background: rgba(8, 11, 20, 0.55);
+  border: 1px solid var(--panel-edge); border-radius: var(--radius);
+  font-size: 13px; line-height: 1.5;
+}
+.lu-spell-entry h3 { margin: 0 0 4px; color: var(--parchment); font-weight: 500; }
+.lu-option.locked { opacity: 0.45; }
+.lu-option.locked:hover { opacity: 0.7; }
+
+/* The likeness stage lives INSIDE the wizard now, so it must not re-create the
+   wizard's own frame or claim the footer. */
+.portrait-step.ps-inline {
+  display: block; grid-column: auto; grid-row: auto;
+  max-width: none; margin: 0; min-height: 0;
+  /* Its own ground: the wizard's backdrop is a painting, and the stage's
+     italic guidance was being read off a lit rock face. */
+  padding: 14px 16px;
+  background: rgba(9, 12, 21, 0.82);
+  border: 1px solid var(--panel-edge); border-radius: var(--radius);
+}
+.portrait-step.ps-inline .ps-head { text-align: left; }
+.portrait-step.ps-inline .ps-head h2 { font-size: 1.2rem; }
+.portrait-step.ps-inline .ps-frame { max-width: 220px; }

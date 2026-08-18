@@ -122,6 +122,51 @@ export function featChoicesSatisfied(c: FeatChoice | null | undefined,
 }
 
 /** A "choose N of these" chip row. */
+const SPELL_LEVEL_WORD = ["Cantrip", "1st-level", "2nd-level", "3rd-level",
+  "4th-level", "5th-level", "6th-level", "7th-level", "8th-level", "9th-level"];
+
+/** One spell, whole: what the pickers' CARDS cannot carry.
+ *
+ *  A card has room for a name, a school and the spell's first sentence cut at
+ *  140 characters, and a player choosing between two spells off a sentence
+ *  each is choosing blind — which is what a table reported. The row itself
+ *  rides along with every spell pool (see `_spell_brief_dict`), so this needs
+ *  no fetch. Shared by creation's detail pane and the level-up overlay,
+ *  because a spell taken at level 5 is chosen exactly as blindly as one taken
+ *  at level 1. */
+export function SpellEntry({ spell }: { spell: SpellBrief }) {
+  const line = [SPELL_LEVEL_WORD[spell.level] ?? `L${spell.level}`,
+                spell.school, spell.ritual ? "ritual" : null]
+    .filter(Boolean).join(" · ");
+  return (
+    <div className="cf-spell-detail">
+      <h3>{spell.name}</h3>
+      <p className="cf-detail-meta">{line}</p>
+      <dl className="cf-spell-stats">
+        {spell.casting_time && (<><dt>Casting time</dt><dd>{spell.casting_time}</dd></>)}
+        {spell.range && (<><dt>Range</dt><dd>{spell.range}</dd></>)}
+        {spell.components && (<><dt>Components</dt><dd>{spell.components}</dd></>)}
+        {spell.duration && (
+          <><dt>Duration</dt>
+            <dd>{spell.concentration
+              ? `Concentration, ${spell.duration}`
+              : spell.duration}</dd></>)}
+        {spell.attack_type && (<><dt>Attack</dt><dd>{spell.attack_type}</dd></>)}
+        {spell.dc_type && (<><dt>Save</dt><dd>{spell.dc_type}</dd></>)}
+      </dl>
+      {spell.desc
+        ? spell.desc.split(/\n{2,}|\n/).filter((x) => x.trim())
+            .map((para, i) => <p key={i}>{para.trim()}</p>)
+        : <p>{spell.brief}</p>}
+      {spell.higher_level && (
+        <p className="cf-spell-upcast">
+          <b>At higher levels.</b> {spell.higher_level}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function ChoiceChips({ label, options, chosen, n, single, onToggle }: {
   label: string; options: string[]; chosen: string[]; n: number;
   single?: boolean; onToggle: (v: string) => void;

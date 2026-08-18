@@ -9,8 +9,10 @@
 //   3. A keepsake can be named and described — and the panel beside the grid
 //      carries its whole text, not 160 characters of it.
 //   4. Name & Seal shows the WHOLE character, not four lines of it.
-//   5. The likeness is the last STAGE of creation rather than a screen after
-//      it, so a player does all their making in one place.
+//   5. The likeness is a STAGE of the wizard, and it comes BEFORE the seal:
+//      a character could be sealed with no face at all and nothing said so.
+//      There is no character row to draw against yet, so it renders against
+//      the wizard's own draft token, which the seal adopts.
 //
 // Run: npm run build && npx vite preview --port 4173  (then npx node this)
 import { chromium, devices } from "playwright";
@@ -126,6 +128,20 @@ await page.getByPlaceholder(/a name of your own/i).fill("Kettle-Wind");
 await page.getByPlaceholder(/what it looks like/i).fill("Sooty grey wool, mended at the shoulder with copper wire.");
 await page.waitForTimeout(150);
 await page.screenshot({ path: `${OUT}/37-keepsake.png`, fullPage: true });
+check("...and the panel says the words are what get it drawn",
+  /drawn|picture/i.test(await page.locator(".cf-keepsake").innerText()));
+await onward();
+
+// ---- 5. the likeness comes BEFORE the seal
+check("the Likeness stage is reached before Name & Seal",
+  (await page.locator(".portrait-step").count()) > 0,
+  (await page.locator(".cf-stage.on").innerText()).replace(/\n/g, " "));
+check("...and it is a stage of the wizard, not a screen with its own way out",
+  (await page.locator(".portrait-step .ps-foot").count()) === 0);
+await page.getByPlaceholder(/weathered half-elf/i)
+  .fill("Sun-dark, close-cropped grey hair, a soldier's broken nose.");
+await page.waitForTimeout(150);
+await page.screenshot({ path: `${OUT}/39-likeness.png`, fullPage: true });
 await onward();
 
 // ---- 4. Name & Seal shows the whole character
@@ -137,10 +153,14 @@ check("the review names the keepsake by its new name AND its base",
 check("...the origin ties", /Greenfields/.test(review) && /Hollow Kettle/.test(review));
 check("...the feats taken", /Strike of the Giants/.test(review));
 check("...and the story in their own words", /tinkers of the Kettle/.test(review));
+check("...the species' own traits", /Any feat/i.test(review));
+check("...the numbers a level-1 sheet has", /Hit points/i.test(review)
+  && /Proficiency/i.test(review) && /Saving throws/i.test(review));
+check("...the gear, itemised rather than counted",
+  /Standard kit|Bought/i.test(review) && /Fighter starting package/i.test(review));
+check("...and the face they described",
+  /soldier's broken nose/i.test(review), review.slice(0, 60));
 await page.screenshot({ path: `${OUT}/38-review.png`, fullPage: true });
-
-// ---- 5. the likeness is a STAGE of the wizard
-check("the wizard has a Likeness stage", (await page.getByText(/likeness/i).count()) > 0);
 
 await browser.close();
 console.log("\n=== parent feats · story · keepsake · review · likeness ===");

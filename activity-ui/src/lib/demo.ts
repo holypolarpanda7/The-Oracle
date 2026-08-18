@@ -558,11 +558,35 @@ const demoLevelUp: ServerEvent = {
     spells_due: {
       cantrips: 0, spells: 1, mode: "known", max_spell_level: 1,
       cantrip_options: [],
+      // The whole row, because the overlay shows the whole entry now — a
+      // spell chosen off a name and a school is chosen blind.
       spell_options: [
-        { slug: "cure-wounds", name: "Cure Wounds", level: 1, school: "Abjuration" },
-        { slug: "hunters-mark", name: "Hunter's Mark", level: 1, school: "Divination", concentration: true },
-        { slug: "goodberry", name: "Goodberry", level: 1, school: "Conjuration" },
-        { slug: "ensnaring-strike", name: "Ensnaring Strike", level: 1, school: "Conjuration", concentration: true },
+        { slug: "cure-wounds", name: "Cure Wounds", level: 1, school: "Abjuration",
+          casting_time: "1 action", range: "Touch", components: "V, S",
+          duration: "Instantaneous",
+          desc: "A creature you touch regains a number of Hit Points equal to "
+              + "2d8 plus your spellcasting ability modifier.",
+          higher_level: "The healing increases by 2d8 for each spell slot level "
+                      + "above 1." },
+        { slug: "hunters-mark", name: "Hunter's Mark", level: 1, school: "Divination",
+          concentration: true, casting_time: "1 bonus action", range: "90 feet",
+          components: "V", duration: "1 hour",
+          desc: "You magically mark one creature you can see within range as "
+              + "your quarry. Until the spell ends, you deal an extra 1d6 Force "
+              + "damage to the target whenever you hit it with an attack roll." },
+        { slug: "goodberry", name: "Goodberry", level: 1, school: "Conjuration",
+          casting_time: "1 action", range: "Self", duration: "24 hours",
+          components: "V, S, M (a sprig of mistletoe)",
+          material: "a sprig of mistletoe",
+          desc: "Ten berries appear in your hand. A creature can use its Bonus "
+              + "Action to eat one berry, regaining 1 Hit Point." },
+        { slug: "ensnaring-strike", name: "Ensnaring Strike", level: 1,
+          school: "Conjuration", concentration: true, casting_time: "1 bonus action",
+          range: "Self", components: "V", duration: "1 minute", dc_type: "STR",
+          desc: "The next time you hit a creature with a weapon attack before "
+              + "the spell ends, writhing vines appear at the point of impact "
+              + "and the target must succeed on a Strength saving throw or have "
+              + "the Restrained condition." },
       ],
       can_swap: true,
       current_spells: [

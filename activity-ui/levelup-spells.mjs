@@ -33,6 +33,14 @@ await page.screenshot({ path: `${OUT}/14-levelup-spell-gate.png`, fullPage: true
 await page.locator(".lu-options").nth(1).locator(".lu-option").first().click();
 await page.waitForTimeout(200);
 check("confirm unlocks after subclass + spell chosen", !(await confirm.isDisabled()));
+// A spell taken at level 3 is chosen as blindly as one taken at level 1 unless
+// the overlay says what it does. It has no side pane, so the entry opens under
+// its own grid.
+const entry = (await page.locator(".lu-spell-entry").first().innerText())
+  .replace(/\s+/g, " ");
+check("...and the overlay says what the spell DOES", /2d8/.test(entry), entry.slice(0, 70));
+check("...with its casting time, range and upcast rule",
+  /1 action/.test(entry) && /Touch/.test(entry) && /each spell slot level/.test(entry));
 await page.screenshot({ path: `${OUT}/15-levelup-ready.png`, fullPage: true });
 
 // optional swap: choosing a spell to drop but no replacement re-gates confirm

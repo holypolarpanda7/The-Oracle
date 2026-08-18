@@ -17,6 +17,13 @@ What it pins:
    the character to that place; a people they invent becomes a real faction
    entity with a real edge, which is what lets the DM use it.
 4. The backstory itself lands on the sheet.
+5. The LIKENESS is chosen before the seal, so it is drawn against the wizard's
+   own draft token and ADOPTED at registration. A face nobody described is
+   rolled off that token — which does not survive registration — so the rolled
+   clause has to be pinned, or the next render is a stranger in the right gear.
+6. A spell picker ships the whole spell, not one sentence of it. The card has
+   room for a sentence; choosing between two spells off a sentence each is
+   choosing blind, which is what the detail pane exists to fix.
 
 Usage:  uv run python scripts/cc_story_smoke.py
 """
@@ -144,6 +151,75 @@ def main() -> int:
     check("…and it is the SAME Greenfields, not a second one",
           len([e for e in Session(dm.world.engine).exec(
               select(_Ent).where(_Ent.name == "Greenfields")).all()]) == 1)
+
+    print(f"\n{BOLD}4. the likeness, chosen before the seal{OFF}")
+    # A draft's picture is an ordinary PC portrait filed under a temporary
+    # subject; adoption is a rename of that subject. Stored bytes rather than a
+    # render — there is no GPU in a test, and the plumbing is what is at stake.
+    token = "wizard-run-7f3a"
+    subject = dm.image_store.draft_subject(token)
+    png = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    try:
+        from PIL import Image
+        import io as _io
+        buf = _io.BytesIO()
+        Image.new("RGB", (64, 84), (40, 30, 20)).save(buf, format="PNG")
+        png = buf.getvalue()
+    except Exception:
+        pass
+    dm.image_store.set_portrait_from_bytes(subject, png, caption="draft portrait")
+    check("a likeness can be drawn before there is anybody to be of",
+          dm.image_store.get_portrait(subject) is not None, subject)
+    check("…and it is not yet anybody's",
+          dm.image_store.get_portrait("Sela Draft") is None)
+
+    p2 = dict(p)
+    p2.update({"name": "Sela Draft", "wondrous_item": None, "wondrous_name": None,
+               "wondrous_desc": None, "homeland": None, "faction": None,
+               "portrait_draft": token})
+    req2 = dm._cc_request("story-smoke", p2)
+    check("the payload carries the draft token", req2.portrait_draft == token)
+    asyncio.run(dm.register_character(req2))
+    check("sealing ADOPTS it onto the character",
+          dm.image_store.get_portrait("Sela Draft") is not None)
+    check("…and the draft stops existing, so nothing adopts it twice",
+          dm.image_store.get_portrait(subject) is None)
+    with Session(dm.engine) as s:
+        sela = s.exec(select(dm.Character).where(
+            dm.Character.name == "Sela Draft")).first()
+    check("a face nobody described is PINNED, not left to be re-rolled",
+          bool((sela.appearance or "").strip()), (sela.appearance or "")[:52])
+    from imagery.appearance import roll_appearance
+    check("…and it is the face the picture was drawn from",
+          sela.appearance == roll_appearance(subject, sela.race or ""))
+
+    p3 = dict(p2)
+    p3.update({"name": "Rhen Wordsonly", "portrait_draft": None,
+               "appearance": "a shaved head and a burn scar down one cheek"})
+    asyncio.run(dm.register_character(dm._cc_request("story-smoke", p3)))
+    with Session(dm.engine) as s:
+        rhen = s.exec(select(dm.Character).where(
+            dm.Character.name == "Rhen Wordsonly")).first()
+    check("words with no picture are still kept — a GPU is not needed for those",
+          "burn scar" in (rhen.appearance or ""), (rhen.appearance or "")[:44])
+
+    print(f"\n{BOLD}5. a spell picker ships the whole spell{OFF}")
+    sp = dm.rules_lib.get_spell("magic-missile") or dm.rules_lib.get_spell("fire-bolt")
+    brief = dm._spell_brief_dict(sp) if sp else {}
+    check("the picker still gets its one-line card", bool(brief.get("brief")),
+          str(brief.get("brief"))[:52])
+    check("…and the pane gets the rest of the row",
+          all(k in brief for k in
+              ("desc", "casting_time", "range", "duration", "components",
+               "higher_level")),
+          ", ".join(k for k in ("desc", "casting_time", "range", "duration")
+                    if brief.get(k)))
+    with_mat = next((x for x in (dm.rules_lib.search_spells("") or [])
+                     if (x.material or "").strip()), None)
+    if with_mat is not None:
+        line = dm._spell_components_text(with_mat)
+        check("…with the material component folded into the components line",
+              (with_mat.material or "")[:18] in line, f"{with_mat.name}: {line[:60]}")
 
     print()
     if _fails:

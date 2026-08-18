@@ -179,21 +179,18 @@ export default function App({ session }: { session: Session }) {
           }
           break;
         case "cc_done": {
-          // The likeness is the LAST STAGE of creation, not a screen after it:
-          // the wizard stays mounted so a player does all their making in one
-          // place. We do NOT set pendingEnterRef, so the following `hello`
-          // won't auto-enter; the portrait stage triggers the enter when the
-          // player is ready.
+          // The wizard stays mounted after the seal: the likeness was chosen
+          // before it, and Name & Seal becomes the way into the world. We do
+          // NOT set pendingEnterRef, so the following `hello` won't auto-enter
+          // — the player steps through when they are ready.
           const det = ev.detail as { character_id?: number } | undefined;
           const id = det && typeof det.character_id === "number" ? det.character_id : null;
           setNewChar({ name: ev.name, id });
           break;
         }
         case "cc_error":
-          // On the portrait step this event means the *enter* failed, not CC —
-          // surface it there (CreateFlow isn't mounted to show ccError).
           // Once the character is sealed, a cc_error is the ENTER failing, not
-          // creation — it belongs on the likeness stage, beside its button.
+          // creation — it belongs on the sealed panel, beside its button.
           if (newCharRef.current) {
             clearEnterTimer();
             setEnterError(ev.detail);

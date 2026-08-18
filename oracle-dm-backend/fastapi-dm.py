@@ -168,7 +168,8 @@ from dm_guide import (
     build_encounter,
 )
 from imagery import ImageStore, ImageResult
-from imagery.appearance import appearance_prompt, BEAUTY_BANDS
+from imagery.appearance import (appearance_prompt, roll_appearance,
+                                roll_beauty, BEAUTY_BANDS)
 from vtt import VttEngine
 from vtt import archetype_for_place as vtt_archetype_for_place
 from vtt import bridge as vtt_bridge
@@ -788,6 +789,14 @@ class RegisterCharacterRequest(BaseModel):
     homeland_new: Optional[bool] = False
     faction: Optional[str] = None
     faction_new: Optional[bool] = False
+    # The likeness, drawn during creation and adopted here. `portrait_draft` is
+    # the wizard's own token: the picture was rendered before there was anybody
+    # to be of, filed under that token, and is moved onto this character when
+    # it is sealed. `appearance`/`beauty` are what it was drawn FROM, kept so
+    # every later render (a gear look especially) is of the same person.
+    portrait_draft: Optional[str] = None
+    appearance: Optional[str] = None
+    beauty: Optional[str] = None
     # Unfinished business they walk in with — the threads a DM can offer back
     # when the party is casting about. Each entry is
     # {kind, summary, subject?, place?}; see eight_card_system/threads.py.
@@ -14267,6 +14276,68 @@ def _kick_item_art(ref: str, base: str, desc: str) -> None:
         print(f"[cc] item art thread failed: {e}")
 
 
+def _adopt_draft_portrait(char: Character, req: RegisterCharacterRequest) -> bool:
+    """Move the likeness drawn during creation onto the sealed character.
+
+    The face is chosen BEFORE the seal, so it is rendered against the wizard's
+    draft token and filed under it. Adopting is a rename of that subject plus
+    the two things every later render is built from: the appearance the picture
+    was drawn from, and the seed it was drawn at.
+
+    A face nobody described is ROLLED, and the roll is keyed off the draft
+    token — which does not survive registration. So when a picture really was
+    drawn, the rolled clause is PINNED here as the character's appearance;
+    otherwise the next render (a gear look) would roll a different key and hand
+    back a stranger in the right armour. With no picture there is nothing to
+    stay consistent WITH, so the roll is left to happen later as it always did.
+
+    The player's WORDS are kept either way. A description typed while the
+    imagery backend was down is still what every later likeness is built from,
+    and dropping it because no picture came back would lose the only half of
+    this a GPU is not needed for.
+    """
+    token = (req.portrait_draft or "").strip()
+    described = (req.appearance or "").strip()
+    band = (req.beauty or "").strip().lower()
+    if band and band not in BEAUTY_BANDS:
+        band = ""
+    if not (token or described or band):
+        return False
+    moved = 0
+    if token:
+        try:
+            moved = image_store.adopt_portrait_draft(token, char.name)
+        except Exception as e:  # noqa: BLE001
+            print(f"[cc] portrait adoption failed: {e}")
+    with Session(engine) as session:
+        row = session.get(Character, char.id)
+        if row is None:
+            return False
+        if described:
+            row.appearance = described
+        elif moved and token:
+            # The SAME key the draft rendered under, or the pinned face is not
+            # the face in the picture.
+            key = image_store.draft_subject(token)
+            row.appearance = roll_appearance(key, str(row.race or ""))
+            row.beauty = roll_beauty(key)
+        if band:
+            row.beauty = band
+        if moved:
+            try:
+                got = image_store.get_portrait(row.name)
+            except Exception:
+                got = None
+            if got is not None and getattr(got, "seed", None) is not None:
+                row.portrait_seed = int(got.seed)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        char.appearance = row.appearance
+        char.beauty = row.beauty
+    return bool(moved)
+
+
 def _apply_origin_ties(char: Character, req: RegisterCharacterRequest) -> dict:
     """Open the world edges a character's ORIGIN implies.
 
@@ -14384,6 +14455,9 @@ def _cc_request(user_id: str, p: Dict[str, Any]) -> RegisterCharacterRequest:
         homeland=p.get("homeland"), homeland_new=bool(p.get("homeland_new")),
         faction=p.get("faction"), faction_new=bool(p.get("faction_new")),
         threads=p.get("threads"),
+        portrait_draft=p.get("portrait_draft"),
+        appearance=p.get("appearance"),
+        beauty=p.get("beauty"),
     )
 
 
@@ -14682,6 +14756,7 @@ async def register_character(req: RegisterCharacterRequest):
     # World ties are opened AFTER the character row is committed — the SQLite
     # rule this project learned the hard way (see the revival notes).
     origins = _apply_origin_ties(char, req)
+    portrait_adopted = _adopt_draft_portrait(char, req)
     if wondrous_art:
         _kick_item_art(*wondrous_art)
 
@@ -14690,6 +14765,7 @@ async def register_character(req: RegisterCharacterRequest):
             "background_feature": bg_feature,
             "purchase": purchase,
             "origins": origins or None,
+            "portrait": bool(portrait_adopted),
             "wondrous_item": wondrous_granted}
 
 
@@ -15828,11 +15904,48 @@ def cc_roll_abilities():
                        "detail": r.detail} for r in rolls]}
 
 
+def _spell_components_text(sp) -> str:
+    """"V, S, M (a pinch of soot)" — the components line as a reader wants it.
+
+    ``Spell.components`` is a JSON list in one ingest and a bare string in the
+    other, and the material is its own column, so this is the one place the two
+    are put back together.
+    """
+    comp = getattr(sp, "components", None)
+    if isinstance(comp, (list, tuple)):
+        parts = [str(c).strip() for c in comp if str(c).strip()]
+    else:
+        parts = [c.strip() for c in str(comp or "").replace("/", ",").split(",")
+                 if c.strip()]
+    line = ", ".join(parts)
+    mat = (getattr(sp, "material", None) or "").strip()
+    if mat:
+        line = f"{line} ({mat})" if line else f"M ({mat})"
+    return line
+
+
 def _spell_brief_dict(sp) -> Dict[str, Any]:
-    first = (sp.desc or "").split(". ")[0]
+    """One spell as the pickers show it.
+
+    The one-sentence ``brief`` is what a CARD has room for; everything after it
+    is what the DETAIL PANE shows, because choosing a spell off half a sentence
+    is choosing blind. It is the spell's own row — never an LLM summary — and
+    the description is sent whole (bounded, since a picker ships a hundred of
+    these at once) so the panel never has to fetch a second time.
+    """
+    desc = (sp.desc or "").strip()
+    first = desc.split(". ")[0]
     return {"slug": sp.index_slug, "name": sp.name, "level": sp.level,
             "school": sp.school, "concentration": bool(sp.concentration),
-            "ritual": bool(sp.ritual), "brief": first[:140]}
+            "ritual": bool(sp.ritual), "brief": first[:140],
+            "casting_time": sp.casting_time, "range": sp.range,
+            "duration": sp.duration,
+            "components": _spell_components_text(sp) or None,
+            "material": (sp.material or None),
+            "attack_type": getattr(sp, "attack_type", None),
+            "dc_type": getattr(sp, "dc_type", None),
+            "desc": desc[:2400] or None,
+            "higher_level": (sp.higher_level or "").strip() or None}
 
 
 def _class_display_name(slug: str) -> str:
@@ -19073,6 +19186,29 @@ class PortraitUploadRequest(BaseModel):
     caption: str = ""
 
 
+class DraftPortraitRequest(BaseModel):
+    """A likeness summoned BEFORE the character exists.
+
+    Creation asks for the face before the seal, so there is no character id to
+    render against — only the draft the wizard is holding. ``token`` is the
+    draft's own identity (the client mints one per wizard run); the picture is
+    stored under it and adopted by ``register_character`` when the character is
+    sealed.
+    """
+    token: str
+    race: str = ""
+    char_class: str = ""
+    gender: str = ""
+    description: str = ""
+    beauty: str = ""
+
+
+class DraftPortraitUploadRequest(BaseModel):
+    token: str
+    b64: str
+    caption: str = ""
+
+
 class CharacterConditionRequest(BaseModel):
     action: str = "add"          # add | remove | clear
     condition: str = ""          # e.g. "poisoned" (ignored for clear)
@@ -19314,6 +19450,73 @@ async def character_portrait_generate(character_id: int, req: PortraitGenerateRe
                 char.portrait_seed = int(result.seed)
                 session.add(char)
                 session.commit()
+    return result.payload()
+
+
+def _draft_character(req: "DraftPortraitRequest") -> Character:
+    """A character-shaped stand-in for a draft, for the portrait prompt only.
+
+    Never added to a session. ``_portrait_base_look`` and ``_portrait_face``
+    want attributes, not a row, so the draft renders through exactly the same
+    prompt the sealed character will — which is the whole point: the face the
+    player approves at creation is the face they keep.
+    """
+    return Character(
+        name=image_store.draft_subject(req.token),
+        race=(req.race or "").strip() or None,
+        char_class=(req.char_class or "").strip() or None,
+        gender=(req.gender or "").strip() or None,
+        appearance=(req.description or "").strip() or None,
+        beauty=(req.beauty or "").strip().lower() or None,
+    )
+
+
+@app.post("/cc/portrait/draft")
+async def cc_portrait_draft(req: DraftPortraitRequest):
+    """Summon a likeness for a character that has not been sealed yet."""
+    cfg = get_config().imagery
+    if not cfg.enabled:
+        raise HTTPException(status_code=503, detail="Imagery is disabled in config.")
+    token = (req.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="A draft needs a token.")
+    band = (req.beauty or "").strip().lower()
+    if band and band not in BEAUTY_BANDS:
+        raise HTTPException(status_code=400,
+                            detail=f"beauty must be one of {sorted(BEAUTY_BANDS)}")
+    draft = _draft_character(req)
+    # The rolled half of a face is keyed off the DRAFT, so re-summoning the
+    # same draft is the same person rather than a new stranger each press.
+    look = _portrait_base_look(draft)
+    _face, face_negative = _portrait_face(draft)
+    _mark_diffusion_dirty()
+    result = image_store.generate_portrait(draft.name, description=req.description,
+                                           look=look, negative_extra=face_negative)
+    if result is None:
+        raise HTTPException(status_code=503, detail="Imagery is disabled.")
+    if result.offline:
+        raise HTTPException(status_code=503, detail="Image service is offline.")
+    return result.payload()
+
+
+@app.post("/cc/portrait/draft/upload")
+async def cc_portrait_draft_upload(req: DraftPortraitUploadRequest):
+    """Store a player-supplied likeness against an unsealed draft."""
+    token = (req.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="A draft needs a token.")
+    try:
+        raw = base64.b64decode(req.b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image data.")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty image data.")
+    subject = image_store.draft_subject(token)
+    try:
+        result = image_store.set_portrait_from_bytes(
+            subject, raw, caption=req.caption or "draft portrait")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not process image: {e}")
     return result.payload()
 
 

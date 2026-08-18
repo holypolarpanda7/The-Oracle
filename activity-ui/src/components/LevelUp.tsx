@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { AsiFeat, FeatPicks, FeatSpells, LevelUpData, SpellBrief } from "../lib/types";
 import {
-  ABILITY_CODES, AsiSpread, FeatChoiceFields, featChoicesSatisfied, spellBucket,
+  ABILITY_CODES, AsiSpread, FeatChoiceFields, featChoicesSatisfied, SpellEntry,
+  spellBucket,
 } from "./FeatChoices";
 import { uiTick } from "../lib/sound";
 
@@ -130,6 +131,11 @@ function LuSpellPick({ label, list, chosen, n, onToggle }: {
   onToggle: (slug: string) => void;
 }) {
   const left = n - chosen.length;
+  // A spell taken at level 5 is chosen exactly as blindly as one taken at
+  // level 1, and this overlay has no side pane to put the entry in — so it
+  // opens under its own grid. Its own state: two pickers on one screen must not
+  // fight over which spell is being read.
+  const [shown, setShown] = useState<SpellBrief | null>(null);
   return (
     <>
       <div className="lu-pick-label">
@@ -138,12 +144,17 @@ function LuSpellPick({ label, list, chosen, n, onToggle }: {
       <div className="lu-options">
         {list.map((sp) => {
           const on = chosen.includes(sp.slug);
+          const locked = !on && chosen.length >= n;
           return (
             <button
               key={sp.slug}
-              className={`lu-option ${on ? "picked" : ""}`}
-              disabled={!on && chosen.length >= n}
-              onClick={() => onToggle(sp.slug)}
+              // Locked rather than disabled: a spell you can no longer take is
+              // the one you most want to read before swapping, and a disabled
+              // button takes no pointer events at all.
+              className={`lu-option ${on ? "picked" : ""} ${locked ? "locked" : ""}`}
+              onMouseEnter={() => setShown(sp)}
+              onFocus={() => setShown(sp)}
+              onClick={() => { setShown(sp); if (!locked) onToggle(sp.slug); }}
             >
               <div className="lu-opt-name">{sp.name}</div>
               <div className="lu-opt-feats">
@@ -154,6 +165,11 @@ function LuSpellPick({ label, list, chosen, n, onToggle }: {
           );
         })}
       </div>
+      {shown && (
+        <div className="lu-spell-entry">
+          <SpellEntry spell={shown} />
+        </div>
+      )}
     </>
   );
 }

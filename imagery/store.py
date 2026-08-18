@@ -695,6 +695,61 @@ class ImageStore:
         """Return the BASE stored portrait for a PC, if any."""
         return self.get_latest(ImageKind.PC, character_name, "portrait")
 
+    # ----- draft portraits: a face drawn BEFORE there is anybody to be of ----
+    #
+    # Character creation asks for the likeness before the seal, so the render
+    # happens while the character is still a draft in the wizard and has no row
+    # and no final name. The picture is stored against the draft's own token and
+    # ADOPTED at registration, which is why nothing here is special-cased in the
+    # renderer: a draft portrait is an ordinary PC portrait filed under a
+    # temporary subject, and adoption is a rename of that subject.
+
+    DRAFT_PREFIX = "cc-draft-"
+
+    def draft_subject(self, token: str) -> str:
+        """The subject a draft's pictures are filed under."""
+        return f"{self.DRAFT_PREFIX}{slugify(token)}"
+
+    def adopt_portrait_draft(self, token: str, character_name: str) -> int:
+        """Move a draft's stored portraits onto a real character.
+
+        Returns how many rows moved. Anything already stored for the character
+        is cleared first, so adopting is a replace rather than a pile-up — the
+        base portrait is a single slot everywhere else and must stay one here.
+        """
+        draft_ref = slugify(self.draft_subject(token))
+        target = slugify(character_name)
+        if not draft_ref or not target or draft_ref == target:
+            return 0
+        moved = 0
+        with Session(self.engine) as s:
+            rows = list(s.exec(
+                select(EntityImage).where(
+                    EntityImage.kind == ImageKind.PC,
+                    EntityImage.ref_slug == draft_ref)
+            ).all())
+            if not rows:
+                return 0
+            contexts = {r.context_key for r in rows}
+            for stale in s.exec(
+                select(EntityImage).where(
+                    EntityImage.kind == ImageKind.PC,
+                    EntityImage.ref_slug == target,
+                    EntityImage.context_key.in_(contexts))
+            ).all():
+                s.delete(stale)
+            for r in rows:
+                r.ref_slug = target
+                r.caption = f"{character_name} (portrait)"
+                s.add(r)
+                moved += 1
+            s.commit()
+        return moved
+
+    def discard_portrait_draft(self, token: str) -> int:
+        """Throw away a draft's pictures (creation abandoned, or superseded)."""
+        return self.invalidate_subject(ImageKind.PC, self.draft_subject(token))
+
     # ----- portrait "looks": the base + up to N equipped-gear variants -----
     #
     # A PC keeps ONE base portrait (context ``portrait``, never auto-wiped by a

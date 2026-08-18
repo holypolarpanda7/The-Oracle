@@ -4,7 +4,7 @@ import type { CCOptions, CCOrigins, CCPayload, CCSpells, CCThreadAnswer,
   FeatSpells, Pantheon, Power, SpellBrief } from "../lib/types";
 import { uiTick } from "../lib/sound";
 import { speciesPortraitFor } from "../lib/assets";
-import { choiceParts, FeatChoiceFields, partActive, partSatisfied,
+import { choiceParts, FeatChoiceFields, partActive, partSatisfied, SpellEntry,
   spellBucket } from "./FeatChoices";
 import { PortraitStep } from "./PortraitStep";
 
@@ -145,11 +145,13 @@ const STAGES: { id: Stage; label: string }[] = [
   { id: "spells", label: "Spells" },   // shown only for spellcasters / Magic Initiate
   { id: "gear", label: "Gear" },
   { id: "wondrous", label: "Wonder" },
-  { id: "review", label: "Name & Seal" },
-  // The face comes LAST because it needs a sealed character to draw — but it
-  // is a stage of creation, not a screen after it, so everything a player
-  // makes is made in one place.
+  // The face is chosen BEFORE the seal. It used to come after, which made it
+  // read as a screen bolted on to the end — a character could be sealed with
+  // no likeness at all and nothing said so. There is no character row to draw
+  // against yet, so the picture is rendered against the wizard's own DRAFT
+  // token and adopted by the server when the character is sealed.
   { id: "portrait", label: "Likeness" },
+  { id: "review", label: "Name & Seal" },
 ];
 const NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX"];
 
@@ -206,15 +208,30 @@ interface Draft {
                             existing?: string }>;
   deity?: string;                 // patron god (esp. clerics/paladins/warlocks)
   gender?: string;                // gender identity (free-form)
+  /** The likeness, chosen before the seal. `portraitImage` is what to SHOW (a
+   *  data URL, held only in the browser); the server already has the picture
+   *  filed under `portraitToken` and adopts it at registration. */
+  portraitToken: string;
+  portraitImage?: string | null;
+  portraitDesc?: string;
   name: string;
 }
+
+/** A token for this wizard run, minted once. It is the subject a pre-seal
+ *  likeness is filed under, so re-summoning a face is the same draft rather
+ *  than a fresh stranger each press. */
+const mintToken = (): string => {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID().replace(/-/g, "");
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+};
 
 const freshDraft = (): Draft => ({
   boostMode: "two-one", method: "standard_array", pool: [], assigned: {},
   pointBuy: { STR: 8, DEX: 8, CON: 8, INT: 8, WIS: 8, CHA: 8 },
   skills: [], featPicks: {}, speciesPicks: {}, threads: {},
   cantrips: [], spells: [], miCantrips: [], miSpells: [],
-  gearMode: "kit", cart: {}, name: "",
+  gearMode: "kit", cart: {}, portraitToken: mintToken(), name: "",
 });
 
 /** A payload list, deduplicated — or undefined when nothing was chosen (the
@@ -234,9 +251,13 @@ type Choice = NonNullable<CCOptions["feats"][number]["choices"]>;
 /** A "choose N" chip picker (skills / tools / languages / an ability). */
 /** A "choose N spells" grid (cantrips or level-1). Cards toggle; the grid locks
  *  once N are picked. Shared by class spellcasting and Magic Initiate. */
-function SpellPicker({ title, list, chosen, n, onToggle }: {
+function SpellPicker({ title, list, chosen, n, onToggle, onShow }: {
   title: string; list: SpellBrief[]; chosen: string[]; n: number;
   onToggle: (slug: string) => void;
+  /** Put a spell in the detail pane. A card has room for one sentence, and a
+   *  spell is not a thing anybody can choose off one sentence — so pointing at
+   *  one (or taking it) shows the whole entry beside the grid. */
+  onShow?: (sp: SpellBrief) => void;
 }) {
   const left = n - chosen.length;
   return (
@@ -253,9 +274,19 @@ function SpellPicker({ title, list, chosen, n, onToggle }: {
               return (
                 <button
                   key={sp.slug}
-                  className={`cf-card ${on ? "picked" : ""}`}
-                  disabled={!on && chosen.length >= n}
-                  onClick={() => { uiTick(); onToggle(sp.slug); }}
+                  className={`cf-card ${on ? "picked" : ""} ${
+                    !on && chosen.length >= n ? "locked" : ""}`}
+                  // A LOCKED card still explains itself: the grid disables
+                  // everything once N are picked, and a spell you can no longer
+                  // take is exactly the one you want to read before swapping.
+                  onMouseEnter={() => onShow?.(sp)}
+                  onFocus={() => onShow?.(sp)}
+                  onClick={() => {
+                    uiTick();
+                    onShow?.(sp);
+                    if (!on && chosen.length >= n) return;
+                    onToggle(sp.slug);
+                  }}
                 >
                   <div className="cf-card-name">{sp.name}</div>
                   <div className="cf-card-sub">
@@ -361,8 +392,9 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
   onDone: (payload: CCPayload) => void;
   onCancel: () => void;
   ccError: string | null;
-  /** Set once the character exists — the portrait stage needs a real id to
-   *  draw against, and the stage rail only opens then. */
+  /** Set once the character exists. The likeness is chosen two stages EARLIER
+   *  (against the wizard's draft token, which the server adopts at
+   *  registration), so this now only turns Name & Seal into the way in. */
   sealed?: { name: string; id: number | null } | null;
   onEnterWorld?: () => void;
   entering?: boolean;
@@ -372,6 +404,10 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
   const [stage, setStage] = useState<Stage>("race");
   const [d, setD] = useState<Draft>(freshDraft());
   const [detail, setDetail] = useState<string | null>(null);
+  // Which spell the detail pane is showing. Its own state rather than a slug in
+  // `detail`, because the pane resolves `detail` against races/backgrounds/
+  // items and a spell is none of those.
+  const [spellDetail, setSpellDetail] = useState<SpellBrief | null>(null);
   // Spell lists (fetched lazily): the class's own list, and — for Magic
   // Initiate — the feat's chosen-class list. Keyed by slug so we don't refetch.
   const [spellData, setSpellData] = useState<CCSpells | null>(null);
@@ -384,6 +420,10 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
   // Bring the racial-features + lineage panel into view when a species is
   // picked — on a phone it sits below the card grid and is easy to miss.
   const raceDetailRef = useRef<HTMLDivElement>(null);
+  // Same problem one stage along: the keepsake's "make it yours" panel sits
+  // under a grid of three dozen cards, so the one thing on the stage a player
+  // can make their OWN was below the fold and read as not existing at all.
+  const keepsakeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/cc/options").then((r) => r.json()).then(setOpts)
@@ -413,9 +453,10 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
       .catch(() => setThreadKinds([]));
   }, [d.race, opts]);
 
-  // The seal has happened — walk on to the likeness.
+  // The seal has happened — stay on Name & Seal, which becomes the way in.
+  // (The likeness was chosen two stages ago and is already on the character.)
   useEffect(() => {
-    if (sealed) setStage("portrait");
+    if (sealed) setStage("review");
   }, [sealed]);
 
   // Fetch the class spell list when a caster class is (re)chosen.
@@ -464,7 +505,14 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
     }
   }, [d.race]);
 
+  useEffect(() => {
+    if (d.wondrous && keepsakeRef.current) {
+      keepsakeRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [d.wondrous]);
+
   const race = opts?.races.find((r) => r.slug === d.race);
+  const lineage = race?.lineages?.find((l) => l.slug === d.lineage);
   const cls = opts?.classes.find((c) => c.slug === d.cls);
   const bg = opts?.backgrounds.find((b) => b.slug === d.background);
 
@@ -670,6 +718,20 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
   const languagesKnown = [...new Set([...gatherFeat("languages"),
     ...speciesPicked("languages")])];
 
+  // ----- the numbers the review page states -----
+  //
+  // Only what can be derived from choices already on this screen. A skill's
+  // modifier is deliberately NOT here: the skill -> ability table lives in
+  // `rules/checks.py` and exists precisely so nothing else computes a check,
+  // and a copy of it in the browser is a second answer waiting to drift.
+  const abilityMod = (a: Ability) =>
+    Math.floor(((finalScore(a) ?? 10) - 10) / 2);
+  const signed = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+  const PROFICIENCY = 2;                       // level 1, every class
+  const hpAtOne = cls?.hit_die ? cls.hit_die + abilityMod("CON") : null;
+  const speedFt = lineage?.speed ?? race?.speed ?? null;
+  const savingThrows = cls?.saving_throws ?? [];
+
   const stageDone: Record<Stage, boolean> = {
     race: !!d.race && (!(race?.lineages?.length) || !!d.lineage) && speciesDone,
     class: !!d.cls,
@@ -682,8 +744,8 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
     spells: !needsSpells || spellsDone,
     gear: d.gearMode === "kit" || cartCost <= budget,  // buy is fine even empty
     wondrous: true,                                     // optional — always ok
-    review: d.name.trim().length >= 2,
-    portrait: !!sealed,                  // a likeness needs somebody to be of
+    review: d.name.trim().length >= 2 && !sealed,
+    portrait: true,                       // optional — set one in-world later
   };
   // The Spells stage is hidden for non-casters without Magic Initiate.
   const visibleStages = STAGES.filter((s) => s.id !== "spells" || needsSpells);
@@ -692,7 +754,6 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
 
   const next = () => {
     uiTick();
-    if (stage === "review" && sealed) { setStage("portrait"); return; }
     if (stage === "review") {
       const stats: Record<string, number> = {};
       for (const a of ABILITIES) stats[ABILITY_FULL[a]] = finalScore(a) ?? 10;
@@ -744,6 +805,11 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
         wondrous_item: d.wondrous,
         wondrous_name: d.wondrousName?.trim() || undefined,
         wondrous_desc: d.wondrousDesc?.trim() || undefined,
+        // The likeness drawn on the Likeness stage. The token is what the
+        // server files it under; the words ride along even when no picture was
+        // drawn, because they are what every later render is built from.
+        portrait_draft: d.portraitImage ? d.portraitToken : undefined,
+        appearance: d.portraitDesc?.trim() || undefined,
         backstory: d.backstory?.trim() || undefined,
         // Unfinished business. A kind whose summary is blank was skipped —
         // every one is optional, so it rides only when it was actually filled.
@@ -780,7 +846,11 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
           <button
             key={s.id}
             className={`cf-stage ${stage === s.id ? "on" : ""} ${stageDone[s.id] ? "done" : ""}`}
-            disabled={i > 0 && !visibleStages.slice(0, i).every((p) => stageDone[p.id])}
+            // Once the character is SEALED nothing is a choice any more: the
+            // rail would offer to change a species that is already written into
+            // the world.
+            disabled={!!sealed
+              || (i > 0 && !visibleStages.slice(0, i).every((p) => stageDone[p.id]))}
             onClick={() => { uiTick(); setStage(s.id); }}
           >
             <span className="cf-stage-n">{NUMERALS[i]}</span>
@@ -1076,6 +1146,7 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
                 </div>
                 {spellData.cantrips_n > 0 && (
                   <SpellPicker
+                    onShow={setSpellDetail}
                     title={`Cantrips (choose ${spellData.cantrips_n})`}
                     list={spellData.cantrips} chosen={d.cantrips}
                     n={spellData.cantrips_n}
@@ -1083,6 +1154,7 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
                       ? d.cantrips.filter((x) => x !== slug) : [...d.cantrips, slug] })} />
                 )}
                 <SpellPicker
+                  onShow={setSpellDetail}
                   title={`${spellData.mode === "spellbook" ? "Spellbook"
                     : "1st-level spells"} (choose ${spellData.spells_n})`}
                   list={spellData.spells} chosen={d.spells} n={spellData.spells_n}
@@ -1106,12 +1178,14 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
                 {d.miClass && miData && (
                   <>
                     <SpellPicker
+                      onShow={setSpellDetail}
                       title={`${d.miClass} cantrips (choose ${miChoice.cantrips ?? 2})`}
                       list={miData.cantrips} chosen={d.miCantrips}
                       n={miChoice.cantrips ?? 2}
                       onToggle={(slug) => setD({ ...d, miCantrips: d.miCantrips.includes(slug)
                         ? d.miCantrips.filter((x) => x !== slug) : [...d.miCantrips, slug] })} />
                     <SpellPicker
+                      onShow={setSpellDetail}
                       title={`1st-level spell (choose ${miChoice.spells ?? 1})`}
                       list={miData.spells} chosen={d.miSpells} n={miChoice.spells ?? 1}
                       onToggle={(slug) => setD({ ...d, miSpells: d.miSpells.includes(slug)
@@ -1131,6 +1205,7 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
                 <div key={`${slug}#${idx}`}
                      style={{ marginTop: (spellData || miChoice) ? 20 : 0 }}>
                   <SpellPicker
+                    onShow={setSpellDetail}
                     title={part.hint || `Feat spell (choose ${n})`}
                     list={pool.spells} chosen={chosen} n={n}
                     onToggle={(sl) => setPicksFor(slug, {
@@ -1158,6 +1233,12 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
             <div className="cf-sub-label">
               Choose one free <b>common wondrous item</b> to start with — or none.
             </div>
+            <p className="cf-hint">
+              Whatever you take, you can give it your <b>own name</b> and say
+              what it looks like — the Oracle draws that piece for you alone,
+              and its rules don't change. The words are asked for once you've
+              picked something.
+            </p>
             <div className="cf-grid">
               {opts.common_items.map((w) => (
                 <button
@@ -1183,9 +1264,9 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
               <p className="cf-hint">No common wondrous items are ingested yet — skip onward.</p>
             )}
             {d.wondrous && (
-              <div className="cf-faith" style={{ marginTop: 18 }}>
+              <div className="cf-keepsake" ref={keepsakeRef}>
                 <label className="cf-sub-label">
-                  Make it yours <span className="cf-req">· optional</span>
+                  ✦ Make it yours <span className="cf-req">· optional</span>
                 </label>
                 <p className="cf-hint">
                   A keepsake is the one thing you start with that nobody else
@@ -1208,6 +1289,13 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
                   value={d.wondrousDesc ?? ""}
                   onChange={(e) => setD({ ...d, wondrousDesc: e.target.value })}
                 />
+                <p className="cf-hint">
+                  {d.wondrousDesc?.trim()
+                    ? "✓ Your words are kept. The picture is drawn after you seal "
+                      + "the character — it appears on the piece in your pack."
+                    : "Leave this empty and you get the catalogue's picture of "
+                      + "an ordinary one."}
+                </p>
               </div>
             )}
           </>
@@ -1215,62 +1303,252 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
 
         {stage === "review" && (
           <div className="cf-review">
-            <input
-              className="cf-name"
-              placeholder="Speak your name…"
-              value={d.name}
-              maxLength={40}
-              onChange={(e) => setD({ ...d, name: e.target.value })}
-            />
+            {sealed ? (
+              <div className="cf-sealed">
+                <h3>✦ {sealed.name} is written into the world.</h3>
+                <p className="cf-hint">
+                  Their homeland, their people and everything they left open are
+                  real places and real people now. Step through when you're ready.
+                </p>
+                {enterError && <p className="cf-error">⚠ {enterError}</p>}
+              </div>
+            ) : (
+              <input
+                className="cf-name"
+                placeholder="Speak your name…"
+                value={d.name}
+                maxLength={40}
+                onChange={(e) => setD({ ...d, name: e.target.value })}
+              />
+            )}
             <div className="cf-summary">
-              <p><b>{race?.name}</b> {cls?.name}, {bg?.name}</p>
+              {/* THE WHOLE character, because this is the last chance to
+                  change any of it. A summary that lists four lines of a sheet
+                  is not something a player can check their work against. */}
+              <div className="cf-rev-head">
+                {d.portraitImage && (
+                  <img className="cf-rev-face" src={d.portraitImage}
+                       alt="likeness" />
+                )}
+                <div>
+                  <p className="cf-rev-title">
+                    <b>{race?.name}{lineage ? ` (${lineage.name})` : ""}</b>{" "}
+                    {cls?.name} · {bg?.name}
+                  </p>
+                  <p className="cf-detail-meta">
+                    {[race?.creature_type ?? "Humanoid", race?.size,
+                      d.gender?.trim() || null,
+                      d.deity?.trim() ? `sworn to ${d.deity.trim()}` : null]
+                      .filter(Boolean).join(" · ")}
+                  </p>
+                </div>
+              </div>
+
+              <div className="cf-vitals">
+                <div className="vital"><div className="k">Hit points</div>
+                  <div className="v">{hpAtOne ?? "—"}</div></div>
+                <div className="vital"><div className="k">Speed</div>
+                  <div className="v">{speedFt ? `${speedFt} ft` : "—"}</div></div>
+                <div className="vital"><div className="k">Initiative</div>
+                  <div className="v">{signed(abilityMod("DEX"))}</div></div>
+                <div className="vital"><div className="k">Proficiency</div>
+                  <div className="v">{signed(PROFICIENCY)}</div></div>
+                <div className="vital"><div className="k">Hit die</div>
+                  <div className="v">{cls ? `d${cls.hit_die}` : "—"}</div></div>
+                <div className="vital"><div className="k">Darkvision</div>
+                  <div className="v">
+                    {(lineage?.darkvision ?? race?.darkvision) ? "yes" : "—"}</div></div>
+              </div>
+
               <div className="stat-grid">
                 {ABILITIES.map((a) => (
-                  <div className="stat" key={a}>
+                  <div className={`stat ${savingThrows.includes(a) ? "saved" : ""}`}
+                       key={a}>
                     <div className="k">{a}</div>
                     <div className="v">{finalScore(a) ?? "—"}</div>
-                    {bonuses[a] ? <div className="m">+{bonuses[a]}</div> : <div className="m">&nbsp;</div>}
+                    <div className="m">{signed(abilityMod(a))}</div>
                   </div>
                 ))}
               </div>
-              <p className="inv-line"><b>Skills</b> · {skillsKnown.join(", ")}</p>
-              {(d.featBg || d.featRace) && (
-                <p className="inv-line"><b>Feats</b> · {
-                  [d.featBg, d.featRace].filter(Boolean)
-                    .map((s) => opts.feats.find((f) => f.slug === s)?.name)
-                    .join(", ")}</p>
+              <p className="inv-line"><b>Saving throws</b> · {
+                savingThrows.length
+                  ? savingThrows.map((a) => `${a} ${signed(
+                      abilityMod(a as Ability) + PROFICIENCY)}`).join(", ")
+                  : "—"}
+                <em className="cf-was"> — every other save is the bare modifier</em>
+              </p>
+              {bonuses && Object.keys(bonuses).length > 0 && (
+                <p className="inv-line"><b>Background boosts</b> · {
+                  ABILITIES.filter((a) => bonuses[a])
+                    .map((a) => `${a} +${bonuses[a]}`).join(", ")}</p>
               )}
-              {(languagesKnown.length > 0) && (
-                <p className="inv-line"><b>Languages</b> · {languagesKnown.join(", ")}</p>
-              )}
+
+              <p className="inv-line"><b>Skills</b> · {
+                skillsKnown.length ? skillsKnown.join(", ") : "—"}</p>
               {toolsKnown.length > 0 && (
                 <p className="inv-line"><b>Tools</b> · {toolsKnown.join(", ")}</p>
               )}
+              <p className="inv-line"><b>Languages</b> · {
+                [race?.languages, ...languagesKnown].filter(Boolean).join(", ")
+                  || "—"}</p>
+
+              {/* What the SPECIES is, in full — the traits are the half of a
+                  character nobody can look up once the wizard is closed. */}
+              {(race?.traits?.length || lineage?.traits?.length) ? (
+                <div className="cf-rev-block">
+                  <div className="cf-sub-label">
+                    {race?.name}{lineage ? ` · ${lineage.name}` : ""}
+                  </div>
+                  <ul className="cf-rev-list">
+                    {(race?.traits ?? []).map((t, i) => <li key={`t${i}`}>{t}</li>)}
+                    {(lineage?.traits ?? []).map((t, i) => <li key={`lt${i}`}>{t}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+              {race?.immunities?.length ? (
+                <p className="inv-line"><b>Immune to</b> · {race.immunities.join(", ")}</p>
+              ) : null}
+
+              {/* Feats WITH what they do and what each one was answered — a
+                  feat listed as a bare name is a label, not a choice made. */}
+              {(d.featBg || d.featRace) && (
+                <div className="cf-rev-block">
+                  <div className="cf-sub-label">Feats</div>
+                  <ul className="cf-rev-list">
+                    {([d.featBg, d.featRace].filter(Boolean) as string[]).map((slug) => {
+                      const f = opts.feats.find((x) => x.slug === slug);
+                      const picks = picksFor(slug);
+                      const answers = [
+                        ...(picks.options ?? []),
+                        ...(picks.skills ?? []),
+                        ...(picks.tools ?? []),
+                        ...(picks.languages ?? []),
+                        ...(picks.ability ? [`+1 ${picks.ability.toUpperCase()}`] : []),
+                      ];
+                      return (
+                        <li key={slug}>
+                          <b>{f?.name ?? slug.replace(/-/g, " ")}</b>
+                          {f?.brief ? ` — ${f.brief}` : ""}
+                          {answers.length ? (
+                            <em className="cf-was"> · {answers.join(", ")}</em>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {/* What the BACKGROUND grants, beyond the two skills its card
+                  showed. */}
+              {bg && (
+                <div className="cf-rev-block">
+                  <div className="cf-sub-label">{bg.name}</div>
+                  <ul className="cf-rev-list">
+                    {bg.feature && <li><b>Feature</b> — {bg.feature}</li>}
+                    {bg.tool && <li><b>Tool</b> — {bg.tool}</li>}
+                    {bg.skills?.length ? (
+                      <li><b>Skills</b> — {bg.skills.join(", ")}</li>) : null}
+                  </ul>
+                </div>
+              )}
+
               {allCantripNames.length > 0 && (
                 <p className="inv-line"><b>Cantrips</b> · {allCantripNames.join(", ")}</p>
               )}
               {allSpellNames.length > 0 && (
                 <p className="inv-line"><b>Spells</b> · {allSpellNames.join(", ")}</p>
               )}
-              <p className="inv-line"><b>Gear</b> · {d.gearMode === "buy"
-                ? `bought ${Object.keys(d.cart).length} item(s), ${(budget - cartCost).toFixed(0)} gp left`
-                : "standard class & background kit"}</p>
-              {d.wondrous && (
-                <p className="inv-line"><b>Keepsake</b> · {
-                  d.wondrousName?.trim()
-                    || opts.common_items.find((w) => w.slug === d.wondrous)?.name}
-                  {d.wondrousName?.trim() && (
-                    <em className="cf-was"> — {
-                      opts.common_items.find((w) => w.slug === d.wondrous)?.name}</em>
-                  )}</p>
+              {spellData?.ability && (
+                <p className="inv-line"><b>Spellcasting</b> · {
+                  spellData.ability.toUpperCase()} — save DC {
+                  8 + PROFICIENCY + abilityMod(
+                    spellData.ability.slice(0, 3).toUpperCase() as Ability)}, attack {
+                  signed(PROFICIENCY + abilityMod(
+                    spellData.ability.slice(0, 3).toUpperCase() as Ability))}</p>
               )}
+
+              {/* GEAR, itemised. "bought 7 item(s)" is a receipt total, not a
+                  pack you can check. */}
+              <div className="cf-rev-block">
+                <div className="cf-sub-label">
+                  {d.gearMode === "buy"
+                    ? `Bought — ${(budget - cartCost).toFixed(0)} gp left of ${budget}`
+                    : "Standard kit"}
+                </div>
+                {d.gearMode === "buy" ? (
+                  Object.keys(d.cart).length ? (
+                    <ul className="cf-rev-list">
+                      {Object.entries(d.cart).map(([name, qty]) => (
+                        <li key={name}>{qty > 1 ? `${name} ×${qty}` : name}</li>
+                      ))}
+                    </ul>
+                  ) : <p className="cf-hint">Nothing bought — you walk in empty-handed.</p>
+                ) : (
+                  <ul className="cf-rev-list">
+                    <li>The {cls?.name ?? "class"} starting package</li>
+                    {bg?.items?.length ? (
+                      <li>{bg.name}'s gear — {bg.items.map(
+                        (it) => (it.quantity > 1 ? `${it.name} ×${it.quantity}` : it.name),
+                      ).join(", ")}</li>
+                    ) : null}
+                  </ul>
+                )}
+              </div>
+
+              {d.wondrous && (
+                <div className="cf-rev-block">
+                  <div className="cf-sub-label">Keepsake</div>
+                  <ul className="cf-rev-list">
+                    <li>
+                      <b>{d.wondrousName?.trim()
+                        || opts.common_items.find((w) => w.slug === d.wondrous)?.name}</b>
+                      {d.wondrousName?.trim() && (
+                        <em className="cf-was"> — a {
+                          opts.common_items.find((w) => w.slug === d.wondrous)?.name
+                        }, renamed; its rules are unchanged</em>
+                      )}
+                    </li>
+                    {d.wondrousDesc?.trim() ? (
+                      <li className="cf-rev-quote">“{d.wondrousDesc.trim()}”
+                        <em className="cf-was"> — the Oracle will draw this piece
+                        for you alone</em></li>
+                    ) : null}
+                  </ul>
+                </div>
+              )}
+
               {(d.homeland || d.faction) && (
                 <p className="inv-line"><b>Origin</b> · {
-                  [d.homeland && `of ${d.homeland}`,
-                   d.faction && `${d.faction}`].filter(Boolean).join(" · ")}</p>
+                  [d.homeland && `of ${d.homeland}${d.homelandNew ? " (new to the world)" : ""}`,
+                   d.faction && `${d.faction}${d.factionNew ? " (new to the world)" : ""}`]
+                    .filter(Boolean).join(" · ")}</p>
               )}
-              {d.deity?.trim() && (
-                <p className="inv-line"><b>Patron</b> · {d.deity.trim()}</p>
+
+              {/* Unfinished business — real places and people the seal creates.
+                  It belongs on the page that says what sealing does. */}
+              {Object.entries(d.threads).filter(([, v]) => (v?.summary ?? "").trim()).length > 0 && (
+                <div className="cf-rev-block">
+                  <div className="cf-sub-label">Unfinished business</div>
+                  <ul className="cf-rev-list">
+                    {Object.entries(d.threads)
+                      .filter(([, v]) => (v?.summary ?? "").trim())
+                      .map(([kind, v]) => (
+                        <li key={kind}>
+                          <b>{threadKinds.find((k) => k.slug === kind)?.label
+                              ?? kind.replace(/-/g, " ")}</b> — {v.summary.trim()}
+                          {(v.subject || v.place) && (
+                            <em className="cf-was"> · {
+                              [v.subject, v.place].filter(Boolean).join(" · ")}</em>
+                          )}
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              )}
+
+              {d.portraitDesc?.trim() && (
+                <p className="inv-line"><b>Likeness</b> · {d.portraitDesc.trim()}</p>
               )}
               {d.backstory?.trim() && (
                 <p className="cf-backstory">{d.backstory.trim()}</p>
@@ -1280,16 +1558,21 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
           </div>
         )}
         {stage === "portrait" && (
-          sealed
-            ? <PortraitStep
-                name={sealed.name}
-                characterId={sealed.id}
-                entering={entering}
-                enterError={enterError}
-                onDone={() => onEnterWorld?.()} />
-            : <p className="cf-hint">
-                Seal the character first — a likeness needs somebody to be of.
-              </p>
+          <PortraitStep
+            name={d.name.trim()}
+            draft={{
+              token: d.portraitToken,
+              race: race
+                ? (lineage ? `${race.name} (${lineage.name})` : race.name)
+                : "",
+              char_class: cls?.name ?? "",
+              gender: d.gender ?? "",
+            }}
+            initial={{ image: d.portraitImage ?? null,
+                       description: d.portraitDesc ?? "" }}
+            onChange={({ image, description }) =>
+              setD({ ...d, portraitImage: image, portraitDesc: description })}
+            onDone={() => { /* the wizard footer walks on */ }} />
         )}
       </main>
 
@@ -1299,23 +1582,23 @@ export function CreateFlow({ onDone, onCancel, ccError, sealed, onEnterWorld,
       <aside className={`cf-detail ${stage === "race" ? "race-dup" : ""}`}>
         <DetailPanel opts={opts} stage={stage} raceSlug={d.race} clsSlug={d.cls}
                      bgSlug={d.background} wondrousSlug={d.wondrous}
-                     lineageSlug={d.lineage} hovered={detail} />
+                     lineageSlug={d.lineage} hovered={detail}
+                     spell={spellDetail} />
       </aside>
 
-      {/* The likeness stage carries its own buttons (summon / upload / enter),
-          and there is nothing after it — an Onward here would walk off the
-          end of the wizard. */}
-      {stage !== "portrait" && (
-        <footer className="cf-foot">
-          <button
-            className="lu-confirm"
-            disabled={!canNext}
-            onClick={next}
-          >
-            {stage === "review" ? "Seal the character" : "Onward ➤"}
-          </button>
-        </footer>
-      )}
+      {/* One way forward, on every stage including the likeness — which is a
+          stage of the wizard now, not a screen after it. Once the character is
+          sealed the same footer becomes the way into the world. */}
+      <footer className="cf-foot">
+        {sealed
+          ? <button className="lu-confirm" disabled={entering}
+                    onClick={() => { uiTick(); onEnterWorld?.(); }}>
+              {entering ? "Entering the world…" : "Enter the world ➤"}
+            </button>
+          : <button className="lu-confirm" disabled={!canNext} onClick={next}>
+              {stage === "review" ? "Seal the character" : "Onward ➤"}
+            </button>}
+      </footer>
     </div>
   );
 }
@@ -1857,12 +2140,31 @@ function GearStage({ opts, d, setD, budget, spent }: {
 }
 
 function DetailPanel({ opts, stage, raceSlug, clsSlug, bgSlug, wondrousSlug,
-                      lineageSlug, hovered }: {
+                      lineageSlug, hovered, spell }: {
   opts: CCOptions; stage: Stage;
   raceSlug?: string; clsSlug?: string; bgSlug?: string; wondrousSlug?: string;
   lineageSlug?: string;
   hovered: string | null;
+  /** The spell the pane is showing, on the Spells stage. */
+  spell?: SpellBrief | null;
 }) {
+  // The spell in hand outranks everything: it is the only thing on this stage
+  // the pane can be about, and a spell chosen off a card's one sentence is a
+  // spell chosen blind — the entry is the whole point of the panel.
+  if (stage === "spells") {
+    if (!spell) {
+      return (
+        <div className="cf-detail-body dim">
+          <p>Point at a spell — or take one — to read what it does.</p>
+        </div>
+      );
+    }
+    return (
+      <div className="cf-detail-body">
+        <SpellEntry spell={spell} />
+      </div>
+    );
+  }
   if (stage === "race" || hovered) {
     const r = opts.races.find((x) => x.slug === (hovered ?? raceSlug));
     if (r && stage === "race") {
@@ -1973,13 +2275,29 @@ function DetailPanel({ opts, stage, raceSlug, clsSlug, bgSlug, wondrousSlug,
       );
     }
   }
+  if (stage === "portrait") {
+    return (
+      <div className="cf-detail-body dim">
+        <p>
+          A face is worth writing down even if you never draw one: your words
+          are kept on the sheet, and every later likeness — a portrait in new
+          armour, a token on the board — is built from them, so the same person
+          comes back rather than a stranger in the right gear.
+        </p>
+        <p>
+          Nothing here is required. Skip it and you can set one in-world later.
+        </p>
+      </div>
+    );
+  }
   if (stage === "review") {
     return (
       <div className="cf-detail-body dim">
         <p>
-          Read it over. Sealing writes this character into the world — the
-          ties you named become places and people in it, and the likeness
-          comes last, once there is somebody to be of.
+          Read it over — this is the last look you get at any of it. Sealing
+          writes this character into the world: the homeland and people you
+          named become real places, and everything you left unfinished becomes
+          somewhere a DM can send you.
         </p>
       </div>
     );

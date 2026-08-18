@@ -1021,6 +1021,13 @@ export interface CCPayload {
    *  drawn for this character alone and keeps `base` for its stats. */
   wondrous_name?: string;
   wondrous_desc?: string;
+  /** The likeness, chosen BEFORE the seal. `portrait_draft` is the wizard's own
+   *  token — the picture was drawn against it and is adopted at registration;
+   *  the other two are what it was drawn from, kept so later renders are of the
+   *  same person. */
+  portrait_draft?: string;
+  appearance?: string;
+  beauty?: string;
   /** Where they come from, in their own words, and the world ties that go with
    *  it. `*_new` marks a name the player invented, which becomes a real stub. */
   backstory?: string;
@@ -1123,6 +1130,18 @@ export interface FeatPicks {
 export interface SpellBrief {
   slug: string; name: string; level: number; school?: string | null;
   concentration?: boolean; ritual?: boolean; brief?: string;
+  /** Everything the DETAIL PANE shows. A card has room for one sentence, and
+   *  choosing a spell off one sentence is choosing blind — so the whole row
+   *  rides along with the pool rather than being fetched a second time. */
+  casting_time?: string | null;
+  range?: string | null;
+  duration?: string | null;
+  components?: string | null;
+  material?: string | null;
+  attack_type?: string | null;
+  dc_type?: string | null;
+  desc?: string | null;
+  higher_level?: string | null;
 }
 
 /** GET /cc/spells/{class} response. */
