@@ -1790,7 +1790,14 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   what makes it scale, since the bands reach 1,100 miles and the planet is
   12,566 around. Distance within a band is drawn area-uniformly
   (`sqrt` of a uniform over the squared radii) or a ring piles its points on
-  its inner edge.
+  its inner edge. **Measured** at 400 characters / 800 anchors: nearest other
+  anchor a median of 27 mi, **0% within a day's walk**, median 350 mi from the
+  starting village, and only ~10% of the planet in use — so the headroom is an
+  order of magnitude, and the reach bands are what caps it, not the world.
+  The cost is O(existing places) per anchor and it shows: 53 ms per character
+  at 200 anchors, 367 ms at 800. That is fine for a one-time registration and
+  is the thing to profile first if it ever isn't — a coarse lat/lon bucket over
+  `_coordful_places` is the fix, not a smaller world.
   **The DM block is gated on the player's MESSAGE alone**, not on
   `_scene_text` — that helper folds in the location's name and description,
   and a thread is something somebody ASKS for, so a tavern describing itself
