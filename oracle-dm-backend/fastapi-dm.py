@@ -1402,6 +1402,45 @@ _ACTIVITY_ROLLS: _contextvars.ContextVar = _contextvars.ContextVar(
 _ACTIVITY_STREAM: _contextvars.ContextVar = _contextvars.ContextVar(
     "activity_stream", default=None)
 
+# The COMBAT LOG, and the reason it exists: the engine and the narration are
+# two different things arriving at two different speeds, and bundling them made
+# the fast one wait for the slow one. An Eldritch Blast resolves in
+# milliseconds — the roll, the damage, the token — and then sat there invisible
+# for as long as the model took to describe it, which reads as the spell not
+# working.
+#
+# When this sink is set, each resolved TURN is pushed the moment it happens, so
+# the board and the log move with the fight and the prose catches up in its own
+# column. Same shape as the two above: a plain callable, set per task/thread.
+_ACTIVITY_COMBAT: _contextvars.ContextVar = _contextvars.ContextVar(
+    "activity_combat", default=None)
+
+#: A beat between one creature's turn and the next, so a fight PLAYS OUT
+#: instead of arriving all at once. Six monsters resolving in the same frame is
+#: not a round of combat, it is a diff. Only paid when somebody is watching
+#: (the sink is set); the engine itself is never slowed for a Discord table.
+COMBAT_STEP_PAUSE_S = float(os.getenv("ORACLE_COMBAT_STEP_PAUSE", "0.75"))
+
+
+def _combat_step(actor: str, kind: str, rnd: int, lines: str,
+                 rolls: Optional[list] = None, *, pause: bool = False) -> None:
+    """Push one creature's resolved turn to whoever is watching, now.
+
+    ``lines`` is the engine's own certified text — never a model's. A table
+    with no sink installed (Discord, a smoke test) pays nothing.
+    """
+    sink = _ACTIVITY_COMBAT.get()
+    if sink is None or not (lines or "").strip():
+        return
+    try:
+        sink({"actor": actor, "kind": kind, "round": rnd,
+              "text": lines, "rolls": rolls or []})
+    except Exception as e:  # noqa: BLE001
+        print(f"[combat-log] push failed: {e}")
+    if pause and COMBAT_STEP_PAUSE_S > 0:
+        import time as _t
+        _t.sleep(COMBAT_STEP_PAUSE_S)
+
 
 #: A raw dice expression, so a named check can be told apart from "2d6+3".
 _DICE_EXPR_RE = re.compile(r"^\d*d\d+([+-]\d+)?([+-]\d+)?$", re.I)
@@ -9602,16 +9641,21 @@ def _combat_npc_catchup(session_id: str, *, limit: int = 12) -> Optional[str]:
         c = combat.current_combatant(enc.id)
         if c is None or c.kind == "pc":
             break
+        rnd = enc.round
         rep = combat_engine.run_monster_turn(enc.id, profiles=profiles, env=env)
         txt = CombatEngine.render_report(rep)
         if txt.strip():
             blocks.append(txt)
         rolls_out.extend(rep.rolls())
+        # One creature, one push, one beat. Resolving six monsters and sending
+        # the lot in a single frame is not a round of combat.
+        _combat_step(c.name, c.kind, rnd, txt, rep.rolls(), pause=True)
         if rep.paused:
             break                # frozen on a player's reaction decision
         over = _combat_fight_over(enc.id)
         if over:
             blocks.append(over)
+            _combat_step("the field", "note", rnd, over)
             break
 
     if not blocks:
@@ -9719,12 +9763,19 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
     rolls_out: list[dict] = []
     all_events: list[dict] = []
 
-    def take(rep) -> None:
+    def take(rep, actor: str = "", kind: str = "pc", *,
+             pause: bool = False) -> None:
         txt = CombatEngine.render_report(rep)
         if txt.strip():
             blocks.append(txt)
         rolls_out.extend(rep.rolls())
         all_events.extend(rep.events)
+        # Straight out to whoever is watching, ahead of the narration. This is
+        # the whole point of the split: the engine has already finished, and
+        # making it wait for a model to describe it is what made a spell look
+        # like it had not gone off.
+        if actor:
+            _combat_step(actor, kind, enc.round, txt, rep.rolls(), pause=pause)
 
     def run_monsters(limit: int = 12) -> None:
         for _ in range(limit):
@@ -9734,12 +9785,13 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             if c is None or c.kind == "pc":
                 return
             rep = combat_engine.run_monster_turn(enc.id, profiles=profiles, env=env)
-            take(rep)
+            take(rep, c.name, c.kind, pause=True)
             if rep.paused:
                 return  # frozen on a player's reaction decision
             over = _combat_fight_over(enc.id)
             if over:
                 blocks.append(over)
+                _combat_step("the field", "note", enc.round, over)
                 return
 
     _round = enc.round
@@ -9817,7 +9869,7 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
                           "reaction pass (declined).")
         rrep = combat_engine.resume_reaction(enc.id, use=bool(decision),
                                              profiles=profiles, env=env)
-        take(rrep)
+        take(rrep, my.name, "pc")
         if not rrep.paused:
             over = _combat_fight_over(enc.id)
             if over:
@@ -9889,10 +9941,11 @@ def _combat_engine_turn(session_id: str, user_id: Optional[str],
             except Exception as e:
                 print(f"[combat-engine] pre-draw failed: {e}")
             rep = combat_engine.resolve(enc.id, intents, profiles, env=env)
-            take(rep)
+            take(rep, my.name, "pc")
             over = _combat_fight_over(enc.id)
             if over:
                 blocks.append(over)
+                _combat_step("the field", "note", enc.round, over)
             elif rep.turn_over and not rep.paused:
                 run_monsters()
         elif cur is not None and cur.kind == "pc":
@@ -13275,6 +13328,7 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
         ctx_obj, ctx_texts = assemble_context(req.session_id, req.message,
                                               user_id=req.user_id, private=req.private)
         active_enc = combat.get_active(req.session_id)
+        muted = bool((state.get("meta", {}) or {}).get("mute_combat_narration"))
         if active_enc:
             # Deterministic path: resolve the player's declared acts through
             # the engine FIRST; the board below then reflects the new state.
@@ -13308,16 +13362,24 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                     ctx_texts.append(_VTT_HOOKS_ACTIVE)
             elif getattr(_vtt_cfg(), "inject_hook_guidance", True):
                 ctx_texts.append(_VTT_HOOKS_IDLE)
-        dm_text = generate_dm_reply(
-            session_id=req.session_id,
-            username=req.username,
-            message=req.message,
-            extra_context=ctx_texts,
-            character_id=(_acting_member(
-                (_load_session_state(req.session_id).get("meta") or {}),
-                req.user_id) or {}).get("character_id")
-            or _resolve_session_character(req.session_id, req.user_id),
-        )
+        if _engine_block is not None and muted:
+            # The table asked for the fight without the prose. The engine has
+            # already resolved this turn and reported it in its own log, so
+            # there is nothing left for a model to add — and waiting several
+            # seconds for it to say so is the entire cost being avoided here.
+            # Not a default: a fight narrated well is most of why this exists.
+            dm_text = ""
+        else:
+            dm_text = generate_dm_reply(
+                session_id=req.session_id,
+                username=req.username,
+                message=req.message,
+                extra_context=ctx_texts,
+                character_id=(_acting_member(
+                    (_load_session_state(req.session_id).get("meta") or {}),
+                    req.user_id) or {}).get("character_id")
+                or _resolve_session_character(req.session_id, req.user_id),
+            )
     except Exception as e:
         print(f"[DM error] {e}")
         dm_text = (
@@ -23279,8 +23341,14 @@ def _arena_open_fight(session_id: str, user_id: str, *,
     # If the initiative went to the OTHER side, they take it now. Waiting for
     # the player to act would mean waiting for them to act out of turn, on a
     # board that had just told them it was not their turn.
+    watching = _ACTIVITY_COMBAT.get() is not None
     opener = _combat_npc_catchup(session_id)
-    if opener:
+    # Where somebody is watching the combat log, those turns have ALREADY gone
+    # out one at a time and repeating them here would print the round twice —
+    # once as it happened and once as history. A Discord table has no such
+    # pane, so there it stays in the narration, which is the only place it
+    # could go.
+    if opener and not watching:
         text = f"{text}\n\n{opener}"
     return {"ok": True, "text": text, "encounter_id": enc.id,
             "scene_id": scene.id if scene is not None else None}
@@ -23439,6 +23507,60 @@ async def activity_ws(ws: WebSocket, channel: str):
         except Exception as e:
             print(f"[activity] action bar push failed: {e}")
         await send_levelup()
+
+    async def with_combat_log(run):
+        """Run engine work in a worker thread, streaming each TURN as it lands.
+
+        The engine and the narration are two different things arriving at two
+        different speeds. Bundled, the fast one waits for the slow one: an
+        Eldritch Blast that had already hit sat invisible until the model
+        finished describing it, which reads at the table as the spell not
+        working. Here the engine's own certified text goes out per turn, with
+        the tracker and the board refreshed behind it, so the fight plays out
+        while the prose is still being written.
+
+        `run` is a zero-argument callable; contextvars are copied into the
+        worker thread, so setting the sink here is what reaches the engine.
+        """
+        cq: "queue.Queue[Optional[dict]]" = queue.Queue()
+        tok = _ACTIVITY_COMBAT.set(cq.put_nowait)
+
+        async def _drain() -> None:
+            while True:
+                entry = await asyncio.to_thread(cq.get)
+                if entry is None:
+                    return
+                try:
+                    await _activity_broadcast(
+                        session_id, {"t": "combat_log", "entry": entry},
+                        fallback=ws)
+                    # The state behind it, so tokens move WITH the log rather
+                    # than jumping to the end when the prose lands. Read from
+                    # the loop thread: SQLite sessions are per-call here and
+                    # the worker only ever writes.
+                    enc_now = combat.get_active(session_id)
+                    await _activity_broadcast(
+                        session_id,
+                        {"t": "combat",
+                         "encounter": combat.state(enc_now.id) if enc_now else None},
+                        fallback=ws)
+                    await _activity_broadcast(
+                        session_id,
+                        {"t": "vtt", "scene": _vtt_scene_payload(session_id)},
+                        fallback=ws)
+                except Exception:
+                    return
+
+        drain_t = asyncio.create_task(_drain())
+        try:
+            return await asyncio.to_thread(run)
+        finally:
+            _ACTIVITY_COMBAT.reset(tok)
+            cq.put_nowait(None)
+            try:
+                await asyncio.wait_for(drain_t, timeout=5)
+            except Exception:
+                drain_t.cancel()
 
     sheet: Optional[dict] = None
     await send_hello()
@@ -23630,7 +23752,11 @@ async def activity_ws(ws: WebSocket, channel: str):
                         sheet = _activity_sheet(session_id, user_id)
                         if sheet:
                             await ws.send_json({"t": "sheet", "sheet": sheet})
-                        fight = _arena_open_fight(session_id, user_id)
+                        # Streamed, because a bout can open on the OTHER
+                        # side's initiative and those turns should be watched
+                        # rather than arrive as a paragraph of history.
+                        fight = await with_combat_log(
+                            lambda: _arena_open_fight(session_id, user_id))
                         await ws.send_json({
                             "t": "narration",
                             "text": (fight["text"] if fight.get("ok")
@@ -23640,10 +23766,10 @@ async def activity_ws(ws: WebSocket, channel: str):
                         continue
 
                     if kind == "arena_fight":
-                        res = _arena_open_fight(
+                        res = await with_combat_log(lambda: _arena_open_fight(
                             session_id, user_id,
                             environment=msg.get("environment") or None,
-                            difficulty=msg.get("difficulty") or None)
+                            difficulty=msg.get("difficulty") or None))
                         if not res.get("ok"):
                             await ws.send_json({"t": "narration",
                                                 "text": f"⚠ {res.get('reason')}"})
@@ -24769,6 +24895,24 @@ async def activity_ws(ws: WebSocket, channel: str):
                 # call, the narration, the sheet refresh — is the path a typed
                 # sentence already takes. Only the parse is skipped.
                 bar_intents: Optional[list[dict]] = None
+                # Fight with the prose, or without it. Muting is a per-TABLE
+                # setting rather than a per-player one for the reason every
+                # narration setting is: the story is a commons, and half a
+                # table reading a scene the other half never sees is not one
+                # table. Off by default — a fight narrated well is most of why
+                # this exists — but a local model can take several seconds a
+                # turn, and a player who wants the engine's pace should have it.
+                if msg.get("t") == "combat_narration":
+                    if session_id:
+                        meta = dict(_load_session_state(session_id)
+                                    .get("meta", {}) or {})
+                        meta["mute_combat_narration"] = not bool(msg.get("on"))
+                        _set_session_meta(session_id, meta)
+                    await _activity_broadcast(
+                        session_id, {"t": "combat_narration",
+                                     "on": bool(msg.get("on"))}, fallback=ws)
+                    continue
+
                 if msg.get("t") == "board_action":
                     try:
                         bar_intents, sentence, err = _board_action_plan(
@@ -24818,6 +24962,8 @@ async def activity_ws(ws: WebSocket, channel: str):
 
                 rolls: list[dict] = []
                 token = _ACTIVITY_ROLLS.set(rolls)
+
+
                 # Live narration. The DM call runs in a worker THREAD, so the sink
                 # is a thread-safe queue and a task on the loop drains it — a
                 # coroutine cannot be awaited from over there, and calling
@@ -24867,8 +25013,9 @@ async def activity_ws(ws: WebSocket, channel: str):
                                       username=username, message=text,
                                       private=is_private, intents=bar_intents)
                     # Sync endpoint with blocking I/O: run in a worker thread
-                    # (contextvars propagate, so the roll collector works).
-                    resp = await asyncio.to_thread(chat_endpoint, req, bt)
+                    # (contextvars propagate, so the roll collector works), and
+                    # stream each resolved TURN out ahead of the narration.
+                    resp = await with_combat_log(lambda: chat_endpoint(req, bt))
                 except HTTPException as e:
                     await _end_stream()
                     await ws.send_json({"t": "narration", "text": f"⚠ {e.detail}"})

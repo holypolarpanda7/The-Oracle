@@ -9,7 +9,7 @@ import { VttOverlay } from "./VttOverlay";
 import { ActionBar } from "./ActionBar";
 import { uiTick } from "../lib/sound";
 import type {
-  ActionBarData, Ally, BarAction, CombatState, Locale, RollResult, RouteRow,
+  ActionBarData, Ally, BarAction, CombatLogEntry, CombatState, Locale, RollResult, RouteRow,
   SheetData, VttArea, VttOptions, VttScene, VttTargets,
 } from "../lib/types";
 
@@ -205,6 +205,13 @@ export interface PlayProps {
   sceneUrl: string | null;
   party: Ally[];
   combat: CombatState | null;
+  /** The engine's own record of the fight, per resolved turn — certified
+   *  mechanics arriving immediately, kept apart from the narration blocks
+   *  (which arrive when the model is done). Only the battle page shows it. */
+  combatLog: CombatLogEntry[];
+  /** Whether the Oracle describes the fight as well as resolving it. */
+  narrateCombat: boolean;
+  onNarrateCombat: (on: boolean) => void;
   /** The tactical board — non-null only while the Oracle has one out. */
   vtt: VttScene | null;
   vttOptions: VttOptions | null;

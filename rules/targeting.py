@@ -282,3 +282,93 @@ def spec_for(spell: Any) -> TargetSpec:
     # direction to err — a target you can see is always legal.
     spec.needs_sight = True
     return spec
+
+
+# ---------------------------------------------------------------------------
+# How a spell RESOLVES: an attack roll, a saving throw, or neither.
+# ---------------------------------------------------------------------------
+#
+# `Spell.attack_type` is populated on 7 rows of 431 and `Spell.dc_type` on 20,
+# because this project's spells came out of a PDF and the parser only ever
+# filled those columns from the tidy SRD shape. The combat engine keyed its two
+# damage branches on exactly those columns — so a spell with neither fell past
+# BOTH and went off dealing nothing at all. Eldritch Blast is the plainest
+# case: the row says nothing, the description says "Make a ranged spell attack
+# against one creature", and casting it did no damage and rolled no attack.
+#
+# Same doctrine as `rules/damage.py` and `rules/components.py`: the column when
+# it has an answer, the spell's own prose when it does not, and never a number
+# cached beside the sentence it was read from.
+
+# The extractor drops spaces INSIDE words as readily as it drops them between
+# them — Inflict Wounds arrives as "Constit ution saving th row" — so every
+# word this depends on is spelled out letter by letter, exactly as the shape
+# vocabulary above is. The tolerance is bounded the same way: it is anchored on
+# a closed vocabulary (six ability names, two attack ranges) with the loose
+# phrase required immediately after, so it cannot drift onto ordinary prose.
+_SAVING_THROW = _loose("saving") + r"\s*" + _loose("throw")
+_SPELL_ATTACK = _loose("spell") + r"\s*" + _loose("attack")
+
+_ATTACK_RE = re.compile(
+    r"\bmake\s+(?:a|an|one)?\s*(" + _loose("ranged") + "|" + _loose("melee")
+    + r")\b[^.]{0,40}?\b" + _loose("attack") + r"\b", re.I)
+#: The phrasing both editions actually print: "a ranged spell attack".
+_ATTACK_RE2 = re.compile(
+    r"\b(" + _loose("ranged") + "|" + _loose("melee") + r")\s*"
+    + _SPELL_ATTACK + r"\b", re.I)
+
+_ABILITIES = ("strength", "dexterity", "constitution",
+              "intelligence", "wisdom", "charisma")
+_SAVE_RE = re.compile(
+    r"\b(" + "|".join(_loose(a) for a in _ABILITIES) + r")\b\s*"
+    + _SAVING_THROW, re.I)
+#: The 2024 stat lines abbreviate: "DEX Save".
+_SAVE_ABBR_RE = re.compile(
+    r"\b(STR|DEX|CON|INT|WIS|CHA)\b\s*(?:" + _SAVING_THROW + r"|save)\b",
+    re.I)
+
+_ABBR = {"str": "str", "dex": "dex", "con": "con",
+         "int": "int", "wis": "wis", "cha": "cha"}
+
+
+def attack_kind(spell: Any) -> Optional[str]:
+    """``"ranged"`` / ``"melee"`` if this spell is resolved with an attack roll.
+
+    The column first; the description after it. Only the FIRST such phrase is
+    read — a spell that mentions an attack roll later on (a rider on somebody
+    else's attack) is not itself an attack spell, and `_head` already keeps us
+    inside this entry.
+    """
+    col = str(getattr(spell, "attack_type", "") or "").strip().lower()
+    if col:
+        return "melee" if "melee" in col else "ranged"
+    desc = _clean(_head(str(getattr(spell, "desc", "") or "")))
+    m = _ATTACK_RE2.search(desc) or _ATTACK_RE.search(desc)
+    return m.group(1).lower() if m else None
+
+
+def save_ability(spell: Any) -> Optional[str]:
+    """The three-letter ability a target saves with, or None.
+
+    Returns the *first* ability named with a saving throw, which is the one the
+    spell is resolved by; a later one is a repeat save or a rider.
+    """
+    col = str(getattr(spell, "dc_type", "") or "").strip().lower()[:3]
+    if col in _ABBR:
+        return _ABBR[col]
+    desc = _clean(_head(str(getattr(spell, "desc", "") or "")))
+    m = _SAVE_RE.search(desc)
+    if m:
+        return re.sub(r"\s+", "", m.group(1)).lower()[:3]
+    m = _SAVE_ABBR_RE.search(desc)
+    return m.group(1).lower() if m else None
+
+
+def resolution_for(spell: Any) -> tuple[Optional[str], Optional[str]]:
+    """``(attack_kind, save_ability)`` — how this spell is resolved.
+
+    Both may be set (a spell that attacks and then forces a save) and both may
+    be None (a buff, a utility, a summon). The ENGINE decides what to do with
+    that; this only reads.
+    """
+    return attack_kind(spell), save_ability(spell)

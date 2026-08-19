@@ -65,6 +65,31 @@ const turn = (await page.locator(".bt-turn").innerText()).toLowerCase();
 check("the page says whose turn it is, in words",
   /your turn|is acting|resolving|set out/.test(turn), turn.slice(0, 60));
 
+// The engine's own record, on its own, arriving per resolved turn.
+const eng = (await page.locator(".bt-eng").innerText()).replace(/\s+/g, " ");
+check("the engine has a log of its own, apart from the narration",
+  (await page.locator(".bt-turnlog").count()) > 1, eng.slice(0, 70));
+check("...one entry per creature's turn, each labelled with whose it was",
+  (await page.locator(".bt-turnlog .bt-tl-who").count()) > 1);
+check("...carrying the certified lines and no prose",
+  /ATTACK:/.test(eng) && /TURN OVER/.test(eng));
+check("...and a hit reads differently from a miss",
+  (await page.locator(".bt-tl-line.hit").count()) > 0
+  && (await page.locator(".bt-tl-line.miss").count()) > 0);
+
+// Fighting without the prose: the engine has already finished by the time a
+// local model gets round to describing the turn.
+const proseBtn = page.locator(".bt-icon", { hasText: "✒" });
+check("the prose can be turned off without leaving the fight",
+  (await proseBtn.count()) === 1
+  && (await proseBtn.getAttribute("class")).includes("on"));
+await proseBtn.click();
+await page.waitForTimeout(250);
+check("...and the log says so", /prose off/i.test(
+  await page.locator(".bt-eng-head").innerText()));
+await proseBtn.click();
+await page.waitForTimeout(200);
+
 check("nothing else is competing for the space",
   (await page.locator(".statusbar").count()) === 0
   && (await page.locator(".here-now, .locale-rail").count()) === 0);

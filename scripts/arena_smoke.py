@@ -40,6 +40,9 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 def _load_backend(db_path: str):
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
+    # The beat between creatures is a WATCHING thing; a test wants the order
+    # and the split, not four seconds of theatre.
+    os.environ.setdefault("ORACLE_COMBAT_STEP_PAUSE", "0")
     spec = importlib.util.spec_from_file_location(
         "fastapi_dm", str(ROOT / "oracle-dm-backend" / "fastapi-dm.py"))
     mod = importlib.util.module_from_spec(spec)
@@ -616,6 +619,43 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
     check("the bout opens on the PLAYER's turn, whoever won initiative",
           up is not None and up.get("kind") == "pc",
           f"{up and up.get('name')} ({up and up.get('kind')})")
+
+    # ---- the ENGINE's own log, apart from the narration and ahead of it ----
+    #
+    # Bundled with the prose, a resolved turn waits on a model to describe it —
+    # which is why a spell that had already hit looked like it had not gone
+    # off. And a whole side resolving into ONE message is a diff, not a round
+    # of combat: each creature's turn is pushed on its own.
+    print("\n\033[1m11b. the engine reports each turn as it resolves\033[0m")
+    sid = m._arena_session_id("lvl1-smoke", user_id)
+    enc = m.combat.get_active(sid)
+    seen: list[dict] = []
+    if enc is not None:
+        # Wind the order round to a monster: the whole point is the turns the
+        # PLAYER does not take.
+        for _ in range(len(m.combat.order(enc.id))):
+            cur = m.combat.current_combatant(enc.id)
+            if cur is not None and cur.kind != "pc":
+                break
+            m.combat.next_turn(enc.id)
+        tok = m._ACTIVITY_COMBAT.set(seen.append)
+        try:
+            m._combat_npc_catchup(sid)
+        finally:
+            m._ACTIVITY_COMBAT.reset(tok)
+    check("each resolved turn is pushed on its own", len(seen) >= 1,
+          f"{len(seen)} entries: {[e['actor'] for e in seen]}")
+    check("...naming whose turn it was", all(e.get("actor") for e in seen))
+    check("...one creature per entry, never a side at a time",
+          len({e["actor"] for e in seen if e["kind"] != "note"})
+          == len([e for e in seen if e["kind"] != "note"]),
+          ", ".join(f"{e['actor']}({e['kind']})" for e in seen))
+    check("...and it is the ENGINE's text, not a model's",
+          all(any(ln.split(":")[0].isupper()
+                  for ln in (e["text"] or "").splitlines() if ln.strip())
+              for e in seen))
+    check("a table with nobody watching pays nothing",
+          m._combat_step("X", "pc", 1, "ATTACK: x") is None)
 
     # ---- 12. the schema self-heals for EVERY model column -----------------
     # `create_all` never ALTERs an existing table, so a column added to a model

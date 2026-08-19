@@ -263,12 +263,16 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   map, wash and ink together, to check labels stay readable over the paint.
 - Loot / affix demo: `uv run python -m loot.demo`
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
+- Spell-resolution smoke test: `uv run python scripts/spell_resolve_smoke.py`
+  (how a spell resolves, read off the spell rather than off a column almost
+  nothing fills — and the damage actually landing, through the real engine)
 - Proving Grounds smoke test: `uv run python scripts/arena_smoke.py` (slots →
   level-up climb → bout → victory/defeat, engine *and* WebSocket, LLM stubbed;
   plus the three things a frozen Quartermaster turned out to be — a LEVEL-1
   bout, which opens the stall with no climb before it, going through to the
   sand; a column a model declares reaching a database that already had the
-  table; and a handler that throws not taking the socket down with it)
+  table; and a handler that throws not taking the socket down with it; plus the
+  engine reporting each turn on its own, naming whose it was, in its own text)
 - Feat smoke test: `uv run python scripts/feats_smoke.py` (a feat's questions,
   its grants, its named options, the resource it hands over, the at-will spell
   it grants, and an OPTION that asks its own questions — all the way to what
@@ -391,9 +395,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
   journal and bonds tabs), `battle-shot` (a board out puts the fight on its own
   page; the board is most of the screen; the order is a rail and not a row of
-  cards; the page says whose turn it is; the sheet is one tap away and does not
-  live on screen; the log folds; Reset Layout does not reload; and on a phone
-  the MAP — not just its panel — still leads), `occlusion-shot` (a creature
+  cards; the page says whose turn it is; the engine has a log of its own with a
+  hit reading differently from a miss; the prose can be turned off without
+  leaving the fight; the sheet is one tap away and does not live on screen; the
+  log folds; Reset Layout does not reload; and on a phone the MAP — not just
+  its panel — still leads), `occlusion-shot` (a creature
   standing behind the mill's pillars is drawn hollow, and nobody else is).
 - Narration-streaming guard: `uv run python scripts/stream_smoke.py` (the hook
   filter and both wire formats, against a synthetic stream — no model needed).
@@ -990,6 +996,38 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `state()["last_move"]` carries the newest one and the client animates along
   it. A straight lerp between two squares draws a creature strolling through
   masonry, which was tolerable when walls were flat shading and is not now.
+- **The ENGINE and the NARRATION are two things at two speeds, and bundling
+  them made the fast one wait.** A resolved turn takes milliseconds and a local
+  model takes seconds, and they used to arrive together — so an Eldritch Blast
+  that had already hit sat invisible until the prose caught up, which reads at
+  the table as the spell not working. `_ACTIVITY_COMBAT` is a sink contextvar
+  beside `_ACTIVITY_ROLLS` and `_ACTIVITY_STREAM`: when it is set, every
+  resolved TURN is pushed the moment it lands (`_combat_step`), and the socket's
+  `with_combat_log` refreshes the tracker and the board behind each one so
+  tokens move WITH the log instead of jumping to the end. The Activity shows it
+  in a pane of its own, in the engine's own certified text — no model wrote a
+  word of it. **One creature per push, with a beat between**
+  (`COMBAT_STEP_PAUSE_S`, paid only when somebody is watching): six monsters
+  resolving into one frame is a diff, not a round of combat. Where a watcher
+  exists the arena's opening narration DROPS the engine text it used to carry,
+  or the round prints twice — once as it happened and once as history; a
+  Discord table has no such pane, so there it stays in the narration.
+  **`combat_narration` mutes the prose per TABLE** — the story is a commons and
+  half a table reading a scene the other half never sees is not one table. Off
+  by default, because a fight narrated well is most of why this exists.
+- **A spell with no `attack_type` and no `dc_type` went off dealing NOTHING.**
+  The engine's two damage branches keyed on those columns, and they are
+  populated on 7 and 20 rows of 431 — every spell here came out of a PDF, and
+  the parser only ever filled them from the tidy SRD shape. A spell with
+  neither fell past both branches: the slot was spent, the narration said
+  something happened, and the target's hit points never moved.
+  `rules.targeting.resolution_for` reads the column first and the spell's own
+  prose after (the `rules/damage.py` doctrine again — derived, never stored),
+  which takes it from 27 spells to **209**. OCR tolerance is the job here too:
+  Inflict Wounds arrives as "Constit ution saving th row", so "saving throw"
+  and "spell attack" are spelled out letter by letter, anchored on the closed
+  vocabulary of six ability names and two attack ranges so it cannot drift onto
+  ordinary prose.
 - **A fight gets its own PAGE, because the board was a fifth of the screen.**
   `BattleSurface.tsx` replaces the play surface whenever a board is out. The old
   layout spent its height on a status bar, an initiative carousel of CARDS, a

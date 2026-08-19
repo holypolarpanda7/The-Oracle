@@ -36,6 +36,7 @@ from sqlmodel import Session, select
 from dice import ability_modifier
 from dice.mechanics import ability_check, attack_roll, damage_roll, saving_throw
 from rules import damage as dmgtypes
+from rules import targeting as spell_targeting
 from rules.models import Monster, Spell
 
 from .models import Awareness, Combatant
@@ -2533,6 +2534,14 @@ class CombatEngine:
             ev["notes"].append(f"level-{slot_spent} slot spent{up}; "
                                f"{prof.slots[slot_spent]} left")
         dmg_expr = self._spell_damage(sp, prof, slot=slot_spent)
+        # HOW the spell resolves. The `attack_type` / `dc_type` COLUMNS are
+        # populated on 7 and 20 rows of 431 — everything here came out of a
+        # PDF — so keying the damage branches on them meant a spell with
+        # neither fell past BOTH and went off dealing nothing. Eldritch Blast
+        # was the plainest case: no attack roll, no damage, no complaint.
+        # `targeting` reads the column first and the spell's own prose after.
+        atk_kind, save_ability = (spell_targeting.resolution_for(sp)
+                                  if sp is not None else (None, None))
         name_l = (sp.name if sp else spell_name).strip().lower()
         eff = _SPELL_EFFECTS.get(name_l)
         base_lv = (sp.level if sp else 1) or 1
@@ -2575,12 +2584,12 @@ class CombatEngine:
                     r.total, expr=expr))
                 ev["notes"].append(f"{tgt.name} regains {r.total} HP "
                                    f"({out['current_hp']}/{out['max_hp']})")
-        elif sp and sp.attack_type and target is not None:
+        elif sp and atk_kind and target is not None:
             bonus = (prof.spell_attack_bonus if prof and
                      prof.spell_attack_bonus is not None
                      else 2 + self._ability_mod(actor, "cha", profiles))
             adv, dis, notes = self._attack_advantage(
-                actor, target, sp.attack_type != "melee", encounter_id)
+                actor, target, atk_kind != "melee", encounter_id)
             exh = self._combat_roll_mod(actor, profiles, spell=True)
             if exh:
                 bonus += exh
@@ -2610,7 +2619,7 @@ class CombatEngine:
                 if out.get("defeated"):
                     ev["defeated"] = True
                 self._note_concentration(out, ev)
-        elif sp and sp.dc_type and targets:
+        elif sp and save_ability and targets:
             # Registry target cap (upcasting may widen it); AoE spells carry
             # no cap — the narration decides who stands in the area, the
             # engine rolls every save.
@@ -2640,14 +2649,14 @@ class CombatEngine:
                                     "unaffected": "not a Humanoid"})
                     ev["notes"].append(f"{tgt.name} is not a Humanoid — unaffected")
                     continue
-                t_mod = self._save_mod(tgt, sp.dc_type, profiles)
+                t_mod = self._save_mod(tgt, save_ability, profiles)
                 t_mod += self._combat_roll_mod(tgt, profiles)
                 save = saving_throw(t_mod, dc=dc,
-                                    label=f"{sp.dc_type.upper()} save ({tgt.name})",
+                                    label=f"{save_ability.upper()} save ({tgt.name})",
                                     rng=self.rng)
                 self._legendary_rescue(tgt, save, ev.get("notes"))
                 ev["rolls"].append(self._roll_dict(
-                    f"{sp.dc_type.upper()} save — {tgt.name}", save.detail,
+                    f"{save_ability.upper()} save — {tgt.name}", save.detail,
                     save.total, dc=dc, success=bool(save.success)))
                 res: dict = {"target": tgt.name, "saved": bool(save.success)}
                 if not save.success and eff and eff.get("save_condition"):
@@ -2662,7 +2671,7 @@ class CombatEngine:
                             fresh_t = self.tracker.get_combatant(tgt.id)
                             saves = list(fresh_t.pending_saves or [])
                             saves.append({"condition": cond,
-                                          "ability": sp.dc_type, "dc": dc})
+                                          "ability": save_ability, "dc": dc})
                             self.tracker.set_pending_saves(tgt.id, saves)
                 if shared is not None:
                     total = shared.total

@@ -21,8 +21,24 @@ import { uiTick } from "../lib/sound";
  *  through `PlaySurface`: the two layouts share no structure, and the shared
  *  half (what a block looks like, what the bar does) is shared as components.
  */
+/** How the engine's own lines are coloured. The text is the ENGINE's, never a
+ *  model's, so the vocabulary is small and fixed and worth reading at a
+ *  glance — a HIT and a MISS should not look the same in a scrolling column. */
+function logTone(line: string): string {
+  if (/^(CRITICAL HIT|.*: CRITICAL HIT)/.test(line)) return "crit";
+  if (/\bCRITICAL HIT\b/.test(line)) return "crit";
+  if (/\bgoes DOWN\b|ALL FOES DOWN|THE PARTY IS DOWN/.test(line)) return "down";
+  if (/\bHIT\b|FAILED SAVE/.test(line)) return "hit";
+  if (/\bMISS\b|\bSAVED\b/.test(line)) return "miss";
+  if (/^REFUSED:/.test(line)) return "refused";
+  if (/^NOW:/.test(line)) return "now";
+  if (/^(MOVE|DASH|DODGE|DISENGAGE):/.test(line)) return "move";
+  return "";
+}
+
 export function BattleSurface(p: PlayProps) {
   const logRef = useRef<HTMLDivElement>(null);
+  const engRef = useRef<HTMLDivElement>(null);
   const [secret, setSecret] = useState(false);
   const [logOpen, setLogOpen] = useState(true);
   // The sheet is a REFERENCE during a fight, not a fixture: it took a third of
@@ -37,8 +53,9 @@ export function BattleSurface(p: PlayProps) {
 
   useEffect(() => {
     const el = logRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    if (el) el.scrollTop = el.scrollHeight;
+    const eg = engRef.current;
+    if (eg) eg.scrollTop = eg.scrollHeight;
   });
 
   const combat = p.combat;
@@ -90,6 +107,13 @@ export function BattleSurface(p: PlayProps) {
             </span>
           )}
           {p.sheet?.ac != null && <span className="bt-ac">AC {p.sheet.ac}</span>}
+          <button
+            className={`bt-icon${p.narrateCombat ? " on" : ""}`}
+            title={p.narrateCombat
+              ? "The Oracle is describing the fight — click for the engine's pace alone"
+              : "Fighting without narration — click to have the Oracle describe it again"}
+            onClick={() => { uiTick(); p.onNarrateCombat(!p.narrateCombat); }}
+          >✒</button>
           <button className={`bt-icon${sheetOpen ? " on" : ""}`} title="Your sheet"
                   onClick={() => { uiTick(); setSheetOpen((v) => !v); }}>📜</button>
           <button className="bt-icon" title="The Chronicle"
@@ -169,6 +193,31 @@ export function BattleSurface(p: PlayProps) {
         <button className="bt-logtab" onClick={() => { uiTick(); setLogOpen((o) => !o); }}>
           {logOpen ? "› log" : "‹ log"}
         </button>
+
+        {/* THE ENGINE, on its own. Every line here is the rules engine's
+            certified record — no model wrote any of it, and it lands the
+            moment the turn resolves rather than when the prose is finished. */}
+        <div className="bt-eng" ref={engRef}>
+          <div className="bt-eng-head">
+            the fight, as the rules had it
+            {!p.narrateCombat && <span className="bt-eng-mute"> · prose off</span>}
+          </div>
+          {p.combatLog.length === 0 && (
+            <p className="bt-eng-empty">nothing has been resolved yet.</p>
+          )}
+          {p.combatLog.map((e, i) => (
+            <div className={`bt-turnlog k-${e.kind}`} key={i}>
+              <div className="bt-turnlog-head">
+                <span className="bt-tl-who">{e.actor}</span>
+                <span className="bt-tl-round">r{e.round}</span>
+              </div>
+              {e.text.split("\n").filter((l) => l.trim()).map((line, j) => (
+                <div className={`bt-tl-line ${logTone(line)}`} key={j}>{line}</div>
+              ))}
+            </div>
+          ))}
+        </div>
+
         <div className="bt-lines" ref={logRef} onClick={p.onSkip}>
           {revealed.map((b, i) => renderBlock(b, i, p.onBlockDone))}
           {p.draft ? <p className="drafting">{p.draft}</p> : null}

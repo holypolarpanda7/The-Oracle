@@ -318,6 +318,21 @@ export interface CombatantView {
 }
 
 /** Live encounter state for the initiative carousel (null = no fight). */
+/** One creature's resolved TURN, straight from the engine.
+ *
+ *  The engine finishes in milliseconds and the narration takes seconds, and
+ *  they used to arrive together — so a spell that had already hit was invisible
+ *  until the prose caught up. These land per turn as the fight resolves, ahead
+ *  of any narration, and carry no model output at all: `text` is the engine's
+ *  own certified record of what happened. */
+export interface CombatLogEntry {
+  actor: string;
+  kind: string;            // pc | monster | npc | note
+  round: number;
+  text: string;
+  rolls?: RollResult[];
+}
+
 export interface CombatState {
   id: number;
   name: string;
@@ -919,6 +934,8 @@ export type ServerEvent =
   | ({ t: "reprepare_data" } & RepData)
   | { t: "party"; members: Ally[] }
   | { t: "combat"; encounter: CombatState | null }
+  | { t: "combat_log"; entry: CombatLogEntry }
+  | { t: "combat_narration"; on: boolean }
   | { t: "vtt"; scene: VttScene | null }
   | ({ t: "vtt_options" } & VttOptions)
   | { t: "vtt_preview"; token_id: number; ok: boolean; path?: [number, number][];
@@ -974,6 +991,10 @@ export type ClientEvent =
   | { t: "portrait_action"; action: "regear" | "select" | "delete";
       context?: string; replace_context?: string; detail?: string }
   | { t: "set_dnr"; dnr: boolean }
+  /** Fight with the prose, or without it. Per TABLE, like every narration
+   *  setting — half a table reading a scene the other half never sees is not
+   *  one table. */
+  | { t: "combat_narration"; on: boolean }
   // ---- tactical board ----
   | { t: "vtt_options"; token_id: number; dash?: boolean }
   | { t: "vtt_preview"; token_id: number; x: number; y: number }

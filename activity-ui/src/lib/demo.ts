@@ -1093,6 +1093,21 @@ export const demoScript = {
               "Goblin Skulker 8, Pip 6",
           },
           { t: "combat", encounter: demoEncounter(1) },
+          // The ENGINE's own record, ahead of the prose. Offline these arrive
+          // together, but the shape is the backend's: one entry per resolved
+          // turn, carrying the certified lines and nothing a model wrote.
+          { t: "combat_log", entry: {
+              actor: "Kara", kind: "pc", round: 1,
+              text: "ATTACK: Kara — Shortbow vs Goblin Warrior: MISS\n"
+                  + "TURN OVER (action spent)" } },
+          { t: "combat_log", entry: {
+              actor: "Goblin Warrior", kind: "monster", round: 1,
+              text: "MOVE: Goblin Warrior (covers 20 ft toward Kara)\n"
+                  + "ATTACK: Goblin Warrior — Handaxe vs Kara: HIT, 4 damage "
+                  + "(17/28 HP)\nTURN OVER (action and movement spent)" } },
+          { t: "combat_log", entry: {
+              actor: "the field", kind: "note", round: 1,
+              text: "NOW: Kara's turn." } },
           { t: "vtt", scene: demoVtt(1) },
           { t: "sheet", sheet: { ...(sheet as any).sheet, hp: 17 } },
           {
@@ -1123,6 +1138,10 @@ export const demoScript = {
               "millstone, blade shaking.",
           },
           { t: "combat", encounter: demoEncounter(2) },
+          { t: "combat_log", entry: {
+              actor: "Kara", kind: "pc", round: 2,
+              text: "ATTACK: Kara — Rapier vs Goblin Warrior: HIT, 9 damage "
+                  + "(0/11 HP) — Goblin Warrior goes DOWN" } },
           { t: "vtt", scene: demoVtt(2) },
         ];
       }

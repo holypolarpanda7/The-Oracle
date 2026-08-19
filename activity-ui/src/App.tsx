@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { connect, type ConnStatus, type Connection } from "./lib/connection";
 import type {
   ActionBarData, Ally, ArenaState, BarAction, CCPayload, CharacterSummary,
-  CombatState, LevelUpData, LexEntry,
+  CombatLogEntry, CombatState, LevelUpData, LexEntry,
   ChronicleData, Locale, RepData, RouteRow, ServerEvent, SheetData, VttArea,
   VttOptions, VttScene, VttTargets, WorldShop, BastionPlan,
 } from "./lib/types";
@@ -106,6 +106,16 @@ export default function App({ session }: { session: Session }) {
   // hang. Opening a bout rosters an encounter, generates a board and may draw
   // it; that is tens of seconds, and it used to happen behind a screen that
   // simply stopped responding.
+  // The engine's own record of the fight, per resolved turn. Kept apart from
+  // `blocks` on purpose: one is certified mechanics arriving immediately, the
+  // other is prose arriving when the model is done, and mixing them is what
+  // made the mechanics wait.
+  const [combatLog, setCombatLog] = useState<CombatLogEntry[]>([]);
+  // Whether the Oracle describes the fight as well as resolving it. On by
+  // default — a fight narrated well is most of why this exists — but a local
+  // model can take several seconds a turn, and the engine has already
+  // finished by then.
+  const [narrateCombat, setNarrateCombat] = useState(true);
   const [waiting, setWaiting] = useState<string | null>(null);
   const waitTimersRef = useRef<number[]>([]);
   const clearWaitTimers = () => {
@@ -326,7 +336,18 @@ export default function App({ session }: { session: Session }) {
           setParty(ev.members);
           break;
         case "combat":
-          setCombat(ev.encounter);
+          // A new fight starts a new log. The id changing is the only honest
+          // signal for that — a round rolling over is the same fight.
+          setCombat((prev) => {
+            if ((prev?.id ?? null) !== (ev.encounter?.id ?? null)) setCombatLog([]);
+            return ev.encounter;
+          });
+          break;
+        case "combat_log":
+          setCombatLog((ls) => [...ls, ev.entry].slice(-200));
+          break;
+        case "combat_narration":
+          setNarrateCombat(ev.on);
           break;
         case "vtt":
           setVtt(ev.scene);
@@ -730,6 +751,12 @@ export default function App({ session }: { session: Session }) {
               sceneUrl={sceneUrl}
               party={party}
               combat={combat}
+              combatLog={combatLog}
+              narrateCombat={narrateCombat}
+              onNarrateCombat={(on) => {
+                setNarrateCombat(on);
+                connRef.current?.send({ t: "combat_narration", on });
+              }}
               vtt={vtt}
               vttOptions={vttOptions}
               vttPing={vttPing}
