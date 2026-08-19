@@ -1,9 +1,11 @@
 /* The Oracle — tactical board overlay.
-   Scoped under .vtt, sits inside .play's stage column above the scene panel.
+   Scoped under .vtt, which lives in two places: inside .play's stage column
+   above the scene panel, and as the whole of the .battle page (where the board
+   IS the screen and fills its cell — see the `.fill` rules at the end).
    Same arcane-panel language as the initiative carousel: dark plate, brass
    keylines, teal for the party, crimson for what wants you dead. */
 
-.play .vtt {
+:is(.play, .battle) .vtt {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -25,60 +27,60 @@
   to { opacity: 1; transform: none; }
 }
 
-.play .vtt.collapsed { border-style: dashed; background: rgba(9, 12, 21, 0.7); }
-.play .vtt-reopen {
+:is(.play, .battle) .vtt.collapsed { border-style: dashed; background: rgba(9, 12, 21, 0.7); }
+:is(.play, .battle) .vtt-reopen {
   width: 100%; padding: 10px 14px; border: 0; background: none; cursor: pointer;
   font-family: var(--serif); font-style: italic; color: var(--gold-2);
   letter-spacing: 0.03em;
 }
-.play .vtt-reopen:hover { color: var(--gold); text-shadow: 0 0 10px rgba(230, 188, 100, 0.5); }
+:is(.play, .battle) .vtt-reopen:hover { color: var(--gold); text-shadow: 0 0 10px rgba(230, 188, 100, 0.5); }
 
 /* ---------- title bar ---------- */
-.play .vtt-bar {
+:is(.play, .battle) .vtt-bar {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--edge);
   background: linear-gradient(180deg, rgba(23, 33, 66, 0.85), rgba(9, 12, 21, 0.6));
 }
-.play .vtt-kind {
+:is(.play, .battle) .vtt-kind {
   font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.16em;
   text-transform: uppercase; color: var(--crimson);
   border: 1px solid color-mix(in srgb, var(--crimson) 55%, var(--edge));
   border-radius: 3px; padding: 2px 6px;
   text-shadow: 0 0 8px rgba(210, 56, 67, 0.5);
 }
-.play .vtt-title {
+:is(.play, .battle) .vtt-title {
   font-family: var(--serif); font-style: italic; font-size: 0.95rem;
   color: var(--gold-2); text-shadow: 0 1px 4px #000;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.play .vtt-round {
+:is(.play, .battle) .vtt-round {
   font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.12em;
   text-transform: uppercase; color: var(--text-dim);
 }
-.play .vtt-note {
+:is(.play, .battle) .vtt-note {
   font-family: var(--mono); font-size: 0.58rem; color: var(--amethyst);
   letter-spacing: 0.08em; animation: vtt-pulse 1.6s ease-in-out infinite;
 }
 @keyframes vtt-pulse { 50% { opacity: 0.45; } }
-.play .vtt-spacer { flex: 1; }
+:is(.play, .battle) .vtt-spacer { flex: 1; }
 
-.play .vtt-tools { display: flex; gap: 4px; }
-.play .vtt-tools button {
+:is(.play, .battle) .vtt-tools { display: flex; gap: 4px; }
+:is(.play, .battle) .vtt-tools button {
   width: 26px; height: 24px; display: grid; place-items: center;
   border: 1px solid var(--edge); border-radius: 4px;
   background: rgba(9, 12, 21, 0.7); color: var(--text-dim);
   font-size: 0.72rem; cursor: pointer; transition: all 0.15s ease;
 }
-.play .vtt-tools button:hover { color: var(--gold-2); border-color: var(--gold-dim); }
-.play .vtt-tools button.on {
+:is(.play, .battle) .vtt-tools button:hover { color: var(--gold-2); border-color: var(--gold-dim); }
+:is(.play, .battle) .vtt-tools button.on {
   color: var(--gold); border-color: var(--gold-dim);
   background: rgba(230, 188, 100, 0.12);
   box-shadow: inset 0 0 8px rgba(230, 188, 100, 0.18);
 }
 
 /* ---------- the board ---------- */
-.play .vtt-board {
+:is(.play, .battle) .vtt-board {
   position: relative;
   /* Sized against what the surface actually has left, not a flat share of the
      viewport: the status bar, carousel, narration and prompt bar are all fixed
@@ -91,15 +93,15 @@
   background:
     radial-gradient(120% 100% at 50% 40%, rgba(20, 28, 52, 0.5), rgba(4, 6, 12, 0.9));
 }
-.play .vtt-board canvas { position: absolute; inset: 0; display: block; }
+:is(.play, .battle) .vtt-board canvas { position: absolute; inset: 0; display: block; }
 /* `isolation` matters: tokens carry a z-index so the isometric board can stack
    them by distance from the camera, and an absolutely-positioned parent with
    `z-index: auto` makes no stacking context of its own — those values would
    escape and paint over the error banner and the floor strip. */
-.play .vtt-tokens { position: absolute; inset: 0; pointer-events: none; isolation: isolate; }
+:is(.play, .battle) .vtt-tokens { position: absolute; inset: 0; pointer-events: none; isolation: isolate; }
 
 /* ---------- tokens ---------- */
-.play .vtt-token {
+:is(.play, .battle) .vtt-token {
   position: absolute;
   pointer-events: auto;
   cursor: pointer;
@@ -108,7 +110,7 @@
   transition: left 0.28s cubic-bezier(0.3, 0.8, 0.3, 1),
               top 0.28s cubic-bezier(0.3, 0.8, 0.3, 1);
 }
-.play .vtt-disc {
+:is(.play, .battle) .vtt-disc {
   width: 82%; height: 82%;
   border-radius: 50%;
   display: grid; place-items: center;
@@ -117,22 +119,22 @@
   background: radial-gradient(circle at 35% 28%, rgba(40, 54, 96, 0.95), rgba(6, 9, 17, 0.95));
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.65), inset 0 0 10px rgba(0, 0, 0, 0.5);
 }
-.play .vtt-disc img { width: 100%; height: 100%; object-fit: cover; }
+:is(.play, .battle) .vtt-disc img { width: 100%; height: 100%; object-fit: cover; }
 /* HP as a rising tide inside the disc: full = a full glass, dire = a sliver. */
-.play .vtt-hp {
+:is(.play, .battle) .vtt-hp {
   position: absolute; left: 0; right: 0; bottom: 0;
   background: linear-gradient(180deg, rgba(95, 174, 95, 0.55), rgba(95, 174, 95, 0.22));
   pointer-events: none; transition: height 0.3s ease;
 }
-.play .vtt-hp.hurt {
+:is(.play, .battle) .vtt-hp.hurt {
   background: linear-gradient(180deg, rgba(230, 188, 100, 0.55), rgba(230, 188, 100, 0.22));
 }
-.play .vtt-hp.dire {
+:is(.play, .battle) .vtt-hp.dire {
   background: linear-gradient(180deg, rgba(224, 69, 123, 0.6), rgba(224, 69, 123, 0.25));
 }
-.play .vtt-disc { position: relative; }
+:is(.play, .battle) .vtt-disc { position: relative; }
 /* Cover badge: "hard to hit, for whoever is acting right now". */
-.play .vtt-cover {
+:is(.play, .battle) .vtt-cover {
   position: absolute; left: -3px; top: -3px;
   display: grid; place-items: center; min-width: 14px; height: 14px;
   padding: 0 2px; border-radius: 7px;
@@ -141,30 +143,30 @@
   border: 1px solid color-mix(in srgb, #7cc0ff 55%, var(--edge));
   pointer-events: none;
 }
-.play .vtt-cover.c-threequarters { border-color: #7cc0ff; color: #eaf4ff; }
-.play .vtt-cover.c-total { border-color: var(--crimson); color: #ffd9de; }
+:is(.play, .battle) .vtt-cover.c-threequarters { border-color: #7cc0ff; color: #eaf4ff; }
+:is(.play, .battle) .vtt-cover.c-total { border-color: var(--crimson); color: #ffd9de; }
 
-.play .vtt-pips {
+:is(.play, .battle) .vtt-pips {
   position: absolute; top: -2px; right: -2px; display: flex; gap: 1px;
   pointer-events: none;
 }
-.play .vtt-pips i {
+:is(.play, .battle) .vtt-pips i {
   display: grid; place-items: center; width: 12px; height: 12px;
   border-radius: 50%; font-style: normal; font-size: 0.5rem; line-height: 1;
   color: #ffd9e2; background: rgba(24, 8, 14, 0.92);
   border: 1px solid color-mix(in srgb, var(--crimson) 60%, var(--edge));
 }
-.play .vtt-mono {
+:is(.play, .battle) .vtt-mono {
   font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.04em;
   color: var(--text); text-shadow: 0 1px 3px #000;
 }
-.play .vtt-token.team-party .vtt-disc { border-color: var(--teal); }
-.play .vtt-token.team-foe .vtt-disc { border-color: var(--crimson); }
-.play .vtt-token.team-neutral .vtt-disc { border-color: var(--gold-dim); }
-.play .vtt-token.kind-object .vtt-disc,
-.play .vtt-token.kind-marker .vtt-disc { border-radius: 12%; opacity: 0.85; }
+:is(.play, .battle) .vtt-token.team-party .vtt-disc { border-color: var(--teal); }
+:is(.play, .battle) .vtt-token.team-foe .vtt-disc { border-color: var(--crimson); }
+:is(.play, .battle) .vtt-token.team-neutral .vtt-disc { border-color: var(--gold-dim); }
+:is(.play, .battle) .vtt-token.kind-object .vtt-disc,
+:is(.play, .battle) .vtt-token.kind-marker .vtt-disc { border-radius: 12%; opacity: 0.85; }
 
-.play .vtt-token.active .vtt-disc {
+:is(.play, .battle) .vtt-token.active .vtt-disc {
   border-color: var(--gold);
   box-shadow: 0 0 0 2px rgba(230, 188, 100, 0.35), 0 0 18px rgba(230, 188, 100, 0.55);
   animation: vtt-turn 1.8s ease-in-out infinite;
@@ -172,12 +174,12 @@
 @keyframes vtt-turn {
   50% { box-shadow: 0 0 0 3px rgba(230, 188, 100, 0.45), 0 0 26px rgba(230, 188, 100, 0.75); }
 }
-.play .vtt-token.selected .vtt-disc { outline: 2px dashed rgba(230, 188, 100, 0.8); outline-offset: 2px; }
-.play .vtt-token.mine .vtt-disc { border-width: 3px; }
-.play .vtt-token.down { filter: grayscale(1); opacity: 0.42; }
-.play .vtt-token.prone .vtt-disc { transform: scale(0.78) rotate(-18deg); }
-.play .vtt-token.ghost { opacity: 0.5; }
-.play .vtt-token.ghost .vtt-disc { border-style: dashed; }
+:is(.play, .battle) .vtt-token.selected .vtt-disc { outline: 2px dashed rgba(230, 188, 100, 0.8); outline-offset: 2px; }
+:is(.play, .battle) .vtt-token.mine .vtt-disc { border-width: 3px; }
+:is(.play, .battle) .vtt-token.down { filter: grayscale(1); opacity: 0.42; }
+:is(.play, .battle) .vtt-token.prone .vtt-disc { transform: scale(0.78) rotate(-18deg); }
+:is(.play, .battle) .vtt-token.ghost { opacity: 0.5; }
+:is(.play, .battle) .vtt-token.ghost .vtt-disc { border-style: dashed; }
 
 /* Something opaque stands between this creature and the camera.
    A token is a DOM element over the canvas, so it is in front of the room by
@@ -187,7 +189,7 @@
    the figure it must not let you lose. Hiding it was never an option: a token
    that simply vanished would be indistinguishable from a bug, the same reason
    an illegal target keeps its place wearing its reason. */
-.play .vtt-token.occluded .vtt-disc {
+:is(.play, .battle) .vtt-token.occluded .vtt-disc {
   border-style: dotted;
   background: rgba(6, 9, 17, 0.92);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--tok, var(--edge)) 45%, transparent),
@@ -197,18 +199,18 @@
    reads as a creature you are seeing the position of rather than the creature.
    The fill is dimmed here rather than on the disc, because a filter on the disc
    would take the rim down with it. */
-.play .vtt-token.occluded .vtt-disc > img,
-.play .vtt-token.occluded .vtt-hp,
-.play .vtt-token.occluded .vtt-mono { opacity: 0.42; filter: saturate(0.25); }
+:is(.play, .battle) .vtt-token.occluded .vtt-disc > img,
+:is(.play, .battle) .vtt-token.occluded .vtt-hp,
+:is(.play, .battle) .vtt-token.occluded .vtt-mono { opacity: 0.42; filter: saturate(0.25); }
 /* Whoever is acting stays fully drawn. Dimming the creature whose turn it is —
    the one the player is steering — is the one moment this costs more than it
    buys. */
-.play .vtt-token.occluded.active .vtt-disc { border-style: solid; }
-.play .vtt-token.occluded.active .vtt-disc > img,
-.play .vtt-token.occluded.active .vtt-hp,
-.play .vtt-token.occluded.active .vtt-mono { opacity: 1; filter: none; }
+:is(.play, .battle) .vtt-token.occluded.active .vtt-disc { border-style: solid; }
+:is(.play, .battle) .vtt-token.occluded.active .vtt-disc > img,
+:is(.play, .battle) .vtt-token.occluded.active .vtt-hp,
+:is(.play, .battle) .vtt-token.occluded.active .vtt-mono { opacity: 1; filter: none; }
 
-.play .vtt-name {
+:is(.play, .battle) .vtt-name {
   position: absolute; bottom: -3px; left: 50%; transform: translateX(-50%);
   max-width: 150%; padding: 0 4px;
   font-family: var(--mono); font-size: 0.5rem; letter-spacing: 0.04em;
@@ -216,18 +218,18 @@
   border-radius: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   opacity: 0; transition: opacity 0.15s ease; pointer-events: none;
 }
-.play .vtt-token:hover .vtt-name,
-.play .vtt-token.selected .vtt-name,
-.play .vtt-token.active .vtt-name { opacity: 1; }
+:is(.play, .battle) .vtt-token:hover .vtt-name,
+:is(.play, .battle) .vtt-token.selected .vtt-name,
+:is(.play, .battle) .vtt-token.active .vtt-name { opacity: 1; }
 
-.play .vtt-move {
+:is(.play, .battle) .vtt-move {
   position: absolute; left: 9%; bottom: 1px; height: 2px;
   background: linear-gradient(90deg, var(--teal), var(--ember));
   border-radius: 1px; opacity: 0.8;
 }
 
 /* ---------- errors ---------- */
-.play .vtt-error {
+:is(.play, .battle) .vtt-error {
   position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
   padding: 7px 14px; max-width: 82%;
   border: 1px solid color-mix(in srgb, var(--crimson) 60%, var(--edge));
@@ -238,7 +240,7 @@
 }
 
 /* ---------- footer ---------- */
-.play .vtt-foot {
+:is(.play, .battle) .vtt-foot {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 7px 12px;
   border-top: 1px solid var(--edge);
@@ -246,68 +248,68 @@
   font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.06em;
   color: var(--text-dim);
 }
-.play .vtt-sel { color: var(--gold-2); letter-spacing: 0.1em; text-transform: uppercase; }
-.play .vtt-budget { color: var(--teal); }
-.play .vtt-measure { color: var(--teal); margin-left: auto; }
-.play .vtt-hint { color: var(--text-faint); font-style: normal; }
-.play .vtt-warn {
+:is(.play, .battle) .vtt-sel { color: var(--gold-2); letter-spacing: 0.1em; text-transform: uppercase; }
+:is(.play, .battle) .vtt-budget { color: var(--teal); }
+:is(.play, .battle) .vtt-measure { color: var(--teal); margin-left: auto; }
+:is(.play, .battle) .vtt-hint { color: var(--text-faint); font-style: normal; }
+:is(.play, .battle) .vtt-warn {
   color: var(--ember); letter-spacing: 0.05em;
   text-shadow: 0 0 10px rgba(245, 154, 60, 0.45);
 }
-.play .vtt-dash {
+:is(.play, .battle) .vtt-dash {
   border: 1px solid var(--edge); border-radius: 4px;
   padding: 2px 8px; background: rgba(9, 12, 21, 0.7);
   color: var(--text-dim); font-family: var(--mono); font-size: 0.58rem;
   letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
 }
-.play .vtt-dash.on {
+:is(.play, .battle) .vtt-dash.on {
   color: var(--ember); border-color: color-mix(in srgb, var(--ember) 55%, var(--edge));
   box-shadow: inset 0 0 8px rgba(245, 154, 60, 0.2);
 }
 
 /* ---------- effects legend ---------- */
-.play .vtt-legend {
+:is(.play, .battle) .vtt-legend {
   display: flex; flex-wrap: wrap; gap: 6px 12px;
   padding: 6px 12px 8px;
   border-top: 1px solid color-mix(in srgb, var(--edge) 60%, transparent);
   background: rgba(6, 9, 17, 0.55);
 }
-.play .vtt-leg {
+:is(.play, .battle) .vtt-leg {
   display: inline-flex; align-items: center; gap: 5px;
   font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.06em;
   color: var(--text-dim); cursor: help;
 }
-.play .vtt-leg i {
+:is(.play, .battle) .vtt-leg i {
   width: 9px; height: 9px; border-radius: 2px; display: inline-block;
   box-shadow: 0 0 6px currentColor;
 }
-.play .vtt-leg b { font-weight: 400; color: var(--ember); font-size: 0.6rem; }
+:is(.play, .battle) .vtt-leg b { font-weight: 400; color: var(--ember); font-size: 0.6rem; }
 
 @media (max-width: 860px) {
-  .play .vtt-board { height: clamp(240px, 44vh, 420px); }
-  .play .vtt-title { font-size: 0.85rem; }
+  :is(.play, .battle) .vtt-board { height: clamp(240px, 44vh, 420px); }
+  :is(.play, .battle) .vtt-title { font-size: 0.85rem; }
 }
 
 /* ---------- the board / chat split ----------
    Height only: the board's width belongs to the column it sits in. A short
    window wants a smaller board than a tall one, and no single default gets
    that right, so the player drags it and the choice persists. */
-.play .vtt-grip {
+:is(.play, .battle) .vtt-grip {
   flex: none; height: 9px; cursor: ns-resize;
   border-top: 1px solid var(--edge);
   background:
     linear-gradient(180deg, rgba(23, 33, 66, 0.7), rgba(9, 12, 21, 0.5));
   position: relative;
 }
-.play .vtt-grip::after {
+:is(.play, .battle) .vtt-grip::after {
   content: ""; position: absolute; left: 50%; top: 50%;
   transform: translate(-50%, -50%);
   width: 46px; height: 3px; border-radius: 2px;
   background: var(--gold-dim); opacity: 0.55; transition: opacity 0.15s;
 }
-.play .vtt-grip:hover::after { opacity: 1; background: var(--gold); }
+:is(.play, .battle) .vtt-grip:hover::after { opacity: 1; background: var(--gold); }
 /* Touch has no hover and no precise drag target — the board sizes itself. */
-@media (hover: none) { .play .vtt-grip { display: none; } }
+@media (hover: none) { :is(.play, .battle) .vtt-grip { display: none; } }
 
 /* ---------- floors ----------
    A storey selector, only present on a board that has more than one. Reading
@@ -317,51 +319,51 @@
    Looking at another floor is deliberately not the same act as standing on it.
    The strip says which one you are on, which one you are looking at, and — when
    you are standing on a stair — offers the one button that actually moves you. */
-.play .vtt-floors {
+:is(.play, .battle) .vtt-floors {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 6px 12px;
   border-bottom: 1px solid var(--edge);
   background: linear-gradient(180deg, rgba(19, 26, 46, 0.75), rgba(9, 12, 21, 0.6));
 }
-.play .vtt-floors > button {
+:is(.play, .battle) .vtt-floors > button {
   display: inline-flex; align-items: baseline; gap: 6px;
   border: 1px solid var(--edge); border-radius: 4px;
   padding: 3px 9px; background: rgba(9, 12, 21, 0.7);
   color: var(--text-dim); font-family: var(--mono); font-size: 0.58rem;
   letter-spacing: 0.09em; text-transform: uppercase; cursor: pointer;
 }
-.play .vtt-floors > button em {
+:is(.play, .battle) .vtt-floors > button em {
   font-style: normal; color: var(--text-faint); font-size: 0.52rem;
 }
-.play .vtt-floors > button:hover { border-color: var(--gold-2); color: var(--text); }
+:is(.play, .battle) .vtt-floors > button:hover { border-color: var(--gold-2); color: var(--text); }
 /* The floor being DRAWN. */
-.play .vtt-floors > button.on {
+:is(.play, .battle) .vtt-floors > button.on {
   border-color: var(--gold-2); color: var(--gold-2);
   background: rgba(230, 188, 100, 0.1);
 }
 /* The floor you are STANDING on — a different fact, so a different mark. */
-.play .vtt-floors > button.here::before {
+:is(.play, .battle) .vtt-floors > button.here::before {
   content: "◆"; color: var(--teal); font-size: 0.6rem;
 }
-.play .vtt-peeking {
+:is(.play, .battle) .vtt-peeking {
   display: inline-flex; align-items: center; gap: 8px;
   color: var(--ember); font-family: var(--mono); font-size: 0.56rem;
   letter-spacing: 0.06em;
 }
-.play .vtt-peeking button {
+:is(.play, .battle) .vtt-peeking button {
   border: 1px solid var(--ember); border-radius: 4px; padding: 1px 7px;
   background: transparent; color: var(--ember); cursor: pointer;
   font-family: var(--mono); font-size: 0.54rem; letter-spacing: 0.09em;
 }
-.play .vtt-take-stairs {
+:is(.play, .battle) .vtt-take-stairs {
   margin-left: auto;
   border: 1px solid var(--teal); border-radius: 4px;
   padding: 3px 10px; background: rgba(36, 224, 184, 0.12);
   color: var(--teal); font-family: var(--mono); font-size: 0.58rem;
   letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer;
 }
-.play .vtt-take-stairs:hover { background: rgba(36, 224, 184, 0.22); }
-.play .vtt-take-stairs:disabled {
+:is(.play, .battle) .vtt-take-stairs:hover { background: rgba(36, 224, 184, 0.22); }
+:is(.play, .battle) .vtt-take-stairs:disabled {
   opacity: 0.45; cursor: not-allowed; background: transparent;
 }
 
@@ -370,8 +372,8 @@
    list of things to choose. Legal targets are RINGED and reachable; the rest
    stay on the board wearing their reason in the tooltip, because a target
    that simply vanished would be indistinguishable from a bug. */
-.play .vtt-token.targetable { pointer-events: auto; cursor: crosshair; }
-.play .vtt-token.targetable .vtt-disc {
+:is(.play, .battle) .vtt-token.targetable { pointer-events: auto; cursor: crosshair; }
+:is(.play, .battle) .vtt-token.targetable .vtt-disc {
   outline: 2px solid var(--ember);
   outline-offset: 3px;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 0 16px rgba(245, 154, 60, 0.55);
@@ -380,17 +382,17 @@
 @keyframes vtt-aim {
   50% { outline-offset: 5px; box-shadow: 0 0 0 1px rgba(0,0,0,0.6), 0 0 24px rgba(245, 154, 60, 0.8); }
 }
-.play .vtt-token.untargetable { opacity: 0.34; filter: grayscale(0.7); cursor: not-allowed; }
-.play .vtt-token.in-area .vtt-disc {
+:is(.play, .battle) .vtt-token.untargetable { opacity: 0.34; filter: grayscale(0.7); cursor: not-allowed; }
+:is(.play, .battle) .vtt-token.in-area .vtt-disc {
   outline: 2px dashed var(--ember); outline-offset: 3px;
 }
-.play .vtt-hint.bad { color: #f4b9be; }
+:is(.play, .battle) .vtt-hint.bad { color: #f4b9be; }
 
 /* ---------- the action bar ----------
    Picking here does not DO anything: an act that needs aiming arms the board
    and waits for the click, so a player can see what a spell would reach — and
    who it would catch — before it costs them the slot. */
-.play .abar {
+:is(.play, .battle) .abar {
   flex: none;
   display: flex; flex-direction: column; gap: 0;
   border-top: 1px solid var(--edge);
@@ -403,38 +405,38 @@
     linear-gradient(180deg, rgba(9, 12, 21, 0.97), rgba(12, 16, 30, 0.99));
   box-shadow: 0 -8px 18px rgba(0, 0, 0, 0.45);
 }
-.play .abar.busy { opacity: 0.55; pointer-events: none; }
+:is(.play, .battle) .abar.busy { opacity: 0.55; pointer-events: none; }
 
-.play .abar-econ {
+:is(.play, .battle) .abar-econ {
   display: flex; align-items: center; gap: 10px;
   padding: 5px 12px;
   border-bottom: 1px solid color-mix(in srgb, var(--edge) 55%, transparent);
   font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.08em;
   color: var(--text-dim);
 }
-.play .abar-pip { color: var(--gold-2); font-size: 0.8rem; line-height: 1; }
-.play .abar-pip.spent { color: var(--text-faint); opacity: 0.4; }
-.play .abar-move { color: var(--teal); }
-.play .abar-wait { color: var(--text-faint); font-style: italic; margin-left: auto; }
+:is(.play, .battle) .abar-pip { color: var(--gold-2); font-size: 0.8rem; line-height: 1; }
+:is(.play, .battle) .abar-pip.spent { color: var(--text-faint); opacity: 0.4; }
+:is(.play, .battle) .abar-move { color: var(--teal); }
+:is(.play, .battle) .abar-wait { color: var(--text-faint); font-style: italic; margin-left: auto; }
 
-.play .abar-groups { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
-.play .abar-group { display: flex; flex-direction: column; min-width: 0; }
-.play .abar-group.open { flex: 1 1 100%; }
-.play .abar-tab {
+:is(.play, .battle) .abar-groups { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+:is(.play, .battle) .abar-group { display: flex; flex-direction: column; min-width: 0; }
+:is(.play, .battle) .abar-group.open { flex: 1 1 100%; }
+:is(.play, .battle) .abar-tab {
   padding: 5px 12px; background: transparent; border: 0;
   border-right: 1px solid color-mix(in srgb, var(--edge) 55%, transparent);
   color: var(--text-dim); font-family: var(--mono); font-size: 0.58rem;
   letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
 }
-.play .abar-group.open .abar-tab { color: var(--gold-2); background: rgba(230, 188, 100, 0.07); }
-.play .abar-tab em { font-style: normal; opacity: 0.5; margin-left: 4px; }
+:is(.play, .battle) .abar-group.open .abar-tab { color: var(--gold-2); background: rgba(230, 188, 100, 0.07); }
+:is(.play, .battle) .abar-tab em { font-style: normal; opacity: 0.5; margin-left: 4px; }
 
-.play .abar-list {
+:is(.play, .battle) .abar-list {
   display: flex; flex-wrap: wrap; gap: 5px;
   padding: 7px 12px 9px;
   border-top: 1px solid color-mix(in srgb, var(--edge) 45%, transparent);
 }
-.play .abar-act {
+:is(.play, .battle) .abar-act {
   display: inline-flex; align-items: baseline; gap: 6px;
   padding: 4px 9px;
   border: 1px solid var(--edge); border-radius: 4px;
@@ -442,58 +444,58 @@
   color: var(--text); font-family: var(--serif); font-size: 0.76rem;
   cursor: pointer; transition: border-color 0.12s, box-shadow 0.12s;
 }
-.play .abar-act:hover:not(:disabled) {
+:is(.play, .battle) .abar-act:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--gold) 50%, var(--edge));
 }
-.play .abar-act.armed {
+:is(.play, .battle) .abar-act.armed {
   border-color: var(--ember);
   box-shadow: inset 0 0 10px rgba(245, 154, 60, 0.22), 0 0 12px rgba(245, 154, 60, 0.3);
   color: var(--gold-2);
 }
-.play .abar-act.off, .play .abar-act:disabled {
+:is(.play, .battle) .abar-act.off, :is(.play, .battle) .abar-act:disabled {
   opacity: 0.38; cursor: not-allowed;
 }
-.play .abar-act.stowed .abar-name { font-style: italic; opacity: 0.8; }
-.play .abar-cost { color: var(--gold-dim); font-size: 0.66rem; }
-.play .abar-act.cost-bonus .abar-cost { color: var(--teal); }
-.play .abar-act.cost-free .abar-cost { opacity: 0.5; }
-.play .abar-range, .play .abar-shape {
+:is(.play, .battle) .abar-act.stowed .abar-name { font-style: italic; opacity: 0.8; }
+:is(.play, .battle) .abar-cost { color: var(--gold-dim); font-size: 0.66rem; }
+:is(.play, .battle) .abar-act.cost-bonus .abar-cost { color: var(--teal); }
+:is(.play, .battle) .abar-act.cost-free .abar-cost { opacity: 0.5; }
+:is(.play, .battle) .abar-range, :is(.play, .battle) .abar-shape {
   font-family: var(--mono); font-size: 0.54rem; letter-spacing: 0.06em;
   color: var(--text-faint);
 }
 
-.play .abar-armed {
+:is(.play, .battle) .abar-armed {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 6px 12px;
   border-top: 1px solid color-mix(in srgb, var(--ember) 40%, var(--edge));
   background: rgba(245, 154, 60, 0.07);
   font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.06em;
 }
-.play .abar-armed-name { color: var(--gold-2); text-transform: uppercase; letter-spacing: 0.1em; }
-.play .abar-armed-hint { color: var(--text-dim); font-style: italic; }
-.play .abar-slots { display: inline-flex; align-items: center; gap: 4px; color: var(--text-faint); }
-.play .abar-slots button {
+:is(.play, .battle) .abar-armed-name { color: var(--gold-2); text-transform: uppercase; letter-spacing: 0.1em; }
+:is(.play, .battle) .abar-armed-hint { color: var(--text-dim); font-style: italic; }
+:is(.play, .battle) .abar-slots { display: inline-flex; align-items: center; gap: 4px; color: var(--text-faint); }
+:is(.play, .battle) .abar-slots button {
   min-width: 20px; padding: 1px 5px;
   border: 1px solid var(--edge); border-radius: 3px;
   background: rgba(9, 12, 21, 0.7); color: var(--text-dim);
   font-family: var(--mono); font-size: 0.58rem; cursor: pointer;
 }
-.play .abar-slots button.on {
+:is(.play, .battle) .abar-slots button.on {
   color: var(--gold-2); border-color: color-mix(in srgb, var(--gold) 55%, var(--edge));
   background: rgba(230, 188, 100, 0.12);
 }
-.play .abar-cancel {
+:is(.play, .battle) .abar-cancel {
   margin-left: auto; padding: 2px 8px;
   border: 1px solid var(--edge); border-radius: 3px;
   background: transparent; color: var(--text-faint);
   font-family: var(--mono); font-size: 0.56rem; letter-spacing: 0.08em;
   text-transform: uppercase; cursor: pointer;
 }
-.play .abar-cancel:hover { color: var(--text); border-color: var(--gold-dim); }
+:is(.play, .battle) .abar-cancel:hover { color: var(--text); border-color: var(--gold-dim); }
 
 @media (max-width: 860px) {
-  .play .abar-act { font-size: 0.82rem; padding: 6px 10px; }
-  .play .abar-tab { padding: 7px 10px; }
+  :is(.play, .battle) .abar-act { font-size: 0.82rem; padding: 6px 10px; }
+  :is(.play, .battle) .abar-tab { padding: 7px 10px; }
 }
 
 /* A walking creature drives its own position every frame from the server's own
@@ -501,14 +503,33 @@
    ordinary case — a token that simply appears somewhere new — and left on
    during a walk it lags a frame behind and rounds off every corner, which is
    the exact thing walking the real path exists to stop. */
-.play .vtt-token.walking { transition: none; }
+:is(.play, .battle) .vtt-token.walking { transition: none; }
 
 /* The painted isometric board, laid under the canvas at the canonical framing
    the server baked it to. Stored RGBA with the surround already removed — the
    board projects to a diamond inside a rectangular image, and left in, the
    corners carry a second room the model invented at its own scale. */
-.play .vtt-backdrop {
+:is(.play, .battle) .vtt-backdrop {
   position: absolute;
   pointer-events: none;
   image-rendering: auto;
+}
+
+/* ---------- filling a page instead of sharing a column ----------
+   On the play surface the board trades height with the narration, so it sets
+   its own and the player drags the split. On the battle page there is nothing
+   to trade with: the board IS the page, and it takes the cell it is given. */
+.battle .vtt.fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  animation: none;               /* the page already faded in around it */
+}
+.battle .vtt.fill .vtt-board {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+@media (max-width: 860px) {
+  .battle .vtt.fill .vtt-board { height: auto; }
 }

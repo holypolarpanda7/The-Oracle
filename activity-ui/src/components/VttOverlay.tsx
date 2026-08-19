@@ -88,6 +88,14 @@ export interface VttProps {
   /** Use the connector under my token — the server checks I'm on one. */
   onTakeStairs: () => void;
   onDismissError: () => void;
+  /** Fill the space given rather than owning a height of its own.
+   *
+   *  On the play surface the board shares a scrolling column with the
+   *  narration, so how they split it is a preference the player drags. On the
+   *  battle page the board IS the page — there is nothing to trade height
+   *  with, so the stored split (and the grip that sets it) would only make it
+   *  smaller than its cell. */
+  fill?: boolean;
   /** The action bar, rendered INSIDE the board panel. It belongs here rather
    *  than as a sibling in the stage: the stage scrolls, the board is tall, and
    *  a bar below the fold is a bar nobody uses. The two are also in
@@ -708,7 +716,7 @@ export function VttOverlay(p: VttProps) {
     : 0;
 
   return (
-    <div className="vtt">
+    <div className={`vtt${p.fill ? " fill" : ""}`}>
       <header className="vtt-bar">
         <span className="vtt-kind">{SCENE_LABEL[scene.kind] ?? scene.kind}</span>
         <span className="vtt-title">{scene.name}</span>
@@ -778,7 +786,12 @@ export function VttOverlay(p: VttProps) {
 
       <div
         className="vtt-board"
-        ref={(el) => { wrapRef.current = el; boardR.ref.current = el; }}
+        ref={(el) => {
+          wrapRef.current = el;
+          // Not handed to the resizer when filling, or the height persisted on
+          // the play surface would clamp the battle page's board.
+          boardR.ref.current = p.fill ? null : el;
+        }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -807,11 +820,13 @@ export function VttOverlay(p: VttProps) {
         )}
       </div>
 
-      <div
-        className="vtt-grip"
-        title="Drag to give the board more room, or give it back to the chat"
-        onPointerDown={boardR.onGripDown}
-      />
+      {!p.fill && (
+        <div
+          className="vtt-grip"
+          title="Drag to give the board more room, or give it back to the chat"
+          onPointerDown={boardR.onGripDown}
+        />
+      )}
 
       <footer className="vtt-foot">
         {aiming ? (

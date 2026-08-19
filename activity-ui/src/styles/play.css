@@ -337,31 +337,31 @@
   background: var(--asset-scroll) center / 100% 100% no-repeat;
   filter: drop-shadow(0 14px 28px rgba(0, 0, 0, 0.55));
 }
-.play .scroll .txt {
+:is(.play .scroll, .battle .bt-lines) .txt {
   position: absolute; left: 9%; right: 9%; top: 7%; bottom: 7%;
   overflow: hidden auto; color: var(--ink); scrollbar-width: thin;
 }
-.play .scroll .who {
+:is(.play .scroll, .battle .bt-lines) .who {
   font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.2em;
   font-size: 0.58rem; color: #6c531e; margin-bottom: 9px;
   position: sticky; top: 0; z-index: 2;
   background: linear-gradient(180deg, rgba(236, 225, 196, 0.96) 60%, transparent);
   padding-bottom: 5px;
 }
-.play .scroll p { margin: 0 0 10px; font-size: clamp(0.86rem, 1.05vw, 1.04rem);
+:is(.play .scroll, .battle .bt-lines) p { margin: 0 0 10px; font-size: clamp(0.86rem, 1.05vw, 1.04rem);
   line-height: 1.62; max-width: 68ch; }
-.play .scroll p.player { color: #6a4c1c; font-style: italic; }
-.play .scroll p.awaiting { color: #7a5e2a; font-style: italic; }
+:is(.play .scroll, .battle .bt-lines) p.player { color: #6a4c1c; font-style: italic; }
+:is(.play .scroll, .battle .bt-lines) p.awaiting { color: #7a5e2a; font-style: italic; }
 
 /* The DM writing, live. Dimmer than finished prose and carrying a cursor,
    because it is a PREVIEW: the server has not resolved its dice or split its
    dialogue yet, and it is replaced rather than kept. Reading as
    not-quite-settled is the honest look for text that is about to change. */
-.play .scroll p.drafting {
+:is(.play .scroll, .battle .bt-lines) p.drafting {
   color: color-mix(in srgb, var(--text) 72%, transparent);
   white-space: pre-wrap;
 }
-.play .scroll p.drafting::after {
+:is(.play .scroll, .battle .bt-lines) p.drafting::after {
   content: "▍";
   margin-left: 1px;
   color: var(--gold-dim);
@@ -370,133 +370,133 @@
 @keyframes oracle-writing { 50% { opacity: 0; } }
 /* Spoken lines read differently from description — the cheapest, largest
    legibility win in a wall of prose. */
-.play .scroll .hl-speech, .play .scroll .in-speech { font-style: italic; color: #5c3f14; }
-.play .scroll .hl-name.in-speech, .play .scroll .hl-item.in-speech { color: #7a4b12; }
-.play .scroll .caret {
+:is(.play .scroll, .battle .bt-lines) .hl-speech, :is(.play .scroll, .battle .bt-lines) .in-speech { font-style: italic; color: #5c3f14; }
+:is(.play .scroll, .battle .bt-lines) .hl-name.in-speech, :is(.play .scroll, .battle .bt-lines) .hl-item.in-speech { color: #7a4b12; }
+:is(.play .scroll, .battle .bt-lines) .caret {
   display: inline-block; width: 7px; height: 1em; vertical-align: text-bottom;
   background: #128e77; margin-left: 2px; animation: blink 0.9s steps(1) infinite;
 }
 @keyframes blink { 50% { opacity: 0; } }
 
 /* narration semantic marks on parchment */
-.play .scroll .lex,
-.play .scroll .hl-name { color: #7a4b12; font-weight: 700; border-bottom: 1px dotted #b98a3f; }
-.play .scroll .hl-magic { color: #4a6f2a; font-weight: 600; }
-.play .scroll .hl-item { color: #7a4b12; font-weight: 700; }
-.play .scroll .hl-place { font-variant: small-caps; letter-spacing: 0.04em; }
-.play .scroll .hl-damage { color: #9c3b32; font-family: var(--mono); font-size: 0.92em; }
-.play .scroll .hl-heal { color: #4a6f2a; font-family: var(--mono); font-size: 0.92em; }
+:is(.play .scroll, .battle .bt-lines) .lex,
+:is(.play .scroll, .battle .bt-lines) .hl-name { color: #7a4b12; font-weight: 700; border-bottom: 1px dotted #b98a3f; }
+:is(.play .scroll, .battle .bt-lines) .hl-magic { color: #4a6f2a; font-weight: 600; }
+:is(.play .scroll, .battle .bt-lines) .hl-item { color: #7a4b12; font-weight: 700; }
+:is(.play .scroll, .battle .bt-lines) .hl-place { font-variant: small-caps; letter-spacing: 0.04em; }
+:is(.play .scroll, .battle .bt-lines) .hl-damage { color: #9c3b32; font-family: var(--mono); font-size: 0.92em; }
+:is(.play .scroll, .battle .bt-lines) .hl-heal { color: #4a6f2a; font-family: var(--mono); font-size: 0.92em; }
 
 /* ---------- a line of dialogue ----------
    The server attributes spoken paragraphs to a speaker (see _activity_segments)
    and each gets its own card with a portrait tab, so a conversation reads as
    an exchange rather than a wall of quoted prose. */
-.play .scroll .speech {
+:is(.play .scroll, .battle .bt-lines) .speech {
   display: flex; gap: 10px; margin: 4px 0 12px; padding: 8px 12px 8px 10px;
   max-width: 68ch; border-radius: 5px;
   background: rgba(120, 90, 30, 0.09);
   border: 1px solid #b6a271; border-left: 3px solid #8c6a20;
 }
-.play .scroll .sp-face {
+:is(.play .scroll, .battle .bt-lines) .sp-face {
   flex: none; width: 38px; height: 38px; border-radius: 5px; object-fit: cover;
   border: 1px solid #8c7a46; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
 }
-.play .scroll .sp-face.empty {
+:is(.play .scroll, .battle .bt-lines) .sp-face.empty {
   display: grid; place-items: center; font-family: var(--serif); font-size: 1.1rem;
   color: #6c531e; background: rgba(120, 96, 40, 0.16);
 }
-.play .scroll .sp-body { min-width: 0; }
-.play .scroll .sp-who {
+:is(.play .scroll, .battle .bt-lines) .sp-body { min-width: 0; }
+:is(.play .scroll, .battle .bt-lines) .sp-who {
   font-family: var(--mono); font-size: 0.55rem; letter-spacing: 0.14em;
   text-transform: uppercase; color: #7a4b12; margin-bottom: 3px;
 }
 /* A speaker who has a culture signs the tab in their OWN hand — which has to
    out-specify the mono treatment above, and drop the uppercasing that would
    flatten a display face. */
-.play .scroll .sp-who[class*="script-"] {
+:is(.play .scroll, .battle .bt-lines) .sp-who[class*="script-"] {
   font-size: 0.88rem; letter-spacing: 0.03em; text-transform: none;
 }
-.play .scroll .sp-who.script-celestial { font-family: var(--script-celestial); }
-.play .scroll .sp-who.script-dwarven   { font-family: var(--script-dwarven); }
-.play .scroll .sp-who.script-elven     { font-family: var(--script-elven); }
-.play .scroll .sp-who.script-draconic  { font-family: var(--script-draconic); }
-.play .scroll .sp-who.script-infernal  { font-family: var(--script-infernal); }
-.play .scroll .sp-who.script-fey       { font-family: var(--script-fey); }
-.play .scroll .speech p { margin: 0; max-width: none; color: #4a3410; }
-.play .scroll .speech.secret { border-left-color: #8a63c4; background: rgba(120, 84, 176, 0.08); }
+:is(.play .scroll, .battle .bt-lines) .sp-who.script-celestial { font-family: var(--script-celestial); }
+:is(.play .scroll, .battle .bt-lines) .sp-who.script-dwarven   { font-family: var(--script-dwarven); }
+:is(.play .scroll, .battle .bt-lines) .sp-who.script-elven     { font-family: var(--script-elven); }
+:is(.play .scroll, .battle .bt-lines) .sp-who.script-draconic  { font-family: var(--script-draconic); }
+:is(.play .scroll, .battle .bt-lines) .sp-who.script-infernal  { font-family: var(--script-infernal); }
+:is(.play .scroll, .battle .bt-lines) .sp-who.script-fey       { font-family: var(--script-fey); }
+:is(.play .scroll, .battle .bt-lines) .speech p { margin: 0; max-width: none; color: #4a3410; }
+:is(.play .scroll, .battle .bt-lines) .speech.secret { border-left-color: #8a63c4; background: rgba(120, 84, 176, 0.08); }
 
 /* ---------- roll card inside the scroll ----------
    A check is the moment the dice decide something, so it stops being an inline
    chip: the total is large, the maths is broken into chips you can actually
    read, and a natural 20 or 1 announces itself. */
-.play .scroll .rollcard {
+:is(.play .scroll, .battle .bt-lines) .rollcard {
   display: flex; align-items: center; gap: 12px; margin: 4px 0 12px;
   padding: 8px 12px; max-width: 68ch;
   background: rgba(30, 22, 8, 0.08); border: 1px solid #9c8a56;
   border-left: 3px solid #8c7a46; border-radius: 5px;
 }
-.play .scroll .rollcard.ok { border-left-color: #128e77; }
-.play .scroll .rollcard.failure { border-left-color: #9c3b32; }
-.play .scroll .rc-die {
+:is(.play .scroll, .battle .bt-lines) .rollcard.ok { border-left-color: #128e77; }
+:is(.play .scroll, .battle .bt-lines) .rollcard.failure { border-left-color: #9c3b32; }
+:is(.play .scroll, .battle .bt-lines) .rc-die {
   position: relative; flex: none; width: 40px; height: 40px;
   display: grid; place-items: center; border-radius: 7px;
   font-family: var(--mono); font-weight: 700; font-size: 1.06rem; color: #f3ece0;
   background: radial-gradient(circle at 35% 28%, #4a4030, #241d12 78%);
   border: 1px solid #8c7a46; box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.6);
 }
-.play .scroll .rollcard.ok .rc-die {
+:is(.play .scroll, .battle .bt-lines) .rollcard.ok .rc-die {
   color: #06201a; background: radial-gradient(circle at 35% 28%, #6bf0d3, #17a186);
   border-color: #0c6f5c;
 }
-.play .scroll .rollcard.failure .rc-die {
+:is(.play .scroll, .battle .bt-lines) .rollcard.failure .rc-die {
   color: #2a0808; background: radial-gradient(circle at 35% 28%, #e89a9a, #b93b32);
   border-color: #9c3b32;
 }
-.play .scroll .rollcard.crit .rc-die {
+:is(.play .scroll, .battle .bt-lines) .rollcard.crit .rc-die {
   color: #1d1400; background: radial-gradient(circle at 35% 28%, #ffe9ab, #e0a52c);
   border-color: #b98a3f; box-shadow: 0 0 14px rgba(224, 165, 44, 0.7);
 }
-.play .scroll .rollcard.fumble .rc-die {
+:is(.play .scroll, .battle .bt-lines) .rollcard.fumble .rc-die {
   color: #f3e6e6; background: radial-gradient(circle at 35% 28%, #6d2222, #360e0e);
   border-color: #9c3b32; box-shadow: 0 0 12px rgba(156, 59, 50, 0.55);
 }
-.play .scroll .rc-crit {
+:is(.play .scroll, .battle .bt-lines) .rc-crit {
   position: absolute; left: 50%; bottom: -9px; transform: translateX(-50%);
   font-family: var(--mono); font-style: normal; font-size: 0.46rem;
   letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap;
   padding: 1px 5px; border-radius: 3px; color: #1d1400;
   background: linear-gradient(180deg, #ffe9ab, #e0a52c); border: 1px solid #8c6a20;
 }
-.play .scroll .rollcard.fumble .rc-crit {
+:is(.play .scroll, .battle .bt-lines) .rollcard.fumble .rc-crit {
   color: #f3e6e6; background: linear-gradient(180deg, #8d2c2c, #5a1414); border-color: #4a1010;
 }
-.play .scroll .rc-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.play .scroll .rc-label { font-family: var(--serif); font-size: 0.92rem; color: #4a3410;
+:is(.play .scroll, .battle .bt-lines) .rc-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+:is(.play .scroll, .battle .bt-lines) .rc-label { font-family: var(--serif); font-size: 0.92rem; color: #4a3410;
   font-weight: 700; }
-.play .scroll .rc-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.play .scroll .rc-chip {
+:is(.play .scroll, .battle .bt-lines) .rc-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+:is(.play .scroll, .battle .bt-lines) .rc-chip {
   font-family: var(--mono); font-style: normal; font-size: 0.58rem;
   letter-spacing: 0.06em; text-transform: uppercase; color: #6c531e;
   padding: 2px 6px; border-radius: 3px;
   background: rgba(120, 96, 40, 0.12); border: 1px solid #b6a271;
 }
-.play .scroll .rc-chip.nat { color: #4a3410; font-weight: 700; }
-.play .scroll .rc-chip.dc { color: #7a3a12; border-color: #c08a4a;
+:is(.play .scroll, .battle .bt-lines) .rc-chip.nat { color: #4a3410; font-weight: 700; }
+:is(.play .scroll, .battle .bt-lines) .rc-chip.dc { color: #7a3a12; border-color: #c08a4a;
   background: rgba(184, 110, 40, 0.14); }
-.play .scroll .rc-stamp {
+:is(.play .scroll, .battle .bt-lines) .rc-stamp {
   margin-left: auto; flex: none; font-family: var(--mono); font-size: 0.56rem;
   letter-spacing: 0.16em; text-transform: uppercase; color: #7a6a3a;
   transform: rotate(-6deg); padding: 3px 8px; border-radius: 3px;
   border: 1px solid currentColor; opacity: 0.75;
 }
-.play .scroll .rollcard.ok .rc-stamp { color: #0c6f5c; }
-.play .scroll .rollcard.failure .rc-stamp { color: #9c3b32; }
+:is(.play .scroll, .battle .bt-lines) .rollcard.ok .rc-stamp { color: #0c6f5c; }
+:is(.play .scroll, .battle .bt-lines) .rollcard.failure .rc-stamp { color: #9c3b32; }
 
 /* ---------- suggested actions ----------
    Openings the Oracle named in the scene it just narrated. A nudge for someone
    staring at an empty box — the input below still takes anything at all. */
-.play .suggests { flex: none; display: flex; flex-wrap: wrap; gap: 7px; }
-.play .sugg {
+:is(.play, .battle) .suggests { flex: none; display: flex; flex-wrap: wrap; gap: 7px; }
+:is(.play, .battle) .sugg {
   font-family: var(--serif); font-size: 0.82rem; font-style: italic;
   color: var(--gold-2); cursor: pointer; padding: 6px 13px; border-radius: 999px;
   background: rgba(20, 28, 48, 0.75);
@@ -505,17 +505,17 @@
   transition: border-color 0.12s, background 0.12s, color 0.12s;
   animation: sugg-in 0.3s ease-out both;
 }
-.play .sugg:nth-child(2) { animation-delay: 0.05s; }
-.play .sugg:nth-child(3) { animation-delay: 0.1s; }
-.play .sugg:nth-child(4) { animation-delay: 0.15s; }
+:is(.play, .battle) .sugg:nth-child(2) { animation-delay: 0.05s; }
+:is(.play, .battle) .sugg:nth-child(3) { animation-delay: 0.1s; }
+:is(.play, .battle) .sugg:nth-child(4) { animation-delay: 0.15s; }
 @keyframes sugg-in { from { opacity: 0; transform: translateY(5px); } }
-.play .sugg:hover:not(:disabled) {
+:is(.play, .battle) .sugg:hover:not(:disabled) {
   border-color: var(--teal); color: #eafffb; background: rgba(26, 44, 56, 0.9);
 }
-.play .sugg:disabled { opacity: 0.4; cursor: default; }
+:is(.play, .battle) .sugg:disabled { opacity: 0.4; cursor: default; }
 
 /* ---------- prompt bar ---------- */
-.play .promptbar {
+:is(.play, .battle) .promptbar {
   /* Pinned to the foot of the stage: whatever else is on screen — a board, a
      long scroll of narration — the place you type must always be reachable. */
   flex: none; position: sticky; bottom: 0; z-index: 6;
@@ -524,43 +524,43 @@
   padding: 8px 10px 8px 14px;
   box-shadow: inset 0 0 0 1px rgba(230, 188, 100, 0.12), 0 8px 22px rgba(0, 0, 0, 0.4);
 }
-.play .promptbar input {
+:is(.play, .battle) .promptbar input {
   flex: 1; background: transparent; border: none; outline: none;
   color: var(--text); font-family: var(--serif); font-size: 0.98rem;
 }
-.play .promptbar input::placeholder { color: var(--text-dim); font-style: italic; }
-.play .promptbar .psend {
+:is(.play, .battle) .promptbar input::placeholder { color: var(--text-dim); font-style: italic; }
+:is(.play, .battle) .promptbar .psend {
   display: grid; place-items: center; width: 40px; height: 40px; border: none; border-radius: 5px;
   background: radial-gradient(circle at 35% 30%, #6bf0d3, var(--teal)); color: #04110e;
   cursor: pointer; box-shadow: 0 0 14px rgba(36, 224, 184, 0.4); font-size: 1rem;
 }
-.play .promptbar .psend:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
-.play .promptbar .psecret {
+:is(.play, .battle) .promptbar .psend:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+:is(.play, .battle) .promptbar .psecret {
   display: grid; place-items: center; width: 34px; height: 34px; border-radius: 5px;
   border: 1px solid var(--edge); background: rgba(8, 11, 20, 0.5);
   color: var(--text-dim); cursor: pointer; font-size: 0.9rem; flex: none;
 }
-.play .promptbar .psecret.on {
+:is(.play, .battle) .promptbar .psecret.on {
   color: #e6c46a; border-color: #7a5aa8;
   background: radial-gradient(circle at 35% 30%, rgba(150, 110, 200, 0.5), rgba(60, 40, 90, 0.6));
   box-shadow: 0 0 12px rgba(140, 96, 200, 0.45);
 }
-.play .promptbar.secret {
+:is(.play, .battle) .promptbar.secret {
   border-color: #7a5aa8;
   box-shadow: inset 0 0 0 1px rgba(150, 110, 200, 0.25), 0 8px 22px rgba(0, 0, 0, 0.4);
 }
 
 /* secret / whisper marks inside the scroll */
-.play .scroll .secret-tag {
+:is(.play .scroll, .battle .bt-lines) .secret-tag {
   font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.05em;
   text-transform: uppercase; color: #6d4aa0;
 }
-.play .scroll p.player.secret { color: #5a3d86; }
-.play .scroll p.secret {
+:is(.play .scroll, .battle .bt-lines) p.player.secret { color: #5a3d86; }
+:is(.play .scroll, .battle .bt-lines) p.secret {
   border-left: 2px solid #8a63c4; padding-left: 8px;
   background: rgba(120, 84, 176, 0.07);
 }
-.play .scroll p.whisper {
+:is(.play .scroll, .battle .bt-lines) p.whisper {
   color: #5a3d86; font-style: italic;
   border-left: 2px solid #8a63c4; padding-left: 8px;
   background: rgba(120, 84, 176, 0.07);
@@ -858,10 +858,10 @@
      on touch. */
   .play .scroll { flex: none; min-height: 0; }
   /* Clears the scroll's torn top edge, which the header sat on top of. */
-  .play .scroll .txt { position: static; overflow: visible;
+  :is(.play .scroll, .battle .bt-lines) .txt { position: static; overflow: visible;
     padding: 15% 10% 13%; }
-  .play .scroll p { max-width: none; }
-  .play .scroll .who { background: none; }
+  :is(.play .scroll, .battle .bt-lines) p { max-width: none; }
+  :is(.play .scroll, .battle .bt-lines) .who { background: none; }
   .play .scene { max-height: none; }
 }
 

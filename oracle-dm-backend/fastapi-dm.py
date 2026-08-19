@@ -9547,6 +9547,103 @@ def _combat_fight_over(encounter_id: int) -> Optional[str]:
     return None
 
 
+def _combat_npc_catchup(session_id: str, *, limit: int = 12) -> Optional[str]:
+    """Play out whoever is up until it is a PLAYER's turn again.
+
+    Monsters used to move only inside ``_combat_engine_turn``, which runs on a
+    player's message — so a fight whose first initiative belonged to a monster
+    simply sat there. The board said "Cultist 1's turn" and the cultist did
+    nothing, forever, because the only thing that could move it was the player
+    doing something they had just been told was not their turn to do.
+
+    So the tracker is caught up wherever a turn might have landed on an NPC:
+    when a bout opens, and after anything that ends a turn. It stops at a PC, at
+    a pending reaction (which is a question only a player can answer), and when
+    one side is wiped. Returns the rendered report, or None if nobody moved —
+    which is the normal case, and must stay cheap.
+    """
+    enc = combat.get_active(session_id)
+    if enc is None:
+        return None
+    cur = combat.current_combatant(enc.id)
+    if cur is None or cur.kind == "pc":
+        return None
+    if combat.get_pending_reaction(enc.id):
+        return None
+
+    profiles: dict[int, PCProfile] = {}
+    with Session(engine) as s:
+        for c in combat.order(enc.id):
+            if not c.character_id:
+                continue
+            ch = s.get(Character, c.character_id)
+            if ch is None:
+                continue
+            try:
+                profiles[c.character_id] = _combat_pc_profile(ch)
+            except Exception as e:  # noqa: BLE001
+                print(f"[combat-catchup] profile for {ch.name} failed: {e}")
+    env = None
+    first_pc = next(iter(profiles), None)
+    if first_pc is not None:
+        try:
+            env = _site_combat_env(_pc_arcane_sites(first_pc))
+        except Exception as e:  # noqa: BLE001
+            print(f"[combat-catchup] site env skipped: {e}")
+    # The same attach every engine turn makes: real feet while a board is out,
+    # the band model when there isn't one.
+    _attach_board_spatial(enc.id)
+
+    blocks: list[str] = []
+    rolls_out: list[dict] = []
+    for _ in range(limit):
+        if combat.get_active(session_id) is None:
+            break
+        c = combat.current_combatant(enc.id)
+        if c is None or c.kind == "pc":
+            break
+        rep = combat_engine.run_monster_turn(enc.id, profiles=profiles, env=env)
+        txt = CombatEngine.render_report(rep)
+        if txt.strip():
+            blocks.append(txt)
+        rolls_out.extend(rep.rolls())
+        if rep.paused:
+            break                # frozen on a player's reaction decision
+        over = _combat_fight_over(enc.id)
+        if over:
+            blocks.append(over)
+            break
+
+    if not blocks:
+        return None
+
+    # The tracker is where damage lands first; the sheet has to follow it.
+    try:
+        with Session(engine) as s:
+            for c in combat.order(enc.id):
+                if not c.character_id:
+                    continue
+                ch = s.get(Character, c.character_id)
+                if ch and (ch.current_hp != c.current_hp
+                           or (getattr(ch, "temp_hp", 0) or 0) != c.temp_hp):
+                    ch.current_hp = c.current_hp
+                    ch.temp_hp = c.temp_hp
+                    s.add(ch)
+            s.commit()
+    except Exception as e:  # noqa: BLE001
+        print(f"[combat-catchup] PC HP mirror failed: {e}")
+
+    collector = _ACTIVITY_ROLLS.get()
+    if collector is not None:
+        collector.extend(rolls_out)
+
+    if combat.get_active(session_id) is not None:
+        nxt = combat.current_combatant(enc.id)
+        if nxt is not None:
+            blocks.append(f"NOW: {nxt.name}'s turn.")
+    return "\n".join(b for b in blocks if b)
+
+
 def _combat_engine_turn(session_id: str, user_id: Optional[str],
                         message: str,
                         intents: Optional[list[dict]] = None) -> Optional[str]:
@@ -23179,6 +23276,12 @@ def _arena_open_fight(session_id: str, user_id: str, *,
             f"from you.{conjured}\n\n"
             f"*{roster.title} — reads as {roster.difficulty} for a level "
             f"{level} fighter. {first} moves first.*")
+    # If the initiative went to the OTHER side, they take it now. Waiting for
+    # the player to act would mean waiting for them to act out of turn, on a
+    # board that had just told them it was not their turn.
+    opener = _combat_npc_catchup(session_id)
+    if opener:
+        text = f"{text}\n\n{opener}"
     return {"ok": True, "text": text, "encounter_id": enc.id,
             "scene_id": scene.id if scene is not None else None}
 

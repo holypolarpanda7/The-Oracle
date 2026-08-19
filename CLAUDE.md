@@ -360,9 +360,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   is still one you can walk)
 - Pantheon / patron-choice smoke test: `uv run python scripts/pantheon_smoke.py`
   (a god born in play becomes choosable in CC; an unmade one stops being offered)
-- Activity UI harnesses (Playwright, against the offline demo — run
-  `npm run build && npx vite preview --port 4173` in `activity-ui/` first, then
-  `npx node <script>.mjs`): `feat-choices`, `spell-picker`, `levelup-spells`,
+- Activity UI harnesses (Playwright, against the offline demo). **`vite
+  preview` PROXIES `/ws` to the backend**, so with the backend up the demo feed
+  never engages and every harness that needs a character sits there waiting —
+  serve the build with something dumber instead:
+  `npm run build && (cd dist && python3 -m http.server 4190)`, then
+  `npx node <script>.mjs http://localhost:4190/`. The harnesses: `feat-choices`, `spell-picker`, `levelup-spells`,
   `reprepare`, `mobile-smoke`, `arena-shot`, `vtt-shot`, `deity-shot`,
   `floors-shot` (the storey switcher: peek at a gallery, and what a connector
   looks like on the board), `race-dup` (species traits render exactly once per
@@ -386,8 +389,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (portrait corner ornaments stay corner-sized), `play-shot` (the play surface
   at desktop and phone: status bar, "here & now" rail, narration column, roll
   card), `chronicle-shot` (suggested-action chips send on tap; the Chronicle's
-  journal and bonds tabs), `occlusion-shot` (a creature standing behind the
-  mill's pillars is drawn hollow, and nobody else is).
+  journal and bonds tabs), `battle-shot` (a board out puts the fight on its own
+  page; the board is most of the screen; the order is a rail and not a row of
+  cards; the page says whose turn it is; the sheet is one tap away and does not
+  live on screen; the log folds; Reset Layout does not reload; and on a phone
+  the MAP — not just its panel — still leads), `occlusion-shot` (a creature
+  standing behind the mill's pillars is drawn hollow, and nobody else is).
 - Narration-streaming guard: `uv run python scripts/stream_smoke.py` (the hook
   filter and both wire formats, against a synthetic stream — no model needed).
   Live streaming is OFF; `ORACLE_LLM_STREAM=1` turns it on and it has not been
@@ -983,6 +990,44 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `state()["last_move"]` carries the newest one and the client animates along
   it. A straight lerp between two squares draws a creature strolling through
   masonry, which was tolerable when walls were flat shading and is not now.
+- **A fight gets its own PAGE, because the board was a fifth of the screen.**
+  `BattleSurface.tsx` replaces the play surface whenever a board is out. The old
+  layout spent its height on a status bar, an initiative carousel of CARDS, a
+  "here & now" rail, a narration column and a permanent character sheet, so the
+  one thing that decides the outcome was a small panel in the middle of them.
+  The page has three things: one strip (round, the whole order as a tight rail,
+  your own HP/AC, the way out), a line saying WHOSE TURN it is in words, and
+  the board with its action bar filling the rest. The sheet is a thing you look
+  UP — it does not change between turns — and the log folds away entirely.
+  Two mechanical notes. `vtt.css` and the shared narration/prompt styles are
+  re-scoped `:is(.play, .battle)` rather than duplicated, and the log is
+  PARCHMENT for that reason: every narration style (a name, an item, damage, a
+  whisper) is inked for parchment, so a dark log would need a second palette
+  for the same words. And the board takes a `fill` prop that stops it owning a
+  height of its own — on the play surface it trades height with the narration
+  and the player drags the split, and that persisted height would otherwise
+  clamp the battle page's board. **Sizing the board CELL as a fraction of the
+  viewport is the bug this page exists to fix, one breakpoint down**: the panel
+  carries a title bar, a floor strip, a movement line and the action bar, and
+  those fixed costs ate a 46vh cell down to a sliver of map on a phone. The MAP
+  gets the floor, and the page scrolls.
+- **A fight whose first initiative belonged to a MONSTER simply sat there.**
+  Monsters only ever moved inside `_combat_engine_turn`, which runs on a
+  player's MESSAGE — so the board said "Cultist 1's turn", the cultist did
+  nothing, and the only thing that could have moved it was the player acting
+  out of a turn they had just been told was not theirs.
+  `_combat_npc_catchup` plays out whoever is up until it is a PC's turn again,
+  and the Grounds run it when a bout opens. It stops at a PC, at a pending
+  reaction (a question only a player can answer) and when one side is wiped.
+  The other half of that hang was in `CombatEngine.render_report`: **a move
+  does NOT always land on a band.** Three paths emit one without — a creature
+  that covered as far as its turn allowed, a failed leap, and a jump (that one
+  deliberately, since a `to` would send the caller to `apply_band_move` and
+  undo the leap it was just told about) — and the renderer indexed `e['to']`
+  directly, so the whole exchange raised. Each event is rendered inside its own
+  guard now, because the tracker has ALREADY applied everything in a report and
+  a rendering failure that raises throws away the record of damage that really
+  happened.
 - **A frozen panel is a DEAD SOCKET, and it was three bugs stacked.** Reported
   as "the equipment screen just froze". None of the three was in that screen.
   **`create_all` never ALTERs an existing table**, so a column added to a model
@@ -1008,6 +1053,15 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   session). Only a frame carrying a `t` counts as having been ANSWERED — a dev
   server's HMR socket accepts any upgrade and sends its own JSON down it, and
   counting that would make a page with no backend look like a live table.
+  **"Reset Layout" was `location.reload()`** — a far bigger hammer than the
+  button says, since reloading drops the socket, so pressing it mid-fight put
+  the player on the landing with a bout still running behind them. Panels clear
+  their own inline size on a broadcast event now; nothing about resetting a
+  HEIGHT requires throwing the table away. **A long wait is said out loud**:
+  opening a bout rosters an encounter, lays out a board and may draw it, which
+  is tens of seconds behind a screen that otherwise just stops responding. The
+  veil appears only after 250 ms, so a fast answer never flashes one (offline,
+  where the Grounds answer synchronously, it never appears at all).
   (Related, and worth knowing when a demo-fed harness suddenly fails: `vite
   preview` PROXIES `/ws` to the backend, so the offline demo feed only engages
   when the backend is actually down. Serve `dist` with a plain static server to

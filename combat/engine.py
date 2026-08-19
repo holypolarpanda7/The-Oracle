@@ -3148,7 +3148,14 @@ class CombatEngine:
     def render_report(rep: TurnReport) -> str:
         """Certified-results text for the narration prompt."""
         lines: list[str] = []
-        for e in rep.events:
+        # One malformed event must not delete a whole resolved turn: the
+        # tracker has ALREADY applied everything in here, so a rendering
+        # failure that raises would throw away the record of damage that
+        # really happened. (A monster closing only part of the way emits a
+        # move with no band at all, and this used to KeyError on it — which
+        # is what a fight that "never started" actually was.)
+        def _one(e: dict) -> list[str]:
+            out: list[str] = []
             k = e["kind"]
             if k in ("attack", "opportunity_attack", "cast"):
                 what = e.get("weapon") or e.get("spell") or "attack"
@@ -3185,46 +3192,61 @@ class CombatEngine:
                         if r.get("defeated"):
                             sub += " — DOWN"
                         line += "\n" + sub
-                lines.append(line)
+                out.append(line)
             elif k == "reaction":
-                lines.append(f"REACTION: {e['actor']} — {e.get('spell')}"
+                out.append(f"REACTION: {e['actor']} — {e.get('spell')}"
                              f" ({'; '.join(e.get('notes') or [])})")
             elif k == "reaction_prompt":
                 q = "; ".join(e.get("notes") or [])
                 opts = " / ".join(e.get("options") or [])
-                lines.append(f"REACTION? {q} Options: {opts}.")
+                out.append(f"REACTION? {q} Options: {opts}.")
             elif k == "note":
-                lines.append(f"NOTE: {'; '.join(e.get('notes') or [])}")
+                out.append(f"NOTE: {'; '.join(e.get('notes') or [])}")
             elif k == "move":
+                # A move does NOT always land on a band. Three paths emit one
+                # without: a creature that covered as far as its turn allowed,
+                # a failed leap, and a jump — the last deliberately, because a
+                # `to` would send the caller to `apply_band_move` and undo the
+                # very leap it was told about. The notes carry what happened.
                 n = f" ({'; '.join(e['notes'])})" if e.get("notes") else ""
-                lines.append(f"MOVE: {e['actor']} -> {e['to']}{n}")
+                dest = f" -> {e['to']}" if e.get("to") else ""
+                out.append(f"MOVE: {e['actor']}{dest}{n}")
             elif k in ("dash", "dodge", "disengage"):
-                lines.append(f"{k.upper()}: {e['actor']}")
+                out.append(f"{k.upper()}: {e['actor']}")
             elif k in ("grapple", "shove", "hide"):
                 res = "succeeds" if e.get("success") else "fails"
                 n = f" ({'; '.join(e['notes'])})" if e.get("notes") else ""
-                lines.append(f"{k.upper()}: {e['actor']}"
+                out.append(f"{k.upper()}: {e['actor']}"
                              + (f" vs {e['target']}" if e.get("target") else "")
                              + f" — {res}{n}")
             elif k == "save":
                 res = (f"shakes off {e.get('condition')}" if e.get("success")
                        else f"still {e.get('condition')}")
-                lines.append(f"SAVE: {e['actor']} — {res}")
+                out.append(f"SAVE: {e['actor']} — {res}")
             elif k == "feature":
                 n = f" — {'; '.join(e['notes'])}" if e.get("notes") else ""
-                lines.append(f"FEATURE: {e['actor']} uses {e['feature']}{n}")
+                out.append(f"FEATURE: {e['actor']} uses {e['feature']}{n}")
             elif k == "help":
-                lines.append(f"HELP: {e['actor']} aids {e['target']} "
+                out.append(f"HELP: {e['actor']} aids {e['target']} "
                              f"({'; '.join(e.get('notes') or [])})")
             elif k == "use":
                 n = f" — {'; '.join(e['notes'])}" if e.get("notes") else ""
-                lines.append(f"USE: {e['actor']} uses {e.get('item')}{n}")
+                out.append(f"USE: {e['actor']} uses {e.get('item')}{n}")
             elif k == "improvise":
                 res = ("" if e.get("success") is None
                        else f" — {'succeeds' if e['success'] else 'fails'}")
-                lines.append(f"IMPROVISED: {e['actor']}: {e.get('desc')}{res}")
+                out.append(f"IMPROVISED: {e['actor']}: {e.get('desc')}{res}")
             elif k == "skip":
-                lines.append(f"SKIP: {e['actor']} ({'; '.join(e.get('notes') or [])})")
+                out.append(f"SKIP: {e['actor']} ({'; '.join(e.get('notes') or [])})")
+            return out
+
+        for e in rep.events:
+            try:
+                lines.extend(_one(e))
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"EVENT: {e.get('kind')} by "
+                             f"{e.get('actor') or 'someone'} "
+                             f"(unrenderable: {type(exc).__name__})")
         for r in rep.rejections:
             lines.append(f"REFUSED: {r['reason']}")
         if rep.paused:

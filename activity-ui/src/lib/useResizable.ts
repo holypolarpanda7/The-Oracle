@@ -10,6 +10,10 @@ interface Opts {
 
 const KEY_PREFIX = "oracle.panel.";
 
+/** The signal a reset sends. Every live panel listens and clears its own
+ *  inline size, which is the whole of what a reset has to do. */
+const RESET_EVENT = "oracle:panels-reset";
+
 /** Forget one panel's persisted size — for panels that stop being resizable,
  *  whose stale stored height would otherwise pin the new layout. */
 export function dropPanel(id: string) {
@@ -69,10 +73,26 @@ export function useResizable(id: string, opts: Opts = {}) {
     try { localStorage.removeItem(storeKey); } catch { /* ignore */ }
   }, [storeKey]);
 
+  // A global reset clears this panel too, without a reload — see resetAllPanels.
+  useEffect(() => {
+    const onReset = () => {
+      const el = ref.current;
+      if (el) { el.style.width = ""; el.style.height = ""; }
+    };
+    window.addEventListener(RESET_EVENT, onReset);
+    return () => window.removeEventListener(RESET_EVENT, onReset);
+  }, []);
+
   return { ref, onGripDown, reset };
 }
 
-/** Clear every persisted panel size and reload to the default layout. */
+/** Clear every persisted panel size and put the panels back to their defaults.
+ *
+ *  It used to call `location.reload()`, which is a much bigger hammer than the
+ *  button says: reloading the Activity drops the socket, and the fresh one is
+ *  bound to no session — so pressing "Reset Layout" in the middle of a fight
+ *  put the player back on the landing with a bout still running behind them.
+ *  Nothing about resetting a panel's HEIGHT requires throwing the table away. */
 export function resetAllPanels() {
   try {
     for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -80,5 +100,7 @@ export function resetAllPanels() {
       if (k && k.startsWith(KEY_PREFIX)) localStorage.removeItem(k);
     }
   } catch { /* ignore */ }
-  location.reload();
+  try {
+    window.dispatchEvent(new CustomEvent(RESET_EVENT));
+  } catch { /* ignore */ }
 }

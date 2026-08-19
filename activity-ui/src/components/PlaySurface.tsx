@@ -13,7 +13,7 @@ import type {
   SheetData, VttArea, VttOptions, VttScene, VttTargets,
 } from "../lib/types";
 
-function hpMood(hp: number, max: number): string {
+export function hpMood(hp: number, max: number): string {
   const f = hp / Math.max(1, max);
   return f <= 0.25 ? "dire" : f <= 0.6 ? "hurt" : "";
 }
@@ -60,7 +60,7 @@ function RollCard({ roll }: { roll: RollResult }) {
   );
 }
 
-function renderBlock(b: Block, i: number, onBlockDone: (i: number) => void) {
+export function renderBlock(b: Block, i: number, onBlockDone: (i: number) => void) {
   if (b.kind === "player") {
     return (
       <p className={`player${b.secret ? " secret" : ""}`} key={i}>

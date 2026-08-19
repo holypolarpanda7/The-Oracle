@@ -1,6 +1,7 @@
 @import "./tokens.css";
 @import "./play.css";
 @import "./vtt.css";
+@import "./battle.css";
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }

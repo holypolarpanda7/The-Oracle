@@ -1,0 +1,247 @@
+/* The Oracle — the battle page.
+ *
+ * A tactical fight gets the screen. The play surface spends its height on a
+ * status bar, an initiative strip, a "here & now" rail, a narration column and
+ * a full character sheet, which left the board — the only thing that decides
+ * the outcome — about a fifth of the window. Here there are three things: who
+ * goes next, the board, and what you can do on it. Everything else is a tap
+ * away and not on screen.
+ *
+ * Scoped under .battle. The board's own styles live in vtt.css and are shared;
+ * see the `.fill` rules there for how it stops owning a height of its own.
+ */
+
+.battle {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas:
+    "top   top"
+    "turn  turn"
+    "board log";
+  gap: 10px;
+  padding: 10px clamp(10px, 1.4vw, 20px) 12px;
+  color: var(--text);
+  font-family: var(--serif);
+  min-height: 0;
+}
+
+/* ---------- the one strip at the top ---------- */
+.bt-top {
+  grid-area: top;
+  display: flex; align-items: center; gap: 12px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--edge); border-radius: 6px;
+  background: linear-gradient(180deg, rgba(19, 26, 46, 0.9), rgba(6, 9, 17, 0.95));
+}
+.bt-id { display: flex; flex-direction: column; min-width: 0; flex: 0 0 auto; }
+.bt-round {
+  font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.12em;
+  color: var(--ember); text-transform: uppercase;
+}
+.bt-name {
+  font-style: italic; color: var(--gold-2); font-size: 0.9rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 22ch;
+}
+
+/* The order, as a tight rail. The old carousel was card-sized and ate 120px of
+   height for six creatures; this says the same thing in one row. */
+.bt-order {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; gap: 6px; overflow-x: auto; padding: 2px 0;
+  scrollbar-width: thin;
+}
+.bt-pip {
+  flex: 0 0 auto;
+  display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto;
+  gap: 0 6px; align-items: center;
+  padding: 4px 8px; min-width: 92px;
+  border: 1px solid var(--edge); border-radius: 5px;
+  background: rgba(8, 11, 20, 0.6);
+}
+.bt-pip.pc { border-color: color-mix(in srgb, var(--teal) 55%, var(--edge)); }
+.bt-pip.on {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold-dim), 0 0 14px rgba(230, 188, 100, 0.28);
+  background: rgba(24, 20, 10, 0.75);
+}
+.bt-pip.down { opacity: 0.4; }
+.bt-pip.down .bt-who { text-decoration: line-through; }
+.bt-init {
+  grid-row: 1 / 3;
+  font-family: var(--mono); font-size: 0.78rem; color: var(--gold-2);
+  min-width: 2ch; text-align: center;
+}
+.bt-who {
+  font-size: 0.72rem; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 12ch;
+}
+.bt-hp {
+  height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.bt-hp i { display: block; height: 100%; background: var(--ember); }
+.bt-pip.pc .bt-hp i { background: var(--teal); }
+
+.bt-me { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.bt-mehp, .bt-ac {
+  font-family: var(--mono); font-size: 0.72rem; color: var(--gold-2);
+  border: 1px solid var(--edge); border-radius: 4px; padding: 3px 7px;
+  background: rgba(8, 11, 20, 0.6);
+}
+.bt-icon {
+  background: transparent; border: 1px solid var(--edge); border-radius: 4px;
+  color: var(--gold-2); cursor: pointer; padding: 3px 7px; font-size: 0.8rem;
+}
+.bt-icon:hover { border-color: var(--gold); }
+
+/* ---------- whose turn it is, said once ---------- */
+.bt-turn {
+  grid-area: turn;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 12px;
+  border: 1px solid var(--edge); border-radius: 5px;
+  background: rgba(8, 11, 20, 0.55);
+  font-size: 0.82rem; color: var(--text-dim); font-style: italic;
+}
+.bt-turn.mine {
+  color: var(--gold); font-style: normal;
+  border-color: var(--gold-dim);
+  background: linear-gradient(90deg, rgba(230, 188, 100, 0.12), transparent 60%);
+}
+.bt-turn b { color: var(--gold); }
+.bt-spin {
+  width: 9px; height: 9px; border-radius: 50%;
+  border: 2px solid var(--gold-dim); border-top-color: transparent;
+  animation: bt-spin 0.9s linear infinite;
+}
+@keyframes bt-spin { to { transform: rotate(360deg); } }
+
+/* ---------- the board ---------- */
+.bt-board {
+  grid-area: board;
+  min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.bt-noboard {
+  flex: 1; display: grid; place-items: center; text-align: center;
+  padding: 24px; color: var(--text-dim); font-style: italic;
+  border: 1px dashed var(--edge); border-radius: 6px;
+}
+
+/* ---------- the log, kept narrow ---------- */
+.bt-log {
+  grid-area: log;
+  position: relative;
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  border: 1px solid var(--edge); border-radius: 6px;
+  /* Opaque: the app's backdrop is a painting, and narration read off a lit
+     rock face is not narration anybody reads. */
+  background: rgba(8, 11, 20, 0.93);
+}
+/* Folding the log is a GRID change, not a flex one: the column has a width of
+   its own, so shrinking the panel inside it only leaves a gap. */
+.battle.log-shut { grid-template-columns: minmax(0, 1fr) 26px; }
+.bt-log.shut .bt-lines,
+.bt-log.shut .bt-suggests,
+.bt-log.shut .promptbar { display: none; }
+.bt-logtab {
+  position: absolute; top: 4px; right: 6px; z-index: 2;
+  white-space: nowrap;
+  background: transparent; border: 0; cursor: pointer;
+  color: var(--text-faint); font-size: 0.65rem; font-family: var(--mono);
+  letter-spacing: 0.08em;
+}
+.bt-logtab:hover { color: var(--gold-2); }
+/* The log is PARCHMENT, like the play surface's scroll — not because it is
+   pretty but because every narration style (a name, an item, damage, a
+   whisper) is inked for parchment, and they are shared. A dark log would need
+   a second palette for the same words. */
+.bt-lines {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  padding: 12px 14px 6px;
+  font-size: 0.84rem; line-height: 1.55;
+  color: var(--ink);
+  background: linear-gradient(180deg, #ece1c4, #e2d5b2);
+  border-radius: 5px 5px 0 0;
+}
+.bt-lines p { margin: 0 0 8px; max-width: none; }
+.bt-suggests {
+  display: flex; flex-wrap: wrap; gap: 5px; padding: 0 10px 8px;
+}
+.battle .promptbar { margin: 0; padding: 8px 10px; border-top: 1px solid var(--edge); }
+
+/* ---------- narrow windows ----------
+   A phone has no second column to give, so the page becomes one and SCROLLS.
+   Sizing the board as a fraction of the viewport does not work here: the board
+   panel carries its own title bar, floor strip, movement line and action bar,
+   and those fixed costs ate a 46vh cell down to a sliver of map — which is the
+   bug this whole page exists to fix, reintroduced one breakpoint down. So the
+   MAP gets a floor of its own and everything else is allowed to push the page
+   taller. */
+@media (max-width: 900px) {
+  .battle {
+    display: flex; flex-direction: column;
+    gap: 8px; padding: 8px;
+    overflow-y: auto; overscroll-behavior: contain;
+  }
+  .bt-top {
+    flex-wrap: wrap; gap: 6px 10px; padding: 6px 8px;
+  }
+  .bt-id { flex: 1 1 auto; }
+  .bt-name { max-width: 18ch; font-size: 0.82rem; }
+  .bt-order { order: 3; width: 100%; }
+  .bt-pip { min-width: 80px; padding: 3px 6px; }
+  .bt-icon { padding: 4px 8px; }
+  .bt-board { flex: 0 0 auto; }
+  .battle .vtt.fill { flex: 0 0 auto; height: auto; }
+  .battle .vtt.fill .vtt-board { flex: 0 0 auto; height: 52vh; min-height: 280px; }
+  .bt-log { flex: 0 0 auto; min-height: 38vh; }
+  .bt-log.shut { min-height: 0; }
+  .battle.log-shut .bt-log { min-height: 0; }
+}
+
+/* ---------- a long wait, said out loud ----------
+   Opening a bout rosters an encounter, lays out a board and may draw it. That
+   is tens of seconds behind a screen that otherwise simply stops responding,
+   which is indistinguishable from a hang — and was reported as one. */
+.oracle-wait {
+  position: absolute; inset: 0; z-index: 90;
+  display: grid; place-items: center;
+  background: rgba(6, 8, 14, 0.82);
+  backdrop-filter: blur(2px);
+}
+.ow-box { text-align: center; max-width: 340px; padding: 0 20px; }
+.ow-ring { display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; }
+.ow-ring i {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--gold-dim);
+  animation: ow-pulse 1.2s ease-in-out infinite;
+}
+.ow-ring i:nth-child(2) { animation-delay: 0.16s; }
+.ow-ring i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes ow-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+.ow-label {
+  font-family: var(--serif); font-size: 1.05rem; color: var(--gold-2);
+  letter-spacing: 0.02em;
+}
+.ow-sub {
+  margin-top: 6px; font-size: 0.78rem; color: var(--text-dim); font-style: italic;
+}
+
+/* The sheet, on demand. It does not change between turns, so it is a thing you
+   look UP rather than a third of the width. */
+.bt-sheet {
+  position: absolute; inset: 0; z-index: 40;
+  display: grid; place-items: start end;
+  padding: 12px;
+  background: rgba(6, 8, 14, 0.55);
+}
+.bt-sheet-in { max-height: 100%; overflow-y: auto; width: min(360px, 92vw); }
+.bt-icon.on { border-color: var(--gold); color: var(--gold); }

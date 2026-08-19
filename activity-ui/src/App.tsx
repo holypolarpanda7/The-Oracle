@@ -13,6 +13,7 @@ import { Arena, ArenaResult, Quartermaster } from "./components/Arena";
 import { LevelUpOverlay } from "./components/LevelUp";
 import { ReprepareOverlay } from "./components/Reprepare";
 import { PlaySurface } from "./components/PlaySurface";
+import { BattleSurface } from "./components/BattleSurface";
 import { Stall } from "./components/Stall";
 import { BastionBuilder } from "./components/BastionBuilder";
 import { Chronicle } from "./components/Chronicle";
@@ -101,6 +102,32 @@ export default function App({ session }: { session: Session }) {
   // Whether the Oracle is still on the other end of the wire. A dropped socket
   // used to be silent, and silence reads as a frozen screen.
   const [link, setLink] = useState<ConnStatus>("open");
+  // What the table is waiting for, when the wait is long enough to look like a
+  // hang. Opening a bout rosters an encounter, generates a board and may draw
+  // it; that is tens of seconds, and it used to happen behind a screen that
+  // simply stopped responding.
+  const [waiting, setWaiting] = useState<string | null>(null);
+  const waitTimersRef = useRef<number[]>([]);
+  const clearWaitTimers = () => {
+    for (const t of waitTimersRef.current) window.clearTimeout(t);
+    waitTimersRef.current = [];
+  };
+  const awaitOracle = (label: string) => {
+    clearWaitTimers();
+    waitTimersRef.current.push(
+      // Shown only if the answer is actually SLOW. An answer that lands in a
+      // few frames needs no veil, and a veil that flashes for 30ms is noise —
+      // offline, where the Grounds answer synchronously, it never appears.
+      window.setTimeout(() => setWaiting(label), 250),
+      // A failsafe, not a schedule: if the answer never comes, the veil must
+      // not become the frozen screen it exists to replace.
+      window.setTimeout(() => setWaiting(null), 120000),
+    );
+  };
+  const doneWaiting = () => {
+    clearWaitTimers();
+    setWaiting(null);
+  };
   const [newChar, setNewChar] = useState<{ name: string; id: number | null } | null>(null);
   const [input, setInput] = useState("");
   const [itemView, setItemView] = useState<ItemView | null>(null);
@@ -168,6 +195,7 @@ export default function App({ session }: { session: Session }) {
           }
           break;
         case "entered":
+          doneWaiting();
           clearEnterTimer();
           setArenaMode(!!ev.arena);
           setScreen("play");
@@ -175,6 +203,8 @@ export default function App({ session }: { session: Session }) {
           break;
         case "arena":
           setArena(ev.state);
+          // The Grounds answered — whatever we were waiting on has landed.
+          doneWaiting();
           // A slot we were filling has been forged — back to the Grounds.
           if (arenaSlotRef.current !== null && screenRef.current === "create") {
             arenaSlotRef.current = null;
@@ -451,6 +481,12 @@ export default function App({ session }: { session: Session }) {
   const markDone = (i: number) =>
     setBlocks((bs) => bs.map((b, j) => (j === i && isTyped(b) ? { ...b, done: true } : b)));
 
+  // A tactical fight owns the screen: same props, a layout built around the
+  // board and the acts you can take on it. A fight with no board stays on the
+  // play surface — theatre of the mind wants the rail and the sheet, and there
+  // is no map to make room for. See BattleSurface.
+  const Surface = (combat && vtt) ? BattleSurface : PlaySurface;
+
   return (
     <div className="table">
       <div className={`frame${screen === "play" ? " playing" : ""}`}>
@@ -459,6 +495,20 @@ export default function App({ session }: { session: Session }) {
         {/* The link, when it isn't there. Every panel in this app is driven by
             the socket, so a dropped one used to present as whatever screen you
             were holding simply refusing to respond — no error, no way out. */}
+        {/* A long wait, said out loud. Opening a bout takes tens of seconds
+            (roster, board, art) and used to look exactly like a hang. */}
+        {waiting && (
+          <div className="oracle-wait">
+            <div className="ow-box">
+              <div className="ow-ring"><i /><i /><i /></div>
+              <div className="ow-label">{waiting}</div>
+              <div className="ow-sub">
+                the ground is being laid out and the roster drawn up
+              </div>
+            </div>
+          </div>
+        )}
+
         {(link === "lost" || link === "reconnecting") && (
           <div className="link-lost">
             <span className="link-dot" />
@@ -532,6 +582,7 @@ export default function App({ session }: { session: Session }) {
             onDelete={(slot) => connRef.current?.send({ t: "arena_delete", slot })}
             onBegin={({ slot, environment, level, difficulty, reuse }) => {
               setBlocks([]);   // a new bout starts on a clean surface
+              awaitOracle("The Grounds are being made ready…");
               connRef.current?.send({ t: "arena_begin", slot, environment, level,
                                       difficulty, reuse });
             }}
@@ -603,16 +654,23 @@ export default function App({ session }: { session: Session }) {
             {arenaMode && arena && arena.run?.phase === "outfitting" && (
               <Quartermaster
                 state={arena}
-                onOutfit={(cart, equip) =>
-                  connRef.current?.send({ t: "arena_outfit", cart, equip })}
+                onOutfit={(cart, equip) => {
+                  awaitOracle("The wards are closing…");
+                  connRef.current?.send({ t: "arena_outfit", cart, equip });
+                }}
               />
             )}
             {arenaMode && arena && (
               <ArenaResult
                 state={arena}
-                onAgain={() => connRef.current?.send({ t: "arena_fight" })}
-                onElsewhere={(environment) =>
-                  connRef.current?.send({ t: "arena_fight", environment })}
+                onAgain={() => {
+                  awaitOracle("The wards are closing…");
+                  connRef.current?.send({ t: "arena_fight" });
+                }}
+                onElsewhere={(environment) => {
+                  awaitOracle("The wards are closing…");
+                  connRef.current?.send({ t: "arena_fight", environment });
+                }}
                 onOutfit={() => connRef.current?.send({ t: "arena_shop" })}
                 onLeave={() => {
                   connRef.current?.send({ t: "arena_leave" });
@@ -656,7 +714,7 @@ export default function App({ session }: { session: Session }) {
                 onClose={() => setStallOpen(false)}
               />
             )}
-            <PlaySurface
+            <Surface
               blocks={blocks}
               draft={draft}
               hasStall={!!shop}

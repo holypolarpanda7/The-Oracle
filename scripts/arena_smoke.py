@@ -605,6 +605,17 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
           str((lvl1[-1].get("run") or {}).get("phase") if lvl1 else None))
     check("...and the socket lived to say so",
           any(e["t"] == "combat" and e.get("encounter") for e in sent))
+    # A fight whose first initiative belongs to a monster used to sit there:
+    # the board said "Cultist 1's turn" and the cultist never moved, because
+    # the only thing that ran monsters was the player acting out of turn.
+    last_combat = [e for e in sent if e["t"] == "combat" and e.get("encounter")]
+    enc_state = last_combat[-1]["encounter"] if last_combat else {}
+    combs = enc_state.get("combatants") or []
+    turn_i = enc_state.get("turn_index")
+    up = combs[turn_i] if isinstance(turn_i, int) and 0 <= turn_i < len(combs) else None
+    check("the bout opens on the PLAYER's turn, whoever won initiative",
+          up is not None and up.get("kind") == "pc",
+          f"{up and up.get('name')} ({up and up.get('kind')})")
 
     # ---- 12. the schema self-heals for EVERY model column -----------------
     # `create_all` never ALTERs an existing table, so a column added to a model
