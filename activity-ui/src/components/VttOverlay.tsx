@@ -565,10 +565,27 @@ export function VttOverlay(p: VttProps) {
 
   const onWheel = (e: React.WheelEvent) => {
     if (!view || !board || !canvasEl) return;
+    // The wheel is the ZOOM, and only the zoom. Left to bubble it also scrolls
+    // whatever the board is sitting in, so zooming in walked the page away
+    // underneath the map. (React attaches wheel passively at the root, so the
+    // native listener registered below is what can actually cancel it; this
+    // stops the bubble, that stops the scroll.)
+    e.stopPropagation();
     const r = canvasEl.getBoundingClientRect();
     setView(board.zoomAt(view, e.clientX - r.left, e.clientY - r.top,
                          e.deltaY < 0 ? 1.12 : 1 / 1.12));
   };
+
+  // React's own wheel handler is passive, so `preventDefault` there is a no-op
+  // and the browser scrolls anyway. A non-passive native listener is the only
+  // thing that can refuse it.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const stop = (e: WheelEvent) => e.preventDefault();
+    el.addEventListener("wheel", stop, { passive: false });
+    return () => el.removeEventListener("wheel", stop);
+  }, [canvasEl]);
 
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();

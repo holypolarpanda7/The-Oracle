@@ -1080,14 +1080,44 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   and "spell attack" are spelled out letter by letter, anchored on the closed
   vocabulary of six ability names and two attack ranges so it cannot drift onto
   ordinary prose.
+- **A BAND is a relationship, so only its OWNER may be repositioned for it.**
+  `reconcile_bands` walks any token whose tracker band disagrees with its
+  square, which is right for a band the DM changed in narration and catastrophic
+  for one that merely DRIFTED — when a crocodile closes on the party everyone's
+  band changes and only the crocodile moved. The PC was dragged backwards two
+  squares to restore a band nobody had set for them, and their own turn began
+  somewhere they had never gone. `MapToken.band_synced` records the band the
+  BOARD last wrote (in `sync_bands`), so a band somebody deliberately changed
+  is told apart from one that drifted. Pinned in the selftest, which fails by
+  exactly two squares without it.
+- **The painted isometric board was built, probed, prerendered into a gallery —
+  and never called.** `VttEngine.render_iso_art` had NO callers, so every board
+  an Activity opened came back as bare geometry while `iso_art_status` sat at
+  `"none"` on every row in the database. `render_art` (the top-down picture a
+  Discord table looks at) was wired from the first day and its isometric
+  counterpart never was. They are two views of the same room and a board can
+  have either, both or neither, so nothing failed — it just quietly never
+  happened. Measured on this rig: **an uncached isoboard painting is ~58s**,
+  which is why it is a background task and the fight runs on geometry until it
+  lands.
 - **A fight gets its own PAGE, because the board was a fifth of the screen.**
   `BattleSurface.tsx` replaces the play surface whenever a board is out. The old
   layout spent its height on a status bar, an initiative carousel of CARDS, a
   "here & now" rail, a narration column and a permanent character sheet, so the
   one thing that decides the outcome was a small panel in the middle of them.
-  The page has three things: one strip (round, the whole order as a tight rail,
-  your own HP/AC, the way out), a line saying WHOSE TURN it is in words, and
-  the board with its action bar filling the rest. The sheet is a thing you look
+  **The board IS the page and everything else floats ON it.** The first cut
+  gave the board a grid CELL with the log in a column beside it, which is
+  better than a panel in a scrolling stage and still not what a fight wants: a
+  third of the width went to a narration column nobody reads mid-turn, and the
+  prose was squeezed into it. Now the strip, the turn line and the log are
+  overlays — they cost the map nothing when you are not reading them, the log
+  folds to a tab, and on a phone it is a bottom drawer that starts SHUT because
+  open it covers the action bar. The page never scrolls: the wheel over the
+  board is the zoom and only the zoom, which needs a NON-PASSIVE native
+  listener, since React attaches wheel passively and `preventDefault` there is
+  a no-op. The page has three things: one strip (round, the whole order as a
+  tight rail, your own HP/AC, the way out), a line saying WHOSE TURN it is in
+  words, and the board with its action bar filling the rest. The sheet is a thing you look
   UP — it does not change between turns — and the log folds away entirely.
   Two mechanical notes. `vtt.css` and the shared narration/prompt styles are
   re-scoped `:is(.play, .battle)` rather than duplicated, and the log is

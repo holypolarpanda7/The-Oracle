@@ -11,31 +11,33 @@
  * see the `.fill` rules there for how it stops owning a height of its own.
  */
 
+/* The board IS the page. Everything else floats ON it.
+ *
+ * The first cut gave the board a grid CELL and put the log in a column beside
+ * it, which is better than a panel in a scrolling stage and still not what a
+ * fight wants: a third of the width went to a narration column nobody reads
+ * mid-turn, and the prose was squeezed into it. The board now fills the
+ * viewport and the strip, the turn line and the log are overlays — they cost
+ * the map nothing when you are not reading them, and the log folds to a tab. */
 .battle {
   position: absolute;
   inset: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
-  grid-template-rows: auto auto minmax(0, 1fr);
-  grid-template-areas:
-    "top   top"
-    "turn  turn"
-    "board log";
-  gap: 10px;
-  padding: 10px clamp(10px, 1.4vw, 20px) 12px;
+  overflow: hidden;                /* the page never scrolls; the board pans */
   color: var(--text);
   font-family: var(--serif);
-  min-height: 0;
 }
 
 /* ---------- the one strip at the top ---------- */
 .bt-top {
-  grid-area: top;
+  position: absolute; z-index: 20;
+  top: 8px; left: 8px; right: 8px;
   display: flex; align-items: center; gap: 12px;
   min-width: 0;
   padding: 6px 10px;
   border: 1px solid var(--edge); border-radius: 6px;
-  background: linear-gradient(180deg, rgba(19, 26, 46, 0.9), rgba(6, 9, 17, 0.95));
+  background: linear-gradient(180deg, rgba(19, 26, 46, 0.92), rgba(6, 9, 17, 0.96));
+  backdrop-filter: blur(3px);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
 }
 .bt-id { display: flex; flex-direction: column; min-width: 0; flex: 0 0 auto; }
 .bt-round {
@@ -100,12 +102,16 @@
 
 /* ---------- whose turn it is, said once ---------- */
 .bt-turn {
-  grid-area: turn;
+  position: absolute; z-index: 20;
+  top: 60px; left: 50%; transform: translateX(-50%);
+  max-width: min(560px, calc(100% - 24px));
   display: flex; align-items: center; gap: 8px;
-  padding: 5px 12px;
-  border: 1px solid var(--edge); border-radius: 5px;
-  background: rgba(8, 11, 20, 0.55);
+  padding: 5px 14px;
+  border: 1px solid var(--edge); border-radius: 999px;
+  background: rgba(8, 11, 20, 0.88);
+  backdrop-filter: blur(3px);
   font-size: 0.82rem; color: var(--text-dim); font-style: italic;
+  white-space: nowrap;
 }
 .bt-turn.mine {
   color: var(--gold); font-style: normal;
@@ -121,10 +127,13 @@
 @keyframes bt-spin { to { transform: rotate(360deg); } }
 
 /* ---------- the board ---------- */
+/* The board takes the whole page. Its own panel chrome (title bar, floor
+   strip, movement line, action bar) rides at the bottom, so the map itself is
+   everything above them — see the `.fill` rules in vtt.css. */
 .bt-board {
-  grid-area: board;
-  min-width: 0; min-height: 0;
+  position: absolute; inset: 0;
   display: flex; flex-direction: column;
+  min-width: 0; min-height: 0;
 }
 .bt-noboard {
   flex: 1; display: grid; place-items: center; text-align: center;
@@ -133,18 +142,25 @@
 }
 
 /* ---------- the log, kept narrow ---------- */
+/* The log floats over the board and can be put away entirely. Wide enough to
+   read prose in — the complaint about the column layout was that the narration
+   was squished, and a narrow overlay would repeat that. */
 .bt-log {
-  grid-area: log;
-  position: relative;
-  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  position: absolute; z-index: 15;
+  top: 96px; right: 8px; bottom: 8px;
+  width: min(400px, 34vw);
+  display: flex; flex-direction: column; min-height: 0;
   border: 1px solid var(--edge); border-radius: 6px;
   /* Opaque: the app's backdrop is a painting, and narration read off a lit
      rock face is not narration anybody reads. */
   background: rgba(8, 11, 20, 0.93);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+  transition: width 0.18s ease, opacity 0.18s ease;
 }
-/* Folding the log is a GRID change, not a flex one: the column has a width of
-   its own, so shrinking the panel inside it only leaves a gap. */
-.battle.log-shut { grid-template-columns: minmax(0, 1fr) 26px; }
+.bt-log.shut {
+  width: 30px; background: rgba(8, 11, 20, 0.7);
+  bottom: auto; box-shadow: none;
+}
 .bt-log.shut .bt-eng,
 .bt-log.shut .bt-lines,
 .bt-log.shut .bt-suggests,
@@ -218,35 +234,30 @@
 .battle .promptbar { margin: 0; padding: 8px 10px; border-top: 1px solid var(--edge); }
 
 /* ---------- narrow windows ----------
-   A phone has no second column to give, so the page becomes one and SCROLLS.
-   Sizing the board as a fraction of the viewport does not work here: the board
-   panel carries its own title bar, floor strip, movement line and action bar,
-   and those fixed costs ate a 46vh cell down to a sliver of map — which is the
-   bug this whole page exists to fix, reintroduced one breakpoint down. So the
-   MAP gets a floor of its own and everything else is allowed to push the page
-   taller. */
+   A phone has no room for a floating panel over the map, so the log becomes a
+   DRAWER along the bottom: shut it is a tab, open it is about half the height.
+   The board still owns the page and the page still never scrolls. */
 @media (max-width: 900px) {
-  .battle {
-    display: flex; flex-direction: column;
-    gap: 8px; padding: 8px;
-    overflow-y: auto; overscroll-behavior: contain;
-  }
   .bt-top {
     flex-wrap: wrap; gap: 6px 10px; padding: 6px 8px;
+    top: 6px; left: 6px; right: 6px;
   }
   .bt-id { flex: 1 1 auto; }
   .bt-name { max-width: 18ch; font-size: 0.82rem; }
   .bt-order { order: 3; width: 100%; }
   .bt-pip { min-width: 80px; padding: 3px 6px; }
   .bt-icon { padding: 4px 8px; }
-  .bt-board { flex: 0 0 auto; }
-  .battle .vtt.fill { flex: 0 0 auto; height: auto; }
-  .battle .vtt.fill .vtt-board { flex: 0 0 auto; height: 52vh; min-height: 280px; }
-  .bt-log { flex: 0 0 auto; min-height: 46vh; }
-  .bt-eng { flex: 0 0 auto; max-height: 24vh; }
-  .bt-lines { flex: 0 0 auto; max-height: 24vh; }
-  .bt-log.shut { min-height: 0; }
-  .battle.log-shut .bt-log { min-height: 0; }
+  .bt-turn { display: none; }        /* the top strip already says whose turn */
+  .bt-log {
+    top: auto; left: 6px; right: 6px; bottom: 6px;
+    width: auto; height: 48vh;
+  }
+  /* `.bt-log.shut` in the desktop block sets `bottom: auto` and outranks the
+     media rule above on specificity, which floated the shut drawer to the TOP
+     of the page. It is a bottom drawer at this width, shut or open. */
+  .bt-log.shut {
+    top: auto; bottom: 6px; height: 30px; width: auto;
+  }
 }
 
 /* ---------- a long wait, said out loud ----------

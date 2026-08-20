@@ -53,8 +53,33 @@ check("a board out puts the fight on its own page",
 const vp = page.viewportSize();
 const board = await page.locator(".bt-board").boundingBox();
 const share = (board.width * board.height) / (vp.width * vp.height);
-check("the board and its bar are most of the screen", share > 0.55,
+// Not 100%: the app's own gilded frame insets everything inside it, and that
+// is the frame's business rather than the battle page's.
+check("the board IS the page — everything else floats on it", share > 0.9,
   `${Math.round(share * 100)}% of the viewport`);
+// The MAP inside the panel is what matters; the panel also carries a title
+// bar, a floor strip and the action bar.
+const mapBox = await page.locator(".vtt-board").boundingBox();
+check("...and the map itself gets most of it",
+  (mapBox.width * mapBox.height) / (vp.width * vp.height) > 0.5,
+  `${Math.round((mapBox.width * mapBox.height) / (vp.width * vp.height) * 100)}%`);
+check("the page itself never scrolls",
+  await page.evaluate(() =>
+    document.documentElement.scrollHeight <= window.innerHeight + 1));
+// The wheel is the zoom and only the zoom: left to bubble it scrolls whatever
+// the board sits in, and the map walks away underneath the cursor.
+await page.locator(".vtt-board").hover();
+const scrolledBefore = await page.evaluate(() => window.scrollY);
+await page.mouse.wheel(0, 400);
+await page.waitForTimeout(200);
+check("...and the wheel over the board zooms rather than scrolling",
+  (await page.evaluate(() => window.scrollY)) === scrolledBefore);
+const logBox = await page.locator(".bt-log").boundingBox();
+check("the log floats over the board rather than taking a column from it",
+  logBox.x + logBox.width > board.x + board.width - 40,
+  `log right edge ${Math.round(logBox.x + logBox.width)} vs board ${Math.round(board.x + board.width)}`);
+check("...and is wide enough to read prose in", logBox.width >= 300,
+  `${Math.round(logBox.width)}px`);
 
 check("the order is one tight rail, not a row of cards",
   (await page.locator(".bt-order .bt-pip").count()) > 1
@@ -107,7 +132,7 @@ check("...and does not stay in the way",
   (await page.locator(".bt-sheet").count()) === 0);
 
 // the log folds away entirely
-const before = (await page.locator(".bt-log").boundingBox()).width;
+const before = logBox.width;
 await page.locator(".bt-logtab").click();
 await page.waitForTimeout(300);
 const after = (await page.locator(".bt-log").boundingBox()).width;
@@ -148,6 +173,15 @@ check("on a phone the board panel still leads", mb.height > 200,
 const mmap = await m.locator(".vtt-board").boundingBox();
 check("...and so does the MAP inside it", mmap.height > 260,
   `${Math.round(mmap.height)}px of map`);
+// The log is a bottom DRAWER at this width, and open by default it sits on top
+// of the action bar — the one thing on the page you act with.
+check("the log starts folded away on a phone",
+  (await m.locator(".bt-log.shut").count()) === 1);
+const bar = await m.locator(".action-bar, .abar, .vtt-foot").first().boundingBox();
+const drawer = await m.locator(".bt-log").boundingBox();
+check("...so nothing covers the acts you can take",
+  !bar || drawer.y >= bar.y + bar.height - 2 || drawer.height < 40,
+  `drawer y=${Math.round(drawer.y)} h=${Math.round(drawer.height)}`);
 await m.screenshot({ path: `${OUT}/12-battle-phone.png` });
 
 await browser.close();

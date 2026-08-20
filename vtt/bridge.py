@@ -176,6 +176,11 @@ def sync_bands(vtt: VttEngine, map_id: int, *, tracker: Any = None) -> None:
             band = geo.band_for_distance(d, nearest.name if engaged else None)
         try:
             tracker.set_position(t.combatant_id, band)
+            # …and remember that WE wrote it. See MapToken.band_synced: this is
+            # what lets a band somebody deliberately changed be told apart from
+            # one that only drifted because somebody else moved.
+            if (t.band_synced or None) != band:
+                vtt.update_token(t.id, band_synced=band)
         except Exception as e:
             print(f"[vtt.bridge] band sync failed for {t.name}: {e}")
 
@@ -791,6 +796,16 @@ def reconcile_bands(vtt: VttEngine, map_id: int, *, tracker: Any = None) -> int:
     for tok in vtt.tokens(map_id, include_defeated=False):
         c = combatants.get(tok.combatant_id or -1)
         if c is None or not c.position:
+            continue
+        # A band is a RELATIONSHIP. When a crocodile closes on the party, every
+        # creature's band changes and only the crocodile moved — so a token
+        # whose band merely DRIFTED must not be walked anywhere. Repositioning
+        # those dragged the PC backwards to restore a band nobody set for them,
+        # and their own turn began somewhere they had never gone.
+        #
+        # What we act on is a band somebody CHANGED: a DM's `[[COMBAT: move]]`,
+        # a shove. Those differ from the last band the board itself wrote.
+        if (tok.band_synced or None) == (c.position or None):
             continue
         want_rank, want_target = _band_rank(c.position)
         have_rank, have_target = _band_rank(

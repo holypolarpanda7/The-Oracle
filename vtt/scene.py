@@ -160,6 +160,11 @@ class VttEngine:
         # Light maps, keyed (map_id, revision). Per-instance because two
         # engines can be pointed at different databases holding the same id.
         self._light_cache: dict = {}
+        # Self-heal on the way in, not only when somebody remembers to call
+        # `create_tables`. A column a model declares and the table lacks does
+        # not fail at import — it fails at the first query naming it, which on
+        # a live board means the tactical layer stops rather than degrades.
+        self._add_missing_columns()
 
     def create_tables(self) -> None:
         SQLModel.metadata.create_all(self.engine)
@@ -172,24 +177,32 @@ class VttEngine:
     #: query naming it fails, which on a live board means the tactical layer
     #: stops working rather than degrading. Same ad-hoc migration the world
     #: graph and the rules ingest already use.
-    _LATE_COLUMNS: tuple[tuple[str, str], ...] = (
-        ("iso_image_id", "INTEGER"),
-        ("iso_art_status", "VARCHAR"),
-        ("skins", "JSON"),
-        ("board_style", "VARCHAR"),
-    )
+    _LATE_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+        "vtt_map": (
+            ("iso_image_id", "INTEGER"),
+            ("iso_art_status", "VARCHAR"),
+            ("skins", "JSON"),
+            ("board_style", "VARCHAR"),
+            ("setpieces", "JSON"),
+        ),
+        "vtt_token": (
+            # The band the board itself last wrote — see MapToken.band_synced.
+            ("band_synced", "VARCHAR"),
+        ),
+    }
 
     def _add_missing_columns(self) -> None:
         try:
             with self.engine.begin() as conn:
-                have = {r[1] for r in conn.exec_driver_sql(
-                    'PRAGMA table_info("vtt_map")')}
-                if not have:
-                    return                      # fresh table; create_all did it
-                for col, ddl in self._LATE_COLUMNS:
-                    if col not in have:
-                        conn.exec_driver_sql(
-                            f'ALTER TABLE "vtt_map" ADD COLUMN {col} {ddl}')
+                for table, cols in self._LATE_COLUMNS.items():
+                    have = {r[1] for r in conn.exec_driver_sql(
+                        f'PRAGMA table_info("{table}")')}
+                    if not have:
+                        continue                # fresh table; create_all did it
+                    for col, ddl in cols:
+                        if col not in have:
+                            conn.exec_driver_sql(
+                                f'ALTER TABLE "{table}" ADD COLUMN {col} {ddl}')
         except Exception as e:                  # never block a board on this
             print(f"[vtt] column migration skipped: {e}")
 
@@ -1253,7 +1266,7 @@ class VttEngine:
                    "moved_ft", "combatant_id", "character_id",
                    "restrained", "grappled_by", "senses",
                    "stealth_dc", "found_by", "swim_speed_ft",
-                   "mounted_on", "squeezing", "level"}
+                   "mounted_on", "squeezing", "level", "band_synced"}
         with Session(self.engine) as s:
             tok = s.get(MapToken, token_id)
             if not tok:

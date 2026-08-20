@@ -40,7 +40,11 @@ export function BattleSurface(p: PlayProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const engRef = useRef<HTMLDivElement>(null);
   const [secret, setSecret] = useState(false);
-  const [logOpen, setLogOpen] = useState(true);
+  // Open beside the board on a desktop, SHUT on a phone. There the log is a
+  // drawer along the bottom, and open by default it covers the action bar —
+  // the one thing on the page you act with.
+  const [logOpen, setLogOpen] = useState(
+    () => typeof window === "undefined" || window.innerWidth > 900);
   // The sheet is a REFERENCE during a fight, not a fixture: it took a third of
   // the width to say things that do not change between turns. It opens over
   // the board when you want it.

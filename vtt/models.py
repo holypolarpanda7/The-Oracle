@@ -264,6 +264,17 @@ class MapToken(SQLModel, table=True):
     # property of the hider alone — the guard who spotted you sees you while
     # the rest of the room still doesn't, and one bool cannot say that.
     found_by: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    # The spacing band the BOARD last wrote for this creature — which is not
+    # the same question as what band it is in now.
+    #
+    # A band is a RELATIONSHIP, not a property: when a crocodile closes on you,
+    # your band changes and you did not move. `reconcile_bands` walks a token
+    # whose tracker band disagrees with its square, so that drift used to drag
+    # the PC backwards to restore a band nobody had set for them — the player's
+    # own turn began somewhere they never went. Remembering what the board
+    # itself last wrote is how a band somebody DELIBERATELY changed (a DM's
+    # `[[COMBAT: move]]`, a shove) is told apart from one that merely drifted.
+    band_synced: Optional[str] = Field(default=None, sa_column=Column(String))
     # Which floor this creature is standing on. 0 is the board's own terrain;
     # anything higher indexes TacticalMap.levels.
     level: int = Field(default=0, sa_column=Column(Integer))

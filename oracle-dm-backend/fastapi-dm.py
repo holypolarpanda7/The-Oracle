@@ -8271,12 +8271,23 @@ def _vtt_render_art(map_id: int) -> None:
         row = vtt_engine.get_scene(map_id)
         slug = getattr(row, "place_slug", None)
         cond = _vtt_place_conditions(slug)
-        vtt_engine.render_art(map_id, extra=_vtt_place_look(slug),
-                              conditions=cond)
+        look = _vtt_place_look(slug)
+        vtt_engine.render_art(map_id, extra=look, conditions=cond)
         # The objects standing in the room are sprites, so they have to be
         # drawn too — a board whose pillars are invisible is the fault this
         # whole path exists to fix.
         vtt_engine.render_objects(map_id, conditions=cond)
+        # …and the ISOMETRIC painting, which is what the Activity actually
+        # lays over its geometry. `render_art` is the top-down picture a
+        # Discord table looks at; they are two different views of the same
+        # room and a board can have either, both or neither. Nothing called
+        # this one — the whole painted layer was built, probed, prerendered
+        # into a gallery and never wired into play, so every board an Activity
+        # opened came back as bare geometry.
+        try:
+            vtt_engine.render_iso_art(map_id, extra=look, conditions=cond)
+        except Exception as e:  # noqa: BLE001
+            print(f"[vtt] isometric render failed: {e}")
     except Exception as e:
         print(f"[vtt] battlemap render failed: {e}")
         return

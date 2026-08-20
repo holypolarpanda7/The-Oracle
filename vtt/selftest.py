@@ -1256,6 +1256,41 @@ def test_setpieces() -> None:
     eq("a monster holding a range band goes UP",
        _v.token_height_ft(_v.get_scene(_sc.id), _moved), 10)
 
+    # --- a band is a RELATIONSHIP, so only its OWNER may be repositioned ----
+    #
+    # When something closes on the party, everyone's band changes and only the
+    # closer moved. `reconcile_bands` walks a token whose tracker band
+    # disagrees with its square, and that drift used to drag the PC BACKWARDS
+    # to restore a band nobody had set for them: a player's own turn began
+    # somewhere they had never gone, on the turn a crocodile swam up to them.
+    from combat.tracker import CombatTracker as _CT
+    _ct2 = _CT(engine=_v.engine)
+    _v.tracker = _ct2
+    _enc2 = _ct2.start_encounter("test:band", "Reconcile")
+    _pc2 = _ct2.add_combatant(_enc2.id, "Kara", kind="pc", max_hp=20,
+                              armor_class=14, initiative=10)
+    _croc = _ct2.add_combatant(_enc2.id, "Crocodile", kind="monster", max_hp=19,
+                               armor_class=12, initiative=2)
+    _v.update_scene_encounter(_sc.id, _enc2.id)
+    _kara_t = _v.find_token(_sc.id, "Kara")
+    _v.update_token(_kara_t.id, combatant_id=_pc2.id)
+    _croc_t = _v.add_token(_sc.id, "Crocodile", kind="monster", team="foe",
+                           x=10, y=13, combatant_id=_croc.id)
+    _bridge.sync_bands(_v, _sc.id, tracker=_ct2)          # both read "far"
+    _kara_was = (_v.get_token(_kara_t.id).x, _v.get_token(_kara_t.id).y)
+    # The crocodile closes — nobody has touched Kara's band or Kara's token.
+    _v.move_token(_croc_t.id, 10, 11, free=True, enforce_speed=False)
+    _bridge.sync_after_turn(_v, _sc.id, tracker=_ct2)
+    _kara_now = (_v.get_token(_kara_t.id).x, _v.get_token(_kara_t.id).y)
+    eq("a creature nobody moved stays where it stood", _kara_now, _kara_was)
+    # …while a band the DM DELIBERATELY set still repositions its owner.
+    _ct2.set_position(_croc.id, "far")
+    _bridge.reconcile_bands(_v, _sc.id, tracker=_ct2)
+    _croc_now = _v.get_token(_croc_t.id)
+    check("…but a band the DM changed still moves the creature it names",
+          (_croc_now.x, _croc_now.y) != (10, 11),
+          f"{(_croc_now.x, _croc_now.y)}")
+
     # --- most boards are not flat -----------------------------------------
     # Height is the cheapest asymmetry a fight can have: it costs movement to
     # take, a fall to leave in a hurry, and it changes who can see whom without

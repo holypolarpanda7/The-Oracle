@@ -523,8 +523,20 @@
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
+  border: 0; border-radius: 0;   /* it IS the page; nothing frames a page */
   animation: none;               /* the page already faded in around it */
 }
+/* Room at the top for the overlays that float there — and the board's own
+   title text goes, because the strip above it already says which fight this is
+   and which round it is. Its BUTTONS stay: those are the layer toggles, and
+   they have nowhere else to live. */
+.battle .vtt.fill .vtt-bar {
+  padding-top: 52px;
+  background: none; border-bottom: 0;
+}
+.battle .vtt.fill .vtt-kind,
+.battle .vtt.fill .vtt-title,
+.battle .vtt.fill .vtt-round { display: none; }
 .battle .vtt.fill .vtt-board {
   flex: 1 1 auto;
   height: auto;
