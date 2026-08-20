@@ -15,7 +15,7 @@
  *    npx node turn-shot.mjs http://localhost:4191/
  */
 import { chromium } from "playwright";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync } from "node:fs";
 const BASE = process.argv[2] || "http://localhost:4191/";
 const OUT = "./vtt-shots";
 mkdirSync(OUT, { recursive: true });
@@ -27,6 +27,16 @@ const browser = await chromium.launch({ args: ["--use-gl=swiftshader",
                                                "--enable-unsafe-swiftshader"] });
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 page.on("pageerror", (e) => console.log("PAGE ERROR:", e.message));
+
+// Real swatches, if `scripts/demo_textures.py --stage` put some in the build.
+// The demo board is flat-coloured otherwise, which is right for the offline
+// fallback and no use at all for judging how the board LOOKS.
+const seam = "dist/demo-surfaces.json";
+if (existsSync(seam)) {
+  const surf = JSON.parse(readFileSync(seam, "utf8"));
+  await page.addInitScript((s) => { globalThis.__ORACLE_DEMO_SURFACES = s; }, surf);
+  console.log(`(staged ${Object.keys(surf.materials || {}).length} real swatches)`);
+}
 
 await page.goto(BASE, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(1200);

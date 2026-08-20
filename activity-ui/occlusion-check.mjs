@@ -19,10 +19,19 @@ await build({ entryPoints: ["src/lib/boardView.ts"], bundle: true, format: "esm"
               platform: "neutral", outfile: out, logLevel: "error" });
 const { occludedAt } = await import(pathToFileURL(out).href);
 
-/** A board is one string per row; `extra` carries elevation or landmarks. */
+/** A board is one string per row; `extra` carries elevation or landmarks.
+ *
+ *  PAINTED by default (`iso_image_id`), and that is not incidental. On an
+ *  UNPAINTED board the near walls are cut away — see `cutAwayAt` — and a wall
+ *  that has been cut to a stub correctly stops hiding anything, which would
+ *  make half the cases below assert the opposite of what they mean. Under a
+ *  painting the wall is a thing in the picture and the geometry is a
+ *  depth-only proxy for exactly this question, so these are the walls the
+ *  march is really about. The cutaway's own consequence is asserted at the
+ *  bottom of this file. */
 const board = (rows, extra = {}) => ({
   width: rows[0].length, height: rows.length, square_ft: 5,
-  terrain: rows, elevation: {}, ...extra,
+  terrain: rows, elevation: {}, iso_image_id: 7, ...extra,
 });
 
 let fails = 0;
@@ -72,5 +81,20 @@ check(!occludedAt(WALL_NEAR, 2, 2, 3, 0),
       "a Huge creature is not hidden by a wall inside its own footprint");
 
 rmSync(dir, { recursive: true, force: true });
+// The cutaway's own consequence, stated here so it is not a surprise. On an
+// unpainted board the near walls come down, and a wall that has been cut to a
+// stub is not in anybody's way — so after a cutaway what hides a creature is
+// the FURNITURE and the ground, never the room's own walls. That is the point
+// of cutting them, and the two answers agree because `drawnTopFt` applies the
+// same reduction the geometry does.
+const bare = (rows) => ({ width: rows[0].length, height: rows.length,
+                          square_ft: 5, terrain: rows, elevation: {} });
+check(!occludedAt(bare([".....", ".....", ".....", "...#.", "....."]), 2, 2, 1, 0),
+      "unpainted, a near wall is cut away and hides nothing");
+check(occludedAt(bare([".....", ".....", ".....", "...O.", "....."]), 2, 2, 1, 0),
+      "...while a pillar, which is never cut, still does");
+check(occludedAt(bare([".....", ".....", ".....", ".....", "....."],
+                 ), 2, 2, 1, 0) === false, "...and open floor never did");
+
 console.log(fails ? `\n${fails} FAILED` : "\nall good");
 process.exit(fails ? 1 : 0);

@@ -307,6 +307,12 @@ function ring(cx: number, cy: number, r: number): [number, number][] {
   return out;
 }
 
+/** Real swatches, if a harness staged some. See `demoVtt`. */
+const DEMO_SURFACES: { materials?: Record<string, number>;
+                       surfaces?: VttScene["surfaces"] } | null =
+  (globalThis as unknown as { __ORACLE_DEMO_SURFACES?: never })
+    .__ORACLE_DEMO_SURFACES ?? null;
+
 function demoVtt(stage: number): VttScene {
   const warriorDown = stage >= 2;
   return {
@@ -325,6 +331,13 @@ function demoVtt(stage: number): VttScene {
     round: stage >= 2 ? 2 : 1,
     current_token_id: stage >= 2 ? 11 : 10,
     terrain: DEMO_TERRAIN,
+    // The demo board is flat-COLOURED, because a swatch is a stored render and
+    // there is no backend here to serve one. That is right for the offline
+    // fallback and useless for judging how the board LOOKS, so a harness may
+    // stage real swatches and their derived surfaces through this seam
+    // (`scripts/demo_textures.py --stage`) without a rebuild and without
+    // committing megabytes of art to make a demo prettier.
+    ...(DEMO_SURFACES ?? {}),
     fog: null,
     sight: null,
     // Two floors, so the offline demo exercises the storey switcher: a gallery

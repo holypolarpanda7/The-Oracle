@@ -42,14 +42,14 @@ export type {
 } from "./boardShapes.generated";
 import {
   COVER_HEIGHT_FT as _COVER, HEIGHT_JITTER as _JITTER,
-  HOLE_CODES as _HOLES, SKINS as _SKINS,
+  HOLE_CODES as _HOLES, SKINS as _SKINS, STRUCTURE_CODES as _STRUCTURE,
   TILE_HEIGHT_FT as _HEIGHT, WALL_THICKNESS as _THICK, isSolid as _isSolid,
 } from "./boardShapes.generated";
 import type { Part } from "./boardShapes.generated";
 // The camera, for the one question that needs it here: which way a view ray
 // travels. Not a renderer import — isocam is arithmetic, and both renderers
 // already sit on top of it.
-import { VERTICAL_SQUEEZE, YAW_DEG, basis } from "./isocam";
+import { VERTICAL_SQUEEZE, YAW_DEG, basis, paintOpacity } from "./isocam";
 
 /** A stable 32-bit hash of a square. Mirrors `_hash` in vtt/isocam.py.
  *
@@ -495,7 +495,8 @@ export function exposedRock(isOpen: (x: number, z: number) => boolean,
  *  A landmark's mesh counts at its declared height. Its stamped tiles are
  *  already in the answer, but a 40-ft gate tower stamps 10-ft masonry, and
  *  what stands between the camera and the creature is the tower. */
-function drawnTopFt(scene: VttScene, x: number, z: number): number {
+function drawnTopFt(scene: VttScene, x: number, z: number,
+                    yawDeg: number = YAW_DEG): number {
   const row = (scene.terrain ?? [])[z];
   const elev = scene.elevation?.[`${x},${z}`] ?? 0;
   let top = -Infinity;
@@ -503,8 +504,12 @@ function drawnTopFt(scene: VttScene, x: number, z: number): number {
     const code = row[x];
     if (!_HOLES.has(code)) {
       const skin = skinAt(scene, code, x, z);
-      top = elev + (_SKINS[skin]?.heightFt || _HEIGHT[code] || 0)
+      const full = (_SKINS[skin]?.heightFt || _HEIGHT[code] || 0)
         * skinHeightScale(skin, code, x, z);
+      // A cut wall really is that low now, and this is the one place the board
+      // answers "what is standing in the way" — so a creature the cutaway
+      // revealed must stop being reported as hidden by the thing that was cut.
+      top = elev + full * cutawayHeightScale(scene, x, z, yawDeg, full);
     }
   }
   for (const sp of scene.setpieces ?? []) {
@@ -513,6 +518,115 @@ function drawnTopFt(scene: VttScene, x: number, z: number): number {
     }
   }
   return top;
+}
+
+// --------------------------------------------------------------------------
+// Cutting away the near walls
+//
+// A room is a box, and an isometric camera looks into it over one of its
+// corners — so the two walls nearest the lens are between the viewer and the
+// fight. At the canonical angle that was survivable, because the wall is IN the
+// painting and the painting is what you are looking at. It stopped being
+// survivable the moment the camera could turn: swing a quarter and the wall
+// that used to be the far one is now a ten-foot slab across the front of the
+// board, hiding the half of the room the fight is in.
+//
+// The rule is one sentence: **cut the near walls exactly when you are looking
+// at the geometry rather than at a painting of the room.** Where a painting is
+// showing, the wall is a thing in that picture and no amount of not-drawing the
+// geometry removes it — the geometry there is a depth-only proxy, so cutting it
+// would delete the occlusion and change nothing anybody can see. Where no
+// painting is showing — a board whose art has not been drawn, an offline table,
+// or any angle the camera has turned to — the geometry IS the picture, and the
+// near walls come down.
+//
+// It is a drawing decision and nothing else. Cover, sight, movement and reach
+// all read the tile, which is untouched: a cut wall is still total cover and
+// still impassable. What it must NOT do is contradict the board's own account
+// of what is visible, which is why `drawnTopFt` applies the same reduction —
+// so a creature the cutaway reveals stops being reported as hidden, from the
+// one place that answers that question.
+// --------------------------------------------------------------------------
+
+/** How much of its height a cut wall keeps. */
+const CUTAWAY_SCALE = 0.28;
+
+/** ...but never less than this, in feet. A wall reduced to nothing leaves the
+ *  floor looking like it is hanging in space; a low stub still says "the room
+ *  ends here", which is the whole reason this is a cutaway and not a delete. */
+const CUTAWAY_MIN_FT = 2.5;
+
+/** How far to look for the floor a near wall is hiding, in squares.
+ *
+ *  Generated walls are commonly two squares thick, so a one-square test cuts
+ *  the inner course and leaves the outer one standing. Three is enough for any
+ *  wall and short enough that a MASS — a cliff, a mountainside — never
+ *  qualifies: rock that is metres deep is not a wall in front of the room, it
+ *  is the edge of the world, and slicing the top off it would read as a
+ *  mountain someone had been at with a bread knife. */
+const CUTAWAY_DEPTH = 3;
+
+/** The eight ways "away from the camera" can point on a square grid. */
+const _COMPASS: readonly (readonly [number, number])[] = [
+  [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1],
+];
+
+/** Which way is AWAY from the camera, to the nearest of eight.
+ *
+ *  Discretised on purpose. The exact direction changes with every degree of a
+ *  drag, and the set of squares it picks out does not: it changes eight times
+ *  in a full turn, at the moments the ray crosses a diagonal. Keying the mesh
+ *  rebuild on this instead of on the raw angle is the difference between
+ *  twenty-four rebuilds per turn and eight. */
+export function awayDir(yawDeg: number = YAW_DEG): readonly [number, number] {
+  const b = basis(yawDeg);
+  // rayX/rayZ point TOWARD the lens, so away is the other way.
+  const ang = Math.atan2(-b.rayZ, -b.rayX);
+  const i = ((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8;
+  return _COMPASS[i];
+}
+
+/** Is the board showing a PAINTING at this angle? */
+function painted(scene: VttScene, yawDeg: number): boolean {
+  return !!scene.iso_image_id && paintOpacity(yawDeg) > 0;
+}
+
+/** Are near walls being cut away on this board, at this angle? */
+export function cuttingAway(scene: VttScene, yawDeg: number = YAW_DEG): boolean {
+  return !painted(scene, yawDeg);
+}
+
+/** Is this square a near wall — one standing between the lens and open floor?
+ *
+ *  Structure only (`#`, `R`). That is not a shortcut: everything with a height
+ *  the RULES quote — a crate at four feet, a low wall at three, a table, an
+ *  altar — is an OBJECT and not structure, so restricting to structure is
+ *  exactly the "never vary a height the rules quote" rule, arrived at from the
+ *  other side. A player deciding whether they can break line of sight behind a
+ *  crate must read that off the board; a wall is total cover at any height. */
+export function cutAwayAt(scene: VttScene, x: number, z: number,
+                          yawDeg: number = YAW_DEG): boolean {
+  if (!cuttingAway(scene, yawDeg)) return false;
+  const code = (scene.terrain ?? [])[z]?.[x];
+  if (code === undefined || !_STRUCTURE.has(code)) return false;
+  const [dx, dz] = awayDir(yawDeg);
+  for (let n = 1; n <= CUTAWAY_DEPTH; n++) {
+    const c = (scene.terrain ?? [])[z + dz * n]?.[x + dx * n];
+    if (c === undefined) return false;              // off the board: an outer face
+    if (_HOLES.has(c)) return false;                // a chasm is not a room
+    if (!_STRUCTURE.has(c)) return true;            // open ground behind it
+  }
+  return false;                                     // a mass, not a wall
+}
+
+/** How much of its drawn height this square keeps. 1 for everything that is
+ *  not being cut, which is every square of every painted board. */
+export function cutawayHeightScale(scene: VttScene, x: number, z: number,
+                                   yawDeg: number = YAW_DEG,
+                                   fullFt = 0): number {
+  if (!cutAwayAt(scene, x, z, yawDeg)) return 1;
+  if (fullFt <= 0) return CUTAWAY_SCALE;
+  return Math.max(CUTAWAY_SCALE, Math.min(1, CUTAWAY_MIN_FT / fullFt));
 }
 
 /** How high the ray may climb before nothing on any board could still be in
@@ -575,7 +689,8 @@ export function occludedAt(scene: VttScene, x: number, z: number,
     if (sx < 0 || sz < 0 || sx >= scene.width || sz >= scene.height) return false;
     // Its own square is not in its own way, whatever is drawn there.
     if (sx >= x && sz >= z && sx < x + squares && sz < z + squares) continue;
-    if (drawnTopFt(scene, sx, sz) > chestFt + run * sqFt * rayRise) return true;
+    if (drawnTopFt(scene, sx, sz, yawDeg) > chestFt + run * sqFt * rayRise)
+      return true;
   }
   return false;
 }

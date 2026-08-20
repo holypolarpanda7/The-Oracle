@@ -1304,6 +1304,39 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   preview` PROXIES `/ws` to the backend, so the offline demo feed only engages
   when the backend is actually down. Serve `dist` with a plain static server to
   exercise it while the backend is up.)
+- **The near walls are CUT AWAY, and the rule is one sentence.** A room is a
+  box and an isometric camera looks into it over a corner, so the two walls
+  nearest the lens stand between the viewer and the fight. At the canonical
+  angle that was survivable because the wall is IN the painting; it stopped
+  being survivable the moment the camera could turn, since a quarter turn puts
+  what used to be the far wall across the front of the board. `boardView.
+  cutAwayAt`: **cut the near walls exactly when you are looking at the geometry
+  rather than at a painting of the room.** Where a painting is showing, the
+  wall is a thing in that picture and not drawing the geometry removes nothing
+  anybody can see — the geometry there is a depth-only proxy, so cutting it
+  would only delete the occlusion. Where none is (art not drawn yet, offline,
+  or any angle away from the bake) the geometry IS the picture and the walls
+  come down to a stub, never to nothing: a floor with no edge at all looks like
+  it is hanging in space.
+  **STRUCTURE only**, which turns out to be the same thing as "never vary a
+  height the rules quote" arrived at from the other side — a crate, a low wall,
+  a table and an altar are OBJECTS, and every one of them has a quoted cover
+  height. A rock MASS deeper than `CUTAWAY_DEPTH` is left alone: that is the
+  edge of the world, not a wall in front of the room, and slicing the top off
+  it reads as a mountain someone has been at with a bread knife. The depth
+  exists at all because generated walls are commonly two squares thick, so a
+  one-square test cuts the inner course and leaves the outer one standing.
+  **`drawnTopFt` applies the identical reduction**, so the board's account of
+  who is HIDDEN follows what it drew — otherwise the cutaway reveals a creature
+  the board still calls occluded, which is the picture-versus-grid
+  disagreement the occlusion march exists to prevent, arriving from the other
+  side. The consequence, stated rather than discovered: after a cutaway what
+  hides a creature is the FURNITURE and the ground, never the room's own walls.
+  Nothing about the RULES moves — a cut wall is still total cover and still
+  impassable. `awayDir` is one of EIGHT directions on purpose: the exact
+  direction changes with every degree of a drag and the set of squares it picks
+  out does not, so the mesh rebuilds eight times in a full turn instead of on
+  every frame of one.
 - **The camera TURNS now, and what that cost was one thing, not three.** The
   note here used to say the camera never rotates and that offering rotation
   would cost the closed-form inverse, pan-and-zoom being a translate-and-scale,

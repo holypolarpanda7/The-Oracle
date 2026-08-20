@@ -28,7 +28,8 @@ await build({ entryPoints: ["src/lib/isocam.ts"], bundle: true, format: "esm",
 await build({ entryPoints: ["src/lib/boardView.ts"], bundle: true, format: "esm",
               platform: "neutral", outfile: bvOut, logLevel: "error" });
 const cam = await import(pathToFileURL(camOut).href);
-const { occludedAt } = await import(pathToFileURL(bvOut).href);
+const { awayDir, cutAwayAt, cuttingAway, occludedAt } =
+  await import(pathToFileURL(bvOut).href);
 
 let fails = 0;
 const check = (ok, what, detail = "") => {
@@ -114,8 +115,13 @@ check(cam.wrapYaw(-315) === 45 && cam.wrapYaw(405) === 45 && cam.wrapYaw(45) ===
       "an angle is normalised to [0, 360)");
 
 // The whole point of turning: what is standing in front of you changes.
+// PAINTED, so the cutaway is off and the wall is a wall — under a painting the
+// wall is a thing in the picture, and the geometry is a depth-only proxy for
+// exactly this question. (Unpainted, the same wall is cut away and correctly
+// stops hiding anything; that is section 6.)
 const board = (rows) => ({ width: rows[0].length, height: rows.length,
-                           square_ft: 5, terrain: rows, elevation: {} });
+                           square_ft: 5, terrain: rows, elevation: {},
+                           iso_image_id: 7 });
 // A wall on the +x/+z side of the creature at 2,2 — in the way at 45°, and
 // behind it once the camera has come round to the far corner.
 const WALL = board([".....", ".....", ".....", "...#.", "....."]);
@@ -150,6 +156,85 @@ check(cam.paintOpacity(cam.YAW_DEG + 360) === 1
       "...and measured the SHORT way round, so 359° off is 1° off");
 check(cam.paintOpacity(cam.YAW_DEG + 180) === 0,
       "from behind, there is no painting at all");
+
+// ---------------------------------------------------------------------------
+console.log("\n6. the near walls come down");
+
+// A room is a box and the camera looks into it over a corner, so the two walls
+// nearest the lens stand between the viewer and the fight. Turning made that
+// unignorable: swing a quarter and the wall that used to be the far one is a
+// ten-foot slab across the front of the board.
+const room = (rows, extra = {}) => ({
+  width: rows[0].length, height: rows.length, square_ft: 5,
+  terrain: rows, elevation: {}, ...extra,
+});
+const BOX = room(["########", "#......#", "#......#", "#......#", "########"]);
+const marks = (scene, yaw) => BOX.terrain.map((r, z) =>
+  [...r].map((c, x) => (cutAwayAt(scene, x, z, yaw) ? "c" : c)).join("")).join("\n");
+
+check(cuttingAway(BOX, 45), "an unpainted board cuts away — the geometry IS the picture");
+check(cutAwayAt(BOX, 7, 2, 45) && cutAwayAt(BOX, 4, 4, 45),
+      "at 45° the walls at greater x and z are the near ones");
+check(!cutAwayAt(BOX, 0, 2, 45) && !cutAwayAt(BOX, 4, 0, 45),
+      "...and the far walls stay up, or the room has no back to read against");
+check(cutAwayAt(BOX, 0, 2, 225) && !cutAwayAt(BOX, 7, 2, 225),
+      "turn round and it is the other two",
+      String(awayDir(225)));
+const counts = ANGLES.map((yaw) => BOX.terrain.reduce((acc, r, z) =>
+  acc + [...r].filter((_, x) => cutAwayAt(BOX, x, z, yaw)).length, 0));
+check(counts.every((n) => n > 0 && n < 20),
+      "at every angle some walls come down and not all of them",
+      counts.join(", "));
+
+// Structure only — which is the same thing as "never vary a height the rules
+// quote", arrived at from the other side: a crate, a low wall, a table and an
+// altar are OBJECTS, and every one of them has a quoted cover height.
+const CLUTTER = room(["########", "#.oww.n#", "#..AA..#", "#......#", "########"]);
+check(!"ownA".split("").some((c) => {
+  for (let z = 0; z < CLUTTER.terrain.length; z++)
+    for (let x = 0; x < CLUTTER.terrain[z].length; x++)
+      if (CLUTTER.terrain[z][x] === c && cutAwayAt(CLUTTER, x, z, 45)) return true;
+  return false;
+}), "nothing whose height the RULES quote is ever cut");
+
+// A MASS is not a wall in front of the room; it is the edge of the world, and
+// slicing the top off it reads as a mountain someone has been at with a knife.
+// The track is at the far corner; the near corner is solid rock for more than
+// CUTAWAY_DEPTH squares in every direction.
+const MASS = room(["R..RRRRR", "R..RRRRR", "RRRRRRRR", "RRRRRRRR",
+                   "RRRRRRRR", "RRRRRRRR", "RRRRRRRR", "RRRRRRRR"]);
+check(!cutAwayAt(MASS, 7, 7, 45) && !cutAwayAt(MASS, 6, 6, 45),
+      "a rock MASS deeper than a wall is left alone — it is the edge of the "
+      + "world, not a wall in front of the room");
+check(cutAwayAt(MASS, 3, 2, 45),
+      "...but the rock actually leaning over the track does come down");
+
+// Where a painting is showing, the wall is a thing in that PICTURE, and not
+// drawing the geometry removes nothing anybody can see — the geometry there is
+// a depth-only proxy, so cutting it would only delete the occlusion.
+const PAINTED = room(["########", "#......#", "#......#", "#......#", "########"],
+                     { iso_image_id: 7 });
+check(!cuttingAway(PAINTED, cam.YAW_DEG) && !cutAwayAt(PAINTED, 7, 2, cam.YAW_DEG),
+      "a painted board at its baked angle cuts nothing");
+check(cuttingAway(PAINTED, cam.YAW_DEG + 90),
+      "...and starts cutting exactly when the painting has gone");
+
+// The board's own account of who is hidden has to follow what it DREW, or the
+// cutaway reveals a creature the board still calls hidden — which is the same
+// disagreement between picture and grid that the whole occlusion march exists
+// to avoid, arriving from the other side.
+const NEARWALL = room(["....", "....", "..#.", "...."]);
+check(cutAwayAt(NEARWALL, 2, 2, 45) && !occludedAt(NEARWALL, 1, 1, 1, 0, 45),
+      "a wall the cutaway took down stops being reported as in the way");
+// So what hides a creature after a cutaway is the FURNITURE, not the room —
+// which is the right answer: a pillar has a quoted height and is never cut.
+const PILLAR = room([".....", ".....", ".....", "...O.", "....."]);
+check(!cutAwayAt(PILLAR, 3, 3, 45) && occludedAt(PILLAR, 2, 2, 1, 0, 45),
+      "...and a pillar, which is never cut, still does");
+// A painted board cuts nothing, so a painted wall hides exactly what it did.
+const PAINTWALL = room(["....", "....", "..#.", "...."], { iso_image_id: 7 });
+check(occludedAt(PAINTWALL, 1, 1, 1, 0, cam.YAW_DEG),
+      "and under a painting the wall is in the picture, so it hides as it always did");
 
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${fails ? `${fails} FAILED` : "the camera turns, and everything that must agree still agrees"}`);

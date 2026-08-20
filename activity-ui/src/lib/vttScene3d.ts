@@ -40,7 +40,9 @@ import type { VttScene } from "./types";
 import {
   CELL, DECOR_KINDS, DECOR_TINT, HOLE_CODES, OBJECT_VARIANTS, SKINS,
   SKIRT_FT, SKIRT_INSET,
-  STRUCTURE_CODES, exposedRock, hullFootprint, isSetpieceSkin, isSolid, materialSlot,
+  STRUCTURE_CODES, awayDir, cutawayHeightScale, cuttingAway, exposedRock,
+  hullFootprint,
+  isSetpieceSkin, isSolid, materialSlot,
   outAxis, outCorner, occludedAt, runAxis, setpieceYaw,
   sameBody,
   skinAt, skinHeightScale, variantSmooth,
@@ -637,7 +639,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
                       base: THREE.Color }[] = [];
   let shadeKey = "";
 
-  function buildTerrain(scene: VttScene, level: number, showGrid: boolean): void {
+  function buildTerrain(scene: VttScene, level: number, showGrid: boolean,
+                        yawDeg: number = YAW_DEG): void {
     disposeTree(terrainGroup);
     terrainGroup.clear();
 
@@ -789,8 +792,15 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // may raise the drawn height — and is refused at import from doing so
         // on any tile whose height the rules DO quote, so this cannot smuggle
         // a lie past heightScale.
-        const h = (shape?.heightFt || tileHeightFt(code))
+        const full = (shape?.heightFt || tileHeightFt(code))
           * skinHeightScale(skin, code, x, z);
+        // A room is a box and the camera looks into it over a corner, so the
+        // two walls nearest the lens stand between the viewer and the fight.
+        // They come down to a stub wherever the geometry IS the picture — see
+        // cutAwayAt. Structure only, which is the same thing as "never a height
+        // the rules quote", and `drawnTopFt` applies the identical reduction so
+        // the board's account of who is hidden follows what it drew.
+        const h = full * cutawayHeightScale(scene, x, z, yawDeg, full);
         const mb = builderFor(slot);
         // Everything emitted from here belongs to this square, so `reshade` can
         // find its vertices again without rebuilding anything.
@@ -1292,13 +1302,19 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       // into the same key — so every step anyone took rebuilt the whole mesh
       // because the fog had moved. They are two keys now: the room is rare, the
       // tint is every frame that matters.
+      // The CUT SET is part of the room now. It does not change with every
+      // degree of a drag — `awayDir` is one of eight — so this rebuilds eight
+      // times in a full turn rather than on every frame of one.
+      const away = awayDir(view.yaw ?? YAW_DEG);
+      const cutting = cuttingAway(scene, view.yaw ?? YAW_DEG);
       const key = [
         scene.id, level, st.show.grid, st.show.terrain, backdrop,
+        cutting ? `${away[0]},${away[1]}` : "-",
         (scene.terrain ?? []).join(""),
         (scene.debris ?? []).map((d) => `${d.x},${d.y}`).join(";"),
       ].join("|");
       if (key !== terrainKey) {
-        buildTerrain(scene, level, st.show.grid);
+        buildTerrain(scene, level, st.show.grid, view.yaw ?? YAW_DEG);
         terrainKey = key;
       }
       const tint = [
