@@ -1072,7 +1072,6 @@ def is_generated(path: Optional[Path]) -> bool:
         return False
 
 
-@lru_cache(maxsize=64)
 def mesh_fit(slug: str, square_ft: int = 5) -> Optional[dict]:
     """How to put this piece's mesh on its squares, in BOARD units.
 
@@ -1083,9 +1082,12 @@ def mesh_fit(slug: str, square_ft: int = 5) -> Optional[dict]:
 
         v -> (v * scale - pivot), then yaw, then + footprint centre
 
-    Cached because ``state()`` is called constantly and this reads a file; the
-    meshes are committed and immutable, so the cache can never go stale within
-    a run.
+    The lookup is deliberately OUTSIDE the cache. An invented landmark is
+    registered by :func:`named_feature` when its phrase is first seen, which in
+    a fresh process happens AFTER something has already asked about the slug —
+    and a cached ``None`` from that first miss would leave the landmark flat
+    for the life of the run. Only the measurement is cached, keyed on what it
+    actually depends on.
     """
     p = CATALOGUE.get(slug) or _ADHOC.get(slug)
     if p is None:
@@ -1098,26 +1100,56 @@ def mesh_fit(slug: str, square_ft: int = 5) -> Optional[dict]:
     # invented-landmark path: the DM's gilded sow keeps stamping the square it
     # always stamped, and gains a shape once one exists. Judged on the FILE,
     # so a machine that has never rendered one behaves exactly as before.
-    if p.source is None and not is_generated(path):
+    made_here = is_generated(path)
+    if p.source is None and not made_here:
         return None
-    piece = p
-    bounds = _obj_bounds(path)
+    # An AUTHORED height is fiction to protect; a DEFAULT one is not. See
+    # _measure_fit.
+    return _measure_fit(str(path), p.height_ft, p.up, int(square_ft or 5),
+                        p.width if made_here and p.source is None else 0,
+                        p.depth if made_here and p.source is None else 0)
+
+
+@lru_cache(maxsize=64)
+def _measure_fit(path_s: str, height_ft: float, up: str, square_ft: int,
+                 max_w: int = 0, max_d: int = 0) -> Optional[dict]:
+    """The measurement itself, cached on exactly what it depends on.
+
+    ``max_w``/``max_d`` are a footprint the mesh may not overhang, in squares,
+    and are passed ONLY for a landmark the DM invented. The catalogue's rule is
+    the opposite and stays the opposite: there, height wins and the footprint
+    gives way, because fitting width to the footprint made every tall thing a
+    dwarf — a 60-ft jungle giant came out 21 ft — and a catalogued height is a
+    stated fact about the fiction.
+
+    An invented landmark has no stated fact to protect. Both its numbers are
+    DEFAULTS (``FEATURE_HEIGHT_FT``, ``FEATURE_SQUARES``), nobody chose either
+    for this thing, and the first real one measured 1.00 x 0.44 x 1.00 — a sow
+    on a broad plinth — which at nine feet tall spills five feet onto every
+    square around it. That is the picture contradicting the grid in the
+    direction the ``KEEP`` rule exists to prevent, and being four feet shorter
+    is the cheaper of the two prices.
+    """
+    bounds = _obj_bounds(Path(path_s))
     if bounds is None:
         return None
     (x0, y0, z0), (x1, y1, z1) = bounds
-    # Which way is up is the pack's choice and a wrong guess is a landmark
-    # lying on its side, so it is declared per entry rather than sniffed.
-    tall = (y1 - y0) if piece.up == "y" else (z1 - z0)
+    # Which way is up is the producer's choice and a wrong guess is a landmark
+    # lying on its side, so it is declared rather than sniffed.
+    tall = (y1 - y0) if up == "y" else (z1 - z0)
     if tall <= 0:
         return None
-    # UNIFORM, and derived from the declared height rather than the footprint.
-    # See the audit's docstring: fitting width to the footprint made every tall
-    # thing a dwarf, and scaling one axis alone distorts anything organic.
-    scale = (piece.height_ft / tall) / float(square_ft or 5)
+    sq = float(square_ft or 5)
+    # UNIFORM, always: scaling one axis alone distorts anything organic.
+    scale = (height_ft / tall) / sq
+    if max_w and max_d:
+        wide = max(x1 - x0, 1e-9)
+        deep = max(z1 - z0, 1e-9) if up == "y" else max(y1 - y0, 1e-9)
+        scale = min(scale, float(max_w) / wide, float(max_d) / deep)
     return {
         "scale": scale,
         "pivot": [(x0 + x1) / 2.0 * scale,
-                  (y0 if piece.up == "y" else z0) * scale,
+                  (y0 if up == "y" else z0) * scale,
                   (z0 + z1) / 2.0 * scale],
     }
 
@@ -1131,7 +1163,7 @@ def forget_mesh(slug: str = "") -> None:
     drawn, and a remembered ``None`` would leave that board flat until the
     process restarted. Cheap — the cache holds at most 64 measurements.
     """
-    mesh_fit.cache_clear()
+    _measure_fit.cache_clear()
 
 
 # --------------------------------------------------------------------------

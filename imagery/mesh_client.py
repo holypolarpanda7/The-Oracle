@@ -198,8 +198,17 @@ class TrellisClient:
             raise MeshServiceUnavailable(f"Could not queue mesh job: {e}") from e
         if not prompt_id:
             raise MeshServiceUnavailable("ComfyUI did not return a prompt_id")
-        path = self._poll(prompt_id)
-        return self._read(path)
+        started = time.time()
+        reported = self._poll(prompt_id)
+        if reported:
+            return self._read(reported)
+        # The export node finished and published NOTHING. See _locate.
+        found = self._locate(name_hint, since=started - 60)
+        if found is None:
+            raise MeshServiceUnavailable(
+                f"The mesh job finished and no file for {name_hint!r} appeared "
+                f"under {[str(r) for r in self.output_roots]}")
+        return found.read_bytes()
 
     def _upload(self, image_bytes: bytes, name: str) -> str:
         try:
@@ -211,8 +220,9 @@ class TrellisClient:
         except Exception as e:
             raise MeshServiceUnavailable(f"Could not upload the picture: {e}") from e
 
-    def _poll(self, prompt_id: str) -> str:
-        """Wait for the job and return the path the export node reported."""
+    def _poll(self, prompt_id: str) -> Optional[str]:
+        """Wait for the job. Returns the reported path, or None if it reported
+        none — which is what this export node does. See ``_locate``."""
         deadline = time.time() + self.timeout_seconds
         misses = 0
         while time.time() < deadline:
@@ -233,16 +243,49 @@ class TrellisClient:
                     raise MeshServiceUnavailable(
                         f"ComfyUI mesh job failed: "
                         f"{json.dumps(status.get('messages', []))[:400]}")
-                if hist.get("outputs"):
-                    found = _first_path(hist["outputs"])
-                    if found:
-                        return found
-                    if status.get("completed"):
-                        raise MeshServiceUnavailable(
-                            f"Mesh job finished with no file: "
-                            f"{json.dumps(hist['outputs'])[:300]}")
+                found = _first_path(hist.get("outputs") or {})
+                if found:
+                    return found
+                # `execution_success` with an EMPTY outputs dict is what this
+                # export node actually does — measured on a real run: the file
+                # was written, the job reported success, and `outputs` was {}.
+                # So finishing is the signal, and where the file went is the
+                # caller's problem to solve by looking. Returning None rather
+                # than raising keeps that decision out of here.
+                if status.get("status_str") in ("success", "error") \
+                        or status.get("completed"):
+                    return None
             time.sleep(2.0)
         raise MeshServiceUnavailable("Timed out waiting for the mesh")
+
+    def _locate(self, name_hint: str, *, since: float = 0.0) -> Optional[Path]:
+        """Find the file the export node wrote but never told anyone about.
+
+        Not a guess: ``filename_prefix`` is ours (``oracle_mesh/<slug>``), so
+        the file is under a directory we named, beginning with a slug we chose,
+        and the only unknown is the timestamp the node appends. Newest wins,
+        and anything older than this job is ignored — a stale mesh from a
+        previous attempt at the same landmark would otherwise be collected as
+        if it were this one's, which is a wrong SHAPE rather than an error.
+        """
+        best: Optional[Path] = None
+        best_at = since
+        for root in self.output_roots:
+            d = root / "oracle_mesh"
+            try:
+                cands = list(d.glob(f"{name_hint}*.obj")) + \
+                    list(d.glob(f"{name_hint}*.glb")) + \
+                    list(d.glob(f"{name_hint}*.ply"))
+            except OSError:
+                continue
+            for c in cands:
+                try:
+                    at = c.stat().st_mtime
+                except OSError:
+                    continue
+                if at >= best_at:
+                    best, best_at = c, at
+        return best
 
     def _read(self, reported: str) -> bytes:
         """Open what the export node wrote.

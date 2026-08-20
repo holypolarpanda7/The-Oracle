@@ -148,6 +148,21 @@ check("...with its provenance beside it, so a stale one can be told apart",
 check("a truncated mesh is refused rather than measured",
       L._write("feature-empty", "x", b"# nothing here\n") is None)
 
+# The failure the first real run actually produced: asked for a gilded sow the
+# reference came back a flat heraldic emblem, and the mesher faithfully built a
+# flat heraldic emblem in relief — 1.00 x 0.02 x 0.95. Correct work on the
+# wrong input, and nothing anywhere complained. A landmark is something a fight
+# happens AROUND; a sheet on its edge is worse than the box it replaces.
+sheet = "".join(f"v {x} {0.002 * z} {z}\n"
+                for x in (0.0, 1.0) for z in range(8)).encode()
+check("a mesh that came back a SHEET is refused, not stood up",
+      L._write("feature-sheet00", "a gilded sow", sheet) is None)
+check("...and the reason names the shape, not just 'failed'",
+      "thinnest side" in (L._too_flat(sheet) or ""), str(L._too_flat(sheet)))
+solid = "".join(f"v {x} {y} {z}\n" for x in (0.0, 1.0)
+                for y in (0.0, 0.9) for z in (0.0, 1.0)).encode()
+check("...while a thing with real volume passes", L._too_flat(solid) is None)
+
 # The fit is cached on the reasoning that meshes are immutable within a run —
 # which a mesh that lands three minutes into a session breaks.
 stale = sp.mesh_fit(piece.slug)
@@ -157,7 +172,8 @@ check("dropping the cache is what lets the board see it",
       fit is not None, f"before={stale} after={fit}")
 assert fit is not None
 
-# A 4-unit cube standing 9 ft on 5-ft squares: 9/4/5 squares per unit.
+# A 4-unit cube standing 9 ft on 5-ft squares: 9/4/5 squares per unit. The cube
+# is as wide as it is tall, so the footprint does not bind and the height wins.
 want = (sp.FEATURE_HEIGHT_FT / 4.0) / 5.0
 check("the fit comes off the DECLARED height, not the mesh's own units",
       abs(fit["scale"] - want) < 1e-9, f"{fit['scale']:.6f} vs {want:.6f}")
@@ -176,10 +192,70 @@ check("...and the scale it ships is the one measured here",
 check("gaining a shape changed no rule",
       piece.tiles == TILES_BEFORE and piece.stamped_code == CODE_BEFORE)
 
+# A landmark nobody authored has no stated fiction to protect: both its numbers
+# are defaults, and the first real mesh — a sow on a broad plinth, 1.00 x 0.44 x
+# 1.00 — scaled to nine feet tall spills five feet onto every square around it.
+# The catalogue's rule is the opposite and must STAY the opposite, or every tall
+# thing becomes a dwarf again.
+wide = ("# a slab\n"
+        + "".join(f"v {x} {y} {z}\n" for x in (0.0, 4.0)
+                  for y in (0.0, 1.0) for z in (0.0, 4.0))
+        + "f 1 2 3\nf 2 3 4\n")
+(gen_root / f"{piece.slug}.obj").write_text(wide)
+sp.forget_mesh()
+wfit = sp.mesh_fit(piece.slug)
+across = 4.0 * wfit["scale"]
+check("an INVENTED landmark is not allowed to spill off its own squares",
+      abs(across - piece.width) < 1e-6,
+      f"{across * 5:.1f} ft across a {piece.width * 5} ft footprint")
+tall_ft = 1.0 * wfit["scale"] * 5
+check("...it gives up height instead, which is the cheaper of the two",
+      tall_ft < sp.FEATURE_HEIGHT_FT, f"{tall_ft:.1f} ft tall")
+if catalogued_early := next((s2 for s2 in sp.CATALOGUE
+                             if sp.mesh_path(s2) is not None
+                             and not sp.is_generated(sp.mesh_path(s2))), ""):
+    cfit = sp.mesh_fit(catalogued_early)
+    cb = sp._obj_bounds(sp.mesh_path(catalogued_early))
+    up = sp.CATALOGUE[catalogued_early].up
+    tall = (cb[1][1] - cb[0][1]) if up == "y" else (cb[1][2] - cb[0][2])
+    check("...while a CATALOGUED height is a stated fact and still wins",
+          abs(tall * cfit["scale"] * 5
+              - sp.CATALOGUE[catalogued_early].height_ft) < 0.01,
+          f"{tall * cfit['scale'] * 5:.1f} ft vs declared "
+          f"{sp.CATALOGUE[catalogued_early].height_ft} ft")
+(gen_root / f"{piece.slug}.obj").write_text(cube_obj(4.0))
+sp.forget_mesh()
+
 
 # ---------------------------------------------------------------------------
 # A collected mesh is never displaced
 # ---------------------------------------------------------------------------
+print(f"\n{BOLD}3b. the file is put into the form the board already assumes{OFF}")
+
+# TRELLIS.2 hands back a Z-UP mesh — measured, on the first real one: the sow's
+# plinth was a flat slab at minimum z and the animal stood along +z. The board
+# is Y-up, `SetPiece.up` is read by mesh_fit and by NO renderer, and nothing
+# anywhere rotates anything — so an unrotated file reaches the board lying on
+# its side, correctly scaled. Fixed once, at write time, rather than by
+# teaching three readers a second convention.
+zup = ("mtllib material.mtl\nusemtl material_0\n"
+       "vt 0.0 0.0\nvt 1.0 0.0\nvt 1.0 1.0\n"
+       "v 0 0 0\nv 2 0 0\nv 2 3 0\nv 0 0 9\n"
+       "f 1/1 2/2 3/3\n").encode()
+norm = L._normalize_obj(zup)
+text = norm.decode()
+vs = [tuple(float(t) for t in ln.split()[1:])
+      for ln in text.splitlines() if ln.startswith("v ")]
+check("a Z-up mesh is stood up: (x, y, z) -> (x, z, -y)",
+      vs[3] == (0.0, 9.0, 0.0) and vs[2] == (2.0, 0.0, -3.0), str(vs))
+check("...and the rotation is PROPER, so face winding survives it",
+      [ln for ln in text.splitlines() if ln.startswith("f ")] == ["f 1 2 3"])
+check("only geometry is kept — our three readers want v and f",
+      "vt " not in text and "mtllib" not in text and "usemtl" not in text)
+check("...which is also why the mtllib goes: it names a file no route serves",
+      "material.mtl" not in text)
+
+
 print(f"\n{BOLD}4. a modeller's answer outranks a generated one{OFF}")
 
 catalogued = next((s for s in sp.CATALOGUE

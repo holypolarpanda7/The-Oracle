@@ -946,6 +946,71 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   a fresh layout every run, and a landmark check is a check about whether one
   fits, so it failed intermittently and would have been blamed on whatever
   change somebody was holding at the time.
+- **An invented landmark can now be given a SHAPE, and the mesher is only ever
+  as good as the picture.** `imagery/landmark3d.py` + `imagery/mesh_client.py`.
+  The catalogue exists so a model cannot ask for a mesh nobody shipped, and a
+  catalogue is a fixed list — the DM's own gilded sow was standing on the board
+  as a 2x2 stamped box: mechanically exact and visually nothing. The missing
+  step was never geometry; a PICTURE of the thing is something the project
+  already makes for every catalogue item and every wreck, and nothing turned one
+  into a shape. TRELLIS.2 does, and what comes back is a mesh like any other —
+  fitted by `setpieces.mesh_fit` on the server, drawn by the isometric board,
+  rasterized into the depth map, carrying NO mechanical content. The tiles the
+  piece stamps stay its entire rules meaning. OBJ, because all three readers
+  already speak it (the browser's `OBJLoader`, `_obj_bounds`, `isocam`'s
+  rasterizer); a GLB would need three new readers to buy nothing. Off by default
+  (`ORACLE_LANDMARK_MESH`) — minutes of GPU on a card already shared with SDXL
+  and the local LLM — and every failure leaves the box exactly where it was.
+  **Two roots, searched COLLECTED FIRST** (`MESH_ROOT`, then `GENERATED_ROOT`,
+  gitignored): a pack mesh is a modeller's answer to what the thing is, a
+  generated one is a diffusion model's guess, so a catalogue entry can never be
+  displaced by something this machine invented under the same slug. They serve
+  over different URLs, because vite serves only `public/`.
+  **The reference render is its own ImageKind, and that cost a real run to
+  learn.** Drawn as a `MAP` — which is what the first version did — the gilded
+  sow came back a flat heraldic emblem, because a kind carries LoRAs and
+  SDXL-Battlemaps + HadesLevel@0.9 do exactly what they are for; no wording
+  survives a LoRA at that strength. TRELLIS then faithfully produced a 2D emblem
+  in relief: **1.00 x 0.02 x 0.95**, correct work on the wrong input, and not one
+  thing in the pipeline complained. `ImageKind.MESHREF` renders it with no house
+  style at all, because nobody ever LOOKS at this picture — it is an instrument
+  reading, and dramatic light bakes a shadow into the geometry. `_too_flat`
+  refuses a mesh whose thinnest side is under 8% of its widest, since a sheet
+  standing on its edge is worse than the box it replaces.
+  Three more things that would each have been silent: the fit is `lru_cache`d on
+  "meshes are immutable within a run", which a mesh landing three minutes into a
+  session breaks (`forget_mesh`); the file is written ATOMICALLY, because
+  `_obj_bounds` measures whatever is on disk and a half-written OBJ measures,
+  fits and stands the landmark at a confidently wrong size; and the mesh is asked
+  for BEFORE the painting, since the depth map the painter is conditioned on
+  rasterizes these meshes. **`Trellis2ExportTrimesh` reports `outputs: {}`** —
+  measured: the file was written, the job reported success, and the history said
+  nothing — so `_poll` returning None is normal and `_locate` finds the file
+  under the prefix we chose.
+- **A swatch is albedo, and albedo alone is a picture of stone laid FLAT on a
+  shape.** `vtt/surface.py`. Every face of every block returned the same light
+  for its orientation, so mortar courses, grain and pitting were painted ON the
+  surface instead of being surface, and the geometry read as coloured cardboard
+  however good the swatch was. Two halves, from different places, and that split
+  is the design. **The RELIEF is already in the picture**: recovered by a
+  HIGH-PASS, never by plain luminance — an albedo render contains the lighting it
+  was made under, so luminance-as-height bakes somebody else's sun into the
+  geometry. Measurable, and pinned: after the pass, detail beats low-frequency
+  energy by 11x on a swatch with a gradient across it, where luminance alone
+  fails the same check. **The SHINE is not in the picture at all** — contrast
+  says nothing about whether stone is wet — so roughness and metalness are
+  declared per SUBSTANCE, which is what a skin already is. Metalness is a switch
+  and not a dial, and nothing is a mirror, because everything on a battlefield is
+  dirty. **Every filter WRAPS** (`numpy.roll`): the swatch is tiled with
+  `RepeatWrapping`, so a blur that clamps at the edges leaves a seam every five
+  feet, in a grid, over the whole board. Derived, never stored beside the
+  swatch — the `rules/components.py` doctrine one layer down — and derived on the
+  SERVER for the `mesh_fit` reason. Client-side: `MeshStandardMaterial`, a
+  hemisphere fill so the underside of every ledge stops going flat black, and a
+  small procedural environment because **a metal with nothing to reflect renders
+  BLACK**. The derived channels load as `NoColorSpace` deliberately: a normal map
+  read through the sRGB curve lights as the material being subtly the wrong
+  colour, which nobody can point at and everybody can see.
 - **The GROUND is where a board stops making sense, and three different things
   were wrong with it.** All three read as "the painter is being silly" and none
   of them was the painter. **Scenery had no idea where it was**: `decor_for`

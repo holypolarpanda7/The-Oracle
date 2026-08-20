@@ -74,8 +74,25 @@ class ImageKind:
     #                          the Baldur's-Gate layer, and the two want
     #                          different framing and a different ControlNet.
 
+    MESHREF = "meshref"    # -> the reference PHOTOGRAPH a mesher is given for a
+    #                          landmark the DM invented (imagery/landmark3d.py).
+    #                          Its own kind for exactly the reason MATERIAL is:
+    #                          a kind carries LoRAs, and rendered as a MAP a
+    #                          gilded sow came back as a flat heraldic emblem —
+    #                          SDXL-Battlemaps and HadesLevel@0.9 doing what
+    #                          they are for. TRELLIS.2 then faithfully turned a
+    #                          2D emblem into a 2D emblem in relief: a mesh
+    #                          1.0 x 0.02 x 0.95, correct work on the wrong
+    #                          input.
+    #
+    #                          Nobody ever LOOKS at one of these. It is an
+    #                          instrument reading, so it wants no house style,
+    #                          no rim light and no mood — a plain, evenly lit
+    #                          three-quarter product photograph is the only
+    #                          thing a mesher can read.
+
     ALL = {PLACE, NPC, CREATURE, ITEM, PC, SCENE, MAP, WORLDMAP, MATERIAL,
-           ISOBOARD}
+           ISOBOARD, MESHREF}
 
 
 def normalize_kind(kind: str) -> str:
@@ -88,7 +105,9 @@ def normalize_kind(kind: str) -> str:
                "worldmap": ImageKind.WORLDMAP, "world-map": ImageKind.WORLDMAP,
                "region-map": ImageKind.WORLDMAP, "chart": ImageKind.WORLDMAP,
                "texture": ImageKind.MATERIAL, "swatch": ImageKind.MATERIAL,
-               "surface": ImageKind.MATERIAL}
+               "surface": ImageKind.MATERIAL,
+               "mesh": ImageKind.MESHREF, "mesh-ref": ImageKind.MESHREF,
+               "landmark": ImageKind.MESHREF}
     k = aliases.get(k, k)
     return k if k in ImageKind.ALL else ImageKind.CREATURE
 

@@ -56,7 +56,19 @@ _MESH_FRAMING = (
     "slightly above, the whole object inside the frame with clear space around "
     "it, standing upright on flat neutral ground, plain flat mid-grey seamless "
     "background, even diffuse studio lighting from every side, no cast shadow, "
-    "sharp focus throughout, product photograph of a museum piece"
+    "sharp focus throughout, product photograph of a museum piece, "
+    "a solid three-dimensional physical object with real depth and volume, "
+    "photographed from an angle so that two sides of it are visible at once"
+)
+
+#: The whole art direction, replacing the house style for this kind. Flat,
+#: even, documentary — the opposite of everything the game's own look asks
+#: for, and correct here for the same reason a reference photograph is not a
+#: painting.
+_MESH_STYLE = (
+    "high resolution reference photograph, neutral colour, flat even "
+    "illumination, no artistic styling, no stylisation, documentary product "
+    "photography, full object visible"
 )
 
 #: Everything that ruins a matte or a mesh. A cropped subject loses a limb in
@@ -68,7 +80,14 @@ _MESH_NEGATIVE = (
     "horizon, sky, floor pattern, tiles, text, watermark, signature, frame, "
     "border, dramatic shadows, hard cast shadow, silhouette, dark background, "
     "busy background, motion blur, depth of field, bokeh, reflections, "
-    "transparent, glass, smoke, fog, particles"
+    "transparent, glass, smoke, fog, particles, "
+    # The failure this actually produced: a flat emblem, faithfully meshed as
+    # a flat emblem. A mesher can only build what the picture shows it, so
+    # anything that reads as a 2D device has to be refused in the negative.
+    "flat, 2d, emblem, crest, heraldry, coat of arms, shield, badge, logo, "
+    "icon, sticker, decal, sign, plaque, medallion, relief carving, "
+    "bas-relief, engraving, illustration, vector art, flat design, "
+    "front view, orthographic view, side view, top view"
 )
 
 #: Slug shape a route may serve from disk. Landmark slugs are built by
@@ -151,10 +170,24 @@ def render_reference(phrase: str, slug: str, *, store=None) -> Optional[bytes]:
         except Exception as e:
             print(f"[landmark3d] imagery unavailable: {e}")
             return None
+    from .models import ImageKind
     try:
         res = store.ensure_image(
-            "map", reference_prompt(phrase), context="landmark-reference",
+            # The MESHREF kind, never "map". A kind carries LoRAs, and rendered
+            # as a MAP this came back a flat heraldic emblem — SDXL-Battlemaps
+            # and HadesLevel@0.9 doing precisely what they are for, and no
+            # wording survives a LoRA at that strength. TRELLIS then turned a
+            # 2D emblem into a 2D emblem in relief: 1.0 x 0.02 x 0.95, correct
+            # work on the wrong input. Measured, not reasoned about.
+            ImageKind.MESHREF, reference_prompt(phrase),
+            context="landmark-reference",
             ref_slug=f"landmark3d-{slug}", negative_extra=_MESH_NEGATIVE,
+            # No house style either. The rim-lit, jewel-toned, painterly art
+            # direction is right for everything a PLAYER looks at and wrong for
+            # every one of these: nobody ever sees this picture, it is an
+            # instrument reading, and dramatic light bakes a shadow into the
+            # geometry.
+            style_prompt=_MESH_STYLE,
             width=REFERENCE_PX, height=REFERENCE_PX, store_width=REFERENCE_PX,
             max_per_bucket=1)
     except Exception as e:
@@ -263,6 +296,20 @@ def _write(slug: str, phrase: str, mesh: bytes, *, seed: int = 0,
     if not mesh or b"v " not in mesh[:200_000]:
         print(f"[landmark3d] {slug}: the mesher returned no vertices")
         return None
+    mesh = _normalize_obj(mesh)
+    thin = _too_flat(mesh)
+    if thin is not None:
+        # A mesher can only build what the picture SHOWS it, and the first real
+        # run proved how that fails: asked for a gilded sow, the reference came
+        # back a flat heraldic emblem, and TRELLIS faithfully produced a flat
+        # heraldic emblem in relief — 1.0 x 0.02 x 0.95. Correct work on the
+        # wrong input, and nothing in the pipeline complained. A landmark is
+        # something a fight happens AROUND; a sheet standing on its edge is
+        # worse than the stamped box it would replace, so it is refused here
+        # rather than fitted, cached and drawn.
+        print(f"[landmark3d] {slug}: the mesh is a sheet, not an object "
+              f"({thin}) — the reference picture was probably flat")
+        return None
     d = root()
     try:
         d.mkdir(parents=True, exist_ok=True)
@@ -275,6 +322,7 @@ def _write(slug: str, phrase: str, mesh: bytes, *, seed: int = 0,
             "seconds": round(seconds, 1), "bytes": len(mesh),
             "made": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "source": "TRELLIS.2 (image->shape) from a rendered reference",
+            "normalized": "Z-up -> Y-up, geometry only",
         }, indent=2), encoding="utf-8")
     except OSError as e:
         print(f"[landmark3d] could not store {slug}: {e}")
@@ -282,6 +330,95 @@ def _write(slug: str, phrase: str, mesh: bytes, *, seed: int = 0,
     print(f"[landmark3d] {slug}: {len(mesh)/1024:.0f} KB in {seconds:.0f}s "
           f"— {phrase!r}")
     return final
+
+
+#: Which way is up in what the mesher hands back. **Z**, measured — the first
+#: real mesh came out with its plinth as a flat slab at minimum z and the figure
+#: standing along +z, while y was the front-to-back axis. The board is Y-up and
+#: nothing downstream rotates anything: `SetPiece.up` exists, `mesh_fit` uses it
+#: for the scale and the floor offset, and NO renderer reads it — so a Z-up file
+#: reaches the board lying on its side, correctly scaled.
+#:
+#: Fixed HERE, once, at write time, rather than by teaching three readers a
+#: second convention. Same argument as `vtt/hull.py`: a thing both languages
+#: must agree about is settled by one of them doing it.
+TRELLIS_UP = "z"
+
+
+def _normalize_obj(mesh: bytes) -> bytes:
+    """Stand the mesh up, and strip it to what our three readers actually use.
+
+    Two jobs, and they belong together because both are "put this file into the
+    form the rest of the project already assumes".
+
+    **Z-up to Y-up**: ``(x, y, z) -> (x, z, -y)``, a proper rotation (its
+    determinant is +1), so face winding — and therefore every normal the
+    renderer derives from it — is unchanged.
+
+    **v and f only**: the browser keeps position and drops materials, normals
+    and UVs; ``_obj_bounds`` reads ``v`` lines; ``isocam``'s rasterizer reads
+    ``v`` and ``f``. Nothing anywhere wants the ``vt`` block or the ``mtllib``
+    line, and the ``mtllib`` is worse than dead weight — it names a file beside
+    the mesh in ComfyUI's output that this route does not serve, so a loader
+    that did resolve materials would fetch a 404 on every landmark. Dropping
+    the UVs means the face lines have to be rewritten to bare vertex indices,
+    which is the whole of why this is a rewrite rather than a filter.
+    """
+    out: list[bytes] = [b"# normalized by imagery/landmark3d.py: Z-up -> Y-up, "
+                        b"geometry only\n"]
+    for line in mesh.splitlines():
+        if line.startswith(b"v "):
+            parts = line.split()
+            if len(parts) >= 4:
+                try:
+                    x, y, z = (float(parts[1]), float(parts[2]), float(parts[3]))
+                except ValueError:
+                    continue
+                out.append(b"v %.6f %.6f %.6f\n" % (x, z, -y))
+        elif line.startswith(b"f "):
+            idx = [tok.split(b"/")[0] for tok in line.split()[1:]]
+            idx = [i for i in idx if i]
+            if len(idx) >= 3:
+                out.append(b"f " + b" ".join(idx) + b"\n")
+    return b"".join(out)
+
+
+#: How thin a landmark may be before it is a picture rather than a thing:
+#: its smallest dimension against its largest. A stone arch is nowhere near
+#: this; an emblem, a plaque or a bas-relief is well under it.
+MIN_THICKNESS = 0.08
+
+
+def _too_flat(mesh: bytes) -> Optional[str]:
+    """A description of the flatness, or None if the mesh has real volume."""
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    seen = 0
+    for line in mesh.splitlines():
+        if not line.startswith(b"v "):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        try:
+            xyz = [float(parts[1]), float(parts[2]), float(parts[3])]
+        except ValueError:
+            continue
+        seen += 1
+        for i in range(3):
+            lo[i] = min(lo[i], xyz[i])
+            hi[i] = max(hi[i], xyz[i])
+    if seen < 8:
+        return f"only {seen} vertices"
+    span = [hi[i] - lo[i] for i in range(3)]
+    widest = max(span)
+    if widest <= 0:
+        return "no extent at all"
+    ratio = min(span) / widest
+    if ratio < MIN_THICKNESS:
+        return (f"{span[0]:.2f} x {span[1]:.2f} x {span[2]:.2f}, "
+                f"thinnest side {ratio:.1%} of the widest")
+    return None
 
 
 def _configured_url() -> str:
