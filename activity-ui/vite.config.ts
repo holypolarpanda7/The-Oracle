@@ -15,6 +15,11 @@ export default defineConfig({
       // and these are same-origin; without this line they 404 in `vite dev`,
       // which is why a locally-run board has always come up untextured.
       "/imagery": "http://127.0.0.1:8000",
+      // Landmark meshes this installation MADE. The committed pack meshes live
+      // under public/ and vite serves them itself; a mesh generated for a
+      // landmark the DM invented is gitignored, outside public/, and only the
+      // backend knows about it. See vtt/setpieces.GENERATED_ROOT.
+      "/vtt": "http://127.0.0.1:8000",
     },
   },
 });

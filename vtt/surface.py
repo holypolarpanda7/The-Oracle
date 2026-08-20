@@ -91,6 +91,13 @@ SURFACE_PROPERTIES: dict[str, tuple[float, float]] = {
     "moss": (0.92, 0.0),
     "bark": (0.94, 0.0),
     "timber": (0.78, 0.0),
+    # The catalogue's own words for the same stuff. `material_ref` produces
+    # "substance-wood" and "substance-stone" for a great many squares, and a
+    # table that only knows "timber" leaves the commonest surface on the board
+    # at the default — which is not wrong, and is not the answer either.
+    "wood": (0.78, 0.0),
+    "plank": (0.76, 0.0),
+    "planking": (0.76, 0.0),
     "canvas": (0.92, 0.0),
     "thatch": (0.95, 0.0),
     "sand": (0.94, 0.0),
@@ -102,6 +109,14 @@ SURFACE_PROPERTIES: dict[str, tuple[float, float]] = {
     # Fire and light emit rather than reflect; roughness is nearly irrelevant
     # but a low number would give lava a specular highlight it should not have.
     "lava": (0.80, 0.0),
+    # More metals, for the same reason: metalness is a switch, and a thing that
+    # conducts and is not switched on is a thing drawn as painted stone.
+    "silver": (0.30, 1.0),
+    "copper": (0.42, 1.0),
+    "metal": (0.44, 1.0),
+    # Cold things, which are the other surfaces that hold a highlight.
+    "snow": (0.55, 0.0),
+    "crystal": (0.16, 0.0),
 }
 
 #: Rough and not metal. Correct for stone, rubble, plaster, flagstones and
