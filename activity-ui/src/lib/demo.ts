@@ -347,6 +347,13 @@ function demoVtt(stage: number): VttScene {
       { name: "Mill floor", base_ft: 0, terrain: DEMO_TERRAIN,
         stairs: [{ x: 17, y: 2, to: 1, tx: 17, ty: 1, kind: "stair" }] },
       { name: "Gallery", base_ft: 15, terrain: DEMO_GALLERY,
+        // A LANDING at the far end from the stair, which is the whole
+        // asymmetry a walkway can honestly carry — and the offline demo is
+        // the only board a browser can draw with no backend, so a storey
+        // that is flat here is a storey nothing exercises. `base_ft` is
+        // where the gallery's floor sits; this is the step ON it.
+        elevation: Object.fromEntries(
+          [1, 2, 3].flatMap((x) => [1, 2].map((y) => [`${x},${y}`, 5]))),
         stairs: [{ x: 17, y: 1, to: 0, tx: 17, ty: 2, kind: "stair" }] },
     ],
     doors: [{ x: 0, y: 3, state: "open", name: "mill door" }],
