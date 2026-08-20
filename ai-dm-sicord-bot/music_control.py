@@ -2,6 +2,7 @@
 Music Control Module - Handles music preferences and playlist switching.
 Coordinates with music_player.py for playback control.
 """
+import re
 from typing import Dict, Optional
 import discord
 import music_player
@@ -53,12 +54,32 @@ async def leave_menu_music(voice_channel: "discord.VoiceChannel") -> Optional[st
     return WORLD_DEFAULT_PLAYLIST
 
 
+#: How a keyword is allowed to match. A plain substring test scores "a WARm
+#: tavern" as combat (war) and "a BARe arena" as tavern (bar) — both real cues
+#: this has been handed. So a keyword must start a WORD, and a short one must
+#: also END one: the long entries here are deliberate stems ("celebrat",
+#: "settlement", "bustle") and want to catch their own endings, while the short
+#: ones are whole words that have no business living inside other words.
+_STEM_MIN = 5
+
+
+def _kw_pattern(kw: str) -> "re.Pattern":
+    tail = r"[a-z]*" if len(kw) >= _STEM_MIN else r"\b"
+    return re.compile(r"\b" + re.escape(kw) + tail)
+
+
+_MOOD_PATTERNS: Dict[str, tuple] = {
+    mood: tuple(_kw_pattern(k) for k in kws)
+    for mood, kws in _MOOD_KEYWORDS.items()
+}
+
+
 def mood_for_query(query: str) -> str:
     """Map a DM music cue (free text) to the nearest local mood playlist."""
     q = (query or "").lower()
     best, best_hits = None, 0
-    for mood, kws in _MOOD_KEYWORDS.items():
-        hits = sum(1 for k in kws if k in q)
+    for mood, pats in _MOOD_PATTERNS.items():
+        hits = sum(1 for p in pats if p.search(q))
         if hits > best_hits:
             best, best_hits = mood, hits
     return best or DEFAULT_MOOD

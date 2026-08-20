@@ -136,25 +136,40 @@ def cast(spell_name: str, *, target_ac: int = 1, target_hp: int = 80) -> tuple[i
     return target_hp - after.current_hp, rep.events
 
 
-# AC 1 so the attack cannot plausibly miss, and the save spells roll against a
-# DC 15 the dummy has no hope of beating with a flat +0 — a legitimate miss
-# would prove nothing either way, and this test is about whether damage is
-# APPLIED at all.
-lost, events = cast("Eldritch Blast")
-check("Eldritch Blast rolls an attack and deals its damage", lost > 0,
-      f"{lost} HP; events {[e['kind'] for e in events]}")
-check("…and it is recorded as a HIT, not as a spell that merely went off",
-      any(e.get("kind") == "cast" and e.get("hit") for e in events))
+# Asserted on the ROLL, never on the hit points alone: a natural 1 misses
+# whatever the AC, and a target that legitimately saves takes nothing. Neither
+# is a bug, and a check that treats them as one flaps. What must be true is
+# that the branch was TAKEN — an attack was rolled, or a save was — and that
+# the damage followed its result.
+def rolled_attack(name: str) -> None:
+    lost, events = cast(name)
+    ev = next((e for e in events if e.get("kind") == "cast"), {})
+    check(f"{name} is resolved with an attack roll", "hit" in ev,
+          f"events {[e['kind'] for e in events]}")
+    check(f"…and {name} deals its damage on a hit",
+          (not ev.get("hit")) or lost > 0,
+          f"hit={ev.get('hit')} lost={lost} HP")
 
-lost, _ = cast("Fire Bolt")
-check("Fire Bolt too", lost > 0, f"{lost} HP")
+
+rolled_attack("Eldritch Blast")
+rolled_attack("Fire Bolt")
 
 lost, events = cast("Sacred Flame")
-check("a save spell forces the save and applies what it deals", lost > 0,
-      f"{lost} HP; events {[e['kind'] for e in events]}")
+ev = next((e for e in events if e.get("kind") == "cast"), {})
+# Asserted on the SAVE rather than on the HP: Sacred Flame deals nothing at
+# all on a success, and a dummy that rolls a 15 is not a bug — it is the rule.
+# What must be true is that the save happened and the damage followed it.
+check("a save spell forces the save",
+      "saved" in ev or bool(ev.get("results")),
+      f"events {[e['kind'] for e in events]}")
+check("…and applies what it deals when that save fails",
+      ev.get("saved") is True or lost > 0,
+      f"saved={ev.get('saved')} lost={lost} HP")
 
+# Fireball is the case with no escape: half damage even on a success, so any
+# outcome at all must move the hit points.
 lost, _ = cast("Fireball")
-check("Fireball too", lost > 0, f"{lost} HP")
+check("Fireball deals damage saved or not", lost > 0, f"{lost} HP")
 
 # Nothing that heals or buffs should be dealing damage to its target.
 lost, _ = cast("Bless")

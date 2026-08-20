@@ -263,6 +263,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   map, wash and ink together, to check labels stay readable over the paint.
 - Loot / affix demo: `uv run python -m loot.demo`
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
+- Combat-music smoke test: `uv run python scripts/music_smoke.py` (the two
+  halves: the BACKEND decides when from the tracker and holds a scene cue that
+  arrives mid-fight, the BOT decides which mood from its own vocabulary — and
+  a warm tavern is not a war)
 - Spell-resolution smoke test: `uv run python scripts/spell_resolve_smoke.py`
   (how a spell resolves, read off the spell rather than off a column almost
   nothing fills — and the damage actually landing, through the real engine)
@@ -998,6 +1002,26 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `state()["last_move"]` carries the newest one and the client animates along
   it. A straight lerp between two squares draws a creature strolling through
   masonry, which was tolerable when walls were flat shading and is not now.
+- **The music follows the TRACKER, not the DM remembering to mention it.**
+  Nothing but the model's own `[[MUSIC:]]` cue ever moved a table's playlist,
+  so initiative could be rolled, a board could come out and six creatures could
+  start swinging over the same tavern lute — and on a lean or muted combat turn
+  there is no cue at all. `_sync_combat_music` compares "is a fight live"
+  against what the channel last heard and speaks only when the answer CHANGES,
+  so it is safe to call from anywhere that already refreshes state. **A fight
+  owns the music while it lasts**: a scene cue arriving mid-combat is
+  remembered as what to go back to (`_set_activity_music(scene=True)` stores
+  it) rather than played over the fight — without that rule the DM's own cue,
+  landing one line after the encounter opened, put the lute straight back on.
+  The backend never names a PLAYLIST: it sends words, and
+  `music_control.mood_for_query` on the bot snaps them to a mood it has audio
+  for, because that side is the only one that knows which moods exist.
+  **That matcher tested bare substrings**, which scored "a WARm tavern" as
+  combat and "a BARe arena" as tavern — both real cues. A keyword must now
+  start a word, and a short one must end one too; the long entries are
+  deliberate stems ("celebrat", "bustle", "settlement") and still catch their
+  own endings. Same lesson as `setpieces.landmark_for` and `threads`' word
+  boundaries.
 - **The ENGINE and the NARRATION are two things at two speeds, and bundling
   them made the fast one wait.** A resolved turn takes milliseconds and a local
   model takes seconds, and they used to arrive together — so an Eldritch Blast

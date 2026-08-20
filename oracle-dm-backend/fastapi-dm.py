@@ -13498,6 +13498,21 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
 
     # Separate the AI's ambient-music recommendation from the narration.
     dm_text, music_query = extract_music_cue(dm_text)
+    # …and the one cue the model is not trusted to remember. A fight opening or
+    # ending is a fact the tracker holds; the DM's cue may or may not mention
+    # it, and on a lean or muted combat turn there is no cue at all. Done AFTER
+    # the extraction so the scene's own cue is what gets remembered and
+    # restored when the fight ends.
+    if music_query:
+        try:
+            _meta = (_load_session_state(req.session_id).get("meta", {}) or {})
+            _set_activity_music(_meta.get("activity_channel"), music_query)
+        except Exception as e:  # noqa: BLE001
+            print(f"[music] scene cue failed: {e}")
+    try:
+        _sync_combat_music(req.session_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[music] combat sync failed: {e}")
 
     # Pull out scene-image requests (and any permanent-change resets), then
     # render/reuse pictures for the bot to attach.
@@ -22356,13 +22371,111 @@ _ACTIVITY_MUSIC: Dict[str, dict] = {}
 _ACTIVITY_MUSIC_SEQ = 0
 
 
-def _set_activity_music(channel: Optional[str], query: Optional[str]) -> None:
-    """Record the DM's latest ambient-music cue for a channel (bumps the seq)."""
+def _set_activity_music(channel: Optional[str], query: Optional[str], *,
+                        scene: bool = True) -> None:
+    """Record the latest ambient-music cue for a channel (bumps the seq).
+
+    **A fight owns the music while it lasts.** A scene cue arriving mid-combat
+    is not ignored — it is remembered as what to go back to — but it does not
+    play over the fight. Without that the DM's own cue, applied one line after
+    the tracker opened an encounter, would put the tavern lute straight back on
+    over the swinging. ``scene=False`` is the fight's own voice and always
+    wins.
+    """
     global _ACTIVITY_MUSIC_SEQ
     if not channel or not query:
         return
+    st = _COMBAT_MUSIC.get(str(channel))
+    if scene and st and st.get("live"):
+        st["before"] = query
+        return
     _ACTIVITY_MUSIC_SEQ += 1
     _ACTIVITY_MUSIC[str(channel)] = {"query": query, "seq": _ACTIVITY_MUSIC_SEQ}
+
+
+#: What the table hears when steel comes out. Free text on purpose: the BOT
+#: owns the mood vocabulary (`music_control.mood_for_query`), and a backend that
+#: named a playlist directly would be a second answer to which moods exist.
+COMBAT_MUSIC_CUE = "combat — battle, the fight is joined, danger"
+
+#: Per channel: whether a fight was live last time we looked, and what was
+#: playing before it started, so the table goes back to it afterwards.
+_COMBAT_MUSIC: Dict[str, dict] = {}
+
+
+def _scene_music_cue(session_id: str) -> str:
+    """What this place sounds like, for when a fight ends.
+
+    Deliberately the place's own WORDS rather than a mood name — the bot snaps
+    free text to the nearest mood it actually has audio for, and duplicating
+    that table here would let the two disagree about what a crypt is.
+    """
+    try:
+        state = _load_session_state(session_id)
+        meta = state.get("meta", {}) or {}
+        if meta.get("arena"):
+            return "the proving grounds — a bare arena between bouts"
+        pc = None
+        if meta.get("user_id"):
+            pc = world.find_pc(str(meta["user_id"]),
+                               meta.get("character_name") or None)
+        loc = world.location_of(pc) if pc is not None else None
+        if loc is not None:
+            bits = [loc.name or "", (loc.attributes or {}).get("biome") or "",
+                    (loc.attributes or {}).get("terrain") or "",
+                    (loc.description or "")[:160]]
+            text = " ".join(b for b in bits if b).strip()
+            if text:
+                return text
+    except Exception as e:  # noqa: BLE001
+        print(f"[music] scene cue failed: {e}")
+    return "the road — quiet travel"
+
+
+def _sync_combat_music(session_id: Optional[str],
+                       channel: Optional[str] = None) -> None:
+    """Music follows the TRACKER, not the DM remembering to mention it.
+
+    Nothing but the model's own `[[MUSIC:]]` cue ever moved a table's playlist,
+    so initiative could be rolled, a board could come out and six creatures
+    could start swinging over the same tavern lute — and with combat narration
+    lean or muted there is no cue at all. A fight starting is a FACT the code
+    holds; the music is one of the few things at the table that can announce it
+    before anybody reads a word.
+
+    Idempotent: it only ever speaks when the answer CHANGES, so it can be
+    called from anywhere that already refreshes state.
+    """
+    if not session_id:
+        return
+    ch = channel
+    if not ch:
+        try:
+            meta = (_load_session_state(session_id).get("meta", {}) or {})
+            ch = meta.get("activity_channel") or meta.get("channel")
+        except Exception:
+            ch = None
+    if not ch:
+        return
+    try:
+        live = combat.get_active(session_id) is not None
+    except Exception:
+        return
+    st = _COMBAT_MUSIC.setdefault(str(ch), {"live": False, "before": None})
+    if bool(st.get("live")) == live:
+        return
+    if live:
+        # Remember what the scene was playing, so the fight doesn't cost the
+        # table the mood it had.
+        st["before"] = (st.get("before")
+                        or (_ACTIVITY_MUSIC.get(str(ch)) or {}).get("query"))
+        st["live"] = True                      # …before the cue, so it wins
+        _set_activity_music(ch, COMBAT_MUSIC_CUE, scene=False)
+    else:
+        st["live"] = False
+        _set_activity_music(ch, st.get("before") or _scene_music_cue(session_id),
+                            scene=False)
+        st["before"] = None
 
 
 @app.get("/activity/music/{channel}")
@@ -23594,6 +23707,13 @@ async def activity_ws(ws: WebSocket, channel: str):
                 await ws.send_json({"t": "locale", "locale": loc})
         except Exception as e:
             print(f"[activity] locale push failed: {e}")
+        # Steel is out, or it isn't — and the table should HEAR that. The music
+        # only ever moved on the DM's own cue, so a fight could open over a
+        # tavern lute; this follows the tracker instead.
+        try:
+            _sync_combat_music(session_id, channel)
+        except Exception as e:  # noqa: BLE001
+            print(f"[music] combat sync failed: {e}")
         # Live initiative board for the combat carousel (null clears it).
         try:
             enc = combat.get_active(session_id)
