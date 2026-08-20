@@ -89,3 +89,9 @@ scene-probe/
 # copied into activity-ui/public/assets/setpieces/ (which IS committed, with
 # its generated ATTRIBUTION.md beside them). See vtt/setpieces.py.
 assets_src/
+
+# Meshes this installation MADE, from a picture of a landmark the DM invented
+# (imagery/landmark3d.py). Derived art with a machine that can re-derive it, so
+# it is kept like a render and not like a source file — and it is one table's
+# gilded sow, which is nobody else's landmark. See vtt/setpieces.GENERATED_ROOT.
+generated/

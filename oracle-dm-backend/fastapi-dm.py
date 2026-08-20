@@ -8284,6 +8284,17 @@ def _vtt_render_art(map_id: int) -> None:
         # this one — the whole painted layer was built, probed, prerendered
         # into a gallery and never wired into play, so every board an Activity
         # opened came back as bare geometry.
+        # A landmark the DM INVENTED has no mesh in any pack, and until it has
+        # one it stands as the box its tiles describe. Asked for BEFORE the
+        # painting on purpose: the depth map the painter is conditioned on
+        # rasterizes these meshes, so a picture baked while the sow is still a
+        # box paints a box, and the player then looks at a sow standing in
+        # front of it. Same rule as everywhere else — the picture may not
+        # contradict what the board actually holds.
+        try:
+            _landmark_meshes(map_id)
+        except Exception as e:  # noqa: BLE001
+            print(f"[vtt] landmark mesh pass failed: {e}")
         try:
             vtt_engine.render_iso_art(map_id, extra=look, conditions=cond)
         except Exception as e:  # noqa: BLE001
@@ -8297,6 +8308,44 @@ def _vtt_render_art(map_id: int) -> None:
             _push_vtt_state(row.session_id)
     except Exception as e:
         print(f"[vtt] art push failed: {e}")
+
+
+def _landmark_meshes(map_id: int) -> int:
+    """Give this board's invented landmarks a shape, if the operator wants one.
+
+    Only pieces the CATALOGUE does not know: a shipped mesh is a modeller's
+    answer to what the thing is, and generating a rival one under the same slug
+    would be the board holding two answers to a question it has already
+    settled. Everything else about the piece — its footprint, the tiles it
+    stamps, its height, where it stands — is untouched, because a mesh is
+    drawing and the tiles are the rules.
+
+    Returns how many were made. Zero is the ordinary answer and never an
+    error: the feature is off by default, the GPU may be busy, and a landmark
+    with no mesh is the box the board has drawn since invented landmarks
+    existed.
+    """
+    from imagery import landmark3d
+    from vtt import setpieces as sp
+    if not landmark3d.enabled():
+        return 0
+    made = 0
+    for rec in (vtt_engine.setpieces_for(map_id) or []):
+        slug, name = str(rec.get("slug") or ""), str(rec.get("name") or "")
+        if not slug or not name or slug in sp.CATALOGUE:
+            continue
+        if landmark3d.has_mesh(slug):
+            continue
+        # Synchronous inside this job — it is ALREADY the background thread
+        # that paints the board, and the painting has to wait for the shape it
+        # is conditioned on. A table is playing on geometry throughout.
+        if landmark3d.generate(slug, name, store=image_store) is not None:
+            made += 1
+    if made:
+        # The board is redrawn from state() on the next push, and the fit it
+        # ships is measured off a file that did not exist a minute ago.
+        sp.forget_mesh()
+    return made
 
 
 def _vtt_render_debris(map_id: int) -> None:
@@ -19650,6 +19699,34 @@ async def imagery_sprite(image_id: int):
     if cut is None:
         return Response(content=raw, media_type="image/webp")
     return Response(content=cut, media_type="image/png")
+
+
+@app.get("/vtt/setpiece/{filename}")
+async def vtt_setpiece_mesh(filename: str):
+    """A landmark mesh this installation MADE, for the browser to draw.
+
+    The packs' meshes are committed under ``activity-ui/public/assets`` and vite
+    serves them; a mesh generated five minutes ago for a landmark the DM
+    invented is gitignored, outside ``public/``, and vite has never heard of it.
+    So the two roots produce two URLs, and this is the second one.
+
+    Read-only, and the slug is checked against a pattern before it reaches the
+    filesystem — this path is reachable from a URL, and the one thing a URL must
+    never be able to say is ``../``.
+    """
+    from imagery import landmark3d
+    slug = filename[:-4] if filename.lower().endswith(".obj") else filename
+    path = landmark3d.mesh_file(slug)
+    if path is None:
+        raise HTTPException(status_code=404, detail="No such landmark mesh.")
+    try:
+        data = path.read_bytes()
+    except OSError:
+        raise HTTPException(status_code=404, detail="No such landmark mesh.")
+    # Immutable once written (the writer replaces atomically under a slug that
+    # is a digest of the phrase), so it can be cached hard.
+    return Response(content=data, media_type="model/obj",
+                    headers={"Cache-Control": "public, max-age=31536000"})
 
 
 @app.delete("/imagery/entity/{kind}/{ref}")

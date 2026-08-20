@@ -100,6 +100,15 @@ PACK_WORKSPACE = "assets_src"
 #: the painting aligned with what the player sees.
 MESH_ROOT = "activity-ui/public/assets/setpieces"
 
+#: Meshes this installation MADE, from a picture of a thing the DM invented.
+#: Deliberately a second root rather than more files in the first: the packs'
+#: meshes are committed and carry somebody else's licence, and these are
+#: derived, unshippable and re-derivable — the same line the project draws
+#: between a rendered species portrait and the descriptors that produced it.
+#: Gitignored, and served by the BACKEND (vite only serves what is in
+#: ``public/``), which is why the two roots produce different URLs.
+GENERATED_ROOT = "generated/setpieces"
+
 #: A footprint square the piece RESERVES but does not change.
 #:
 #: Not a tile code — the grid never holds one. It exists because height became
@@ -1016,19 +1025,51 @@ def _obj_bounds(path: Path) -> Optional[tuple[tuple[float, float, float],
 
 
 def mesh_path(slug: str, root: Optional[Path] = None) -> Optional[Path]:
-    """The collected mesh for this piece, or None if it was never collected.
+    """The mesh for this piece, or None if there isn't one on this machine.
 
     None is not an error: a catalogue entry whose pack nobody has unzipped is a
     landmark the board draws from its tiles alone, which is exactly what a
     piece with ``source=None`` does on purpose. Degrading to the geometry the
     board has always had beats a missing model leaving a hole in the room.
+
+    Two roots, searched COLLECTED FIRST. A pack mesh is a modeller's answer to
+    what the thing is and a generated one is a diffusion model's guess at it,
+    so where both exist the modeller wins — and a catalogue entry can never be
+    quietly displaced by something this machine invented under the same slug.
     """
-    base = root or (Path(__file__).resolve().parents[1] / MESH_ROOT)
+    if root is not None:
+        return _in_root(root, slug)
+    here = Path(__file__).resolve().parents[1]
+    return _in_root(here / MESH_ROOT, slug) or _in_root(generated_root(), slug)
+
+
+def _in_root(base: Path, slug: str) -> Optional[Path]:
     for ext in FORMATS:
         p = base / f"{slug}.{ext}"
         if p.exists():
             return p
     return None
+
+
+def generated_root() -> Path:
+    """Where a mesh this installation made is kept."""
+    return Path(__file__).resolve().parents[1] / GENERATED_ROOT
+
+
+def is_generated(path: Optional[Path]) -> bool:
+    """Did this file come out of the generator rather than out of a pack?
+
+    Asked because the two are served over different URLs, and answered by
+    where the file IS rather than by what the piece says about itself — a
+    catalogue entry whose pack is missing may still have a generated stand-in,
+    and the honest answer for that one is "generated".
+    """
+    if path is None:
+        return False
+    try:
+        return path.resolve().parent == generated_root().resolve()
+    except OSError:
+        return False
 
 
 @lru_cache(maxsize=64)
@@ -1046,12 +1087,20 @@ def mesh_fit(slug: str, square_ft: int = 5) -> Optional[dict]:
     meshes are committed and immutable, so the cache can never go stale within
     a run.
     """
-    piece = CATALOGUE.get(slug)
-    if piece is None or piece.source is None:
+    p = CATALOGUE.get(slug) or _ADHOC.get(slug)
+    if p is None:
         return None
     path = mesh_path(slug)
     if path is None or path.suffix.lower() != ".obj":
         return None
+    # A piece that declares no source draws itself from its tiles — UNLESS this
+    # machine has actually made a mesh for it. That is the whole of the
+    # invented-landmark path: the DM's gilded sow keeps stamping the square it
+    # always stamped, and gains a shape once one exists. Judged on the FILE,
+    # so a machine that has never rendered one behaves exactly as before.
+    if p.source is None and not is_generated(path):
+        return None
+    piece = p
     bounds = _obj_bounds(path)
     if bounds is None:
         return None
@@ -1071,6 +1120,18 @@ def mesh_fit(slug: str, square_ft: int = 5) -> Optional[dict]:
                   (y0 if piece.up == "y" else z0) * scale,
                   (z0 + z1) / 2.0 * scale],
     }
+
+
+def forget_mesh(slug: str = "") -> None:
+    """Drop the cached fit, because a mesh has just appeared or changed.
+
+    :func:`mesh_fit` is cached on the reasoning that the collected meshes are
+    committed and immutable within a run. A GENERATED one breaks that: it lands
+    in the middle of a session, minutes after the board that wanted it was
+    drawn, and a remembered ``None`` would leave that board flat until the
+    process restarted. Cheap — the cache holds at most 64 measurements.
+    """
+    mesh_fit.cache_clear()
 
 
 # --------------------------------------------------------------------------
@@ -1111,15 +1172,24 @@ class Placed:
         # a piece authored without one (the pyramid) and a piece whose pack
         # nobody has unzipped — the second must degrade the same way as the
         # first, or an uncollected mesh leaves a hole in the room.
-        fit = mesh_fit(self.slug) if p.source is not None else None
+        # mesh_fit answers for both kinds now — a pack mesh that was collected,
+        # and one this machine generated for a landmark the DM invented — and
+        # returns None for a piece that has neither, which is the case the
+        # board has always drawn from its tiles alone.
+        fit = mesh_fit(self.slug)
+        path = mesh_path(self.slug) if fit is not None else None
         out = {
             "slug": self.slug, "name": p.name,
             "x": self.x, "y": self.y, "yaw": self.yaw,
             "w": p.width, "d": p.depth,
             "height_ft": p.height_ft, "up": p.up, "yaw_fix": p.yaw_fix,
             "words": p.words, "code": p.stamped_code,
-            "mesh": (f"/assets/setpieces/{self.slug}{mesh_path(self.slug).suffix}"
-                     if fit is not None else None),
+            # Two roots, two URLs: vite serves the committed packs out of
+            # ``public/``, and it has never heard of a file this machine made
+            # five minutes ago — so a generated mesh comes through the backend.
+            "mesh": (None if path is None else
+                     (f"/vtt/setpiece/{self.slug}{path.suffix}" if is_generated(path)
+                      else f"/assets/setpieces/{self.slug}{path.suffix}")),
         }
         if fit is not None:
             out.update(fit)
