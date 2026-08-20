@@ -815,7 +815,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // cutAwayAt. Structure only, which is the same thing as "never a height
         // the rules quote", and `drawnTopFt` applies the identical reduction so
         // the board's account of who is hidden follows what it drew.
-        const h = full * cutawayHeightScale(scene, x, z, yawDeg, full);
+        const h = full * cutawayHeightScale(scene, x, z, yawDeg, full, level);
         const mb = builderFor(slot);
         // Everything emitted from here belongs to this square, so `reshade` can
         // find its vertices again without rebuilding anything.
@@ -1223,7 +1223,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       // ray march is the correction: see squareUnderRay.
       const [x, y] = squareUnderRay(
         scene, wx, wz, yaw,
-        (scene.square_ft || 5) * tallestUnits(scene), deepestFt(scene));
+        (scene.square_ft || 5) * tallestUnits(scene), deepestFt(scene), level);
       // Unlike the flat board this CAN miss: the viewport is a rectangle and
       // the board inside it is a diamond, so a good part of the frame is not
       // over the board at all. Reporting a square there would let a click on
@@ -1255,7 +1255,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // are relative to this STOREY: only one floor is ever drawn, so an
         // upper gallery is not standing in the hall's way.
         occluded: occludedAt(scene, x, y, squares, footFt,
-                             view.yaw ?? YAW_DEG),
+                             view.yaw ?? YAW_DEG, level),
       };
     },
 
@@ -1338,6 +1338,9 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const key = [
         scene.id, level, st.show.grid, st.show.terrain, backdrop,
         cutting ? `${away[0]},${away[1]}` : "-",
+        // The cut set is read off THIS storey's tiles; `level` is already in
+        // the key above, which is what keeps a gallery from being cut to the
+        // hall's plan.
         (scene.terrain ?? []).join(""),
         (scene.debris ?? []).map((d) => `${d.x},${d.y}`).join(";"),
       ].join("|");

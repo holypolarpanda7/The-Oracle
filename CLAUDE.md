@@ -1372,7 +1372,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   side. The consequence, stated rather than discovered: after a cutaway what
   hides a creature is the FURNITURE and the ground, never the room's own walls.
   Nothing about the RULES moves — a cut wall is still total cover and still
-  impassable. `awayDir` is one of EIGHT directions on purpose: the exact
+  impassable. **Everything that reads terrain and can be asked about an upper
+  STOREY goes through `rowsOf`**: `scene.terrain` is the ground floor and always
+  has been (`state()` repeats each floor's own inside `levels[]`), so reading it
+  for a gallery cuts that gallery to the plan of the hall underneath — walls
+  missing where it has them, walls standing where it does not. Survivable while
+  terrain reads were only the occlusion march, which documented itself as
+  ground-floor; not survivable once the cutaway started deciding what to DRAW
+  from it. `drawnTopFt`, `cutAwayAt`, `occludedAt` and `squareUnderRay` all take
+  the level now. (Per-square ELEVATION is still ground-floor only, and that is a
+  data gap rather than a reading one: `state()` ships `elevation` for level 0
+  and each upper storey carries only its `base_ft`.)
+  `awayDir` is one of EIGHT directions on purpose: the exact
   direction changes with every degree of a drag and the set of squares it picks
   out does not, so the mesh rebuilds eight times in a full turn instead of on
   every frame of one.

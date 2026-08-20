@@ -28,7 +28,7 @@ await build({ entryPoints: ["src/lib/isocam.ts"], bundle: true, format: "esm",
 await build({ entryPoints: ["src/lib/boardView.ts"], bundle: true, format: "esm",
               platform: "neutral", outfile: bvOut, logLevel: "error" });
 const cam = await import(pathToFileURL(camOut).href);
-const { awayDir, cutAwayAt, cuttingAway, occludedAt } =
+const { awayDir, cutAwayAt, cuttingAway, drawnTopFt, occludedAt } =
   await import(pathToFileURL(bvOut).href);
 
 let fails = 0;
@@ -235,6 +235,30 @@ check(!cutAwayAt(PILLAR, 3, 3, 45) && occludedAt(PILLAR, 2, 2, 1, 0, 45),
 const PAINTWALL = room(["....", "....", "..#.", "...."], { iso_image_id: 7 });
 check(occludedAt(PAINTWALL, 1, 1, 1, 0, cam.YAW_DEG),
       "and under a painting the wall is in the picture, so it hides as it always did");
+
+// A board with STOREYS asks the same question per floor, and `scene.terrain`
+// is the ground floor and always has been. Reading it for an upper storey cuts
+// the gallery to the plan of the hall underneath — walls missing where the
+// gallery has them, walls standing where it does not.
+const TWO = {
+  width: 6, height: 6, square_ft: 5, elevation: {},
+  terrain: ["######", "#....#", "#....#", "#....#", "#....#", "######"],
+  levels: [
+    { name: "Hall", base_ft: 0,
+      terrain: ["######", "#....#", "#....#", "#....#", "#....#", "######"] },
+    // A gallery is the strip you build; everywhere else is open to the hall.
+    { name: "Gallery", base_ft: 15,
+      terrain: ["      ", " #### ", " #..# ", " #..# ", " #### ", "      "] },
+  ],
+};
+check(cutAwayAt(TWO, 4, 5, 45, 0), "the hall's own near wall is cut on the hall");
+check(!cutAwayAt(TWO, 4, 5, 45, 1),
+      "...and the SAME square is not, on the gallery, where there is no wall");
+check(cutAwayAt(TWO, 4, 3, 45, 1),
+      "...while the gallery's own near wall is cut");
+check(drawnTopFt(TWO, 4, 5, 45, 1) === -Infinity,
+      "open air on an upper storey is a hole, not the hall's masonry",
+      String(drawnTopFt(TWO, 4, 5, 45, 1)));
 
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${fails ? `${fails} FAILED` : "the camera turns, and everything that must agree still agrees"}`);

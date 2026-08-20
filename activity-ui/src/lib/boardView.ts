@@ -483,6 +483,19 @@ export function exposedRock(isOpen: (x: number, z: number) => boolean,
       || isOpen(x - 1, z + 1) || isOpen(x + 1, z + 1);
 }
 
+/** The tile rows for one storey.
+ *
+ *  `scene.terrain` is the GROUND floor and always has been — `state()` ships it
+ *  where it has always been and repeats every floor's own inside `levels[]`. So
+ *  anything that reads terrain and can be asked about an upper storey has to
+ *  come through here, or it silently answers about the hall while the player is
+ *  looking at the gallery. That was survivable while terrain reads were only
+ *  the occlusion march (documented as ground-floor only); it stopped being
+ *  survivable when the cutaway started deciding which walls to DRAW from it. */
+function rowsOf(scene: VttScene, level = 0): readonly string[] {
+  return (level ? scene.levels?.[level]?.terrain : undefined) ?? scene.terrain ?? [];
+}
+
 /** How tall the thing standing on this square is DRAWN, in feet above the
  *  storey's own floor — the ground's elevation plus whatever stands on it.
  *
@@ -496,8 +509,8 @@ export function exposedRock(isOpen: (x: number, z: number) => boolean,
  *  already in the answer, but a 40-ft gate tower stamps 10-ft masonry, and
  *  what stands between the camera and the creature is the tower. */
 export function drawnTopFt(scene: VttScene, x: number, z: number,
-                           yawDeg: number = YAW_DEG): number {
-  const row = (scene.terrain ?? [])[z];
+                           yawDeg: number = YAW_DEG, level = 0): number {
+  const row = rowsOf(scene, level)[z];
   const elev = scene.elevation?.[`${x},${z}`] ?? 0;
   let top = -Infinity;
   if (row !== undefined && x >= 0 && x < row.length) {
@@ -509,7 +522,7 @@ export function drawnTopFt(scene: VttScene, x: number, z: number,
       // A cut wall really is that low now, and this is the one place the board
       // answers "what is standing in the way" — so a creature the cutaway
       // revealed must stop being reported as hidden by the thing that was cut.
-      top = elev + full * cutawayHeightScale(scene, x, z, yawDeg, full);
+      top = elev + full * cutawayHeightScale(scene, x, z, yawDeg, full, level);
     }
   }
   for (const sp of scene.setpieces ?? []) {
@@ -605,13 +618,14 @@ export function cuttingAway(scene: VttScene, yawDeg: number = YAW_DEG): boolean 
  *  other side. A player deciding whether they can break line of sight behind a
  *  crate must read that off the board; a wall is total cover at any height. */
 export function cutAwayAt(scene: VttScene, x: number, z: number,
-                          yawDeg: number = YAW_DEG): boolean {
+                          yawDeg: number = YAW_DEG, level = 0): boolean {
   if (!cuttingAway(scene, yawDeg)) return false;
-  const code = (scene.terrain ?? [])[z]?.[x];
+  const rows = rowsOf(scene, level);
+  const code = rows[z]?.[x];
   if (code === undefined || !_STRUCTURE.has(code)) return false;
   const [dx, dz] = awayDir(yawDeg);
   for (let n = 1; n <= CUTAWAY_DEPTH; n++) {
-    const c = (scene.terrain ?? [])[z + dz * n]?.[x + dx * n];
+    const c = rows[z + dz * n]?.[x + dx * n];
     if (c === undefined) return false;              // off the board: an outer face
     if (_HOLES.has(c)) return false;                // a chasm is not a room
     if (!_STRUCTURE.has(c)) return true;            // open ground behind it
@@ -623,8 +637,8 @@ export function cutAwayAt(scene: VttScene, x: number, z: number,
  *  not being cut, which is every square of every painted board. */
 export function cutawayHeightScale(scene: VttScene, x: number, z: number,
                                    yawDeg: number = YAW_DEG,
-                                   fullFt = 0): number {
-  if (!cutAwayAt(scene, x, z, yawDeg)) return 1;
+                                   fullFt = 0, level = 0): number {
+  if (!cutAwayAt(scene, x, z, yawDeg, level)) return 1;
   if (fullFt <= 0) return CUTAWAY_SCALE;
   return Math.max(CUTAWAY_SCALE, Math.min(1, CUTAWAY_MIN_FT / fullFt));
 }
@@ -660,7 +674,7 @@ export function cutawayHeightScale(scene: VttScene, x: number, z: number,
  *  and a march that stopped at zero fell back to the plane every time. */
 export function squareUnderRay(scene: VttScene, gx: number, gz: number,
                                yawDeg: number, tallestFt: number,
-                               deepestFt = 0): [number, number] {
+                               deepestFt = 0, level = 0): [number, number] {
   const { rayX, rayZ, rayRise } = basis(yawDeg);
   const sqFt = scene.square_ft || 5;
   const ground: [number, number] = [Math.floor(gx), Math.floor(gz)];
@@ -676,7 +690,7 @@ export function squareUnderRay(scene: VttScene, gx: number, gz: number,
     const x = Math.floor(gx + rayX * u);
     const z = Math.floor(gz + rayZ * u);
     if (x < 0 || z < 0 || x >= scene.width || z >= scene.height) continue;
-    if (drawnTopFt(scene, x, z, yawDeg) >= u * climbPerSquare) return [x, z];
+    if (drawnTopFt(scene, x, z, yawDeg, level) >= u * climbPerSquare) return [x, z];
   }
   return ground;
 }
@@ -722,7 +736,7 @@ const MAX_OCCLUDER_FT = 64;
  *  prevent. */
 export function occludedAt(scene: VttScene, x: number, z: number,
                            squares: number, footFt: number,
-                           yawDeg: number = YAW_DEG): boolean {
+                           yawDeg: number = YAW_DEG, level = 0): boolean {
   const { rayX, rayZ, rayRise } = basis(yawDeg);
   const sqFt = scene.square_ft || 5;
   // A token's DOM box is as tall in pixels as its footprint is wide, so the
@@ -741,7 +755,7 @@ export function occludedAt(scene: VttScene, x: number, z: number,
     if (sx < 0 || sz < 0 || sx >= scene.width || sz >= scene.height) return false;
     // Its own square is not in its own way, whatever is drawn there.
     if (sx >= x && sz >= z && sx < x + squares && sz < z + squares) continue;
-    if (drawnTopFt(scene, sx, sz, yawDeg) > chestFt + run * sqFt * rayRise)
+    if (drawnTopFt(scene, sx, sz, yawDeg, level) > chestFt + run * sqFt * rayRise)
       return true;
   }
   return false;
