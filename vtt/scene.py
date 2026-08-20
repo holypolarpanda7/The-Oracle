@@ -1090,6 +1090,47 @@ class VttEngine:
                     out[slot] = got
         return out
 
+    def surfaces_for(self, map_id: int) -> dict[str, dict]:
+        """How LIGHT behaves on each of this board's materials.
+
+        The companion to :meth:`materials_for`, and shipped separately for the
+        same reason the two exist at all: a swatch says what colour a square is
+        and this says what it DOES to light. Before it, every surface on every
+        board was equally matt — wet flagstones, brass fittings and dry
+        limestone all returned the same amount of light for the same
+        orientation, which is why the geometry read as coloured cardboard
+        however good the swatch was.
+
+        Roughness and metalness come from the SUBSTANCE, because they are facts
+        about what a thing is made of and cannot be recovered from a photograph
+        of it (contrast tells you nothing about whether stone is wet). The
+        derived maps are URLs rather than ids so the client is never in the
+        position of composing a measurement of its own — the same rule
+        ``setpieces.mesh_fit`` keeps.
+        """
+        from urllib.parse import quote
+
+        from . import skins as _skins
+        from . import surface as _surface
+        from .art import SUBSTANCE
+
+        out: dict[str, dict] = {}
+        for slot, image_id in (self.materials_for(map_id) or {}).items():
+            code, _, skin = slot.partition("@")
+            sk = _skins.skin(skin) if skin else None
+            substance = (sk.substance if sk is not None
+                         else SUBSTANCE.get(code, "") or "")
+            rough, metal = _surface.properties_for(substance)
+            out[slot] = {
+                "substance": substance,
+                "roughness": round(rough, 3),
+                "metalness": round(metal, 3),
+                "normal": f"/imagery/surface/{image_id}/normal",
+                "rough_map": (f"/imagery/surface/{image_id}/rough"
+                              + (f"?substance={quote(substance)}" if substance else "")),
+            }
+        return out
+
     def render_objects(self, map_id: int, *, conditions: str = "") -> int:
         """Draw sprites for the object kinds on this board. Returns how many.
 
@@ -3609,6 +3650,11 @@ class VttEngine:
             # falls back to its flat tile colour, which is plainer and equally
             # playable.
             "materials": self.materials_for(map_id),
+            # How light behaves on each of those materials: the substance's own
+            # roughness and metalness, and the derived normal/roughness maps.
+            # A swatch is albedo, and albedo alone is a picture of stone laid
+            # flat on a shape. See vtt/surface.py.
+            "surfaces": self.surfaces_for(map_id),
             # What the board is MADE of, as opposed to what it does. Material
             # and silhouette only — no rule reads a skin. See vtt/skins.py.
             "skins": self.skins_for(map_id),

@@ -19701,6 +19701,42 @@ async def imagery_sprite(image_id: int):
     return Response(content=cut, media_type="image/png")
 
 
+@app.get("/imagery/surface/{image_id}/{channel}")
+async def imagery_surface(image_id: int, channel: str, substance: str = ""):
+    """A derived surface channel for a board swatch — normal or roughness.
+
+    The swatch itself has always been albedo, which is a picture of stone laid
+    flat on a shape: every face of every block returns the same light for its
+    orientation, so mortar courses and grain are painted ON the surface instead
+    of being surface. The relief is recoverable from the picture (high-passed,
+    or the lighting it was rendered under becomes geometry); how SHINY the thing
+    is is not recoverable at all and is declared per substance.
+
+    Derived here rather than in the browser for the reason every other
+    measurement is: two clients deriving their own normals from the same swatch
+    is a second answer to what the room is made of. Memoised — a stored swatch's
+    picture never changes.
+    """
+    from vtt import surface as _surface
+    if channel not in _surface.channels():
+        raise HTTPException(status_code=404, detail="No such surface channel.")
+    raw = image_store.get_image_bytes(image_id)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    try:
+        out = _surface.derived(image_id, channel, raw, substance)
+    except Exception as e:  # noqa: BLE001
+        print(f"[imagery] surface {channel} failed for {image_id}: {e}")
+        out = None
+    if out is None:
+        # A board with no normal map is the flat-lit board it has always been,
+        # which is plainer and perfectly playable. A 404 lets the client stop
+        # asking rather than retry every rebuild.
+        raise HTTPException(status_code=404, detail="Channel unavailable.")
+    return Response(content=out, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=31536000"})
+
+
 @app.get("/vtt/setpiece/{filename}")
 async def vtt_setpiece_mesh(filename: str):
     """A landmark mesh this installation MADE, for the browser to draw.

@@ -35,6 +35,7 @@
 import * as THREE from "three";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { VttScene } from "./types";
 import {
   CELL, DECOR_KINDS, DECOR_TINT, HOLE_CODES, OBJECT_VARIANTS, SKINS,
@@ -189,6 +190,41 @@ function requestTexture(id: number, settled: () => void): void {
     // No imagery server (the offline demo) or a pruned id. Remembered as bad so
     // it is asked for once, and the board simply stays flat-coloured.
     () => { TEXTURES.set(id, null); settled(); },
+  );
+}
+
+/** Derived surface channels (normal, roughness), by URL.
+ *
+ *  A second map rather than more entries in `TEXTURES` because these are not
+ *  colour: they must NOT be decoded as sRGB. A normal map read through the
+ *  sRGB curve is a normal map whose vectors are all subtly wrong, which lights
+ *  as the material being a slightly different colour from the one next to it —
+ *  the kind of wrongness nobody can point at and everybody can see.
+ *
+ *  Same economics as the swatches: one normal map of dungeon flagstone serves
+ *  every board in every session, and it is derived from a stored picture that
+ *  never changes, so the cache can never go stale. */
+const SURFACE_MAPS = new Map<string, THREE.Texture | null | undefined>();
+
+function requestSurface(url: string, settled: () => void): void {
+  if (SURFACE_MAPS.has(url)) return;           // resolved, or already in flight
+  SURFACE_MAPS.set(url, undefined);
+  new THREE.TextureLoader().load(
+    url,
+    (t) => {
+      t.wrapS = THREE.RepeatWrapping;
+      t.wrapT = THREE.RepeatWrapping;
+      // Linear, deliberately. See above.
+      t.colorSpace = THREE.NoColorSpace;
+      t.anisotropy = 4;
+      SURFACE_MAPS.set(url, t);
+      settled();
+    },
+    undefined,
+    // No backend (the offline demo), or a swatch this server could not derive
+    // from. Remembered as bad so it is asked for once, and the board is the
+    // flat-lit board it has always been.
+    () => { SURFACE_MAPS.set(url, null); settled(); },
   );
 }
 
@@ -504,10 +540,26 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
 
   // Form only — see the header. Angled off the camera axis so the two visible
   // faces of every corner differ, which is what makes a block read as a block.
-  const sun = new THREE.DirectionalLight(0xfff2dc, 1.5);
+  const sun = new THREE.DirectionalLight(0xfff2dc, 2.1);
   sun.position.set(-0.4, 1, 0.65);
   scene3.add(sun);
-  scene3.add(new THREE.AmbientLight(0x8899cc, 1.1));
+  // A cool fill from BELOW as well as above: a hemisphere light is what stops
+  // the underside of every ledge, rail and hull going to flat black now that
+  // the surfaces respond to light instead of merely being tinted by it.
+  scene3.add(new THREE.HemisphereLight(0xb9c8ff, 0x3a3326, 1.25));
+
+  // Metalness is a switch, not a dial — a brass fitting either conducts or it
+  // does not — and a metal with nothing to reflect renders BLACK. So the scene
+  // carries a small procedural environment: cheap (a 256px cube, generated
+  // once), and enough that brass reads as brass rather than as a hole.
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  try {
+    scene3.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene3.environmentIntensity = 0.35;
+  } catch {
+    // An environment is a luxury; a board that will not start is not.
+  }
+  pmrem.dispose();
 
   const terrainGroup = new THREE.Group();
   const decalGroup = new THREE.Group();
@@ -647,6 +699,55 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       if (t instanceof THREE.Texture) textured.add(code);
       else if (t === undefined) requestTexture(id, invalidate);
     }
+    // The relief and the shine. Asked for only where there is a picture to lay
+    // them over — a normal map on a flat-coloured tile has no surface to
+    // modulate and would only make the tile light unevenly for no reason.
+    const surfaces = scene.surfaces ?? {};
+    for (const code of textured) {
+      const sf = surfaces[code];
+      if (!sf) continue;
+      for (const url of [sf.normal, sf.rough_map]) {
+        if (url && SURFACE_MAPS.get(url) === undefined
+            && !SURFACE_MAPS.has(url)) requestSurface(url, invalidate);
+      }
+    }
+
+    /** The one place a terrain material is built.
+     *
+     *  `MeshStandardMaterial` rather than Lambert, which is the whole PBR
+     *  change: Lambert has no concept of how rough a surface is, so wet
+     *  flagstones, brass fittings and dry limestone all returned the same
+     *  light for the same orientation and the board read as coloured
+     *  cardboard. Standard at roughness ~0.9 and metalness 0 is
+     *  indistinguishable from the Lambert it replaces, so a material nobody
+     *  has classified looks exactly as it did.
+     *
+     *  Vertex colour still carries fog, sight and light — see `shade` — which
+     *  is why a textured mesh must be built knowing it is textured: the
+     *  vertex colour is a multiplier over white there, and the tile's own
+     *  colour anywhere else. */
+    const terrainMaterial = (code: string): THREE.Material => {
+      const has = textured.has(code);
+      const tex = has ? TEXTURES.get(swatches[code]) : null;
+      const sf = has ? surfaces[code] : undefined;
+      const nrm = sf ? SURFACE_MAPS.get(sf.normal) : null;
+      const rgh = sf ? SURFACE_MAPS.get(sf.rough_map) : null;
+      return new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: sf ? sf.roughness : 0.9,
+        metalness: sf ? sf.metalness : 0.0,
+        ...(tex instanceof THREE.Texture ? { map: tex } : {}),
+        ...(nrm instanceof THREE.Texture
+          ? { normalMap: nrm, normalScale: new THREE.Vector2(1, 1) } : {}),
+        ...(rgh instanceof THREE.Texture ? { roughnessMap: rgh } : {}),
+        // With a painting behind it the geometry stops drawing and becomes a
+        // depth-only proxy — invisible, but still occluding the decals and
+        // answering "is a wall in front of this creature". That is precisely
+        // what Baldur's Gate shipped beside each of its backgrounds, and it is
+        // why the geometry is not thrown away once the picture arrives.
+        ...(backdrop ? { colorWrite: false } : {}),
+      });
+    };
 
     /** Floor a creature could stand on — not structure, not off the board.
      *  Void counts as closed: on an upper storey it is open air, and a wall
@@ -909,8 +1010,9 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       requestSetpiece(sp.mesh, invalidate);
       const geom = SETPIECE_MESHES.get(sp.mesh);
       if (!geom) continue;                     // in flight, or never collected
-      const mesh = new THREE.Mesh(geom, new THREE.MeshLambertMaterial({
+      const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
         color: new THREE.Color(tileStyle(sp.code || "#").fill),
+        roughness: 0.86, metalness: 0.0,
         ...(backdrop ? { colorWrite: false } : {}),
       }));
       const [px, py, pz] = sp.pivot ?? [0, 0, 0];
@@ -938,28 +1040,19 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const geom = decorMb.build();
       shadeTargets.push({ geom, owners: decorMb.owners(),
                           base: new THREE.Color("#ffffff") });
-      terrainGroup.add(new THREE.Mesh(geom, new THREE.MeshLambertMaterial({
-        vertexColors: true, ...(backdrop ? { colorWrite: false } : {}),
+      terrainGroup.add(new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.92, metalness: 0.0,
+        ...(backdrop ? { colorWrite: false } : {}),
       })));
     }
     for (const [code, mb] of byCode) {
       if (mb.empty) continue;
-      const tex = textured.has(code) ? TEXTURES.get(swatches[code]) : null;
       const geom = mb.build();
       shadeTargets.push({
         geom, owners: mb.owners(),
         base: new THREE.Color(textured.has(code) ? "#ffffff" : tileStyle(code).fill),
       });
-      terrainGroup.add(new THREE.Mesh(geom, new THREE.MeshLambertMaterial({
-        vertexColors: true,
-        ...(tex instanceof THREE.Texture ? { map: tex } : {}),
-        // With a painting behind it the geometry stops drawing and becomes a
-        // depth-only proxy — invisible, but still occluding the decals and
-        // answering "is a wall in front of this creature". That is precisely
-        // what Baldur's Gate shipped beside each of its backgrounds, and it is
-        // why the geometry is not thrown away once the picture arrives.
-        ...(backdrop ? { colorWrite: false } : {}),
-      })));
+      terrainGroup.add(new THREE.Mesh(geom, terrainMaterial(code)));
     }
     shadeKey = "";      // force a tint pass over the new geometry
     if (gridPts.length) {

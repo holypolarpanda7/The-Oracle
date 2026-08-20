@@ -498,6 +498,24 @@ export interface VttScene {
   /** Scenery — drawn by every view, honoured by none of the rules. Never tall
    *  enough to be mistaken for cover; see vtt/decor.py. */
   decor?: { x: number; y: number; kind: string }[];
+  /** How LIGHT behaves on each material, keyed exactly as `materials` is.
+   *
+   *  A swatch is albedo, and albedo alone is a picture of stone laid flat on a
+   *  shape: every face returns the same light for its orientation, so mortar
+   *  courses and grain are painted ON the surface rather than being surface.
+   *  `roughness`/`metalness` are facts about the SUBSTANCE and come from the
+   *  server (they cannot be recovered from a photograph — contrast says nothing
+   *  about whether stone is wet); `normal` and `rough_map` are derived from the
+   *  swatch there too, so no client ever composes a measurement of its own.
+   *  Absent = the flat-lit board this has always been. See vtt/surface.py. */
+  surfaces?: Record<string, {
+    substance?: string;
+    roughness: number;
+    metalness: number;
+    normal: string;
+    rough_map: string;
+  }>;
+
   /** Landmarks: a mesh, where it stands, and how to fit it to its squares.
    *
    *  `scale` and `pivot` are MEASURED off the mesh by the server
