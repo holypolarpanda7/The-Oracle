@@ -272,7 +272,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   bout, which opens the stall with no climb before it, going through to the
   sand; a column a model declares reaching a database that already had the
   table; and a handler that throws not taking the socket down with it; plus the
-  engine reporting each turn on its own, naming whose it was, in its own text)
+  engine reporting each turn on its own, naming whose it was, in its own text,
+  and a resolved turn's prompt being a fraction of an ordinary one while still
+  carrying what happened and where everyone stands)
 - Feat smoke test: `uv run python scripts/feats_smoke.py` (a feat's questions,
   its grants, its named options, the resource it hands over, the at-will spell
   it grants, and an OPTION that asks its own questions — all the way to what
@@ -1015,6 +1017,32 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   **`combat_narration` mutes the prose per TABLE** — the story is a commons and
   half a table reading a scene the other half never sees is not one table. Off
   by default, because a fight narrated well is most of why this exists.
+- **A turn the ENGINE settled is a description job, and it gets a narrator's
+  prompt rather than the Dungeon Master's.** Measured on a real Eldritch Blast
+  through the action bar: **45,158 chars / ~11,300 tokens**, of which about
+  4,000 was the board, the certified result and the narration contract — and
+  the other **91% was instruction for things that turn's own contract
+  forbids**. Ten thousand characters of it was the tactical hook vocabulary,
+  teaching the model to move tokens and open boards on a turn where it may
+  change nothing at all; 3,405 more listed spell slots the engine had already
+  spent. Ingestion is roughly linear in length, so that was most of the wait a
+  player reads as "the spell didn't work". `generate_dm_reply(lean_combat=)`
+  short-circuits the whole assembly — everything below that branch exists so
+  the model can DECIDE things, and here it decides nothing. Result: **4,759
+  chars / ~1,190 tokens, an 89% cut**, and output is capped
+  (`_COMBAT_NARRATION_MAX_TOKENS`) because generation is the other half of the
+  wait and a local model left unbounded writes past the point the fight moved
+  on. What a lean turn carries is decided in ONE place (`lean_ctx` in
+  `chat_endpoint`), by adding blocks deliberately — never by filtering
+  `ctx_texts` on their first line, which would break the moment somebody
+  retitled one. **`_COMBAT_NARRATOR_SYSTEM` is a statement of ROLE and VOICE,
+  not a second rulebook**: the narration contract travelling with the
+  resolution block stays the authority on what to do with a REFUSED line, a
+  frozen reaction or a still-open turn, and two prompts giving overlapping
+  orders is the same fault as sending the player's sentence twice — which is
+  the other thing fixed here. `_append_turn` records the player's line BEFORE
+  narration is asked for, and `generate_dm_reply` then appended it again as
+  the new user message, so every prompt carried it twice.
 - **A spell with no `attack_type` and no `dc_type` went off dealing NOTHING.**
   The engine's two damage branches keyed on those columns, and they are
   populated on 7 and 20 rows of 431 — every spell here came out of a PDF, and

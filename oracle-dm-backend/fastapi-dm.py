@@ -10337,9 +10337,16 @@ def call_openrouter_chat(
     raise RuntimeError(f"LLM call failed after retries: {last_error}")
 
 
-def call_openrouter_dm(messages: List[Dict[str, str]]) -> str:
-    """Call OpenRouter for live DM narration."""
-    return call_openrouter_chat(messages)
+def call_openrouter_dm(messages: List[Dict[str, str]],
+                       max_tokens: Optional[int] = None) -> str:
+    """Call the DM model for live narration.
+
+    ``max_tokens`` is normally unset — a scene should end where it ends. It is
+    passed for a COMBAT turn, which is two to four sentences by contract:
+    generation is the other half of the wait, and a local model left unbounded
+    will keep writing well past the point the fight has moved on.
+    """
+    return call_openrouter_chat(messages, max_tokens=max_tokens)
 
 
 def _call_extractor_llm(messages: List[Dict[str, str]]) -> str:
@@ -10983,12 +10990,84 @@ _CC_RULES_BLOCK = (
 )
 
 
+def _append_player_line(messages: List[Dict[str, str]], username: str,
+                        message: str) -> None:
+    """Add the player's line — unless the history already ends with it.
+
+    `chat_endpoint` records the turn BEFORE asking for narration, so the same
+    sentence was going out twice in every prompt: once as the last history
+    entry and once as the new user message. Harmless in principle, and in
+    practice a model shown the same instruction twice leans on it twice.
+    """
+    line = f"{username}: {message}"
+    if messages and messages[-1].get("role") == "user" \
+            and messages[-1].get("content") == line:
+        return
+    messages.append({"role": "user", "content": line})
+
+
+def _log_prompt_size(messages: List[Dict[str, str]], tag: str = "") -> None:
+    total = sum(len(m.get("content", "")) for m in messages)
+    label = f"[prompt{':' + tag if tag else ''}]"
+    print(f"{label} ~{total // 4} tokens ({total} chars, {len(messages)} messages)")
+
+
+def _character_for_rolls(character_id: Optional[int]):
+    """The acting character, so a NAMED check's modifier comes off the sheet."""
+    if not character_id:
+        return None
+    try:
+        with Session(engine) as _s:
+            return _s.get(Character, character_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[roll hooks] character: {e}")
+        return None
+
+
+#: The system prompt for a turn the ENGINE has already resolved.
+#:
+#: Measured on a real Eldritch Blast through the action bar, the ordinary DM
+#: prompt for that turn was 45,158 chars (~11,300 tokens) — of which about
+#: 4,000 was the board, the certified result and the narration contract, and
+#: the other 91% was instruction for things the model is explicitly FORBIDDEN
+#: to do on such a turn: 10,108 chars teaching it to move tokens and open
+#: boards, 3,405 listing spell slots the engine had already spent, plus the
+#: whole DM system prompt underneath. Ingestion is roughly linear in length, so
+#: that was most of the wait a player reads as "the spell didn't work".
+#:
+#: What is left is deliberately narrow. This model is not adjudicating: the
+#: dice are rolled, the damage is applied, the tracker is written. It is
+#: describing. Anything it could "decide" here would be a second answer to a
+#: question the engine has already answered.
+#: Deliberately a statement of ROLE and VOICE, not a second rulebook. The
+#: narration contract that travels with the resolution block is the authority
+#: on what to do with each kind of line (REFUSED, TURN STILL OPEN, REACTION?,
+#: which hooks remain available), and two prompts giving overlapping orders is
+#: the same fault as sending the player's sentence twice.
+_COMBAT_NARRATOR_SYSTEM = (
+    "You are the Dungeon Master, narrating a fight that a rules engine has "
+    "ALREADY resolved. The 'Combat resolution' block is certified fact — those "
+    "rolls happened, that damage is applied, that creature is down — and the "
+    "narration contract below says what to do with each line of it. You are "
+    "not adjudicating anything: do not roll, do not ask for a roll, and do not "
+    "decide an outcome.\n\n"
+    "VOICE: two to four sentences. Present tense, concrete, physical. Name the "
+    "creatures. You may state the numbers. No preamble, no summary of the "
+    "round so far, no menu of options."
+)
+
+#: A combat turn's narration is two to four sentences. Left unbounded, a local
+#: model will keep going, and generation is the other half of the wait.
+_COMBAT_NARRATION_MAX_TOKENS = 220
+
+
 def generate_dm_reply(
     session_id: str,
     username: str,
     message: str,
     extra_context: Optional[List[str]] = None,
     character_id: Optional[int] = None,
+    lean_combat: bool = False,
 ) -> str:
     """DM brain via OpenRouter, grounded in world state + SRD rules.
 
@@ -11000,6 +11079,32 @@ def generate_dm_reply(
     history = list(state.get("recent_turns", []))
 
     messages: List[Dict[str, str]] = []
+
+    # ---- the lean path: describing a turn the engine already settled ----
+    #
+    # Everything below this block — the rules cheat-sheets, the hook
+    # vocabularies, the physical-limits tables, the world guidance — exists so
+    # the model can DECIDE things. On an engine-resolved turn it decides
+    # nothing, so all of it is weight. See _COMBAT_NARRATOR_SYSTEM.
+    if lean_combat:
+        messages.append({"role": "system", "content": _COMBAT_NARRATOR_SYSTEM})
+        for block in (extra_context or []):
+            if block and block.strip():
+                messages.append({"role": "system", "content": block})
+        # Two turns of history, not ten: what happened a minute ago does not
+        # help describe a hit that has already landed, and it is the part of
+        # the prompt that grows without bound.
+        for turn in history[-2:]:
+            messages.append({
+                "role": "user" if turn["role"] == "player" else "assistant",
+                "content": (f"{turn['user']}: {turn['content']}"
+                            if turn["role"] == "player" else turn["content"]),
+            })
+        _append_player_line(messages, username, message)
+        _log_prompt_size(messages, "combat")
+        dm_raw = call_openrouter_dm(
+            messages, max_tokens=_COMBAT_NARRATION_MAX_TOKENS)
+        return resolve_roll_hooks(dm_raw, _character_for_rolls(character_id))
 
     # Token diet for the 14B local model: the full per-condition rules cheat-sheet
     # and the full physical-limits detail block are only worth their weight when
@@ -11221,14 +11326,8 @@ def generate_dm_reply(
                 "content": turn["content"],
             })
 
-    # New user message
-    messages.append({
-        "role": "user",
-        "content": f"{username}: {message}",
-    })
-
-    total_chars = sum(len(m.get("content", "")) for m in messages)
-    print(f"[prompt] ~{total_chars // 4} tokens ({total_chars} chars, {len(messages)} messages)")
+    _append_player_line(messages, username, message)
+    _log_prompt_size(messages)
 
     dm_raw = call_openrouter_dm(messages)
 
@@ -11236,14 +11335,7 @@ def generate_dm_reply(
     # The acting character comes with it so a NAMED check ("[[ROLL: Stealth |
     # DC 15]]") can have its modifier computed from the sheet instead of by the
     # model — see `resolve_roll_hooks`.
-    _rc = None
-    if character_id:
-        try:
-            with Session(engine) as _s:
-                _rc = _s.get(Character, character_id)
-        except Exception as e:
-            print(f"[roll hooks] character: {e}")
-    return resolve_roll_hooks(dm_raw, _rc)
+    return resolve_roll_hooks(dm_raw, _character_for_rolls(character_id))
 
 
 def _resolve_session_character(session_id: str, user_id: str) -> Optional[int]:
@@ -13329,6 +13421,11 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
                                               user_id=req.user_id, private=req.private)
         active_enc = combat.get_active(req.session_id)
         muted = bool((state.get("meta", {}) or {}).get("mute_combat_narration"))
+        # What a RESOLVED combat turn is allowed to carry, decided in one place.
+        # Not a filter over `ctx_texts` — matching blocks by their first line
+        # would break the moment somebody retitled one. A block is added here
+        # because it is needed to DESCRIBE what happened, and nowhere else.
+        lean_ctx: List[str] = []
         if active_enc:
             # Deterministic path: resolve the player's declared acts through
             # the engine FIRST; the board below then reflects the new state.
@@ -13341,9 +13438,12 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             board = combat.render(active_enc.id)
             if board.strip():
                 ctx_texts.append(board)
+                lean_ctx.append(board)          # who is in it, and how hurt
             if _engine_block is not None:
                 ctx_texts.append(_engine_block)
                 ctx_texts.append(_COMBAT_NARRATE_CONTRACT)
+                lean_ctx.append(_engine_block)  # what actually happened
+                lean_ctx.append(_COMBAT_NARRATE_CONTRACT)
             else:
                 ctx_texts.append(_COMBAT_HOOKS_ACTIVE)
         else:
@@ -13358,6 +13458,11 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             _vtt_board = _vtt_board_block(req.session_id)
             if _vtt_board:
                 ctx_texts.append(_vtt_board)
+                lean_ctx.append(_vtt_board)     # where everyone is standing
+                # The hook VOCABULARY is deliberately not in `lean_ctx`: it is
+                # ten thousand characters teaching the model to move tokens and
+                # open boards, on a turn where the contract three blocks up
+                # forbids it from changing anything at all.
                 if getattr(_vtt_cfg(), "inject_hook_guidance", True):
                     ctx_texts.append(_VTT_HOOKS_ACTIVE)
             elif getattr(_vtt_cfg(), "inject_hook_guidance", True):
@@ -13370,11 +13475,15 @@ def chat_endpoint(req: ChatRequest, background_tasks: BackgroundTasks):
             # Not a default: a fight narrated well is most of why this exists.
             dm_text = ""
         else:
+            # A turn the engine settled is a DESCRIPTION job, and it gets the
+            # narrator's prompt rather than the Dungeon Master's.
+            lean = _engine_block is not None
             dm_text = generate_dm_reply(
                 session_id=req.session_id,
                 username=req.username,
                 message=req.message,
-                extra_context=ctx_texts,
+                extra_context=(lean_ctx if lean else ctx_texts),
+                lean_combat=lean,
                 character_id=(_acting_member(
                     (_load_session_state(req.session_id).get("meta") or {}),
                     req.user_id) or {}).get("character_id")

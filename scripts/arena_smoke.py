@@ -421,7 +421,7 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
     print("\n\033[1m5. the DM prompt knows this is the Grounds\033[0m")
     scripted: list[str] = []
 
-    def fake_dm(messages):
+    def fake_dm(messages, max_tokens=None):
         m.LAST_PROMPT = "\n".join(x.get("content", "") for x in messages)
         return scripted.pop(0) if scripted else "Steel rings."
 
@@ -448,6 +448,46 @@ def main() -> int:  # noqa: C901 - a smoke test is a straight line by design
     check("no world slice is claimed", "# Where you are" not in prompt)
     check("and nothing is written back to the world", not extractions,
           f"{len(extractions)} extraction(s)")
+    check("the player's line is sent ONCE, not twice",
+          prompt.count("Smoke: I set my feet and swing.") == 1,
+          f"{prompt.count('Smoke: I set my feet and swing.')}x")
+
+    # ---- 5b. a turn the ENGINE settled is a DESCRIPTION job -------------
+    #
+    # Measured on a real Eldritch Blast: the ordinary DM prompt for a resolved
+    # turn was 45,158 chars, of which ~4,000 was the board, the certified
+    # result and the contract, and the rest was instruction for things the
+    # narration contract three blocks up forbids — 10,108 chars of it teaching
+    # the model to move tokens on a turn where it may change nothing at all.
+    # Prompt ingestion is roughly linear, so that was most of the wait a player
+    # reads as "the spell didn't work".
+    print("\n\033[1m5b. the prompt for a resolved turn is a narrator's, not a DM's\033[0m")
+    full = prompt
+    enc_now = m.combat.get_active(session_id)
+    foe_now = next((c for c in m.combat.order(enc_now.id) if c.kind != "pc"),
+                   None) if enc_now else None
+    scripted.append("The blade bites.")
+    bt2 = BackgroundTasks()
+    m.chat_endpoint(m.ChatRequest(
+        session_id=session_id, user_id=user_id, username="Smoke",
+        message="I cut at it.",
+        intents=[{"verb": "attack",
+                  "target": foe_now.name if foe_now else ""}]), bt2)
+    asyncio.run(bt2())
+    lean = getattr(m, "LAST_PROMPT", "")
+    check("it is a fraction of the size", 0 < len(lean) < len(full) // 3,
+          f"{len(lean)} chars vs {len(full)}")
+    check("...and still carries what happened",
+          "# Combat resolution" in lean and "Narration contract" in lean)
+    check("...and where everyone is standing", "# Board:" in lean)
+    # NB the BOARD block legitimately names a hook or two in its legend (the
+    # remedy for a square a creature's medium forbids). What must be gone is
+    # the 10,108-character VOCABULARY that teaches the model to move tokens.
+    check("...but not the hook vocabulary it may not use",
+          "# Tactical board (a board is out" not in lean,
+          "the tactical hook block is 10k chars")
+    check("...nor the resources the engine already spent",
+          "# Character resources" not in lean)
 
     # ---- 6. victory is called by the Grounds, not the narration ---------
     print("\n\033[1m6. the bout ends when one side is down\033[0m")

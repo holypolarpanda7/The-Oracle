@@ -311,7 +311,7 @@ def part_bar() -> int:
 
     scripted: list[str] = []
 
-    def fake_dm(messages):
+    def fake_dm(messages, max_tokens=None):
         m.LAST_PROMPT = "\n".join(x.get("content", "") for x in messages)
         return scripted.pop(0) if scripted else "The dust settles."
 
