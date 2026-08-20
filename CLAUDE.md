@@ -572,9 +572,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   canvas is in front of the room by construction, so no depth test will ever put
   a creature behind a wall — "behind" is a thing somebody has to SAY.
   `boardView.occludedAt` marches the view ray over the grid: the camera is
-  orthographic and never turns, so the ray back to the lens is one fixed
-  direction that climbs `RAY_RISE` (tan of the pitch) per foot it crosses the
-  floor, and a square's drawn height is the same arithmetic the geometry is
+  orthographic and never MOVES, so for any one angle the ray back to the lens
+  is a fixed direction that climbs `RAY_RISE` (tan of the pitch, which no
+  amount of turning changes) per foot it crosses the floor, and a square's drawn height is the same arithmetic the geometry is
   built from. Grid, not picture — the same rule as cover and sight, and the only
   answer available on a painted board, where the geometry draws no colour at all
   and a depth-buffer readback would stall the frame besides. The point tested is
@@ -1304,14 +1304,42 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   preview` PROXIES `/ws` to the backend, so the offline demo feed only engages
   when the backend is actually down. Serve `dist` with a plain static server to
   exercise it while the backend is up.)
-- **The isometric camera is ORTHOGRAPHIC and never rotates, and that buys
-  three things.** The projection is a plain affine map, so it inverts in closed
+- **The camera TURNS now, and what that cost was one thing, not three.** The
+  note here used to say the camera never rotates and that offering rotation
+  would cost the closed-form inverse, pan-and-zoom being a translate-and-scale,
+  and a painting staying aligned — all at once. Two of the three survive: yaw is
+  a PARAMETER (`project(x,y,z,yawDeg)`, `basis(yaw)` memoised per angle), and
+  for any fixed yaw the projection is still a plain affine map, so picking is
+  still arithmetic and pan/zoom still mean what they meant. The geometry is real
+  3D and never moves; only the lens does, so `vttScene3d` needed one basis
+  swap and the shape tables needed nothing. `occludedAt` takes the yaw too —
+  `rayRise` is tan(pitch) and does NOT depend on yaw, only which way the ray
+  runs across the floor does — and it had to start testing the NEAR edges of the
+  board, which it never did when the ray could only run one way.
+  **The PAINTING is the real price, and it is paid honestly.** A picture baked
+  against a depth map rasterized at one angle is a photograph of the room from
+  one place, and no transform makes it a photograph from another. So the SERVER
+  still works at exactly one angle — `YAW_DEG`, the canonical yaw, which
+  `vtt/isocam.py` mirrors and `iso_alignment_check.py` compares — and the client
+  FADES the painting out as it turns away (`paintOpacity`, full within 3°, gone
+  by 16°, measured the short way round). A picture that vanished at a threshold
+  would read as a bug; one that dissolves reads as the room turning. Off-axis
+  you are looking at the geometry, which is exactly why the surfaces had to
+  learn to answer to light before this was worth offering — the two changes are
+  one change in the right order.
+  `camera-turn.mjs` holds the arithmetic with no browser (canonical projection
+  unchanged to the bit, every basis orthonormal, the inverse exact at every
+  angle, a full turn returning exactly); `turn-shot.mjs` holds the look in a
+  real WebGL context. The flat canvas answers `canTurn: false` and shows no
+  control — looking straight down there is nothing a rotation would reveal.
+- **The isometric camera is ORTHOGRAPHIC, and that buys three things.** The projection is a plain affine map, so it inverts in closed
   form and picking is arithmetic; pan and zoom are a translate-and-scale, so
   one `View` (`scale`/`ox`/`oy`) drives both browser renderers and the camera
   needs no state of its own; and a painting baked at one framing stays aligned
-  at every other. Offering rotation would cost all three at once.
+  at every other FRAMING — which is why turning it costs the painting and
+  nothing else (see above).
   `activity-ui/src/lib/isocam.ts` is the only place the camera is defined, and
-  `vtt/isocam.py` will mirror it so the server can rasterize a depth map of the
+  `vtt/isocam.py` mirrors it so the server can rasterize a depth map of the
   SAME view for a depth ControlNet. **Change one and you must change the
   other** — a degree of drift puts every painted shadow beside the thing
   casting it. Winding is load-bearing in the mesh builder for a related reason:

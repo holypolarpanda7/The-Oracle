@@ -20,6 +20,10 @@ import { fitView, paint, toScreen, toSquare } from "./vttPaint";
 
 export function createCanvasBoardView(canvas: HTMLCanvasElement): BoardView {
   return {
+    // Looking straight down there is nothing a rotation would reveal, so this
+    // one never turns — and says so rather than turning into a board that
+    // silently ignores the control.
+    canTurn: false,
     fit(scene: VttScene, w: number, h: number): View {
       return fitView(scene, w, h);
     },

@@ -50,7 +50,8 @@ import {
   type BoardView, type Part, type PaintState, type TokenPlacement, type View,
 } from "./boardView";
 import {
-  FORWARD, FRAME_PAD_SQUARES, RIGHT, UP, boundsOf, project, unproject,
+  FRAME_PAD_SQUARES, YAW_DEG, basis, boundsOf, paintOpacity, project,
+  unproject,
 } from "./isocam";
 
 /** How far back the camera sits. Orthographic, so this changes nothing about
@@ -1164,9 +1165,12 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   }
 
   return {
-    fit(scene: VttScene, w: number, h: number): View {
+    // The geometry is real 3D and never moves; only the lens does.
+    canTurn: true,
+
+    fit(scene: VttScene, w: number, h: number, yaw: number = YAW_DEG): View {
       const pad = 18;
-      const b = boundsOf(scene.width, scene.height, tallestUnits(scene));
+      const b = boundsOf(scene.width, scene.height, tallestUnits(scene), 0, yaw);
       const spanX = Math.max(1e-6, b.maxX - b.minX);
       const spanY = Math.max(1e-6, b.maxY - b.minY);
       const scale = Math.max(0.28, Math.min(
@@ -1178,6 +1182,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         scale,
         ox: w / 2 - CELL * scale * (b.minX + b.maxX) / 2,
         oy: h / 2 - CELL * scale * (b.minY + b.maxY) / 2,
+        yaw,
       };
     },
 
@@ -1185,7 +1190,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
              level: number): [number, number] | null {
       const k = CELL * view.scale;
       const [wx, wz] = unproject((px - view.ox) / k, (py - view.oy) / k,
-                                 baseUnits(scene, level));
+                                 baseUnits(scene, level), view.yaw ?? YAW_DEG);
       const x = Math.floor(wx);
       const y = Math.floor(wz);
       // Unlike the flat board this CAN miss: the viewport is a rectangle and
@@ -1203,7 +1208,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       // of it: a wyvern hovering over a ledge is above both.
       const footFt = elevFt(scene, x, y) + elevationFt;
       const wy = baseUnits(scene, level) + heightUnits(scene, footFt);
-      const p = project(x + squares / 2, wy, y + squares / 2);
+      const p = project(x + squares / 2, wy, y + squares / 2,
+                        view.yaw ?? YAW_DEG);
       const size = k * squares;
       return {
         left: view.ox + k * p.x - size / 2,
@@ -1217,19 +1223,27 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // no colour once a painting lands, so there is nothing to read. Heights
         // are relative to this STOREY: only one floor is ever drawn, so an
         // upper gallery is not standing in the hall's way.
-        occluded: occludedAt(scene, x, y, squares, footFt),
+        occluded: occludedAt(scene, x, y, squares, footFt,
+                             view.yaw ?? YAW_DEG),
       };
     },
 
     zoomAt(view: View, px: number, py: number, factor: number): View {
       const scale = Math.max(0.2, Math.min(3, view.scale * factor));
       const k = scale / view.scale;
-      return { scale, ox: px - (px - view.ox) * k, oy: py - (py - view.oy) * k };
+      return { scale, ox: px - (px - view.ox) * k, oy: py - (py - view.oy) * k,
+               yaw: view.yaw };
     },
 
     backdropRect(view: View, scene: VttScene) {
       if (!PAINTED_BACKDROP || !scene.iso_image_id) return null;
+      // A painting is a photograph of the room from ONE place, and turning the
+      // camera away from that place makes it a picture of somewhere else. It
+      // fades out rather than being clipped or stretched — see paintOpacity.
+      if (paintOpacity(view.yaw ?? YAW_DEG) <= 0) return null;
       const k = CELL * view.scale;
+      // At the CANONICAL yaw, always: the rectangle the picture was baked to
+      // is a fact about the bake, not about where the viewer is looking now.
       const b = boundsOf(scene.width, scene.height, tallestUnits(scene));
       const p = FRAME_PAD_SQUARES;
       return {
@@ -1301,14 +1315,18 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       // what they mean on the flat board and `screenOf` and the rendered image
       // cannot drift apart.
       const k = CELL * view.scale;
+      // Whichever way the viewer has turned. The geometry is real 3D and never
+      // moves; the only thing rotation touches is where the lens is, which is
+      // why turning cost nothing here and everything to the painted layer.
+      const cam = basis(view.yaw ?? YAW_DEG);
       const halfW = w / 2 / k;
       const halfH = h / 2 / k;
       const cx = (w / 2 - view.ox) / k;
       const cyUp = (view.oy - h / 2) / k;
       const target = new THREE.Vector3(
-        RIGHT[0] * cx + UP[0] * cyUp,
-        RIGHT[1] * cx + UP[1] * cyUp,
-        RIGHT[2] * cx + UP[2] * cyUp,
+        cam.RIGHT[0] * cx + cam.UP[0] * cyUp,
+        cam.RIGHT[1] * cx + cam.UP[1] * cyUp,
+        cam.RIGHT[2] * cx + cam.UP[2] * cyUp,
       );
       camera.left = -halfW;
       camera.right = halfW;
@@ -1317,11 +1335,11 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       camera.near = 0.1;
       camera.far = CAMERA_DISTANCE * 2;
       camera.position.set(
-        target.x - FORWARD[0] * CAMERA_DISTANCE,
-        target.y - FORWARD[1] * CAMERA_DISTANCE,
-        target.z - FORWARD[2] * CAMERA_DISTANCE,
+        target.x - cam.FORWARD[0] * CAMERA_DISTANCE,
+        target.y - cam.FORWARD[1] * CAMERA_DISTANCE,
+        target.z - cam.FORWARD[2] * CAMERA_DISTANCE,
       );
-      camera.up.set(UP[0], UP[1], UP[2]);
+      camera.up.set(cam.UP[0], cam.UP[1], cam.UP[2]);
       camera.lookAt(target);
       camera.updateProjectionMatrix();
 

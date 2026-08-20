@@ -5,7 +5,8 @@ import type {
 } from "../lib/types";
 import { SPRITES, loadSprites } from "../lib/boardSprites";
 import { useResizable } from "../lib/useResizable";
-import { pathFromCosts, type BoardView, type View } from "../lib/boardView";
+import { CELL, pathFromCosts, type BoardView, type View } from "../lib/boardView";
+import { YAW_DEG, YAW_STEP_DEG, paintOpacity, project, wrapYaw } from "../lib/isocam";
 import { createCanvasBoardView } from "../lib/canvasBoardView";
 import { createIsoBoardView } from "../lib/vttScene3d";
 
@@ -163,6 +164,7 @@ export function VttOverlay(p: VttProps) {
   const [pings, setPings] = useState<{ x: number; y: number; label?: string; at: number }[]>([]);
   const [show, setShow] = useState({ grid: true, terrain: true, effects: true, fog: true });
   const [drag, setDrag] = useState<{ kind: "pan"; x: number; y: number; ox: number; oy: number }
+    | { kind: "turn"; x: number; from: number }
     | { kind: "token"; id: number } | null>(null);
 
   // Which floor you are STANDING on. Not the same question as which floor is
@@ -388,6 +390,27 @@ export function VttOverlay(p: VttProps) {
   /** Where the painted layer sits this frame, if there is one. */
   const backdrop = view && board ? board.backdropRect(view, floor) : null;
 
+  /** Turn the camera, keeping the middle of the viewport looking at the same
+   *  square. Without that the board swings out of frame on the first press:
+   *  the pan is a translate of the PROJECTED image, so a different projection
+   *  puts a different part of the room under the same offset. */
+  const turn = useCallback((byDeg: number) => {
+    if (!board || !view || !size[0]) return;
+    const from = view.yaw ?? YAW_DEG;
+    const to = wrapYaw(from + byDeg);
+    const k = CELL * view.scale;
+    const centre = board.squareAt(view, floor, size[0] / 2, size[1] / 2, level);
+    const next: View = { ...view, yaw: to };
+    if (!centre) { setView(next); return; }
+    const before = project(centre[0] + 0.5, 0, centre[1] + 0.5, from);
+    const after = project(centre[0] + 0.5, 0, centre[1] + 0.5, to);
+    setView({
+      ...next,
+      ox: view.ox + k * (before.x - after.x),
+      oy: view.oy + k * (before.y - after.y),
+    });
+  }, [board, view, size, floor, level]);
+
   /** Where a token should be DRAWN — mid-walk if it is the one walking. */
   const drawnAt = useCallback((t: VttToken): [number, number] =>
     (walk && walkPos && walk.tokenId === t.id ? walkPos : [t.x, t.y]),
@@ -521,6 +544,13 @@ export function VttOverlay(p: VttProps) {
       return;
     }
     (e.target as Element).setPointerCapture?.(e.pointerId);
+    // Shift-drag turns instead of panning. Free rather than stepped, because
+    // the arithmetic supports any angle and a board you can only see from
+    // twenty-four places is a worse board than one you can see from anywhere.
+    if (e.shiftKey && board?.canTurn) {
+      setDrag({ kind: "turn", x: e.clientX, from: view.yaw ?? YAW_DEG });
+      return;
+    }
     setDrag({ kind: "pan", x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy });
   };
 
@@ -533,17 +563,22 @@ export function VttOverlay(p: VttProps) {
     }
     if (drag?.kind === "pan" && view) {
       setView({ ...view, ox: drag.ox + (e.clientX - drag.x), oy: drag.oy + (e.clientY - drag.y) });
+    } else if (drag?.kind === "turn" && view) {
+      // A third of a degree per pixel: a full turn is about a thousand pixels,
+      // which is a deliberate drag rather than a flick.
+      setView({ ...view, yaw: wrapYaw(drag.from + (e.clientX - drag.x) * 0.36) });
     }
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
     const sq = squareAt(e);
     const wasPan = drag?.kind === "pan";
-    const moved = wasPan && drag.kind === "pan"
+    const moved = wasPan && drag?.kind === "pan"
       && (Math.abs(e.clientX - drag.x) > 4 || Math.abs(e.clientY - drag.y) > 4);
+    const turned = drag?.kind === "turn";
     setDrag(null);
     if (measuring) return;
-    if (!sq || moved) return;
+    if (turned || !sq || moved) return;
     // Aiming owns the click. A template is placed on a SQUARE, so it lands
     // here; a creature target is a click on the token itself (below), because
     // clicking the ground near someone is not choosing them.
@@ -757,8 +792,21 @@ export function VttOverlay(p: VttProps) {
             title={mode === "iso" ? "Isometric board — switch to flat"
                                   : "Flat board — switch to isometric"}
             onClick={() => setMode((m) => (m === "iso" ? "flat" : "iso"))}>◪</button>
+          {board?.canTurn && (
+            <>
+              <button title="Turn the board left"
+                onClick={() => turn(-YAW_STEP_DEG)}>⟲</button>
+              <button title="Turn the board right"
+                onClick={() => turn(YAW_STEP_DEG)}>⟳</button>
+              {Math.round(((view?.yaw ?? YAW_DEG) - YAW_DEG + 540) % 360 - 180) !== 0 && (
+                <button className="on" title="Back to the painted view"
+                  onClick={() => turn(YAW_DEG - (view?.yaw ?? YAW_DEG))}>◈</button>
+              )}
+            </>
+          )}
           <button title="Fit the board"
-            onClick={() => board && size[0] && setView(board.fit(scene, size[0], size[1]))}>⤢</button>
+            onClick={() => board && size[0]
+              && setView(board.fit(scene, size[0], size[1], view?.yaw ?? YAW_DEG))}>⤢</button>
           <button title="Minimise" onClick={() => setCollapsed(true)}>—</button>
         </div>
       </header>
@@ -827,7 +875,13 @@ export function VttOverlay(p: VttProps) {
             alt=""
             draggable={false}
             style={{ left: backdrop.left, top: backdrop.top,
-                     width: backdrop.width, height: backdrop.height }}
+                     width: backdrop.width, height: backdrop.height,
+                     // A painting is a photograph of the room from ONE place.
+                     // Turned away from it, it dissolves rather than being
+                     // stretched into a picture of somewhere else — and it
+                     // fades rather than switching off, because a picture that
+                     // vanishes at a threshold reads as a bug.
+                     opacity: paintOpacity(view?.yaw ?? YAW_DEG) }}
           />
         )}
         <canvas key={mode} data-mode={mode} ref={setCanvasEl} />

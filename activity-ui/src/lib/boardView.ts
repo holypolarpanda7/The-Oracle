@@ -49,7 +49,7 @@ import type { Part } from "./boardShapes.generated";
 // The camera, for the one question that needs it here: which way a view ray
 // travels. Not a renderer import — isocam is arithmetic, and both renderers
 // already sit on top of it.
-import { RAY_RISE, RAY_X, RAY_Z, VERTICAL_SQUEEZE } from "./isocam";
+import { VERTICAL_SQUEEZE, YAW_DEG, basis } from "./isocam";
 
 /** A stable 32-bit hash of a square. Mirrors `_hash` in vtt/isocam.py.
  *
@@ -345,7 +345,19 @@ export function skinHeightScale(skin: string, code: string,
 }
 
 /** Zoom and screen offset. See the note above on why this suits both renderers. */
-export interface View { scale: number; ox: number; oy: number }
+export interface View {
+  scale: number;
+  ox: number;
+  oy: number;
+  /** Which way the camera is turned, in degrees. Absent = `YAW_DEG`, the
+   *  canonical angle everything the SERVER makes is aligned to.
+   *
+   *  Optional rather than required so that every View built before rotation
+   *  existed — and every one persisted in a layout — still means what it meant.
+   *  A viewer may put this anywhere; nothing that has to agree with the server
+   *  may. */
+  yaw?: number;
+}
 
 /** Screen pixels per square at zoom 1. The base unit both renderers scale from. */
 export const CELL = 44;
@@ -517,9 +529,12 @@ const MAX_OCCLUDER_FT = 64;
  *  and it costs no depth-buffer readback, which would stall the GPU every frame
  *  on a webview that can barely afford the draw calls it already makes.
  *
- *  The camera never moves and never turns, so the ray from a creature back to
- *  the lens is ONE fixed direction (`RAY_X`/`RAY_Z`/`RAY_RISE`): march it over
- *  the squares it crosses and ask each how tall it is drawn.
+ *  The camera never MOVES, so for any one angle the ray from a creature back to
+ *  the lens is one fixed direction (`basis(yaw)`): march it over the squares it
+ *  crosses and ask each how tall it is drawn. Turning the camera picks a
+ *  different direction and the march is the same march — which is the whole
+ *  reason rotation was affordable here at all. The climb, `rayRise`, is
+ *  tan(pitch) and does not depend on yaw.
  *
  *  Two decisions worth keeping:
  *
@@ -527,10 +542,10 @@ const MAX_OCCLUDER_FT = 64;
  *    the boots hides nothing worth marking, and at this pitch a ten-foot wall
  *    one square in front leaves exactly the head showing — which is precisely
  *    the case a silhouette is for.
- *  * The ray runs along the grid DIAGONAL (the yaw is 45 degrees), so the
- *    squares it crosses are the diagonal ones. A pillar beside that line covers
- *    half the figure, and half a figure is still a figure you can find, so it
- *    is not called occluded.
+ *  * The ray crosses whichever squares the current angle puts between the
+ *    creature and the lens — at the canonical 45 degrees those are the diagonal
+ *    ones. A pillar beside that line covers half the figure, and half a figure
+ *    is still a figure you can find, so it is not called occluded.
  *
  *  A square is treated as a full column even where the thing on it is drawn
  *  narrow — a pillar is a third of its square wide. That is deliberate and
@@ -540,7 +555,9 @@ const MAX_OCCLUDER_FT = 64;
  *  geometry, which is the one thing the generated shape table exists to
  *  prevent. */
 export function occludedAt(scene: VttScene, x: number, z: number,
-                           squares: number, footFt: number): boolean {
+                           squares: number, footFt: number,
+                           yawDeg: number = YAW_DEG): boolean {
+  const { rayX, rayZ, rayRise } = basis(yawDeg);
   const sqFt = scene.square_ft || 5;
   // A token's DOM box is as tall in pixels as its footprint is wide, so the
   // figure it draws stands this tall in the world. See VERTICAL_SQUEEZE.
@@ -549,13 +566,16 @@ export function occludedAt(scene: VttScene, x: number, z: number,
   const fromX = x + squares / 2;
   const fromZ = z + squares / 2;
   const step = 0.5;
-  for (let run = step; run * sqFt * RAY_RISE <= MAX_OCCLUDER_FT; run += step) {
-    const sx = Math.floor(fromX + RAY_X * run);
-    const sz = Math.floor(fromZ + RAY_Z * run);
-    if (sx >= scene.width || sz >= scene.height) return false;   // off the board
+  for (let run = step; run * sqFt * rayRise <= MAX_OCCLUDER_FT; run += step) {
+    const sx = Math.floor(fromX + rayX * run);
+    const sz = Math.floor(fromZ + rayZ * run);
+    // Off the board in ANY direction. It used to test only the far edges,
+    // which was right when the ray could only ever run one way; turned round,
+    // the same ray leaves by the near ones.
+    if (sx < 0 || sz < 0 || sx >= scene.width || sz >= scene.height) return false;
     // Its own square is not in its own way, whatever is drawn there.
     if (sx >= x && sz >= z && sx < x + squares && sz < z + squares) continue;
-    if (drawnTopFt(scene, sx, sz) > chestFt + run * sqFt * RAY_RISE) return true;
+    if (drawnTopFt(scene, sx, sz) > chestFt + run * sqFt * rayRise) return true;
   }
   return false;
 }
@@ -632,8 +652,14 @@ export interface TokenPlacement {
  *  in, so the component keeps driving pan and zoom exactly as it always has and
  *  a renderer swap stays a renderer swap. */
 export interface BoardView {
-  /** Fit the whole board into a viewport, with breathing room. */
-  fit(scene: VttScene, w: number, h: number): View;
+  /** Can this renderer be turned? The isometric board can — its geometry is
+   *  real and only the lens moves. The flat canvas cannot and never will:
+   *  looking straight down, there is nothing a rotation would reveal. */
+  readonly canTurn: boolean;
+
+  /** Fit the whole board into a viewport, with breathing room. `yaw` is which
+   *  way the camera is turned; a renderer that cannot turn ignores it. */
+  fit(scene: VttScene, w: number, h: number, yaw?: number): View;
 
   /** Which square is under this pixel. Null when the pointer is off the board
    *  entirely — which a flat board can't tell you, and reports as never. */
