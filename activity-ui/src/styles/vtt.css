@@ -252,6 +252,14 @@
 :is(.play, .battle) .vtt-budget { color: var(--teal); }
 :is(.play, .battle) .vtt-measure { color: var(--teal); margin-left: auto; }
 :is(.play, .battle) .vtt-hint { color: var(--text-faint); font-style: normal; }
+/* What the hovered square would be worth. Deliberately not warn-coloured: a
+   route that provokes is bad news and cover is good news, and one palette for
+   both teaches a player to read neither. */
+:is(.play, .battle) .vtt-cover {
+  color: var(--teal); letter-spacing: 0.05em;
+  text-shadow: 0 0 10px rgba(90, 200, 190, 0.35);
+  white-space: nowrap;
+}
 :is(.play, .battle) .vtt-warn {
   color: var(--ember); letter-spacing: 0.05em;
   text-shadow: 0 0 10px rgba(245, 154, 60, 0.45);

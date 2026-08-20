@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { connect, type ConnStatus, type Connection } from "./lib/connection";
 import type {
   ActionBarData, Ally, ArenaState, BarAction, CCPayload, CharacterSummary,
-  CombatLogEntry, CombatState, LevelUpData, LexEntry,
+  CombatLogEntry, CombatState, CoverPreview, LevelUpData, LexEntry,
   ChronicleData, Locale, RepData, RouteRow, ServerEvent, SheetData, VttArea,
   VttOptions, VttScene, VttTargets, WorldShop, BastionPlan,
 } from "./lib/types";
@@ -74,7 +74,8 @@ export default function App({ session }: { session: Session }) {
   const [vttPing, setVttPing] = useState<{ x: number; y: number; label?: string; at: number } | null>(null);
   const [vttPreview, setVttPreview] = useState<
     { token_id: number; ok: boolean; cost_ft?: number;
-      path?: [number, number][]; opportunity?: string[] } | null>(null);
+      path?: [number, number][]; opportunity?: string[];
+      x?: number; y?: number; cover?: CoverPreview } | null>(null);
   const [vttError, setVttError] = useState<string | null>(null);
   // The action bar, and what is armed on it. `armed` is deliberately client
   // state: choosing an act is not doing one, and nothing is sent until the
@@ -366,7 +367,11 @@ export default function App({ session }: { session: Session }) {
           break;
         case "vtt_preview":
           setVttPreview({ token_id: ev.token_id, ok: ev.ok, cost_ft: ev.cost_ft,
-                          path: ev.path, opportunity: ev.opportunity });
+                          path: ev.path, opportunity: ev.opportunity,
+                          x: ev.x, y: ev.y,
+                          // What standing there would be WORTH. Copied field by
+                          // field here, which is exactly how it went missing.
+                          cover: ev.cover });
           break;
         case "vtt_targets":
           setVttTargets({ action_id: ev.action_id, ok: ev.ok,

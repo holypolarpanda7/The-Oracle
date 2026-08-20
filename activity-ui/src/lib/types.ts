@@ -444,6 +444,21 @@ export interface VttDebris {
 }
 
 /** The whole board, as the overlay draws it. */
+/** What standing on a square would be worth, per ENEMY.
+ *
+ *  Per enemy because cover is a RELATIONSHIP and not a property of a square:
+ *  the crate that screens you from the archer on your left does nothing about
+ *  the one on your right, and a single number would be a comfortable lie.
+ *  `best`/`worst` are for a caller with one line to spend. Absent entirely when
+ *  there is nobody to take cover from — "none" on an empty board would read as
+ *  "this square is exposed". Computed by the server (vtt/scene.py
+ *  `cover_preview`), like every other rules answer. */
+export interface CoverPreview {
+  from: { name: string; cover: "none" | "half" | "three-quarters" | "total" }[];
+  best: "none" | "half" | "three-quarters" | "total";
+  worst: "none" | "half" | "three-quarters" | "total";
+}
+
 export interface VttScene {
   id: number;
   session_id: string;
@@ -957,8 +972,9 @@ export type ServerEvent =
   | { t: "vtt"; scene: VttScene | null }
   | ({ t: "vtt_options" } & VttOptions)
   | { t: "vtt_preview"; token_id: number; ok: boolean; path?: [number, number][];
+      x?: number; y?: number;
       cost_ft?: number; remaining_ft?: number; within_budget?: boolean;
-      opportunity?: string[]; reason?: string }
+      opportunity?: string[]; reason?: string; cover?: CoverPreview }
   | ({ t: "vtt_targets" } & VttTargets)
   | ({ t: "vtt_area" } & VttArea)
   | { t: "actions"; data: ActionBarData | null }

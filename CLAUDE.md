@@ -1304,6 +1304,45 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   preview` PROXIES `/ws` to the backend, so the offline demo feed only engages
   when the backend is actually down. Serve `dist` with a plain static server to
   exercise it while the backend is up.)
+- **A click lands on the square you are LOOKING at, not on the ground plane
+  under it.** `squareAt` unprojected the pixel onto the storey's floor, which
+  answers "which square would be here if the board were flat" — and it has not
+  been flat since elevation went in. On the demo board's ten-foot dais the
+  plane was wrong by **two squares** on every probe, and the error grows with
+  the height, which is exactly backwards: the whole point of high ground is
+  that people stand on it. A player reported it as "I need to click on the 2d
+  mesh location". `boardView.squareUnderRay` is the `occludedAt` march run the
+  other way — every point of the form `(gx + rayX*u, u*rayRise, gz + rayZ*u)`
+  projects to the same pixel, so walking `u` down from above and asking each
+  square how tall it is DRAWN finds the first surface the ray meets. Drawn, not
+  solid: **you pick what you can see**, so a click on what looks like the top
+  of a wall selects that wall, and a wall the cutaway took down stops
+  swallowing clicks meant for the floor behind it. Two traps, both measured: a
+  SUNKEN square is reached at a NEGATIVE `u` (beyond the ground plane, not
+  short of it), so the march is bounded by the board's deepest floor as well as
+  its tallest thing; and it must step a little PAST that bound, because a
+  surface sitting exactly on it is only ever approached and never crossed.
+  Turning the camera pivots about `groundAt` — the CONTINUOUS ground point, never
+  a square — because the square under the middle of the frame legitimately
+  changes as the camera comes round, and pivoting about a moving target means a
+  whole turn does not come back to where it started.
+- **Cover is REPORTED while you are choosing where to stand.** It has been
+  computed exactly and applied correctly since the board went 3D, and the only
+  place a player ever saw the word was on a foe's own line after the fact —
+  reported as "cover is not obvious". `VttEngine.cover_preview` rides in
+  `path_preview`, so the answer for a hovered square arrives with what the move
+  costs and who it provokes. **Per ENEMY, because cover is a relationship and
+  not a property of a square**: the crate that screens you from the archer on
+  your left does nothing about the one on your right, and one number for the
+  square would be a comfortable lie. `best`/`worst` are for a caller with one
+  line to spend, and the line NAMES the foes while there are few enough to name.
+  Silent when there is nobody to take cover from, and silent when the answer is
+  "none" — printing that on every square teaches a player to stop reading the
+  line. **A preview says WHICH square it is about** (`x`/`y`), because it
+  arrives after a debounce and the pointer has usually moved on; without that
+  the panel shows the cover of a square the player has already left. It went
+  missing once on the way through `App.tsx`, which copies the preview field by
+  field — the same shape of bug as `_cc_request`.
 - **The near walls are CUT AWAY, and the rule is one sentence.** A room is a
   box and an isometric camera looks into it over a corner, so the two walls
   nearest the lens stand between the viewer and the fight. At the canonical

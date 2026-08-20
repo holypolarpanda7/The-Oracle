@@ -41,7 +41,7 @@ import {
   CELL, DECOR_KINDS, DECOR_TINT, HOLE_CODES, OBJECT_VARIANTS, SKINS,
   SKIRT_FT, SKIRT_INSET,
   STRUCTURE_CODES, awayDir, cutawayHeightScale, cuttingAway, exposedRock,
-  hullFootprint,
+  hullFootprint, squareUnderRay,
   isSetpieceSkin, isSolid, materialSlot,
   outAxis, outCorner, occludedAt, runAxis, setpieceYaw,
   sameBody,
@@ -606,6 +606,21 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
    *  sinks into the ledge it is supposed to be on. */
   const elevFt = (scene: VttScene, x: number, y: number) =>
     scene.elevation?.[`${x},${y}`] ?? 0;
+
+  /** The lowest FLOOR on the board, in feet below the storey's own.
+   *
+   *  The other end of `tallestUnits`, and it exists for the picker: a square
+   *  sunk ten feet is reached by the view ray BEYOND the ground plane, so a
+   *  march that started at the top and stopped at zero never saw it. Read off
+   *  the sparse elevation map rather than by scanning every square, because
+   *  that is where a hole in the floor is recorded. */
+  function deepestFt(scene: VttScene): number {
+    let ft = 0;
+    for (const v of Object.values(scene.elevation ?? {})) {
+      if (typeof v === "number" && v < ft) ft = v;
+    }
+    return ft;
+  }
 
   /** Tallest thing on the board, for framing and for the camera's far plane. */
   function tallestUnits(scene: VttScene): number {
@@ -1199,10 +1214,16 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     squareAt(view: View, scene: VttScene, px: number, py: number,
              level: number): [number, number] | null {
       const k = CELL * view.scale;
+      const yaw = view.yaw ?? YAW_DEG;
       const [wx, wz] = unproject((px - view.ox) / k, (py - view.oy) / k,
-                                 baseUnits(scene, level), view.yaw ?? YAW_DEG);
-      const x = Math.floor(wx);
-      const y = Math.floor(wz);
+                                 baseUnits(scene, level), yaw);
+      // Unprojecting answers "which square would be here if the board were
+      // flat", and it has not been flat since elevation went in — so on a dais
+      // or in a channel the square you click is not the square you get. The
+      // ray march is the correction: see squareUnderRay.
+      const [x, y] = squareUnderRay(
+        scene, wx, wz, yaw,
+        (scene.square_ft || 5) * tallestUnits(scene), deepestFt(scene));
       // Unlike the flat board this CAN miss: the viewport is a rectangle and
       // the board inside it is a diamond, so a good part of the frame is not
       // over the board at all. Reporting a square there would let a click on
@@ -1236,6 +1257,13 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         occluded: occludedAt(scene, x, y, squares, footFt,
                              view.yaw ?? YAW_DEG),
       };
+    },
+
+    groundAt(view: View, scene: VttScene, px: number, py: number,
+             level: number): [number, number] {
+      const k = CELL * view.scale;
+      return unproject((px - view.ox) / k, (py - view.oy) / k,
+                       baseUnits(scene, level), view.yaw ?? YAW_DEG);
     },
 
     zoomAt(view: View, px: number, py: number, factor: number): View {

@@ -495,8 +495,8 @@ export function exposedRock(isOpen: (x: number, z: number) => boolean,
  *  A landmark's mesh counts at its declared height. Its stamped tiles are
  *  already in the answer, but a 40-ft gate tower stamps 10-ft masonry, and
  *  what stands between the camera and the creature is the tower. */
-function drawnTopFt(scene: VttScene, x: number, z: number,
-                    yawDeg: number = YAW_DEG): number {
+export function drawnTopFt(scene: VttScene, x: number, z: number,
+                           yawDeg: number = YAW_DEG): number {
   const row = (scene.terrain ?? [])[z];
   const elev = scene.elevation?.[`${x},${z}`] ?? 0;
   let top = -Infinity;
@@ -627,6 +627,58 @@ export function cutawayHeightScale(scene: VttScene, x: number, z: number,
   if (!cutAwayAt(scene, x, z, yawDeg)) return 1;
   if (fullFt <= 0) return CUTAWAY_SCALE;
   return Math.max(CUTAWAY_SCALE, Math.min(1, CUTAWAY_MIN_FT / fullFt));
+}
+
+/** Which square is really under this pixel, given that the board has HEIGHT.
+ *
+ *  Unprojecting onto a plane answers "which square would be here if the board
+ *  were flat", and the board has not been flat since elevation went in. On a
+ *  dais the square you click is not the square you get: the ground-plane answer
+ *  is the square that would be there at floor level, and what you are actually
+ *  looking at is a square five feet up and therefore drawn higher on screen.
+ *  A player reported it exactly that way — "I need to click on the 2d mesh
+ *  location" — and it is worse than it sounds, because the error grows with
+ *  the height and the whole point of high ground is that people stand on it.
+ *
+ *  The fix is the march `occludedAt` already does, run the other way. Every
+ *  point of the form `(gx + rayX*u, u*rayRise, gz + rayZ*u)` projects to the
+ *  same pixel — that is what an orthographic camera means — so walking `u` down
+ *  from above and asking each square how tall it is DRAWN finds the first
+ *  surface the ray meets. Drawn, not "solid": you pick what you can see, so a
+ *  click on what looks like the top of a wall selects that wall, and a wall the
+ *  cutaway took down no longer swallows clicks meant for the floor behind it.
+ *
+ *  Falls back to the ground-plane square when the ray meets nothing at all —
+ *  over a chasm, or off the edge of the built area — which is exactly the
+ *  answer this replaced, so nothing that worked before can get worse.
+ *
+ *  `gx`/`gz` are the ground-plane hit in squares. The march is bounded by the
+ *  board's own extremes in feet: `tallestFt` above the storey's floor and
+ *  `deepestFt` below it. BOTH, because a sunken square is the same bug the
+ *  other way round — a reef channel is ten feet down, so the ray reaches it
+ *  BEYOND the ground-plane point rather than short of it, at a negative `u`,
+ *  and a march that stopped at zero fell back to the plane every time. */
+export function squareUnderRay(scene: VttScene, gx: number, gz: number,
+                               yawDeg: number, tallestFt: number,
+                               deepestFt = 0): [number, number] {
+  const { rayX, rayZ, rayRise } = basis(yawDeg);
+  const sqFt = scene.square_ft || 5;
+  const ground: [number, number] = [Math.floor(gx), Math.floor(gz)];
+  const climbPerSquare = rayRise * sqFt;             // feet gained per square
+  if (climbPerSquare <= 0) return ground;
+  const step = 0.25;
+  // A step PAST the deepest floor, not exactly to it. The march samples
+  // discretely, and a surface sitting exactly on the bound is only ever
+  // approached and never crossed — which is how a channel sunk exactly ten
+  // feet was missed by a march bounded at exactly ten feet.
+  const floorU = Math.min(0, deepestFt) / climbPerSquare - 0.25;
+  for (let u = Math.max(0, tallestFt) / climbPerSquare; u >= floorU; u -= step) {
+    const x = Math.floor(gx + rayX * u);
+    const z = Math.floor(gz + rayZ * u);
+    if (x < 0 || z < 0 || x >= scene.width || z >= scene.height) continue;
+    if (drawnTopFt(scene, x, z, yawDeg) >= u * climbPerSquare) return [x, z];
+  }
+  return ground;
 }
 
 /** How high the ray may climb before nothing on any board could still be in
@@ -780,6 +832,18 @@ export interface BoardView {
    *  entirely — which a flat board can't tell you, and reports as never. */
   squareAt(view: View, scene: VttScene, px: number, py: number,
            level: number): [number, number] | null;
+
+  /** The CONTINUOUS point on this storey's floor under a pixel, in squares.
+   *
+   *  Not `squareAt`: that one marches the view ray and answers "which square am
+   *  I looking at", which is what a click wants and is deliberately affected by
+   *  height. This is the flat, exact, invertible answer, and it is what turning
+   *  the camera has to pivot about — a whole turn must come back to precisely
+   *  where it started, and re-deriving a SQUARE each time drifts, because on a
+   *  board with any height the square under the middle of the frame legitimately
+   *  changes as you turn. */
+  groundAt(view: View, scene: VttScene, px: number, py: number,
+           level: number): [number, number];
 
   /** Where the token standing at this square belongs on screen. */
   screenOf(view: View, scene: VttScene, x: number, y: number, squares: number,

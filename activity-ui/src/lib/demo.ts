@@ -1,7 +1,7 @@
 import type { ActionBarData, ArenaEnv, ArenaEquipLine, ArenaOutfitLine,
               ArenaShop, ArenaState,
               ArenaStockItem, ChronicleData, CombatState, ServerEvent, VttEffect,
-              VttScene } from "./types";
+              VttScene, VttToken } from "./types";
 
 /** Standalone demo feed — lets the whole UI run with no backend, and doubles
     as living documentation of the event protocol. */
@@ -616,6 +616,38 @@ function demoGapFt(a: { x: number; y: number }, b: { x: number; y: number }): nu
   return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y)) * 5;
 }
 
+/** What standing on a square would be worth, offline.
+ *
+ *  The same CONTRACT as the backend's `cover_preview` — one answer per enemy,
+ *  because cover is a relationship — and a much cruder model behind it: a
+ *  straight line sampled for anything the demo grid calls solid, where the
+ *  server runs the PHB corner rule with heights folded in. Honest about what it
+ *  is, in the way `targets` above is honest about judging range and not sight:
+ *  enough to drive the panel, never a second answer anybody could mistake for
+ *  the rules.
+ */
+function demoCover(scene: VttScene, me: VttToken, x: number, y: number) {
+  const solid = (sx: number, sy: number) =>
+    "#RTOow".includes(DEMO_TERRAIN[sy]?.[sx] ?? " ");
+  const foes = scene.tokens.filter(
+    (t) => t.id !== me.id && !t.defeated && t.team !== me.team);
+  if (!foes.length) return undefined;
+  const rank: Record<string, number> = {
+    none: 0, half: 1, "three-quarters": 2, total: 3 };
+  const from = foes.map((f) => {
+    const steps = Math.max(Math.abs(f.x - x), Math.abs(f.y - y)) * 2;
+    let blocked = false;
+    for (let i = 1; i < steps && !blocked; i++) {
+      const t = i / steps;
+      blocked = solid(Math.round(f.x + (x - f.x) * t),
+                      Math.round(f.y + (y - f.y) * t));
+    }
+    return { name: f.name, cover: (blocked ? "three-quarters" : "none") as
+             "none" | "half" | "three-quarters" | "total" };
+  }).sort((a, b) => rank[b.cover] - rank[a.cover]);
+  return { from, best: from[0].cover, worst: from[from.length - 1].cover };
+}
+
 export const demoVttApi = {
   scene: demoScene,
   options: demoReach,
@@ -747,7 +779,8 @@ export const demoVttApi = {
       .filter((t) => t.team !== me.team && !t.defeated
         && near(me.x, me.y, t) && !near(x, y, t))
       .map((t) => t.name);
-    return { token_id: tokenId, ok: true, cost_ft: hit.cost, opportunity };
+    return { token_id: tokenId, ok: true, x, y, cost_ft: hit.cost, opportunity,
+             cover: demoCover(scene, me, x, y) };
   },
   move(tokenId: number, x: number, y: number) {
     const reach = demoReach(tokenId, false);

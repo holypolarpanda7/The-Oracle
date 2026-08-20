@@ -43,6 +43,15 @@ export function createCanvasBoardView(canvas: HTMLCanvasElement): BoardView {
       return { left, top, size: CELL * view.scale * squares, depth: 0, occluded: false };
     },
 
+    // The flat board never turns, so nothing pivots about this — it is here
+    // because the interface asks, and the honest flat answer is the same
+    // arithmetic squareAt does without the floor.
+    groundAt(view: View, _scene: VttScene, px: number, py: number,
+             _level: number): [number, number] {
+      const k = CELL * view.scale;
+      return [(px - view.ox) / k, (py - view.oy) / k];
+    },
+
     zoomAt(view: View, px: number, py: number, factor: number): View {
       const scale = Math.max(0.2, Math.min(3, view.scale * factor));
       const k = scale / view.scale;

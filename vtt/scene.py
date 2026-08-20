@@ -1494,10 +1494,19 @@ class VttEngine:
             return {"ok": False, "reason": "no route to that square"}
         remaining = max(0, tok.speed_ft - tok.moved_ft)
         return {"ok": True, "path": [list(p) for p in path], "cost_ft": cost,
+                # WHICH square this is an answer about. A preview arrives after
+                # a debounce and the pointer has usually moved on, so a caller
+                # that cannot tell a stale answer from a current one shows the
+                # cover of a square the player has already left.
+                "x": int(x), "y": int(y),
                 "level": lvl,
                 "remaining_ft": remaining, "within_budget": cost <= remaining,
                 "opportunity": [t["name"] for t in
-                                self._opportunity(tok, path, row)]}
+                                self._opportunity(tok, path, row)],
+                # What standing THERE would be worth. Deciding where to stand is
+                # exactly when cover matters, and until now the only place the
+                # word ever appeared was on a foe's line after the fact.
+                "cover": self.cover_preview(token_id, int(x), int(y))}
 
     def move_token(self, token_id: int, x: int, y: int, *, teleport: bool = False,
                    enforce_speed: bool = True, free: bool = False,
@@ -2818,6 +2827,90 @@ class VttEngine:
             target_height_ft=profile_height_ft(b.size, bool(b.prone)),
             attacker_height_advantage_ft=max(
                 0, self.token_height_ft(row, a) - self.token_height_ft(row, b)))
+
+    def cover_preview(self, token_id: int, x: int, y: int) -> dict:
+        """What cover this creature would have AT a square, from each enemy.
+
+        The complaint this answers is "cover is not obvious", and it is a fair
+        one: cover has been computed exactly and applied correctly since the
+        board went 3D, and the only place a player ever saw the word was on a
+        foe's own line after the fact. Deciding where to stand is precisely
+        when it matters — a square behind a pillar is worth two squares of
+        movement, and nothing on the board said so.
+
+        Reported per ENEMY, because cover is a relationship and not a property
+        of a square: the crate that screens you from the archer on your left
+        does nothing about the one on your right, and a single number would be
+        a comfortable lie. ``best`` and ``worst`` are for a caller with one
+        line to spend.
+
+        Costs nothing anybody notices: this is asked once per hovered square,
+        against the handful of living enemies, and each answer is the PHB
+        corner rule over four corners.
+        """
+        tok = self.get_token(token_id)
+        if not tok:
+            return {}
+        row = self.get_scene(tok.map_id)
+        if row is None:
+            return {}
+        lvl = int(tok.level or 0)
+        g = self.grid_of(row, lvl)
+        if not g.in_bounds(int(x), int(y)):
+            return {}
+        mine = tok.team or ("party" if tok.kind == TokenKind.PC else "foe")
+        foes = [t for t in self.tokens(tok.map_id, include_defeated=False)
+                if t.id != tok.id and t.kind != TokenKind.MARKER
+                and (t.team or "foe") != mine and int(t.level or 0) == lvl]
+        if not foes:
+            return {}
+        # A creature in the way is half cover, and a sight-blocking effect is
+        # three-quarters — the same table `cover_for` uses, because two answers
+        # to "what is in the way" is exactly the drift this engine avoids
+        # everywhere else.
+        blockers: dict[Square, str] = {}
+        for t in self.tokens(tok.map_id, include_defeated=False):
+            if t.id == tok.id or t.kind == TokenKind.MARKER:
+                continue
+            for sq in geo.footprint(t.x, t.y, size_squares(t.size)):
+                blockers[sq] = "half"
+        for eff in self.effects(tok.map_id):
+            if eff.blocks_sight:
+                for p in (eff.squares or []):
+                    blockers[tuple(p)] = "three-quarters"  # type: ignore[index]
+        # The destination's own ground, not the square the creature is standing
+        # on now — the whole question is what moving there would buy.
+        base = 0
+        if lvl:
+            lv = (row.levels or [])
+            idx = lvl - 1
+            if 0 <= idx < len(lv):
+                base = int((lv[idx] or {}).get("base_ft") or 0)
+        own = int(tok.elevation_ft or 0)
+        dest_ft = base + (own if own else self._height_at(row, (int(x), int(y))))
+        mine_tall = profile_height_ft(tok.size, bool(tok.prone))
+        out: list[dict] = []
+        for f in foes:
+            # A linked creature always has a clean line — that is what the
+            # feature granting the link is FOR — so it must not be reported as
+            # blocked by scenery it can see straight through.
+            if self._is_linked(tok.map_id, f.name, tok.name):
+                out.append({"name": f.name, "cover": "none"})
+                continue
+            here = dict(blockers)
+            for sq in geo.footprint(f.x, f.y, size_squares(f.size)):
+                here.pop(sq, None)
+            out.append({"name": f.name, "cover": geo.cover_between(
+                g, (f.x, f.y), (int(x), int(y)),
+                attacker_size=size_squares(f.size),
+                target_size=size_squares(tok.size),
+                obstacles=here,
+                target_height_ft=mine_tall,
+                attacker_height_advantage_ft=max(
+                    0, self.token_height_ft(row, f) - dest_ft))})
+        rank = {"none": 0, "half": 1, "three-quarters": 2, "total": 3}
+        out.sort(key=lambda r: -rank.get(r["cover"], 0))
+        return {"from": out, "best": out[0]["cover"], "worst": out[-1]["cover"]}
 
     # ================================================================ light
 

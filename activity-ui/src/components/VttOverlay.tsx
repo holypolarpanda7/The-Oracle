@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type {
-  BarAction, CombatState, VttArea, VttOptions, VttScene, VttTarget, VttToken,
+  BarAction, CombatState, CoverPreview, VttArea, VttOptions, VttScene,
+  VttTarget, VttToken,
 } from "../lib/types";
 import { SPRITES, loadSprites } from "../lib/boardSprites";
 import { useResizable } from "../lib/useResizable";
@@ -66,7 +67,8 @@ export interface VttProps {
   /** The server's answer for the square being hovered: the real route it
    *  would walk, what it costs, and who it provokes. */
   preview: { token_id: number; ok: boolean; cost_ft?: number;
-             path?: [number, number][]; opportunity?: string[] } | null;
+             path?: [number, number][]; opportunity?: string[];
+             x?: number; y?: number; cover?: CoverPreview } | null;
   /** The act armed on the action bar, waiting for the board to be aimed. */
   armed?: BarAction | null;
   /** Who that act may legally hit, with reasons for the rest. */
@@ -102,6 +104,28 @@ export interface VttProps {
    *  a bar below the fold is a bar nobody uses. The two are also in
    *  conversation — you pick on one and the other answers. */
   children?: ReactNode;
+}
+
+/** How much cover, in a word narrow enough for a status line. */
+const COVER_WORD: Record<string, string> = {
+  half: "half", "three-quarters": "¾", total: "total",
+};
+
+/** What the hovered square would be worth, as one short phrase.
+ *
+ *  Silent when it would be noise: no cover from anybody is the ordinary case
+ *  and printing "no cover" on every square of the board teaches a player to
+ *  stop reading the line. Names the foes while there are few enough to name,
+ *  and counts them after that — "¾ from 3 of 5" is the fact a player needs to
+ *  decide, and five names is a paragraph. */
+function coverPhrase(c?: CoverPreview | null): string {
+  if (!c || !c.from?.length || c.best === "none") return "";
+  const helped = c.from.filter((f) => f.cover !== "none");
+  const word = COVER_WORD[c.best] ?? c.best;
+  if (helped.length <= 2) {
+    return `${word} cover from ${helped.map((f) => f.name).join(" and ")}`;
+  }
+  return `${word} cover from ${helped.length} of ${c.from.length}`;
 }
 
 export function VttOverlay(p: VttProps) {
@@ -399,13 +423,15 @@ export function VttOverlay(p: VttProps) {
     const from = view.yaw ?? YAW_DEG;
     const to = wrapYaw(from + byDeg);
     const k = CELL * view.scale;
-    const centre = board.squareAt(view, floor, size[0] / 2, size[1] / 2, level);
-    const next: View = { ...view, yaw: to };
-    if (!centre) { setView(next); return; }
-    const before = project(centre[0] + 0.5, 0, centre[1] + 0.5, from);
-    const after = project(centre[0] + 0.5, 0, centre[1] + 0.5, to);
+    // The CONTINUOUS ground point, never a square: a square is what you are
+    // looking AT, which legitimately changes as the camera comes round on a
+    // board with any height, and pivoting about a moving target means a whole
+    // turn does not come back to where it started.
+    const [cx, cz] = board.groundAt(view, floor, size[0] / 2, size[1] / 2, level);
+    const before = project(cx, 0, cz, from);
+    const after = project(cx, 0, cz, to);
     setView({
-      ...next,
+      ...view, yaw: to,
       ox: view.ox + k * (before.x - after.x),
       oy: view.oy + k * (before.y - after.y),
     });
@@ -446,6 +472,15 @@ export function VttOverlay(p: VttProps) {
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hover?.[0], hover?.[1], selectedToken?.id, reach]);
+
+  /** What the hovered square would be worth, when the server has said. Tied to
+   *  the same conditions as the route preview: it is an answer about a square
+   *  somebody is considering, and it means nothing about a square nobody is. */
+  const previewHere = !!(p.preview?.ok && hover
+    && p.preview.token_id === selectedToken?.id
+    && (p.preview.x === undefined
+        || (p.preview.x === hover[0] && p.preview.y === hover[1])));
+  const coverAt = previewHere && !aiming ? coverPhrase(p.preview!.cover) : "";
 
   const provokes = (p.preview && selectedToken
     && p.preview.token_id === selectedToken.id
@@ -933,6 +968,13 @@ export function VttOverlay(p: VttProps) {
                 <button className={`vtt-dash${dash ? " on" : ""}`}
                   onClick={() => setDash((d) => !d)}
                   title="Preview movement as though you Dash">Dash</button>
+                {coverAt && (
+                  <span className="vtt-cover" title={
+                    (p.preview?.cover?.from ?? [])
+                      .map((f) => `${f.name}: ${f.cover}`).join(" · ")}>
+                    ⛊ {coverAt}
+                  </span>
+                )}
                 {provokes.length > 0 ? (
                   <span className="vtt-warn">
                     ⚠ that route leaves {provokes.join(", ")} — it provokes
