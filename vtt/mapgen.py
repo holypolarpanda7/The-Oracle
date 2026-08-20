@@ -330,17 +330,38 @@ STEP_FT = 5
 LEDGE_FT = 10
 
 
-def _raise(out: GeneratedMap, squares: Iterable[Square], ft: int) -> None:
+def _elev_of(out: GeneratedMap, level: int = 0) -> dict:
+    """The height map of one storey, made on demand.
+
+    Level 0 is the board's own ``elevation``; an upper storey keeps its own
+    inside its ``levels`` entry — the same split the engine stores, and for the
+    same reason. It exists at all because every height primitive below used to
+    write the GROUND floor whatever floor it was building, so a gallery, a
+    rooftop and a ship's hold were table tops by construction: the whole
+    vocabulary this module grew for the ground stopped at the stairs.
+    """
+    if not int(level or 0):
+        return out.elevation
+    idx = int(level) - 1
+    if not (0 <= idx < len(out.levels)):
+        return {}                    # no such storey: writing nowhere is right
+    return out.levels[idx].setdefault("elevation", {})
+
+
+def _raise(out: GeneratedMap, squares: Iterable[Square], ft: int,
+           level: int = 0) -> None:
     """Record height on squares. Zero is stored as nothing, not as zero."""
+    elev = _elev_of(out, level)
     for x, y in squares:
         if ft:
-            out.elevation[f"{x},{y}"] = int(ft)
+            elev[f"{x},{y}"] = int(ft)
         else:
-            out.elevation.pop(f"{x},{y}", None)
+            elev.pop(f"{x},{y}", None)
 
 
 def _terrace(g: Grid, out: GeneratedMap, x0: int, y0: int, x1: int, y1: int,
-             ft: int, *, on: tuple[str, ...] = (), steps: str = "") -> list[Square]:
+             ft: int, *, on: tuple[str, ...] = (), steps: str = "",
+             level: int = 0) -> list[Square]:
     """Raise (or sink) a rectangle, and mark the way up.
 
     ``steps`` names a side (n/s/e/w) whose edge squares are set to half the
@@ -357,7 +378,7 @@ def _terrace(g: Grid, out: GeneratedMap, x0: int, y0: int, x1: int, y1: int,
             if on and g.get(x, y) not in on:
                 continue
             got.append((x, y))
-    _raise(out, got, ft)
+    _raise(out, got, ft, level)
     # A ramp is only worth having on a LEDGE. Half of a five-foot step is two
     # feet, which is a number nobody needs to be told and which costs a climb
     # of five feet either way — the step is already cheap enough to take.
@@ -367,7 +388,7 @@ def _terrace(g: Grid, out: GeneratedMap, x0: int, y0: int, x1: int, y1: int,
                 "w": [(x0, y) for y in range(y0, y1 + 1)],
                 "e": [(x1, y) for y in range(y0, y1 + 1)]}.get(steps, [])
         ramp = [sq for sq in edge if sq in got]
-        _raise(out, ramp, int(ft / 2))
+        _raise(out, ramp, int(ft / 2), level)
         for x, y in ramp:
             if g.get(x, y) not in APERTURES and g.passable(x, y):
                 g.set(x, y, "u")
@@ -375,7 +396,8 @@ def _terrace(g: Grid, out: GeneratedMap, x0: int, y0: int, x1: int, y1: int,
 
 
 def _mound(g: Grid, rng: random.Random, out: GeneratedMap, cx: int, cy: int,
-           radius: float, ft: int, *, on: tuple[str, ...] = ()) -> list[Square]:
+           radius: float, ft: int, *, on: tuple[str, ...] = (),
+           level: int = 0) -> list[Square]:
     """A rounded rise in two tiers — the shape of ground rather than of masonry.
 
     Outer ring at half height so the climb is two short ones and the silhouette
@@ -390,7 +412,7 @@ def _mound(g: Grid, rng: random.Random, out: GeneratedMap, cx: int, cy: int,
         if d > 1.0:
             continue
         got.append((x, y))
-        _raise(out, [(x, y)], ft if d < 0.55 else int(ft / 2))
+        _raise(out, [(x, y)], ft if d < 0.55 else int(ft / 2), level)
     return got
 
 
@@ -398,7 +420,7 @@ def _mound(g: Grid, rng: random.Random, out: GeneratedMap, cx: int, cy: int,
 def _plateaus(g: Grid, rng: random.Random, out: GeneratedMap, *,
               tiers: int = 3, step_ft: int = LEDGE_FT,
               on: tuple[str, ...] = (), face: str = "R",
-              ramps: int = 2) -> None:
+              ramps: int = 2, level: int = 0) -> None:
     """Stack the whole board into terraces, with cliffs between and ways up.
 
     The difference between a board with a ledge on it and a board that IS
@@ -448,7 +470,7 @@ def _plateaus(g: Grid, rng: random.Random, out: GeneratedMap, *,
             continue
         t = tier_at(x, y)
         if t:
-            _raise(out, [(x, y)], t * step_ft)
+            _raise(out, [(x, y)], t * step_ft, level)
 
     # The faces, and the gaps left in them. A ramp is a run of squares that
     # keeps the LOWER tier's height, so walking up one is a climb of nothing at
@@ -468,12 +490,13 @@ def _plateaus(g: Grid, rng: random.Random, out: GeneratedMap, *,
             if any(abs(b - gp) <= wide for gp in gaps):
                 # A way up: keep it walkable, and step it half a tier so the
                 # climb is two short ones rather than one that eats a turn.
-                _raise(out, [(x, y)], int((len(edges) - i - 0.5) * step_ft))
+                _raise(out, [(x, y)], int((len(edges) - i - 0.5) * step_ft),
+                       level)
                 if g.passable(x, y):
                     g.set(x, y, "u")
                 continue
             g.set(x, y, face)
-            out.elevation.pop(f"{x},{y}", None)
+            _elev_of(out, level).pop(f"{x},{y}", None)
 
 
 def _storey(out: GeneratedMap, g: Grid, name: str, base_ft: int,
@@ -496,7 +519,10 @@ def _storey(out: GeneratedMap, g: Grid, name: str, base_ft: int,
     if not n:
         return 0
     out.levels.append({"name": name, "base_ft": int(base_ft),
-                       "terrain": ["".join(r) for r in rows], "stairs": []})
+                       "terrain": ["".join(r) for r in rows],
+                       # Its own height map, empty to begin with. A storey is
+                       # allowed relief exactly as the ground is.
+                       "elevation": {}, "stairs": []})
     return len(out.levels)
 
 
@@ -879,6 +905,47 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                         _stair(out, level, (sx, sy), (x, y), kind="stair")
                         placed.append((x, y))
                         break
+            # A ROOF IS NOT A PLANE. The roof level was laid flat, so a street
+            # fight's whole second storey — the one the comment above calls the
+            # asymmetric fight — was twenty feet of table top: nowhere to take,
+            # nothing to crouch behind, no reason to be on one part of it
+            # rather than another. Every square with roof on all four sides is
+            # a building's own ridge, raised a step; the rim it leaves is the
+            # eaves. That is a hipped roof, it is derived from the footprint
+            # rather than rolled, and it gives an archer up there somewhere
+            # worth standing and somebody coming up the stair a way to close
+            # without being seen the whole time.
+            # Depth in from the eaves, by erosion: ring 0 is the edge of the
+            # roof, ring 1 the course inside it, and so on. Raising by RING
+            # rather than by "is it interior" is the difference between a
+            # hipped roof and a mesa with a rim — on a big block the interior
+            # is most of the roof, and one step for all of it is a plateau.
+            roofset = set(roof)
+            depth: dict[Square, int] = {}
+            edge = [sq for sq in roof
+                    if not {(sq[0] + 1, sq[1]), (sq[0] - 1, sq[1]),
+                            (sq[0], sq[1] + 1), (sq[0], sq[1] - 1)} <= roofset]
+            for sq in edge:
+                depth[sq] = 0
+            frontier = list(edge)
+            while frontier:
+                nxt = []
+                for x, y in frontier:
+                    for sq in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                        if sq in roofset and sq not in depth:
+                            depth[sq] = depth[(x, y)] + 1
+                            nxt.append(sq)
+                frontier = nxt
+            # Two tiers at most. The second only appears on a block deep enough
+            # to have a middle, so a narrow townhouse gets eaves and a ridge and
+            # a warehouse gets a real place to stand — and stepping off THAT is
+            # a ten-foot fall, which is the height the rules make you decide
+            # about.
+            for sq, d in depth.items():
+                if d >= 3:
+                    _raise(out, [sq], LEDGE_FT, level)
+                elif d >= 1:
+                    _raise(out, [sq], STEP_FT, level)
             out.description += ", roofs above it reached by an outside stair"
 
 
@@ -1070,6 +1137,19 @@ def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                         and below not in keep:
                     g.set(*below, "u")
                     _stair(out, level, below, foot)
+                    # A raised LANDING at the far end of the run. The gallery
+                    # was a plank ten feet up and nothing else: a fight on it
+                    # was two lines of creatures with no reason to be anywhere
+                    # in particular. One step at the end away from the stair is
+                    # the whole asymmetry a walkway can honestly carry — the
+                    # far end is worth taking, and taking it costs the length
+                    # of the gallery under somebody's bow.
+                    far = max(walk, key=lambda sq: abs(sq[0] - below[0]))
+                    landing = [sq for sq in walk
+                               if abs(sq[0] - far[0]) <= 1
+                               and abs(sq[0] - below[0]) > 3]
+                    if landing:
+                        _raise(out, landing, STEP_FT, level)
                     break
             out.description += ", a gallery running along one side above it"
 
@@ -1466,7 +1546,8 @@ def _rig_ship(g: Grid, rng: random.Random, out: GeneratedMap, stern_x: int,
                               "w": hi - lo + 1, "h": max(ys) - min(ys) + 1})
 
     out.levels.append({"name": "Below Decks", "base_ft": -8,
-                       "terrain": ["".join(r) for r in rows], "stairs": []})
+                       "terrain": ["".join(r) for r in rows],
+                       "elevation": {}, "stairs": []})
     walkable = [sq for sq in deck_squares if g.get(sq[0], sq[1]) == "b"] \
         or deck_squares
     hx, hy = walkable[rng.randrange(len(walkable))]

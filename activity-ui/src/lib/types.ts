@@ -414,6 +414,14 @@ export interface VttLevel {
   fog?: string[] | null;
   sight?: string[] | null;
   light?: string[] | null;
+  /** ...and its own per-square HEIGHT, `{"x,y": ft}` above THIS floor.
+   *
+   *  `base_ft` says where the storey's floor sits; this says what stands on
+   *  it, so a gallery may have a step exactly as the hall may. Above the
+   *  storey, never above the ground — adding the two is one caller's job, or a
+   *  one-foot step on a fifteen-foot gallery reads as sixteen feet in the
+   *  air. The board's own `elevation` is the ground floor's. */
+  elevation?: Record<string, number>;
   stairs: { x: number; y: number; to: number; tx: number; ty: number; kind?: string }[];
 }
 

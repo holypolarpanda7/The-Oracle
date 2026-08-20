@@ -193,6 +193,7 @@ def _upper_level(out, g: Grid, base_ft: int, name: str) -> int:
         if lv.get("name") == name.title() and lv.get("base_ft") == base_ft:
             return i + 1
     out.levels.append({"name": name.title(), "base_ft": int(base_ft),
+                       "elevation": {},
                        "terrain": [VOID * g.width for _ in range(g.height)],
                        "stairs": []})
     return len(out.levels)

@@ -494,7 +494,7 @@ class VttEngine:
     def levels_of(self, row: TacticalMap) -> list[dict]:
         """Every floor of this board, level 0 first. Always at least one."""
         base = {"name": "Ground", "base_ft": 0, "terrain": row.terrain or [],
-                "stairs": []}
+                "elevation": dict(row.elevation or {}), "stairs": []}
         return [base, *[dict(l) for l in (row.levels or [])]]
 
     def grid_of(self, row: TacticalMap, level: int = 0) -> Grid:
@@ -509,6 +509,42 @@ class VttEngine:
         lv = self.levels_of(row)
         idx = max(0, min(int(level), len(lv) - 1))
         return Grid.from_rows(lv[idx].get("terrain") or row.terrain or [])
+
+    def elevation_of(self, row: TacticalMap, level: int = 0) -> dict:
+        """This floor's own per-square height, in feet above ITS floor.
+
+        Stored the way terrain, fog, sight and light are — level 0 on the row,
+        upper floors inside ``levels`` — because it is the same KIND of fact,
+        and splitting it any other way puts two answers to "what does this
+        storey look like" in two places. It was the one such fact left out, so
+        every upper storey in the game was a table top: a gallery could not
+        have a step, a rooftop could not have a ridge, a hold could not have a
+        raised platform, and the whole height vocabulary the ground floor grew
+        stopped at the stairs.
+
+        Relative to the storey's own floor, NOT to the ground. A level's
+        ``base_ft`` is where its floor sits; this is what stands on it. Adding
+        them is :meth:`_height_at`'s job and only its job, which is what keeps
+        a gallery's one-foot step from being read as sixteen feet in the air.
+        """
+        if not int(level or 0):
+            return dict(row.elevation or {})
+        lv = self.levels_of(row)
+        idx = max(0, min(int(level), len(lv) - 1))
+        return dict(lv[idx].get("elevation") or {})
+
+    def _set_elevation(self, map_id: int, level: int, elev: dict) -> None:
+        if not int(level or 0):
+            self._set_fields(map_id, elevation=elev or None)
+            return
+        row = self.get_scene(map_id)
+        if row is None:
+            return
+        levels = [dict(l) for l in (row.levels or [])]
+        idx = int(level) - 1
+        if 0 <= idx < len(levels):
+            levels[idx]["elevation"] = elev or {}
+            self._set_fields(map_id, levels=levels)
 
     def level_base_ft(self, row: TacticalMap, level: int) -> int:
         """How far above the ground floor this level's floor sits."""
@@ -661,12 +697,17 @@ class VttEngine:
         notes["cover_override"] = overrides
         self._set_fields(map_id, notes=notes)
 
-    def set_elevation(self, map_id: int, squares: Iterable[Square], feet: int) -> int:
-        """Raise (or level, with 0) squares. Climbing them costs the extra feet."""
+    def set_elevation(self, map_id: int, squares: Iterable[Square], feet: int,
+                      level: int = 0) -> int:
+        """Raise (or level, with 0) squares. Climbing them costs the extra feet.
+
+        ``level`` defaults to the ground floor, so every caller written before
+        upper storeys could carry height keeps meaning what it meant.
+        """
         row = self.get_scene(map_id)
         if row is None:
             return 0
-        elev = dict(row.elevation or {})
+        elev = self.elevation_of(row, level)
         n = 0
         for x, y in squares:
             key = f"{x},{y}"
@@ -676,10 +717,11 @@ class VttEngine:
                 elev.pop(key, None)
             n += 1
         if n:
-            self._set_fields(map_id, elevation=elev or None)
+            self._set_elevation(map_id, level, elev)
+            where = "" if not level else f" on {self.levels_of(row)[level].get('name', f'level {level}')}"
             self._log(map_id, row.session_id, "terrain",
-                      summary=f"{n} square(s) set to {feet} ft elevation",
-                      payload={"feet": feet})
+                      summary=f"{n} square(s) set to {feet} ft elevation{where}",
+                      payload={"feet": feet, "level": int(level or 0)})
         return n
 
     def set_door(self, map_id: int, x: int, y: int, state: str) -> bool:
@@ -1419,7 +1461,8 @@ class VttEngine:
         costs = geo.reachable_costs(
             g, (tok.x, tok.y), budget, size=size_squares(tok.size),
             mode=tok.movement_mode, blocked=blocked,
-            extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode, row),
+            extra_cost=self._effect_cost_fn(
+                tok.map_id, tok.movement_mode, row, lvl),
             square_ft=row.square_ft)
         return {
             "token_id": token_id,
@@ -1488,7 +1531,8 @@ class VttEngine:
         path, cost = geo.find_path(
             g, (tok.x, tok.y), (int(x), int(y)), size=size_squares(tok.size),
             mode=tok.movement_mode, blocked=blocked,
-            extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode, row),
+            extra_cost=self._effect_cost_fn(
+                tok.map_id, tok.movement_mode, row, lvl),
             square_ft=row.square_ft)
         if not path:
             return {"ok": False, "reason": "no route to that square"}
@@ -1594,7 +1638,8 @@ class VttEngine:
                 g, (tok.x, tok.y), dest,
                 size=(n - 1 if squeezing else n), mode=tok.movement_mode,
                 blocked=soft_blocked,
-                extra_cost=self._effect_cost_fn(tok.map_id, tok.movement_mode, row),
+                extra_cost=self._effect_cost_fn(
+                tok.map_id, tok.movement_mode, row, lvl),
                 square_ft=row.square_ft)
             if not path and n > 1 and not squeezing:
                 # The destination fits; something on the WAY doesn't. That is
@@ -1606,7 +1651,7 @@ class VttEngine:
                     g, (tok.x, tok.y), dest, size=n - 1,
                     mode=tok.movement_mode, blocked=soft_blocked,
                     extra_cost=self._effect_cost_fn(tok.map_id,
-                                                    tok.movement_mode, row),
+                                                    tok.movement_mode, row, lvl),
                     square_ft=row.square_ft)
                 squeezing = bool(path)
             if not path:
@@ -1708,7 +1753,7 @@ class VttEngine:
             out["hiding_broken"] = True
         # Stepping off a ledge is a fact the DM should narrate (and charge for);
         # the board reports the drop rather than silently applying damage.
-        drop = self._drop_ft(row, (tok.x, tok.y), dest)
+        drop = self._drop_ft(row, (tok.x, tok.y), dest, int(tok.level or 0))
         if drop >= 10 and tok.movement_mode != "fly":
             out["fall_ft"] = drop
         return out
@@ -1822,7 +1867,9 @@ class VttEngine:
                                + ("" if running else
                                   " — 10 ft of movement first makes it a running jump"))}
 
-        rise = self._height_at(row, (x, y)) - self._height_at(row, (ox, oy))
+        lvl_j = int(t.level or 0)
+        rise = (self._height_at(row, (x, y), lvl_j)
+                - self._height_at(row, (ox, oy), lvl_j))
         if rise > reach["high_ft"]:
             return {"ok": False,
                     "reason": (f"{t.name} can jump {reach['high_ft']} ft up and that "
@@ -2386,7 +2433,7 @@ class VttEngine:
         out = {"ok": True, "x": cur[0], "y": cur[1], "moved_ft": moved_ft,
                "stopped_by": stopped_by, "hit_something": bool(stopped_by),
                "detail": detail}
-        drop = self._drop_ft(row, start, cur)
+        drop = self._drop_ft(row, start, cur, int(tok.level or 0))
         if drop >= 10 and tok.movement_mode != "fly":
             out["fall_ft"] = drop
         # The squares crossed can matter (shoved through a wall of fire).
@@ -2450,15 +2497,14 @@ class VttEngine:
             square_ft=row.square_ft)
         return [{"token_id": i, "name": names.get(i, "?")} for i in ids]
 
-    @staticmethod
-    def _elevation_summary(row: TacticalMap) -> str:
+    def _elevation_summary(self, row: TacticalMap, level: int = 0) -> str:
         """What high ground this floor has, for the DM board.
 
         Counted rather than mapped: a list of raised squares is unreadable, and
         what a DM needs is that the high ground EXISTS, how high it is, and what
         it costs — the rest they can read off the grid and the tokens.
         """
-        elev = row.elevation or {}
+        elev = self.elevation_of(row, level)
         if not elev:
             return ""
         tally: dict[int, int] = {}
@@ -2477,8 +2523,22 @@ class VttEngine:
                 " cover to whoever is up there")
 
     @staticmethod
-    def _height_at(row: TacticalMap, sq: Square) -> int:
-        return int((row.elevation or {}).get(f"{sq[0]},{sq[1]}", 0) or 0)
+    def _height_at(row: TacticalMap, sq: Square, level: int = 0) -> int:
+        """What stands at this square on this storey, in feet above ITS floor.
+
+        Not above the ground: the storey's own ``base_ft`` is added by
+        :meth:`token_height_ft`, which is the only place the two are put
+        together. Two callers adding it independently is how a gallery's step
+        becomes sixteen feet in the air.
+        """
+        if not int(level or 0):
+            return int((row.elevation or {}).get(f"{sq[0]},{sq[1]}", 0) or 0)
+        lv = (row.levels or [])
+        idx = int(level) - 1
+        if not (0 <= idx < len(lv)):
+            return 0
+        return int(((lv[idx] or {}).get("elevation") or {})
+                   .get(f"{sq[0]},{sq[1]}", 0) or 0)
 
     @staticmethod
     def token_height_ft(row: TacticalMap, tok: MapToken) -> int:
@@ -2494,23 +2554,35 @@ class VttEngine:
         # it. Every distance, reach, spell area and cover check on this board
         # already folds height in, so putting the level here is what makes an
         # archer on the gallery 15 ft away instead of standing on your head.
+        lvl = int(getattr(tok, "level", 0) or 0)
         base = 0
-        if int(getattr(tok, "level", 0) or 0):
+        if lvl:
             lv = (row.levels or [])
-            idx = int(tok.level) - 1
+            idx = lvl - 1
             if 0 <= idx < len(lv):
                 base = int((lv[idx] or {}).get("base_ft") or 0)
         own = int(tok.elevation_ft or 0)
-        return base + (own if own else VttEngine._height_at(row, (tok.x, tok.y)))
+        # The ground THIS storey has under it, not the ground floor's. A
+        # gallery with a step on it used to read the hall's elevation map,
+        # which is the same square answering for two different rooms.
+        return base + (own if own else
+                       VttEngine._height_at(row, (tok.x, tok.y), lvl))
 
     @staticmethod
     def height_gap_ft(row: TacticalMap, a: MapToken, b: MapToken) -> int:
         """Vertical separation between two creatures."""
         return abs(VttEngine.token_height_ft(row, a) - VttEngine.token_height_ft(row, b))
 
-    def _drop_ft(self, row: TacticalMap, frm: Square, to: Square) -> int:
-        """How far down a step goes (0 when level or climbing)."""
-        return max(0, self._height_at(row, frm) - self._height_at(row, to))
+    def _drop_ft(self, row: TacticalMap, frm: Square, to: Square,
+                 level: int = 0) -> int:
+        """How far down a step goes (0 when level or climbing).
+
+        Within ONE storey: a step is between two squares of the same floor, and
+        the way between floors is a connector. Both ends therefore read the
+        same elevation map, which is what the level argument is for.
+        """
+        return max(0, self._height_at(row, frm, level)
+                   - self._height_at(row, to, level))
 
     def _hazards_on(self, row: TacticalMap, g: Grid,
                     squares: Iterable[Square]) -> list[dict]:
@@ -2535,7 +2607,7 @@ class VttEngine:
                             "save_ability": eff.save_ability})
         return out
 
-    def _effect_cost_fn(self, map_id: int, mode: str, row=None):
+    def _effect_cost_fn(self, map_id: int, mode: str, row=None, level: int = 0):
         """Extra feet a step costs beyond the tile itself.
 
         Two sources: difficult-terrain effects laid on the ground (grease, webs,
@@ -2551,7 +2623,9 @@ class VttEngine:
                 if eff.difficult_terrain:
                     rough.update(tuple(p) for p in (eff.squares or []))
         row = row or self.get_scene(map_id)
-        elev: dict = dict((row.elevation or {}) if row else {})
+        # THIS storey's ground. Climbing a gallery's step costs what that step
+        # is, not what the hall below happens to have at the same coordinates.
+        elev: dict = self.elevation_of(row, level) if row else {}
         if not rough and not elev:
             return None
 
@@ -2741,7 +2815,9 @@ class VttEngine:
         # effect stands in one of them and is caught by a fireball it should
         # have been well clear of. Its own vertical reach is its radius/length.
         span = max(int(eff.radius_ft or 0), int(eff.length_ft or 0)) or None
-        origin_h = self._height_at(row, (eff.origin_x, eff.origin_y)) if row else 0
+        origin_h = (self._height_at(row, (eff.origin_x, eff.origin_y),
+                                    int(getattr(eff, "level", 0) or 0))
+                    if row else 0)
         out = []
         for t in self.tokens(eff.map_id, include_defeated=False):
             if not (cells & set(geo.footprint(t.x, t.y, size_squares(t.size)))):
@@ -2887,7 +2963,8 @@ class VttEngine:
             if 0 <= idx < len(lv):
                 base = int((lv[idx] or {}).get("base_ft") or 0)
         own = int(tok.elevation_ft or 0)
-        dest_ft = base + (own if own else self._height_at(row, (int(x), int(y))))
+        dest_ft = base + (own if own else
+                          self._height_at(row, (int(x), int(y)), lvl))
         mine_tall = profile_height_ft(tok.size, bool(tok.prone))
         out: list[dict] = []
         for f in foes:
@@ -3722,6 +3799,12 @@ class VttEngine:
             "levels": [{"name": l.get("name", f"Level {i}"),
                         "base_ft": int(l.get("base_ft") or 0),
                         "terrain": l.get("terrain") or [],
+                        # Per-square height ON this storey, above ITS floor.
+                        # `base_ft` is where the floor sits; this is what stands
+                        # on it. Shipped per level for the same reason terrain,
+                        # fog, sight and light are — it is the same kind of fact
+                        # about what a storey looks like.
+                        "elevation": self.elevation_of(row, i),
                         "fog": self.fog_of(row, i),
                         "sight": self.sight(map_id, team=viewer_team, level=i),
                         "light": self.light_map(map_id, i),
@@ -3821,9 +3904,17 @@ class VttEngine:
         # anybody SHOULD: the board knew about its own height and only ever
         # mentioned it once somebody was on it. Elevation is not a tile, so the
         # legend cannot carry it either.
-        high = self._elevation_summary(row)
-        if high:
-            lines.append(f"  {high}")
+        # Per STOREY, and named where there is more than one: a board with a
+        # gallery has two floors with two different answers, and one line that
+        # silently means the ground is a DM told the wrong thing about the
+        # place the archer is standing.
+        floors = self.levels_of(row)
+        for i, lv in enumerate(floors):
+            high = self._elevation_summary(row, i)
+            if not high:
+                continue
+            lines.append(f"  {high}" if len(floors) == 1
+                         else f"  {lv.get('name', f'level {i}')}: {high}")
         # What the rooms are CALLED. The grid below shows walls and a doorway
         # and cannot say which side of them the armoury is on, so a DM asked to
         # send somebody there would have to invent an answer the board would

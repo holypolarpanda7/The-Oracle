@@ -1313,6 +1313,39 @@ def test_setpieces() -> None:
     check("a board has somewhere to stand above the fight",
           set(flat) <= {"open-water"}, f"flat archetypes: {flat}")
 
+    # …and neither is an upper STOREY. The height vocabulary belonged to the
+    # ground floor for as long as elevation was one flat map, so every gallery,
+    # rooftop and hold in the game was a table top by construction. These two
+    # are the deliberate uses; the guard is that a generator may be rewritten
+    # but not back into a plank ten feet up.
+    from .terrain import VOID as _VOID
+    for arch, storey in (("street", "Rooftops"), ("tavern", "Gallery")):
+        got = False
+        for seed in (3, 7, 11):
+            gen = _gm(arch, width=30, height=22, seed=seed)
+            if any(l.get("name") == storey and l.get("elevation")
+                   for l in gen.levels):
+                got = True
+                break
+        check(f"a {arch}'s {storey.lower()} are not a table top", got)
+
+    # A height on a square the storey has no FLOOR on is height on nothing: the
+    # classic way a per-level map goes wrong is a primitive writing the ground's
+    # coordinates onto an upper storey that is mostly open air.
+    stranded: list[str] = []
+    for name in sorted(_ARCH):
+        for seed in (3, 7, 11):
+            gen = _gm(name, width=30, height=22, seed=seed)
+            for l in gen.levels:
+                rows = l.get("terrain") or []
+                for key in (l.get("elevation") or {}):
+                    x, y = (int(v) for v in key.split(","))
+                    if not (0 <= y < len(rows) and 0 <= x < len(rows[y])) \
+                            or rows[y][x] == _VOID:
+                        stranded.append(f"{name}/{l.get('name')}@{key}")
+    check("no storey carries height on a square it has no floor on",
+          not stranded, "; ".join(stranded[:4]))
+
 
     # --- scenery belongs to the kind of place it is in --------------------
     from . import decor as _decor

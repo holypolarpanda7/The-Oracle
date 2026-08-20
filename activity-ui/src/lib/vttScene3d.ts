@@ -597,15 +597,22 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   const baseUnits = (scene: VttScene, level: number) =>
     heightUnits(scene, scene.levels?.[level]?.base_ft ?? 0);
 
-  /** A square's own elevation above its storey, in feet.
+  /** A square's own elevation above ITS OWN storey, in feet.
    *
    *  Stored on the board, shipped in `state()` and folded into every distance,
    *  reach, cover and area check since the board went 3D — and drawn by
    *  nobody, so a mountain-pass ledge stood ten feet up in the rules and flat
    *  in the picture. A creature standing on it rides it too, or the figure
-   *  sinks into the ledge it is supposed to be on. */
-  const elevFt = (scene: VttScene, x: number, y: number) =>
-    scene.elevation?.[`${x},${y}`] ?? 0;
+   *  sinks into the ledge it is supposed to be on.
+   *
+   *  Per STOREY, and `scene.elevation` is the GROUND — the same split as
+   *  terrain, fog, sight and light. Reading the flat field for a gallery is
+   *  the hall's height map answering for a different room. Above the storey's
+   *  own floor, never above the ground: `base` carries where the floor sits
+   *  and adding the two is the caller's job, done once. */
+  const elevFt = (scene: VttScene, x: number, y: number, level = 0) =>
+    ((level ? scene.levels?.[level]?.elevation : undefined)
+      ?? scene.elevation)?.[`${x},${y}`] ?? 0;
 
   /** The lowest FLOOR on the board, in feet below the storey's own.
    *
@@ -614,18 +621,21 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
    *  march that started at the top and stopped at zero never saw it. Read off
    *  the sparse elevation map rather than by scanning every square, because
    *  that is where a hole in the floor is recorded. */
-  function deepestFt(scene: VttScene): number {
+  function deepestFt(scene: VttScene, level = 0): number {
     let ft = 0;
-    for (const v of Object.values(scene.elevation ?? {})) {
+    const own = (level ? scene.levels?.[level]?.elevation : undefined)
+      ?? scene.elevation ?? {};
+    for (const v of Object.values(own)) {
       if (typeof v === "number" && v < ft) ft = v;
     }
     return ft;
   }
 
   /** Tallest thing on the board, for framing and for the camera's far plane. */
-  function tallestUnits(scene: VttScene): number {
+  function tallestUnits(scene: VttScene, level = 0): number {
     let ft = 0;
-    const rows = scene.terrain ?? [];
+    const rows = (level ? scene.levels?.[level]?.terrain : undefined)
+      ?? scene.terrain ?? [];
     for (let z = 0; z < rows.length; z++) {
       for (let x = 0; x < rows[z].length; x++) {
         const skin = skinAt(scene, rows[z][x], x, z);
@@ -633,7 +643,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // stands on. Both count, or a mast the framing never heard about comes
         // back with its top cropped off. Mirrors `tallest` in vtt/isocam.py.
         ft = Math.max(ft, (SKINS[skin]?.heightFt || tileHeightFt(rows[z][x]))
-                          + elevFt(scene, x, z));
+                          + elevFt(scene, x, z, level));
       }
     }
     return heightUnits(scene, ft);
@@ -697,7 +707,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     const floorY = (x: number, z: number): number | null => {
       const c = at(x, z);
       if (c === null || HOLE_CODES.has(c)) return null;
-      return base + heightUnits(scene, elevFt(scene, x, z));
+      return base + heightUnits(scene, elevFt(scene, x, z, level));
     };
 
     // Which way the wall runs through each aperture. Read off the server's own
@@ -1137,7 +1147,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     decalGroup.clear();
     const { scene } = st;
     const y = baseUnits(scene, level) + 0.012;
-    const lift = (x: number, z: number) => heightUnits(scene, elevFt(scene, x, z));
+    const lift = (x: number, z: number) =>
+      heightUnits(scene, elevFt(scene, x, z, level));
     const keys = (m: Iterable<string>) =>
       [...m].map((k) => k.split(",").map(Number) as [number, number]);
 
@@ -1223,7 +1234,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       // ray march is the correction: see squareUnderRay.
       const [x, y] = squareUnderRay(
         scene, wx, wz, yaw,
-        (scene.square_ft || 5) * tallestUnits(scene), deepestFt(scene), level);
+        (scene.square_ft || 5) * tallestUnits(scene, level),
+        deepestFt(scene, level), level);
       // Unlike the flat board this CAN miss: the viewport is a rectangle and
       // the board inside it is a diamond, so a good part of the frame is not
       // over the board at all. Reporting a square there would let a click on
@@ -1237,7 +1249,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const k = CELL * view.scale;
       // The square's own elevation PLUS whatever the creature is doing on top
       // of it: a wyvern hovering over a ledge is above both.
-      const footFt = elevFt(scene, x, y) + elevationFt;
+      const footFt = elevFt(scene, x, y, level) + elevationFt;
       const wy = baseUnits(scene, level) + heightUnits(scene, footFt);
       const p = project(x + squares / 2, wy, y + squares / 2,
                         view.yaw ?? YAW_DEG);

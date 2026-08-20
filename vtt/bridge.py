@@ -247,10 +247,17 @@ def apply_band_move(vtt: VttEngine, map_id: int, combatant_id: int,
     # change to the engine's abstraction rather than to this translation, and
     # it is not made here.
     here_ft = vtt.token_height_ft(row, tok)
+    lvl = int(getattr(tok, "level", 0) or 0)
+    # THIS storey's ground, and its own floor height under it — a band move
+    # never leaves the floor the creature is on, and reading the hall's
+    # elevation for a creature on the gallery is the same square answering for
+    # two different rooms.
+    base_ft = vtt.level_base_ft(row, lvl)
+    elev = vtt.elevation_of(row, lvl)
 
     def _gain(sq: tuple[int, int]) -> int:
         """Feet of height this square would win, 0 if it is a cliff or a drop."""
-        got = int((row.elevation or {}).get(f"{sq[0]},{sq[1]}", 0) or 0) - here_ft
+        got = (base_ft + int(elev.get(f"{sq[0]},{sq[1]}", 0) or 0)) - here_ft
         return got if 0 < got <= 10 else 0
 
     target_sq = None

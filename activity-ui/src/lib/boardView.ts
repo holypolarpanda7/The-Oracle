@@ -511,7 +511,9 @@ function rowsOf(scene: VttScene, level = 0): readonly string[] {
 export function drawnTopFt(scene: VttScene, x: number, z: number,
                            yawDeg: number = YAW_DEG, level = 0): number {
   const row = rowsOf(scene, level)[z];
-  const elev = scene.elevation?.[`${x},${z}`] ?? 0;
+  // This storey's ground, not the ground floor's — see `rowsOf`.
+  const elev = ((level ? scene.levels?.[level]?.elevation : undefined)
+    ?? scene.elevation)?.[`${x},${z}`] ?? 0;
   let top = -Infinity;
   if (row !== undefined && x >= 0 && x < row.length) {
     const code = row[x];

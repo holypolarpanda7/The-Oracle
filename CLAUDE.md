@@ -1380,9 +1380,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   terrain reads were only the occlusion march, which documented itself as
   ground-floor; not survivable once the cutaway started deciding what to DRAW
   from it. `drawnTopFt`, `cutAwayAt`, `occludedAt` and `squareUnderRay` all take
-  the level now. (Per-square ELEVATION is still ground-floor only, and that is a
-  data gap rather than a reading one: `state()` ships `elevation` for level 0
-  and each upper storey carries only its `base_ft`.)
+  the level now.
   `awayDir` is one of EIGHT directions on purpose: the exact
   direction changes with every degree of a drag and the set of squares it picks
   out does not, so the mesh rebuilds eight times in a full turn instead of on
@@ -1498,6 +1496,36 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   mention height only on a creature's own line, which is no help at all to a DM
   deciding whether anybody *should* take it. The selftest guards it — a
   generator may be rewritten, but not back into a table top.
+- **Elevation is PER STOREY, and it was the one such fact left out.** Terrain,
+  fog, live sight and light are each stored level 0 on the row and upper floors
+  inside `levels`, because they are the same kind of fact about what a storey
+  looks like. Elevation was a single flat map belonging to the ground — so a
+  gallery could not have a step, a rooftop could not have a ridge, a hold could
+  not have a platform, and **the whole height vocabulary the ground floor grew
+  (`_raise`, `_terrace`, `_mound`, `_plateaus`) stopped at the stairs.** Every
+  upper storey in the game was a table top by construction, which is the same
+  complaint the fourteen flat archetypes answered, one floor up.
+  `elevation_of(row, level)` mirrors `fog_of` exactly, and the height
+  primitives all take a `level`, so the vocabulary now works on any floor.
+  **A level's `base_ft` is where its FLOOR sits; its elevation is what stands
+  ON that floor.** Adding them is `token_height_ft`'s job and only its job — do
+  it in two places and a one-foot step on a fifteen-foot gallery is sixteen
+  feet in the air. Everything that reads a height takes a level now:
+  `_height_at`, `_drop_ft` (a step is WITHIN one storey; the way between floors
+  is a connector), `_effect_cost_fn` (climbing a gallery's step costs what that
+  step is, not what the hall below happens to have at the same coordinates),
+  the spell-area origin, the cover preview, and `bridge`'s band moves.
+  Two deliberate uses, and the selftest pins both. A street's **rooftops** are
+  raised by RING in from the eaves — a hipped roof, not a mesa with a rim,
+  which is what "raise every interior square" gives on a block whose interior
+  is most of it — with a second tier only where a block is deep enough to have
+  a middle, and stepping off THAT is the ten-foot fall the rules make you
+  decide about. A taproom's **gallery** gets a landing at the far end from its
+  stair, which is the whole asymmetry a walkway can honestly carry. The other
+  guard is the invariant that catches the classic mistake: **no storey may
+  carry height on a square it has no floor on** — a primitive writing the
+  ground's coordinates onto a storey that is mostly open air is height on
+  nothing.
 - **`_plateaus` stacks a whole board, and it climbs AWAY from the camera.**
   A ledge on a flat board and a board that IS stepped are different things: the
   primitive lays two to four tiers with impassable rock between them and two or
