@@ -976,10 +976,28 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   style at all, because nobody ever LOOKS at this picture — it is an instrument
   reading, and dramatic light bakes a shadow into the geometry. `_too_flat`
   refuses a mesh whose thinnest side is under 8% of its widest, since a sheet
-  standing on its edge is worse than the box it replaces.
-  Three more things that would each have been silent: the fit is `lru_cache`d on
-  "meshes are immutable within a run", which a mesh landing three minutes into a
-  session breaks (`forget_mesh`); the file is written ATOMICALLY, because
+  standing on its edge is worse than the box it replaces. With a real
+  photograph the same phrase came back a **sow on a plinth**, 1.00 x 0.44 x
+  1.00, in **76 s warm** (30 s picture + 46 s mesh).
+  **TRELLIS.2 is Z-UP and the board is Y-up**, and nothing in the project
+  rotates anything — `SetPiece.up` is read by `mesh_fit` and by NO renderer, so
+  an unrotated file arrives lying on its side, correctly scaled and silently
+  wrong. `_normalize_obj` stands it up at WRITE time ((x,y,z) -> (x,z,-y), a
+  proper rotation so winding survives) and strips the file to `v` and `f` —
+  all three readers want nothing else, it halves the bytes, and it drops a
+  `mtllib` line naming a file no route serves.
+  **For an INVENTED landmark the footprint binds and the height gives way** —
+  the exact reverse of the catalogue's rule, and deliberately. There, height is
+  a stated fact about the fiction and fitting width to the footprint made every
+  tall thing a dwarf; here BOTH numbers are defaults nobody chose for this
+  thing, and the sow at nine feet tall would spill five feet onto every square
+  around it, which is the picture contradicting the grid in the direction the
+  `KEEP` rule exists to prevent.
+  Three more things that would each have been silent: the fit measurement is
+  cached but its MISSES are not — an invented piece is registered when its
+  phrase is first seen, which in a fresh process is after something has already
+  asked about the slug, and a remembered `None` would leave the landmark flat
+  for the life of the run (`forget_mesh` drops it when a mesh lands mid-session); the file is written ATOMICALLY, because
   `_obj_bounds` measures whatever is on disk and a half-written OBJ measures,
   fits and stands the landmark at a confidently wrong size; and the mesh is asked
   for BEFORE the painting, since the depth map the painter is conditioned on
