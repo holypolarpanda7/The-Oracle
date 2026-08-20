@@ -19,8 +19,9 @@ Everything degrades gracefully when the diffusion backend is offline.
 from __future__ import annotations
 
 import base64
+import os
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 
@@ -115,7 +116,21 @@ class ImageStore:
         if self._config is not None:
             return self._config
         from game_config import get_config
-        return get_config().imagery
+        cfg = get_config().imagery
+        # ``ORACLE_IMAGERY_ENABLED=0`` turns rendering off for this process.
+        #
+        # It was already being SET, by four offline smoke tests that believed
+        # it worked, and it was read by nothing: they announced themselves as
+        # having no GPU and then queued jobs at whatever ComfyUI answered. The
+        # tests were only ever quiet because the connection was refused, which
+        # is a different thing from being off. Env, not config file, because
+        # what a test needs is to disable it for ITSELF without editing the
+        # operator's settings.
+        flag = os.getenv("ORACLE_IMAGERY_ENABLED")
+        if flag is not None and flag.strip().lower() in ("0", "false", "no", "off"):
+            if getattr(cfg, "enabled", False):
+                cfg = replace(cfg, enabled=False)
+        return cfg
 
     def _loras_for(self, cfg, kind: str, mature: bool = False) -> list:
         """The LoRA stack for one render: the kind's own, else the house style.
