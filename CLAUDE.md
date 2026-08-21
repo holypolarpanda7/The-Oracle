@@ -1692,6 +1692,26 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   high ground AND that the DM board states it with what it costs. The offline
   demo board carries a dais for the same reason: it is the only board a browser
   can draw with no backend, and it was flat while every real board grew height.
+- **A liquid surface is LEVEL, and water lies in a DEPRESSION.** `~` and `W`
+  were on `terrain.SOFT_GROUND`, so a pool's surface was averaged with the
+  ground around it and given the ordinary ripple — a swamp pool with a hummock
+  beside it ran visibly UPHILL into the bank, which is the one thing water
+  never does. Off the list; the `seabed-*` skins keep `soft` instead, because a
+  board fought UNDER the water has no surface in view and its floor is ordinary
+  ground that should roll. The skin answers first, exactly as it does for scree
+  and cobbles sharing a `.`. Level is not enough on its own, though: a pool
+  flush with its bank is paint on a floor. `vtt/water.py` cuts the BED into a
+  basin below its own shore — deeper the further from the bank, so the shallows
+  are where anyone would expect them — as real elevation in whole feet that
+  every rule reads, capped under a LEDGE so walking into water is never
+  reported as a fall and wading out costs the foot-per-foot the SRD charges.
+  It only ever lowers a square, so a generator that already dug its channel (a
+  sewer's sludge run under its walkways) keeps what it dug. `surfaces()` is the
+  other half — the sheet put back on top, or the depression reads as a hole —
+  and it is traced on the SERVER and shipped in `state()` for the `hull.py`
+  reason: a surface belongs to the whole POOL, no square can see one, and two
+  languages tracing it separately is two answers. The shore is the LOWEST dry
+  square a pool touches, which is the one it would spill over.
 - **A town is somewhere you go IN.** A street was a block of solid `#` with a
   roof traced over it: scenery you fought around, never in. A house is not a
   different KIND of thing from a tent — `structures.townhouse` is

@@ -50,7 +50,7 @@ export const HEIGHT_JITTER = 0.12;
  *  drawn as terraces unless the corners are averaged. Natural ground
  *  only — a floor, a road, a bridge and a deck are LAID, and laid
  *  things are flat. Mirrors SOFT_GROUND in vtt/terrain.py. */
-export const SOFT_GROUND: ReadonlySet<string> = new Set(['"', ",", "W", "g", "m", "s", "~"]);
+export const SOFT_GROUND: ReadonlySet<string> = new Set(['"', ",", "g", "m", "s"]);
 
 /** The largest difference two squares may have and still be joined
  *  by a slope, in feet. One STEP: a LEDGE is the height the rules

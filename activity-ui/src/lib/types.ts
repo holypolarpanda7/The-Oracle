@@ -422,6 +422,8 @@ export interface VttLevel {
    *  one-foot step on a fifteen-foot gallery reads as sixteen feet in the
    *  air. The board's own `elevation` is the ground floor's. */
   elevation?: Record<string, number>;
+  /** The level sheet over any pool on this storey, `{"x,y": ft}`. */
+  water?: Record<string, number>;
   stairs: { x: number; y: number; to: number; tx: number; ty: number; kind?: string }[];
 }
 
@@ -505,6 +507,14 @@ export interface VttScene {
   levels?: VttLevel[];
   doors: VttDoor[];
   elevation: Record<string, number>;
+  /** The level sheet over each pool, `{"x,y": feet}` — sparse.
+   *
+   *  Water's BED is cut into a basin below its own bank (real elevation, which
+   *  every distance and cover check reads); this is the surface put back on
+   *  top of it, or the depression reads as a hole in the ground. Traced on the
+   *  server for the reason the roofs and the shells are: a pool's surface
+   *  belongs to the whole pool and no square can see one. */
+  water?: Record<string, number>;
   /** Vessel hulls, traced as whole outlines rather than a side per square.
    *
    *  A hull is bigger than a square: joining the corners farthest from its

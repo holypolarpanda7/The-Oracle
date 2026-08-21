@@ -605,6 +605,19 @@ export function elevationAt(scene: VttScene, x: number, z: number,
     ?? scene.elevation)?.[`${x},${z}`] ?? 0;
 }
 
+/** The WATER's surface over a square, in feet, or null where there is none.
+ *
+ *  Sparse and traced by the server (see vtt/water.py): water lies in a basin
+ *  cut below its own bank, and this is the level sheet put back on top of it.
+ *  Never derived here — a pool's surface is a property of the whole pool, and
+ *  a second tracer in a second language is a second answer. */
+export function waterAt(scene: VttScene, x: number, z: number,
+                        level = 0): number | null {
+  const w = (level ? scene.levels?.[level]?.water : undefined) ?? scene.water;
+  const v = w?.[`${x},${z}`];
+  return typeof v === "number" ? v : null;
+}
+
 /** The ground's height at a point INSIDE a square, bilinear over its corners.
  *
  *  `u`/`v` run 0..1 across the square. The floor is drawn as a fan over an

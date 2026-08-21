@@ -79,7 +79,24 @@ def _t(code: str, name: str, cost: Optional[int], **kw) -> Tile:
 #: across a difference of one STEP. A LEDGE is the height the rules make you
 #: decide about, and sloping one would draw a ramp where the board says there
 #: is a drop.
-SOFT_GROUND = frozenset({"g", "s", ",", '"', "m", "~", "W"})
+#:
+#: WATER is not on this list, and the omission is the point. A liquid surface
+#: is LEVEL — that is what being a liquid means — so a pool averaged with the
+#: hummock beside it came back tilted, running visibly uphill into the bank. On
+#: a board fought UNDER the water there is no surface in view and the seabed is
+#: ordinary ground, which is why the ``seabed-*`` skins carry ``soft`` and the
+#: codes do not: the skin answers first, exactly as it does for scree and
+#: cobbles sharing a ``.``.
+SOFT_GROUND = frozenset({"g", "s", ",", '"', "m"})
+
+#: The codes that are a body of WATER, as opposed to ground that happens to be
+#: wet. See :mod:`vtt.water`.
+WATER_CODES = frozenset({"~", "W"})
+
+#: How far below its bank a pool's surface is DRAWN, in feet. Drawing only —
+#: without it the sheet is flush with the bank it meets and the two z-fight
+#: along every shore. Small enough that nothing reads as a step.
+WATERLINE_DROP_FT = 0.4
 
 #: The largest difference two squares may have and still be joined by a slope,
 #: in feet. One STEP. See ``mapgen.STEP_FT`` / ``LEDGE_FT``: a step is cheap to

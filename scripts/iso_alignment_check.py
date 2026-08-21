@@ -139,6 +139,11 @@ GROUND_CASES = [
     (["ggg", "ggg", "ggg"], {"0,0": 5}, 0, 0, 0, 0),
     (["gg", "gg"], {"0,0": 5, "1,1": 5}, 0, 0, 1, 1),
     (["mmm", "m~m", "mmm"], {"1,1": -5}, 1, 1, 1, 1),
+    # A pool with a hummock on one corner of it — the reported bug, as a case.
+    # Water is not soft ground, so this corner reads the water's OWN bed and
+    # the surface stays level; averaged in, the pool visibly ran uphill into
+    # the mire beside it. See vtt/water.py.
+    (["mmm", "m~m", "mmm"], {"0,0": 5, "1,1": -2}, 1, 1, 1, 1),
 ]
 
 

@@ -48,7 +48,7 @@ import {
   skinAt, skinHeightScale, variantSmooth,
   rotatePart,
   tileHeightFt,
-  tileStyle, variantOf, wallParts, yawOf,
+  tileStyle, variantOf, wallParts, waterAt, yawOf,
   type BoardView, type Part, type PaintState, type TokenPlacement, type View,
 } from "./boardView";
 import {
@@ -292,6 +292,13 @@ const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
  *  vtt/render_image.py's _PANEL_THICKNESS and the flat renderer's: a door is a
  *  plank in a wall, and drawn square and centred it reads as furniture parked
  *  on the floor. */
+/** What the water SHEET is tinted, before fog and light.
+ *
+ *  Its own colour rather than the tile's: `~`'s swatch is a picture of the
+ *  BED — silt, weed, sand — which is exactly right for the bottom of the basin
+ *  and is not what looking at water looks like. */
+const WATER_TINT = new THREE.Color("#3f6f86");
+
 const PANEL_THICKNESS = 0.46;
 
 /** Apertures — a gap in a wall rather than a block filling a square. */
@@ -647,6 +654,10 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     // and canvas tents, both of them '#', and merging them into one mesh would
     // give them one swatch between them.
     const byCode = new Map<string, MeshBuilder>();
+    // The WATER, kept apart from every other builder because it is the one thing
+    // on the board you can see THROUGH. See vtt/water.py: the bed is cut into a
+    // basin below its bank and this is the level sheet put back on top of it.
+    const waterMb = new MeshBuilder();
     const builderFor = (slot: string) => {
       let b = byCode.get(slot);
       if (!b) { b = new MeshBuilder(); byCode.set(slot, b); }
@@ -876,6 +887,21 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
                   v3(x + low[m][0], drop, z + low[m][1]),
                   v3(x + bx, ground(bx, bz), z + bz),
                   color);
+        }
+
+        // The water over this square, if it is under any. Flush to the
+        // square's own edges rather than inset: two pool squares meet bank to
+        // bank, and a sheet that shrank from its outline would be a grid of
+        // puddles with mortar between them.
+        const wft = waterAt(scene, x, z, level);
+        if (wft !== null) {
+          const wy = base + heightUnits(scene, wft);
+          if (wy > here + 1e-6) {
+            waterMb.at = z * scene.width + x;
+            waterMb.quad(v3(x, wy, z), v3(x, wy, z + 1),
+                         v3(x + 1, wy, z + 1), v3(x + 1, wy, z),
+                         WATER_TINT);
+          }
         }
 
         if (showGrid && seenAt(x, z) !== Seen.Never) {
@@ -1126,6 +1152,21 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         vertexColors: true, roughness: 0.92, metalness: 0.0,
         ...(backdrop ? { colorWrite: false } : {}),
       })));
+    }
+    if (!waterMb.empty) {
+      const geom = waterMb.build();
+      // Shaded like everything else — a pool in an unlit crypt is as dark as
+      // the floor beside it — but drawn LAST and without writing depth, so the
+      // bed stays visible through it from every angle.
+      shadeTargets.push({ geom, owners: waterMb.owners(),
+                          base: WATER_TINT.clone() });
+      const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
+        vertexColors: true, roughness: 0.18, metalness: 0.0,
+        transparent: true, opacity: 0.72, depthWrite: false,
+        ...(backdrop ? { colorWrite: false } : {}),
+      }));
+      mesh.renderOrder = 2;
+      terrainGroup.add(mesh);
     }
     for (const [code, mb] of byCode) {
       if (mb.empty) continue;

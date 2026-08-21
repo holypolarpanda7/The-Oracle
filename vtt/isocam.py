@@ -1088,7 +1088,7 @@ def coverage_mask(rows: Sequence[str], **kw) -> bytes:
 
 def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 skin_of=None, elevation=None, shells=None, roofs=None,
-                setpieces=None,
+                setpieces=None, water=None,
                 _mask_only: bool = False, _colour_of=None, _flat: bool = False,
                 square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
@@ -1388,6 +1388,15 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                       (x + bx, _ground(bx, bz), z + bz)])
             if shade:
                 shade(TOP_TINT)
+            # The WATER, put back on top of the basin its bed was cut into.
+            # Flush to the square's own edges rather than inset: two pools
+            # squares meet bank to bank and a sheet that shrank from its own
+            # outline would be a grid of puddles. See vtt/water.py.
+            _top = (water or {}).get(f"{x},{z}")
+            if _top is not None and units(float(_top)) > here + 1e-6:
+                _wy = units(float(_top))
+                face([(x, _wy, z), (x, _wy, z + 1),
+                      (x + 1, _wy, z + 1), (x + 1, _wy, z)])
             if ft <= 0:
                 continue
             if _skins.is_setpiece(sk):

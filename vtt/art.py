@@ -789,6 +789,10 @@ def conditioning_kwargs(gen: GeneratedMap, *, skin_of=None) -> dict:
                         archetype=gen.archetype),
         square_ft=5, structure=STRUCTURE_CODES, skin_of=skin_of,
         elevation=gen.elevation,
+        # The level sheet over any pool. The bed was cut into a basin at
+        # generation; without the water put back the painter is conditioned on
+        # a pit and paints one. See vtt/water.py.
+        water=gen.water or None,
         shells=_hull.shells(gen.grid.rows, skin_of, gen.elevation),
         # One roof per BUILDING, traced over its footprint. Without it the
         # painter is conditioned on a terrace of houses with no roofs at all,

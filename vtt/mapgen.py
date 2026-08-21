@@ -92,6 +92,11 @@ class GeneratedMap:
     # one HOUSE with its own inside — the roof tracer needs them one at a time
     # or a terrace comes back under a single roof, which is a warehouse.
     buildings: list[dict] = field(default_factory=list)
+    # The level sheet over each pool, {"x,y": feet} — sparse, and DERIVED from
+    # the grid plus the elevation the sink cut (see vtt.water). Traced on this
+    # side because a pool's surface is a property of the whole POOL and no
+    # square can see one, which is the argument that put vtt.hull here too.
+    water: dict[str, float] = field(default_factory=dict)
     # Rooms the CALLER asked for, by name. An input, consumed by the generator
     # exactly as ``style`` is: a bastion airship carries its owner's facilities,
     # and nothing else on the board could know their names.
@@ -2829,6 +2834,15 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
             if not (_tile(grid.get(*(int(v) for v in key.split(",")))
                           ).move_cost_ft and _skins.occludes_floor(name))
         }
+
+    # Water lies in a DEPRESSION, and it does so board-wide rather than
+    # generator by generator: any layout that lays a pool gets its bed cut
+    # below its own bank. Only ever downward, so a generator that already dug
+    # its channel (a sewer's sludge run under its walkways) keeps what it dug.
+    from . import water as _water
+    _rows = grid.to_rows()
+    _water.sink(_rows, out.elevation, mode=out.mode)
+    out.water = _water.surfaces(_rows, out.elevation, mode=out.mode)
 
     # Landmarks last, so they stand on a board already proved connected — and
     # before the spawn zones, so nobody starts inside one.

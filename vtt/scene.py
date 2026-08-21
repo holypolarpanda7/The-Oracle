@@ -1107,6 +1107,24 @@ class VttEngine:
                            footprints=((row.notes or {}).get("buildings")
                                        or None))
 
+    def water_for(self, map_id: int, level: int = 0) -> dict[str, float]:
+        """The level sheet over each pool on this storey: ``{"x,y": feet}``.
+
+        Derived rather than stored, from the grid and the elevation the sink
+        already cut — the same treatment the roofs and the shells get, and for
+        the same reason: a pool's surface belongs to the whole pool, no square
+        can see one, and two languages tracing it separately is two answers.
+        See :mod:`vtt.water`.
+        """
+        from . import water as _water
+
+        row = self.get_scene(map_id)
+        if row is None:
+            return {}
+        return _water.surfaces(list(self.grid_of(row, level).to_rows()),
+                               self.elevation_of(row, level),
+                               mode=(row.notes or {}).get("mode") or "walk")
+
     def shells_for(self, map_id: int) -> list[dict]:
         """Every vessel SHELL on this board — one traced hull per body.
 
@@ -3863,6 +3881,11 @@ class VttEngine:
                         # fog, sight and light are — it is the same kind of fact
                         # about what a storey looks like.
                         "elevation": self.elevation_of(row, i),
+                        # The level sheet over any pool on this storey. See
+                        # vtt/water.py: water is cut into a basin below its own
+                        # bank, and this is what puts the water back on top of
+                        # it so the depression does not read as a hole.
+                        "water": self.water_for(map_id, i),
                         "fog": self.fog_of(row, i),
                         "sight": self.sight(map_id, team=viewer_team, level=i),
                         "light": self.light_map(map_id, i),
@@ -3871,6 +3894,7 @@ class VttEngine:
                        for i, l in enumerate(self.levels_of(row))],
             "doors": row.doors or [],
             "elevation": row.elevation or {},
+            "water": self.water_for(map_id),
             "debris": self.debris_for(map_id),
             "objects": self.objects_for(map_id),
             # Scenery: drawn by every view, honoured by none of the rules.

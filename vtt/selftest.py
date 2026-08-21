@@ -1590,6 +1590,67 @@ def test_vessels() -> None:
                                             for r in _ruin.grid.to_rows()),
           f"{len(_ruin.buildings)} standing")
 
+    section("water: a surface is level, and it lies in a depression")
+    # Two faults, both reported by a player looking at a swamp: pools RAN
+    # UPHILL into the hummocks beside them, because `~` and `W` were on
+    # SOFT_GROUND and were averaged with their neighbours like any other soil;
+    # and even level they sat flush with the bank, which is paint on a floor.
+    from . import water as _w
+    from .terrain import SOFT_GROUND as _SOFT, WATER_CODES as _WC
+
+    check("water is not soft ground — a liquid surface is LEVEL",
+          not (_WC & _SOFT), f"soft: {sorted(_SOFT)}")
+    # ...but the SEABED is, because a board fought under the water has no
+    # surface in view and its floor is ordinary ground. The skin answers first.
+    check("...while a seabed still rolls, because its SKIN says so",
+          bool(getattr(_sk5.skin("seabed-shallow"), "soft", False)))
+
+    _bog = _gm5("swamp", width=46, height=34, seed=7)
+    _brows = _bog.grid.to_rows()
+    check("a swamp has standing water at all",
+          sum(r.count("~") + r.count("W") for r in _brows) > 20,
+          f"{sum(r.count('~') + r.count('W') for r in _brows)} squares")
+    check("...cut into a basin below the ground around it",
+          bool(_bog.water) and min(_bog.elevation.values(), default=0) < 0,
+          f"{len(_bog.water)} squares of surface, "
+          f"bed down to {min(_bog.elevation.values(), default=0)} ft")
+    # The complaint itself, as a check: no square of water may stand above the
+    # dry land it touches.
+    _uphill = 0
+    for _k, _top in _bog.water.items():
+        _x, _y = (int(v) for v in _k.split(","))
+        for _dx, _dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            _nx, _ny = _x + _dx, _y + _dy
+            if 0 <= _ny < len(_brows) and 0 <= _nx < len(_brows[_ny]) \
+                    and _brows[_ny][_nx] not in _WC \
+                    and _top > (_bog.elevation.get(f"{_nx},{_ny}", 0) or 0):
+                _uphill += 1
+    check("...and no pool stands higher than the bank beside it",
+          _uphill == 0, f"{_uphill} square(s) running uphill")
+    # A pool is a BASIN, not a trench: shallow at the bank, deeper in.
+    _depths = sorted({(_bog.water[_k] - (_bog.elevation.get(_k, 0) or 0))
+                      for _k in _bog.water})
+    check("...shallow at the edge and deeper in the middle", len(_depths) >= 3,
+          f"depths {[round(d, 1) for d in _depths]}")
+    check("...and never deep enough to be a fall",
+          max(_depths, default=0) < 10, f"{max(_depths, default=0):.1f} ft")
+    # Two pools on a hillside are two DIFFERENT levels, which is the whole
+    # reason a surface belongs to the pool rather than to the board.
+    _pools = _w.pools(_brows)
+    check("each pool gets its own surface, not one waterline for the board",
+          len(_pools) > 1 and len(set(_bog.water.values())) > 1,
+          f"{len(_pools)} pools at {sorted(set(_bog.water.values()))}")
+    # Never on a board fought IN the water: there is no surface to draw, and
+    # the seabed is the ground.
+    _sea = _gm5("reef", width=40, height=30, seed=3)
+    check("a board fought under the water gets no surface at all",
+          not _sea.water and _sea.mode == "swim")
+    # Only ever DOWNWARD, so a generator that dug its own channel keeps it.
+    _dug = {"3,1": -8}
+    _w.sink(["ggggg", "g~~~g", "ggggg"], _dug)
+    check("sinking never raises a bed a generator already dug",
+          _dug["3,1"] == -8, f"{_dug['3,1']} ft")
+
     section("scale: a bigger board is more of the place, not a bigger place")
     # A square is five feet, which makes almost every dimension on a board a
     # real measurement. Hold the FEATURES in feet and let the COUNTS grow, and
