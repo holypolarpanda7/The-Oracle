@@ -19737,6 +19737,31 @@ async def imagery_surface(image_id: int, channel: str, substance: str = ""):
                     headers={"Cache-Control": "public, max-age=31536000"})
 
 
+@app.get("/vtt/furniture/{filename}")
+async def vtt_furniture_mesh(filename: str):
+    """A furniture MODEL this installation rendered but has not committed.
+
+    The collected ones live under ``activity-ui/public/assets/furniture`` and
+    vite serves them; one rendered five minutes ago is gitignored and outside
+    ``public/``, so it comes through here — the same two-roots, two-URLs split
+    the landmark meshes make, for the same reason.
+    """
+    from vtt import furniture as _furn
+    name = Path(filename).name
+    if not name.endswith(".obj") or "/" in filename or ".." in filename:
+        raise HTTPException(status_code=404, detail="No such model.")
+    path = _furn.generated_root() / name
+    try:
+        if path.resolve().parent != _furn.generated_root().resolve() \
+                or not path.is_file():
+            raise HTTPException(status_code=404, detail="No such model.")
+        data = path.read_bytes()
+    except OSError:
+        raise HTTPException(status_code=404, detail="No such model.")
+    return Response(content=data, media_type="model/obj",
+                    headers={"Cache-Control": "public, max-age=31536000"})
+
+
 @app.get("/vtt/setpiece/{filename}")
 async def vtt_setpiece_mesh(filename: str):
     """A landmark mesh this installation MADE, for the browser to draw.

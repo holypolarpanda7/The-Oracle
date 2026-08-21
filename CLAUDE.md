@@ -870,6 +870,37 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   creature and is a box with a hole in it. Shelters demand clear ground around
   them — two built back to back seal a pocket, and the connectivity net then
   carves a corridor through somebody's tent to reach it.
+- **A tile KIND may have a MODEL, and that is where furniture-sized meshes
+  stopped being forbidden.** `vtt/furniture.py`. The shape tables draw a crate,
+  a table, an altar and a column out of prismatoids and that goes a long way
+  for a few numbers; what they cannot do is put a handle on a barrel or a
+  moulding on an altar, because none of those is a shape a rule can describe.
+  A model per KIND is affordable on the sprite economics — one crate model
+  serves every crate on every board in every session, nine kinds rather than
+  nine hundred squares. Three rules, and the second is the one that reverses
+  the old prohibition: the TILE keeps every rule; **the model is scaled to the
+  height the board would have DRAWN**, so it cannot restate a height the rules
+  quote (a set piece stamps its own codes and one mesh at one scale cannot
+  honour a per-square quoted height — here the code is already there and the
+  scale is derived FROM it); and a missing model is never an error, it is the
+  prismatoids every board drew before. The fit carries no height of its own —
+  `unit_scale` takes the mesh to one unit tall and the caller multiplies — so a
+  quoted height stays exact and a jittered one still jitters.
+  **A model wider than its own square is REFUSED, not squashed.** Measured: a
+  "stack of two crates" came back 1.00 x 0.45 x 0.58 and would have stood nine
+  feet across a five-foot square. Scaling it to fit would draw a crate that
+  screens four feet at two, and a player deciding whether they can break line
+  of sight behind it would read the wrong number off the board — so
+  `MAX_SPREAD` refuses it and `--audit` says why. Every subject phrase
+  therefore describes ONE upright thing of roughly square footprint, which is a
+  constraint and not a style.
+  **Rendering and COMMITTING are two steps on purpose.**
+  `scripts/furniture_meshes.py --render` gives this installation a model;
+  `--collect` is the deliberate act of putting one in the repo for everyone.
+  The code can tell you a model is ILLEGAL; it cannot tell you whether one is
+  any GOOD — a pedestal that is a perfectly correct altar is the wrong thing in
+  a crypt full of coffins, and no measurement catches that. The committed set
+  is empty until a person has looked.
 - **A LANDMARK may be somebody else's mesh, and it still owns no rules.**
   `vtt/setpieces.py`. Everything else the board draws is derived from (tile
   code, skin, x, z), which works because a wall, a cliff and a hull are things

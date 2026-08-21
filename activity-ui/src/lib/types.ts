@@ -438,6 +438,16 @@ export interface VttObject {
    *  drawn as a panel along that line, never as a picture filling the square. */
   axis?: string;
   image_id?: number | null;
+  /** A MODEL for this kind of thing, when this installation has one.
+   *
+   *  One model per KIND — a crate model serving every crate, the sprite
+   *  economics — and measured on the server, which is a measurement of a FILE
+   *  and so cannot be recomputed here without becoming a second answer. It
+   *  carries no height of its own: `unit_scale` takes the mesh to ONE unit
+   *  tall, and the caller multiplies by whatever the board would have DRAWN on
+   *  that square, so a quoted height stays exactly quoted. Absent means draw
+   *  the shape table's prismatoids, which is what every board did before. */
+  model?: { mesh: string; unit_scale: number; pivot: [number, number, number] };
 }
 
 /** Wreckage left where something broke. */

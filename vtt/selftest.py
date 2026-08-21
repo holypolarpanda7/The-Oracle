@@ -1470,6 +1470,46 @@ def test_vessels() -> None:
     from . import mapgen as _mg
     from . import vessels as _v
 
+    section("furniture: a model may not restate a height the rules quote")
+    # A tile KIND may have a mesh, on the sprite economics — one crate model
+    # for every crate on every board. Three things keep it honest, and the
+    # third is why furniture-sized meshes were ruled out before and are
+    # allowed now.
+    from . import furniture as _fn
+    from .terrain import tile as _tile
+    from .terrain import cover_height_ft as _cov
+
+    check("only DISCRETE standing things are offered a model",
+          not ({"#", "R", ".", "g", "~"} & set(_fn.SUBJECTS)),
+          f"kinds: {''.join(sorted(_fn.SUBJECTS))}")
+    check("...and every one of them is a real tile",
+          all(_tile(c).name for c in _fn.SUBJECTS))
+    # The fit carries NO height of its own: the caller multiplies by whatever
+    # the board would have drawn on that square, which is what lets a model
+    # stand on a tile whose height the rules quote without restating it.
+    for code in _fn.SUBJECTS:
+        got = _fn.fit(code)
+        if got is None:
+            continue
+        check(f"{code!r}'s fit is per unit of drawn height, not a height",
+              "unit_scale" in got and "height_ft" not in got, str(sorted(got)))
+    check("the quoted height is what a model is scaled to",
+          all(_fn.quoted_height_ft(c) == _cov(c)
+              for c in _fn.SUBJECTS if _cov(c)),
+          str({c: _fn.quoted_height_ft(c) for c in _fn.SUBJECTS}))
+    # A model wider than its square at that height is REFUSED rather than
+    # squashed: scaling it to fit would draw a crate that screens four feet at
+    # two, and a player deciding whether they can break line of sight behind it
+    # would read the wrong number off the board.
+    for code in _fn.SUBJECTS:
+        if _fn.mesh_path(code) is None:
+            continue
+        check(f"{code!r} is either within its square or not drawn",
+              (_fn.spread(code) <= _fn.MAX_SPREAD) == (_fn.fit(code) is not None),
+              f"spread {_fn.spread(code):.2f} squares")
+    check("a kind with no model at all is not an error",
+          _fn.fit("#") is None and _fn.mesh_path("#") is None)
+
     section("ground: a hillside is not a flight of stairs")
     # Elevation is stored per square as whole feet, so ground drawn at one
     # height per square is a flight of terraces. The corner average bends the

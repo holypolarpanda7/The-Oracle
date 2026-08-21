@@ -36,7 +36,7 @@ import * as THREE from "three";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import type { VttScene } from "./types";
+import type { VttObject, VttScene } from "./types";
 import {
   CELL, DECOR_KINDS, DECOR_TINT, HOLE_CODES, OBJECT_VARIANTS, SKINS,
   SKIRT_FT, SKIRT_INSET,
@@ -694,6 +694,11 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     // them over — a normal map on a flat-coloured tile has no surface to
     // modulate and would only make the tile light unevenly for no reason.
     const surfaces = scene.surfaces ?? {};
+    // Which squares have a MODEL rather than a silhouette out of the tables.
+    const models = new Map<string, NonNullable<VttObject["model"]>>();
+    for (const o of scene.objects ?? []) {
+      if (o.model) models.set(`${o.x},${o.y}`, o.model);
+    }
     for (const code of textured) {
       const sf = surfaces[code];
       if (!sf) continue;
@@ -946,7 +951,34 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             // a 5-ft square is a big place, and a pillar filling one is the
             // single loudest voxel tell on the board.
             const cx = x + 0.5, cz = z + 0.5;
-            if (OBJECT_VARIANTS[code]) {
+            const model = models.get(`${x},${z}`);
+            if (model) {
+              // A MODEL for this kind of thing. Scaled to the height the board
+              // would have DRAWN on this square, so a quoted height stays
+              // quoted and a jittered one still jitters — see vtt/furniture.py.
+              // Not merged into the tile's builder: it came out of a file
+              // rather than out of the shape tables, so it is placed with a
+              // transform like a landmark rather than emitted vertex by vertex.
+              requestSetpiece(model.mesh, invalidate);
+              const geom = SETPIECE_MESHES.get(model.mesh);
+              if (geom) {
+                const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
+                  color, roughness: 0.86, metalness: 0.0,
+                  ...(backdrop ? { colorWrite: false } : {}),
+                }));
+                const k = model.unit_scale * heightUnits(scene, h);
+                const [px, py, pz] = model.pivot;
+                mesh.scale.setScalar(k);
+                mesh.position.set(-px * k, -py * k, -pz * k);
+                const spin = new THREE.Group();
+                spin.add(mesh);
+                spin.rotation.y = (yawOf(x, z) * Math.PI) / 2;
+                const holder = new THREE.Group();
+                holder.add(spin);
+                holder.position.set(cx, here, cz);
+                terrainGroup.add(holder);
+              }
+            } else if (OBJECT_VARIANTS[code]) {
               // A built silhouette, in one of several arrangements chosen by the
               // square itself — shared with the depth map the painted layer is
               // conditioned on, so what stands here is what gets painted here.

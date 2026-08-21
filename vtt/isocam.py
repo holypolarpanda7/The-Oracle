@@ -1119,6 +1119,16 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
     from . import skins as _skins
 
     cover_ft = cover_ft or (lambda _c: 0)
+    # One model per KIND, resolved once. Empty on a machine that has rendered
+    # none, and then every square draws the prismatoids it always drew.
+    from . import furniture as _furn
+    _models: dict = {}
+    for _c in {c for r in rows for c in r}:
+        _f = _furn.fit(_c)
+        if _f:
+            _p = _furn.mesh_path(_c)
+            if _p is not None:
+                _models[_c] = {**_f, "path": str(_p)}
     h_rows = len(rows)
     w_cols = max((len(r) for r in rows), default=0)
     if not h_rows or not w_cols:
@@ -1237,6 +1247,31 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
     # tile's distance rises with x + z; the z-buffer makes the order a
     # formality, but it keeps the traversal cache-friendly and matches how the
     # client stacks its own geometry.
+    def _draw_model(fit_: dict, x: int, z: int, here: float, top: float) -> None:
+        """One kind's model, on one square. See vtt/furniture.py.
+
+        The same three terms as a landmark's mesh — scale, pivot, quarter turn
+        — with the scale taken from the square's own DRAWN height rather than
+        from a declared one, which is what lets a model stand on a tile whose
+        height the rules quote without restating it.
+        """
+        tris = _obj_triangles(fit_["path"])
+        if not tris:
+            return
+        k = float(fit_["unit_scale"]) * top
+        px, py, pz = fit_["pivot"]
+        turns = yaw_of(x, z)
+        shade(TOP_TINT)
+        for tri in tris:
+            pts = []
+            for vx, vy, vz in tri:
+                ax = (vx - px) * k
+                az = (vz - pz) * k
+                for _ in range(turns):
+                    ax, az = -az, ax
+                pts.append((x + 0.5 + ax, here + (vy - py) * k, z + 0.5 + az))
+            face(pts)
+
     for total in range(w_cols + h_rows + 1):
         for x in range(max(0, total - h_rows + 1), min(w_cols, total + 1)):
             z = total - x
@@ -1411,6 +1446,13 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 for wx0, wx1, wz0, wz1 in wall_parts(is_open, x, z):
                     _box(face, x + wx0, x + wx1, z + wz0, z + wz1,
                          here + top, y0=here, shade=shade)
+            elif _models.get(code):
+                # A MODEL for this kind of thing, scaled to the height the board
+                # would have DRAWN here — so a quoted height stays quoted. The
+                # painter has to be conditioned on the same volume the player
+                # is looking at: a depth map with a prismatoid where the browser
+                # draws a model is a painting of a different room.
+                _draw_model(_models[code], x, z, here, top)
             elif code in OBJECT_VARIANTS:
                 # A built silhouette. Drawn as one cube these came back as DICE
                 # — a crypt of thirty four-foot cubes reads as a board game

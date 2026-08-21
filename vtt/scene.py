@@ -893,15 +893,24 @@ class VttEngine:
         row = self.get_scene(map_id)
         if row is None:
             return []
+        from . import furniture as _furn
+
         g = self.grid_of(row)
         sprites = dict(row.object_art or {})
+        # One model per KIND, measured once — the sprite economics, and the
+        # `setpieces.mesh_fit` rule about who does the measuring. Empty on an
+        # installation that has never rendered one, and then the board draws
+        # the prismatoids it always drew.
+        models = {c: _furn.fit(c) for c in {g.get(x, y) for x, y in g.squares()}}
         out = []
         for x, y in g.squares():
             code = g.get(x, y)
             subject = sprite_subject(code)
             if not subject:
                 continue
+            model = models.get(code)
             out.append({"x": x, "y": y, "code": code,
+                        **({"model": model} if model else {}),
                         "name": tile(code).name,
                         "label": sprite_label(code),
                         # A door belongs to the wall it interrupts, so it is
