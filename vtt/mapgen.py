@@ -326,8 +326,88 @@ SPARSE_ARCHETYPES = frozenset({"ship", "skyship", "open-water", "sky-islands",
 #: the collapsed generator this floor exists to catch.
 VESSEL_DECK_FLOOR = 12
 
+#: The smallest walkable area worth calling a board, in squares — about a
+#: twelve-by-ten room.
+#:
+#: An ABSOLUTE floor, and it has to be. This was an eighth of the board, which
+#: is a sensible-looking rule that grows with the area while the walkable
+#: content of a corridor-shaped place grows with its LENGTH. A mountain pass is
+#: a track: at 24x18 its two hundred walkable squares clear an eighth easily,
+#: and at 48x36 the same generator producing four times the track is condemned
+#: for not producing eight times — so the board was thrown away and replaced
+#: with a MEADOW. Silently, because the fallback is a real board.
+#:
+#: That is the shape of bug this whole pass is about: a rule written as a
+#: fraction of the board, which is right at one size and wrong at another.
+PLAYABLE_FLOOR = 120
+
 STEP_FT = 5
 LEDGE_FT = 10
+
+
+# --------------------------------------------------------------------------
+# A BIGGER BOARD MEANS MORE OF THE PLACE, NOT A BIGGER PLACE.
+#
+# A square is five feet. That makes almost every dimension on a board a real
+# measurement somebody can picture, and it is the thing to hold on to when the
+# board gets bigger: a chamber is twenty to forty-five feet across whether the
+# board is a hundred feet wide or two hundred and fifty, a corridor is five or
+# ten feet, a street is a cart and two people passing. What a bigger board buys
+# is MORE chambers, MORE street, MORE camp — never one chamber four times the
+# size, which is a cathedral with a goblin in it.
+#
+# Measured, before this existed, by comparing the largest connected open region
+# at 24x18 against 48x36: the dungeon complex grew its rooms **7.5x**, the
+# taproom 5.2x, the crypt 4.9x. Six halls of seventy-five by sixty feet is not
+# a dungeon. `vtt/selftest.py` guards it now — a generator may be rewritten,
+# but not back into a hall.
+#
+# Open country is the exception and needs no rule: a meadow, a forest and a
+# marsh SHOULD be one region four times the size, because that is what more of
+# them is.
+# --------------------------------------------------------------------------
+
+#: The board every count below is quoted against — the combat default, and the
+#: size these generators were originally tuned at.
+BASE_AREA = 24 * 18
+
+#: A chamber, in FEET. Twenty is a cell, forty-five a hall; past that it stops
+#: being a room and starts being a courtyard, which is a different tile.
+ROOM_MIN_FT, ROOM_MAX_FT = 20, 45
+
+#: A passage, in feet. Five is one person at a time and ten is two abreast,
+#: which is the whole of the tactical difference a corridor makes.
+CORRIDOR_FT = 10
+
+#: A town street, kerb to kerb: a cart and two people passing.
+STREET_FT = 25
+
+#: How deep a block of houses is, front to back — a room and a half and a yard.
+BLOCK_FT = 40
+
+#: A big coaching inn's public room, front to back. Past this it is a hall.
+TAPROOM_FT = 70
+
+#: A GREAT hall — a cathedral nave, and the largest single room the board will
+#: build. Past this it stops being a room and becomes a parade ground with a
+#: roof on.
+HALL_FT = 90
+
+
+def _sq(ft: int) -> int:
+    """Feet to whole squares, at least one."""
+    return max(1, int(round(ft / 5.0)))
+
+
+def _for_area(g: Grid, n_at_base: float, *, most: int = 10_000) -> int:
+    """How many of a thing this board should hold.
+
+    ``n_at_base`` is the count that looked right on a 24x18 board. Scaling by
+    AREA rather than by width is what keeps density constant — the alternative
+    is a board twice as wide with the same number of tents in it, which is the
+    same emptiness the size increase was meant to fix.
+    """
+    return max(1, min(most, int(round(n_at_base * g.width * g.height / BASE_AREA))))
 
 
 def _elev_of(out: GeneratedMap, level: int = 0) -> dict:
@@ -643,21 +723,78 @@ def _door_on_wall(grid: Grid, rng: random.Random, x0: int, y0: int,
 # --------------------------------------------------------------- generators
 # Each takes (grid, rng, out) and mutates the grid + fills spawn/description.
 
+def _side_chambers(g: Grid, rng: random.Random, out: GeneratedMap,
+                   hall: tuple[int, int, int, int]) -> None:
+    """Rooms off a great hall, in whatever the hall did not take.
+
+    A hall on a big board used to be the whole board — one flat rectangle two
+    hundred feet across. Capping it leaves a margin, and a margin round a hall
+    is what a hall actually has: vestries, cells, a stair, the way in. The same
+    warren machinery the complex uses, because a suite of small rooms off one
+    another is the same problem however it is reached.
+    """
+    hx0, hy0, hx1, hy1 = hall
+    spare = [(0, 0, g.width - 1, hy0 - 2), (0, hy1 + 2, g.width - 1, g.height - 1),
+             (0, hy0 - 1, hx0 - 2, hy1 + 1), (hx1 + 2, hy0 - 1, g.width - 1, hy1 + 1)]
+    made: list[tuple[int, int, int, int]] = []
+    for sx0, sy0, sx1, sy1 in spare:
+        if sx1 - sx0 < 5 or sy1 - sy0 < 5:
+            continue
+        for cx0, cy0, cx1, cy1 in _bsp_cells(sx0, sy0, sx1, sy1, rng,
+                                             min_side=_sq(ROOM_MIN_FT) + 2,
+                                             max_side=_sq(ROOM_MAX_FT) + 2):
+            x0, y0 = cx0 + 1, cy0 + 1
+            x1, y1 = min(g.width - 2, cx1 - 1), min(g.height - 2, cy1 - 1)
+            if x1 - x0 < 3 or y1 - y0 < 3:
+                continue
+            _room(g, x0, y0, x1, y1)
+            made.append((x0, y0, x1, y1))
+    prev = ((hx0 + hx1) // 2, (hy0 + hy1) // 2)
+    for x0, y0, x1, y1 in made:
+        _carve_corridor(g, prev, ((x0 + x1) // 2, (y0 + y1) // 2))
+        prev = ((x0 + x1) // 2, (y0 + y1) // 2)
+    if made:
+        _threshold_doors(g, rng, made, out)
+
+
 def _gen_dungeon_room(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     g.fill_rect(0, 0, g.width - 1, g.height - 1, WALL)
+    # A GREAT HALL is grand and it is still a room: ninety by sixty feet is a
+    # cathedral nave, and past that it is a parade ground with a roof on. The
+    # chamber used to be the whole board, so a 46x34 one came back two hundred
+    # and thirty feet across — one flat rectangle with pillars in it, which is
+    # the one shape this archetype was written to avoid.
+    # A margin only becomes side chambers when there is room for one on each
+    # side; anything less and the hall simply takes it. Otherwise a board that
+    # is merely a little bigger than a hall comes back as a hall with two
+    # useless strips of rock beside it — and a board that was ALREADY one room
+    # stops being one, which is not what a bigger default was for.
+    spare_for = _sq(ROOM_MIN_FT) + 3
+    hall_w = min(g.width - 2, _sq(HALL_FT))
+    hall_h = min(g.height - 2, _sq(HALL_FT * 2 // 3))
+    if (g.width - 2 - hall_w) < spare_for * 2:
+        hall_w = g.width - 2
+    if (g.height - 2 - hall_h) < spare_for * 2:
+        hall_h = g.height - 2
+    hx = 1 + (g.width - 2 - hall_w) // 2
+    hy = 1 + (g.height - 2 - hall_h) // 2
     m = 1
-    _room(g, m, m, g.width - 1 - m, g.height - 1 - m)
+    _room(g, hx, hy, hx + hall_w - 1, hy + hall_h - 1)
+    # …and what a bigger board buys is the rest of the PLACE: side chambers off
+    # the hall and the ways between them, so there is somewhere to fall back to
+    # and somewhere to come round by.
+    _side_chambers(g, rng, out, (hx, hy, hx + hall_w - 1, hy + hall_h - 1))
     # Pillars in a rough colonnade — real cover, symmetric enough to read as built.
-    step = max(3, min(5, g.width // 5))
-    for y in range(m + 2, g.height - m - 1, step):
-        for x in range(m + 2, g.width - m - 1, step):
+    step = max(3, min(5, hall_w // 5))
+    for y in range(hy + 1, hy + hall_h - 1, step):
+        for x in range(hx + 1, hx + hall_w - 1, step):
             if rng.random() < 0.7:
                 g.set(x, y, "O")
     # Rubble and a scattering of furniture.
     _scatter(g, rng, ",", 0.06)
     _scatter(g, rng, "o", 0.03)
     for side in ("west", "east"):
-        d = _door_on_wall(g, rng, m, m, g.width - 1 - m, g.height - 1 - m, side)
+        d = _door_on_wall(g, rng, hx, hy, hx + hall_w - 1, hy + hall_h - 1, side)
         if d:
             out.doors.append({"x": d[0], "y": d[1], "state": "closed",
                               "name": "door", "dc": None})
@@ -666,17 +803,17 @@ def _gen_dungeon_room(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # there costs a climb.
     m2 = m + 1
     if rng.random() < 0.7:
-        d = max(3, min(6, g.height // 4))
+        d = max(3, min(6, hall_h // 4))
         top = rng.random() < 0.5
-        y0 = m2 if top else g.height - 1 - m2 - d
-        _terrace(g, out, m2, y0, g.width - 1 - m2, y0 + d, STEP_FT,
+        y0 = hy + 1 if top else hy + hall_h - 2 - d
+        _terrace(g, out, hx + 1, y0, hx + hall_w - 2, y0 + d, STEP_FT,
                  on=(FLOOR, ",", "o", "O"), steps=("s" if top else "n"))
         out.description = ("a pillared stone chamber, flagstones cracked with "
                            "age, a broad dais along one end")
     else:
-        pit = max(4, min(9, g.width // 3))
-        px = (g.width - pit) // 2
-        py = (g.height - max(3, pit // 2)) // 2
+        pit = max(4, min(9, hall_w // 3))
+        px = hx + (hall_w - pit) // 2
+        py = hy + (hall_h - max(3, pit // 2)) // 2
         _terrace(g, out, px, py, px + pit, py + max(3, pit // 2), -STEP_FT,
                  on=(FLOOR, ",", "o"), steps="w")
         out.description = ("a pillared stone chamber built around a sunken "
@@ -685,30 +822,47 @@ def _gen_dungeon_room(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 
 def _bsp_cells(x0: int, y0: int, x1: int, y1: int, rng: random.Random,
-               depth: int = 0, min_side: int = 7) -> list[tuple[int, int, int, int]]:
-    """Recursively halve a rectangle until the pieces are room-sized."""
+               depth: int = 0, min_side: int = 7,
+               max_side: int = 0) -> list[tuple[int, int, int, int]]:
+    """Recursively halve a rectangle until the pieces are room-sized.
+
+    ``max_side`` is the whole reason this stops where it does. It used to stop
+    at ``depth >= 3``, which is a fixed EIGHT cells however big the rectangle
+    is — so doubling the board doubled every room instead of doubling the
+    number of them, and a 48x36 complex came back as six halls of seventy-five
+    by sixty feet. Depth is still a backstop against pathological recursion;
+    what actually decides is whether a cell is bigger than a room.
+    """
     w, h = x1 - x0, y1 - y0
-    if depth >= 3 or (w < min_side * 2 and h < min_side * 2):
+    big = max_side and (w > max_side or h > max_side)
+    if depth >= 12 or (not big and w < min_side * 2 and h < min_side * 2):
         return [(x0, y0, x1, y1)]
     horizontal = h > w if abs(w - h) > 2 else rng.random() < 0.5
     if horizontal and h >= min_side * 2:
         cut = rng.randint(y0 + min_side, y1 - min_side)
-        return (_bsp_cells(x0, y0, x1, cut, rng, depth + 1, min_side)
-                + _bsp_cells(x0, cut, x1, y1, rng, depth + 1, min_side))
+        return (_bsp_cells(x0, y0, x1, cut, rng, depth + 1, min_side, max_side)
+                + _bsp_cells(x0, cut, x1, y1, rng, depth + 1, min_side, max_side))
     if w >= min_side * 2:
         cut = rng.randint(x0 + min_side, x1 - min_side)
-        return (_bsp_cells(x0, y0, cut, y1, rng, depth + 1, min_side)
-                + _bsp_cells(cut, y0, x1, y1, rng, depth + 1, min_side))
+        return (_bsp_cells(x0, y0, cut, y1, rng, depth + 1, min_side, max_side)
+                + _bsp_cells(cut, y0, x1, y1, rng, depth + 1, min_side, max_side))
     return [(x0, y0, x1, y1)]
 
 
 def _gen_dungeon_complex(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     g.fill_rect(0, 0, g.width - 1, g.height - 1, WALL)
     rooms: list[tuple[int, int, int, int]] = []
-    for cx0, cy0, cx1, cy1 in _bsp_cells(0, 0, g.width - 1, g.height - 1, rng):
+    # Cells the size of a ROOM plus its walls, not a fixed eight of them: see
+    # _bsp_cells and the doctrine at the top of this module. A room is twenty to
+    # forty-five feet across whatever the board is, and a board four times the
+    # area holds four times as many.
+    cell_min = _sq(ROOM_MIN_FT) + 2
+    cell_max = _sq(ROOM_MAX_FT) + 2
+    for cx0, cy0, cx1, cy1 in _bsp_cells(0, 0, g.width - 1, g.height - 1, rng,
+                                         min_side=cell_min, max_side=cell_max):
         # Inset the room inside its cell so neighbouring rooms don't share walls.
-        w = max(3, (cx1 - cx0) - rng.randint(1, 3))
-        h = max(3, (cy1 - cy0) - rng.randint(1, 3))
+        w = max(3, min(_sq(ROOM_MAX_FT), (cx1 - cx0) - rng.randint(1, 3)))
+        h = max(3, min(_sq(ROOM_MAX_FT), (cy1 - cy0) - rng.randint(1, 3)))
         x0 = rng.randint(cx0, max(cx0, cx1 - w))
         y0 = rng.randint(cy0, max(cy0, cy1 - h))
         x1, y1 = min(g.width - 1, x0 + w), min(g.height - 1, y0 + h)
@@ -855,23 +1009,79 @@ def _gen_clearing(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 
 def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
-    g.fill_rect(0, 0, g.width - 1, g.height - 1, "=")
-    band = max(2, g.height // 4)
-    # Buildings crowd both sides; alleys break the line so it isn't a shooting gallery.
-    for y in range(0, band):
-        for x in range(g.width):
-            g.set(x, y, WALL)
-    for y in range(g.height - band, g.height):
-        for x in range(g.width):
-            g.set(x, y, WALL)
-    for _ in range(rng.randint(1, 3)):
+    # A town is BLOCKS, and both numbers here are real measurements: a roadway
+    # a cart and two people can pass on, and a block of houses about forty feet
+    # deep with a yard behind. Sized as fractions of the board instead — which
+    # is how this was written — a bigger street came back a boulevard between
+    # buildings a hundred feet deep, which is a warehouse district nobody asked
+    # for. Held in feet, the same code lays one street across a small board and
+    # a district of crossings on a large one.
+    road = _sq(STREET_FT)
+    block = _sq(BLOCK_FT)
+    g.fill_rect(0, 0, g.width - 1, g.height - 1, WALL)
+
+    def _lanes(span: int) -> list[int]:
+        """Where the roadways run. Pitch is two blocks back to back plus the
+        road between them, which is what a town actually is."""
+        pitch = block * 2 + road
+        out_ = []
+        at = block
+        while at + road + block <= span:
+            out_.append(at)
+            at += pitch
+        return out_ or ([max(0, (span - road) // 2)] if span >= road + 2 else [])
+
+    for y0 in _lanes(g.height):
+        g.fill_rect(0, y0, g.width - 1, min(g.height - 1, y0 + road - 1), "=")
+    # Cross streets on the same pitch, once the board is long enough to want
+    # one: a roadway running the whole way with no way off it is more street
+    # and the same corridor.
+    if g.width >= block * 2 + road * 2:
+        for x0 in _lanes(g.width):
+            g.fill_rect(x0, 0, min(g.width - 1, x0 + road - 1), g.height - 1, "=")
+
+    # Alleys break the frontage, so a block is not one unbroken wall — and a
+    # one-square gap between two buildings is the best kiting ground a town
+    # has. Counted by the RUN they break rather than by area: an alley is a
+    # gap in a frontage, so twice as much frontage wants twice as many, not
+    # four times.
+    for _ in range(max(1, g.width // 16)):
         ax = rng.randrange(1, g.width - 1)
-        for y in range(0, band):
-            g.set(ax, y, "=")
-    for _ in range(rng.randint(1, 3)):
-        ax = rng.randrange(1, g.width - 1)
-        for y in range(g.height - band, g.height):
-            g.set(ax, y, "=")
+        for y in range(g.height):
+            if g.get(ax, y) == WALL:
+                g.set(ax, y, "=")
+    for _ in range(max(1, g.height // 16)):
+        ay = rng.randrange(1, g.height - 1)
+        for x in range(g.width):
+            if g.get(x, ay) == WALL:
+                g.set(x, ay, "=")
+
+    # YARDS. A building is about forty feet deep from its own frontage, and a
+    # block deeper than two of them has ground in the middle of it — a yard, a
+    # garden, a midden — not another eighty feet of masonry. Measured from the
+    # road rather than laid out, so it self-adjusts: a shallow block stays
+    # solid and a deep one is hollow, whatever the board's proportions are.
+    deep = _sq(BLOCK_FT)
+    reach: dict[Square, int] = {}
+    front = [(x, y) for x, y in g.squares() if g.get(x, y) != WALL]
+    for sq in front:
+        reach[sq] = 0
+    edge = list(front)
+    while edge:
+        nxt = []
+        for x, y in edge:
+            d = reach[(x, y)] + 1
+            if d > deep:
+                continue
+            for ax, ay in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if g.in_bounds(ax, ay) and (ax, ay) not in reach \
+                        and g.get(ax, ay) == WALL:
+                    reach[(ax, ay)] = d
+                    nxt.append((ax, ay))
+        edge = nxt
+    for x, y in g.squares():
+        if g.get(x, y) == WALL and (x, y) not in reach:
+            g.set(x, y, "g")
     _scatter(g, rng, "o", 0.05, only_on=("=",))
     _scatter(g, rng, "n", 0.02, only_on=("=",))
     _scatter(g, rng, ",", 0.04, only_on=("=",))
@@ -949,6 +1159,42 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
             out.description += ", roofs above it reached by an outside stair"
 
 
+def _inn_rooms(g: Grid, rng: random.Random, out: GeneratedMap,
+               tap_x1: int, tap_y1: int, back: int) -> None:
+    """Whatever is left of the board once the taproom has taken its own size.
+
+    An inn is a public room and a warren behind it — a parlour, a snug, a stair
+    hall, a cellar way, the yard door. The taproom used to be the whole board,
+    so a bigger board was a bigger barn; this is what a bigger board should buy
+    instead, and it is the dungeon's own machinery because a suite of small
+    rooms off one another is the same problem.
+    """
+    spare = [(0, tap_y1 + 1, g.width - 1, g.height - 1),
+             (tap_x1 + (back + 2 if back else 1), 0, g.width - 1, tap_y1)]
+    made: list[tuple[int, int, int, int]] = []
+    for sx0, sy0, sx1, sy1 in spare:
+        if sx1 - sx0 < 5 or sy1 - sy0 < 4:
+            continue
+        for cx0, cy0, cx1, cy1 in _bsp_cells(sx0, sy0, sx1, sy1, rng,
+                                             min_side=_sq(ROOM_MIN_FT) + 2,
+                                             max_side=_sq(ROOM_MAX_FT) + 2):
+            x0, y0 = cx0 + 1, cy0 + 1
+            x1, y1 = min(g.width - 1, cx1 - 1), min(g.height - 1, cy1 - 1)
+            if x1 - x0 < 3 or y1 - y0 < 3:
+                continue
+            _room(g, x0, y0, x1, y1)
+            made.append((x0, y0, x1, y1))
+    # Joined to each other and to the taproom, or they are sealed boxes behind
+    # a wall — and `_connect_regions` would then carve its own way in, which
+    # reads as nothing.
+    prev = (tap_x1 // 2, tap_y1 // 2)
+    for x0, y0, x1, y1 in made:
+        _carve_corridor(g, prev, ((x0 + x1) // 2, (y0 + y1) // 2))
+        prev = ((x0 + x1) // 2, (y0 + y1) // 2)
+    if made:
+        _threshold_doors(g, rng, made, out)
+
+
 def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     """A taproom, and the thing that stops it being a hall.
 
@@ -981,12 +1227,20 @@ def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # one side. A tavern with nothing behind the bar is a bar in a field.
     back = max(3, min(6, g.width // 5)) if g.width >= 16 else 0
     tap_x1 = g.width - 1 - (back + 1 if back else 0)
-    _room(g, 0, 0, tap_x1, g.height - 1)
+    # A TAPROOM is a taproom. Filling the board with one made a 48x36 inn a
+    # barn a hundred and ninety feet across; a big coaching inn's public room
+    # is more like sixty by forty-five. What a bigger board buys is the REST of
+    # the inn — a parlour, a snug, a stair hall — which the same warren
+    # machinery the dungeon uses lays behind it.
+    tap_x1 = min(tap_x1, _sq(TAPROOM_FT))
+    tap_y1 = min(g.height - 1, _sq(ROOM_MAX_FT))
+    _room(g, 0, 0, tap_x1, tap_y1)
+    _inn_rooms(g, rng, out, tap_x1, tap_y1, back)
     if back:
-        cut = rng.randrange(g.height // 3, max(g.height // 3 + 1,
-                                               2 * g.height // 3))
+        cut = rng.randrange(max(1, tap_y1 // 3),
+                            max(2, 2 * tap_y1 // 3))
         _room(g, tap_x1, 0, g.width - 1, cut)               # the kitchen
-        _room(g, tap_x1, cut, g.width - 1, g.height - 1)    # the store
+        _room(g, tap_x1, cut, g.width - 1, tap_y1)          # the store
         for y0, y1, name in ((0, cut, "kitchen door"),
                              (cut, g.height - 1, "store door")):
             d = _door_on_wall(g, rng, tap_x1, y0, g.width - 1, y1, "west")
@@ -995,7 +1249,7 @@ def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                                   "name": name, "dc": None})
         # Casks and sacks in the store, a range and a block in the kitchen.
         _scatter(g, rng, "o", 0.22, only_on=(FLOOR,),
-                 within=(tap_x1 + 1, cut + 1, g.width - 2, g.height - 2))
+                 within=(tap_x1 + 1, cut + 1, g.width - 2, tap_y1 - 1))
         _scatter(g, rng, "n", 0.22, only_on=(FLOOR,),
                  within=(tap_x1 + 1, 1, g.width - 2, cut - 1))
 
@@ -1011,7 +1265,7 @@ def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # The hearth, in a breast that stands proud of the wall — a fire drawn flat
     # against a flat wall is a light source, not a fireplace — and an apron of
     # floor in front of it, which is where anyone standing at the fire stands.
-    hy = max(2, min(g.height - 3, g.height // 2 + rng.randint(-2, 2)))
+    hy = max(2, min(tap_y1 - 2, tap_y1 // 2 + rng.randint(-2, 2)))
     g.set(1, hy, "f")
     keep.add((1, hy))
     for dy in (-1, 1):
@@ -1111,7 +1365,7 @@ def _gen_tavern(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # IN that ring, and counting it dragged the gallery's extent out to the
     # board's edge and made the run a row deeper than the room.
     inner = [(x, y) for x, y in g.squares()
-             if 0 < x <= tap_x1 - 1 and 0 < y < g.height - 1
+             if 0 < x <= tap_x1 - 1 and 0 < y < tap_y1
              and g.get(x, y) not in (WALL, VOID)]
     if inner and tap_x1 >= 13 and g.height >= 12:
         xs = [x for x, _y in inner]
@@ -1239,9 +1493,12 @@ def _gen_bridge(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 def _gen_ruins(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     g.fill_rect(0, 0, g.width - 1, g.height - 1, ",")
-    for _ in range(rng.randint(3, 6)):
-        w = rng.randint(3, max(4, g.width // 3))
-        h = rng.randint(3, max(4, g.height // 3))
+    # More of them on a bigger board, each the size a building is. Sized as a
+    # third of the board they grew instead, so a big ruin was three enormous
+    # halls rather than a village somebody burned.
+    for _ in range(_for_area(g, 4.5, most=40)):
+        w = rng.randint(3, _sq(ROOM_MAX_FT))
+        h = rng.randint(3, _sq(ROOM_MAX_FT))
         x0 = rng.randint(0, max(0, g.width - w - 1))
         y0 = rng.randint(0, max(0, g.height - h - 1))
         # Broken walls: outline, then knock chunks out of it.
@@ -1296,9 +1553,11 @@ def _gen_camp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
     # Tents first, while the ground is still clear: they need a clean footprint,
     # and scatter dropped afterwards flows around them.
-    want = rng.randint(3, 5)
+    # A camp is TENTS, so four times the ground is four times the camp — not
+    # the same four tents standing in a field with a fire in the middle of it.
+    want = _for_area(g, rng.randint(3, 5), most=40)
     pitched = 0
-    for _ in range(60):
+    for _ in range(want * 14):
         if pitched >= want:
             break
         tx = rng.randrange(1, max(2, g.width - 6))
@@ -1338,8 +1597,15 @@ def _gen_camp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # A camp that has been anywhere throws up a bank. One side of the board
     # stands a step higher behind it, which is the asymmetry a raid is fought
     # across.
-    if rng.random() < 0.7:
-        band = max(2, g.height // 6)
+    # Nearly always: it is the camp's only vertical feature, and at 0.7 the
+    # selftest's three seeds could all miss it — which they did, the moment the
+    # tent count changed the rng stream. A guard that depends on a coin flip is
+    # a guard that reports the weather.
+    if rng.random() < 0.9:
+        # A BANK, in feet: fifteen to twenty-five deep, which is a ditch and
+        # its spoil. A sixth of the board grew with it, so a big camp came back
+        # standing behind an earthwork forty feet thick.
+        band = max(2, min(_sq(25), g.height // 6))
         top = rng.random() < 0.5
         y0 = 0 if top else g.height - 1 - band
         _terrace(g, out, 0, y0, g.width - 1, y0 + band, STEP_FT,
@@ -1630,7 +1896,30 @@ def _gen_arena(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 def _gen_crypt(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     g.fill_rect(0, 0, g.width - 1, g.height - 1, WALL)
-    _room(g, 1, 1, g.width - 2, g.height - 2)
+    # A vault is a vault: forty-five feet across at the outside. A bigger board
+    # holds MORE of them, opening off one another, rather than one burial hall
+    # the size of a cathedral — which is what a single room filling the board
+    # came to at 48x36.
+    vaults = _bsp_cells(0, 0, g.width - 1, g.height - 1, rng,
+                        min_side=_sq(ROOM_MIN_FT) + 2,
+                        max_side=_sq(ROOM_MAX_FT) + 2)
+    cells: list[tuple[int, int, int, int]] = []
+    for vx0, vy0, vx1, vy1 in vaults:
+        x0, y0 = vx0 + 1, vy0 + 1
+        x1, y1 = min(g.width - 2, vx1 - 1), min(g.height - 2, vy1 - 1)
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            continue
+        _room(g, x0, y0, x1, y1)
+        cells.append((x0, y0, x1, y1))
+    if not cells:
+        _room(g, 1, 1, g.width - 2, g.height - 2)
+        cells = [(1, 1, g.width - 2, g.height - 2)]
+    # Joined in a chain, so the vault reads as a catacomb rather than as a set
+    # of sealed boxes. `_threshold_doors` then hangs a door where each way in
+    # actually broke the wall.
+    for (ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1) in zip(cells, cells[1:]):
+        _carve_corridor(g, ((ax0 + ax1) // 2, (ay0 + ay1) // 2),
+                        ((bx0 + bx1) // 2, (by0 + by1) // 2))
     # Rows of sarcophagi make aisles — a fight of angles and corners.
     for y in range(3, g.height - 3, 3):
         for x in range(3, g.width - 3, 2):
@@ -1646,10 +1935,12 @@ def _gen_crypt(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     out.description = "a burial vault, stone coffins in ranks, dust and cobweb"
     # The bier: the one thing in a burial vault that is meant to be looked up
     # at, and the board had it flush with the floor.
-    bw = max(3, g.width // 4)
-    bh = max(3, g.height // 4)
-    bx = (g.width - bw) // 2
-    by = (g.height - bh) // 2
+    # One bier, in the biggest vault, and the size a bier is.
+    big = max(cells, key=lambda c: (c[2] - c[0]) * (c[3] - c[1]))
+    bw = min(_sq(ROOM_MIN_FT), max(3, (big[2] - big[0]) // 2))
+    bh = min(_sq(ROOM_MIN_FT), max(3, (big[3] - big[1]) // 2))
+    bx = big[0] + ((big[2] - big[0]) - bw) // 2
+    by = big[1] + ((big[3] - big[1]) - bh) // 2
     _terrace(g, out, bx, by, bx + bw, by + bh, STEP_FT, on=(FLOOR, ",", "A"))
 
 
@@ -1678,7 +1969,10 @@ def _gen_pass(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     y = g.height // 2
     track: list[int] = []
     for x in range(g.width):
-        width = rng.randint(2, max(3, g.height // 3))
+        # A TRACK, in feet: ten to thirty across, which is a cart at a squeeze
+        # and two carts passing. A third of the board instead, and a bigger
+        # pass came back a valley floor with a cliff at each edge.
+        width = rng.randint(_sq(10), _sq(30))
         for dy in range(-width // 2, width // 2 + 1):
             if g.in_bounds(x, y + dy):
                 g.set(x, y + dy, "," if rng.random() < 0.3 else FLOOR)
@@ -1723,12 +2017,31 @@ def _gen_pass(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 def _gen_sewer(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     g.fill_rect(0, 0, g.width - 1, g.height - 1, WALL)
-    mid = g.height // 2
-    channel = max(2, g.height // 4)
-    g.fill_rect(1, mid - channel, g.width - 2, mid + channel, FLOOR)
-    g.fill_rect(1, mid - channel // 2, g.width - 2, mid + channel // 2, "~")
-    for x in range(2, g.width - 2, max(3, g.width // 5)):
-        g.set(x, mid, "b")
+    # A TUNNEL is a tunnel: a channel a few feet across with a ledge either
+    # side. Sized as a quarter of the board it widened into a canal, and a
+    # bigger board came back as one enormous culvert instead of a system.
+    channel = _sq(10)
+    ledge = _sq(CORRIDOR_FT)
+    bore = channel + ledge * 2
+    # How many tunnels the board holds is a question about its HEIGHT, not its
+    # area: a channel runs the length of the board, so more of them stack
+    # across it. Scaled by area instead, a 48x36 sewer came back four lanes
+    # deep with the walls between them eaten — seventy per cent open floor,
+    # which is a cistern.
+    runs = max(1, (g.height - bore) // (bore * 2 + 2))
+    lanes = [int((i + 1) * g.height / (runs + 1)) for i in range(runs)]
+    for mid in lanes:
+        lo, hi = max(1, mid - bore // 2), min(g.height - 2, mid + bore // 2)
+        g.fill_rect(1, lo, g.width - 2, hi, FLOOR)
+        g.fill_rect(1, max(1, mid - channel // 2), g.width - 2,
+                    min(g.height - 2, mid + channel // 2), "~")
+        for x in range(2, g.width - 2, max(3, _for_area(g, 5, most=12))):
+            g.set(x, mid, "b")
+    # Cross-culverts, so a system is a system and not a set of parallel pipes.
+    for i in range(len(lanes) - 1):
+        cx = rng.randrange(3, max(4, g.width - 3))
+        g.fill_rect(cx, lanes[i], cx + ledge - 1, lanes[i + 1], FLOOR)
+    mid = lanes[len(lanes) // 2]
     _scatter(g, rng, ",", 0.06, only_on=(FLOOR,))
     _scatter(g, rng, "%", 0.03, only_on=(FLOOR,))
     # Silted-up stretches where the channel has choked. Mud, not water: it costs
@@ -2383,7 +2696,7 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
     # to be replaced by a meadow. The floor for those is an absolute one: is
     # there a deck to fight on at all.
     floor = (VESSEL_DECK_FLOOR if archetype in SPARSE_ARCHETYPES
-             else (width * height) // 8)
+             else min((width * height) // 8, PLAYABLE_FLOOR))
     if len(_walkable(grid, out.mode)) < floor:
         # A generator collapsed (rare corner of the CA); fall back to open ground
         # rather than handing the table an unplayable board.

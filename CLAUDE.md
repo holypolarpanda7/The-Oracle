@@ -1692,6 +1692,45 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   high ground AND that the DM board states it with what it costs. The offline
   demo board carries a dais for the same reason: it is the only board a browser
   can draw with no backend, and it was flat while every real board grew height.
+- **A bigger board is MORE OF THE PLACE, not a bigger place.** Boards are
+  roughly **four times the area** they were (combat 24x18 -> 46x34, which is
+  230 by 170 feet), because a 120-ft board is enough to stand and trade blows
+  on and not enough to skirmish, break off or kite: a longbow reaches 150 feet,
+  so backing out of reach meant backing off the map. The area is the whole
+  change — **nothing was stretched to fill it.**
+  A square is five feet, which makes almost every dimension on a board a real
+  measurement, and that is the thing to hold: a chamber is 20-45 ft, a great
+  hall 90, a roadway 25, a block of houses 40 deep, a mountain track 10-30. Hold
+  the FEATURES in feet and let the COUNTS grow (`_for_area`) and doubling a
+  board doubles the number of rooms; write a feature as a fraction of the board
+  and doubling it doubles every room. **Measured before any of this: between
+  24x18 and 48x36 the dungeon complex grew its rooms 7.5x, the taproom 5.2x,
+  the crypt 4.9x.** Six halls of seventy-five by sixty feet is not a dungeon,
+  and a 190-ft taproom is a barn. `_bsp_cells` stopped at `depth >= 3` — a
+  fixed EIGHT cells however big the rectangle — which is the bug in one line.
+  What changed, and why each is the right shape: the complex and the crypt
+  split until cells are ROOM-sized; the tavern caps its taproom and puts the
+  rest of the inn behind it (`_inn_rooms`); `dungeon-room` caps its great hall
+  and rings it with side chambers, **unless the margin is too small to hold
+  one**, in which case the hall takes it — a board that was already one room
+  must stay one room; the street lays a BLOCK GRID with a real roadway and
+  cross streets, and hollows any block deeper than two buildings into a yard;
+  the sewer's bore is a bore and a bigger board holds more tunnels; the camp
+  pitches more tents. Open country needs no rule at all: a meadow, a forest and
+  a marsh SHOULD be one region four times the size, because that is what more
+  of them is.
+  **The board-collapsed floor was a fraction of the area, and that is a bug
+  that only appears when boards grow.** "An eighth of the board must be
+  walkable" is sensible at one size and wrong at another: the walkable content
+  of a corridor-shaped place grows with its LENGTH, so a 48x36 mountain pass
+  producing four times the track was condemned for not producing eight times —
+  and silently replaced with a MEADOW, because the fallback is a real board.
+  `PLAYABLE_FLOOR` is absolute. The guard is
+  `selftest`'s "a big X is no WIDER than it was, only longer": the widest clear
+  span of a built place, which is the one measure that works for a room and a
+  roadway alike — a street is legitimately one long thin rectangle and a hall
+  is not. Verified to fail by exactly that check with the old room sizing
+  restored.
 - **A board is sized by the FIGHT, not by one number.** `triggers.board_size_for`
   starts from the scene kind's default (`DEFAULT_SIZE`: combat 24x18, explore
   30x24, chase 34x14…) and grows it for room to STAND (total footprint on the

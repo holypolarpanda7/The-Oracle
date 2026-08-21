@@ -1510,6 +1510,84 @@ def test_vessels() -> None:
     check("a kind with no model at all is not an error",
           _fn.fit("#") is None and _fn.mesh_path("#") is None)
 
+    section("scale: a bigger board is more of the place, not a bigger place")
+    # A square is five feet, which makes almost every dimension on a board a
+    # real measurement. Hold the FEATURES in feet and let the COUNTS grow, and
+    # doubling a board doubles the number of rooms; write a feature as a
+    # fraction of the board instead and doubling it doubles every room. That
+    # second thing is what the generators used to do, measured: the dungeon
+    # complex grew its rooms 7.5x between 24x18 and 48x36, the taproom 5.2x,
+    # the crypt 4.9x. Six halls of seventy-five by sixty feet is not a dungeon.
+    from .mapgen import ARCHETYPES as _A3, ROOM_MAX_FT as _RMAX, generate_map as _gm4
+
+    def _biggest_room(gen) -> tuple[int, int]:
+        """The biggest axis-aligned rectangle of open ground, as ``(area,
+        short side)``.
+
+        Connected-region size cannot answer "how big is a room": corridors
+        join every room in a dungeon into one region. And AREA alone cannot
+        either, because a street and a sewer are legitimately one long thin
+        rectangle — the honest measure across both shapes is how WIDE the
+        widest clear span is, which is a room's short side or a roadway's kerb
+        to kerb, and is the number that says whether something has been
+        stretched.
+        """
+        rows = gen.grid.to_rows()
+        openish = set(".g=,s\"bmui~%ou")
+        h, w = len(rows), len(rows[0])
+        best, short = 0, 0
+        heights = [0] * w
+        for y in range(h):
+            for x in range(w):
+                heights[x] = heights[x] + 1 if rows[y][x] in openish else 0
+            stack: list[tuple[int, int]] = []
+            for x in range(w + 1):
+                cur = heights[x] if x < w else 0
+                start = x
+                while stack and stack[-1][1] >= cur:
+                    i, ht = stack.pop()
+                    area = ht * (x - i)
+                    if area > best:
+                        best, short = area, min(ht, x - i)
+                    start = i
+                stack.append((start, cur))
+        return best, short
+
+    #: Places that are ROOMS. Open country is deliberately not here: a meadow,
+    #: a forest and a marsh SHOULD be four times the size, because that is what
+    #: more of them is.
+    _BUILT = ("dungeon-complex", "crypt", "tavern", "sewer", "street")
+    # Stated as an absolute, in FEET, because that is the doctrine's own
+    # language and a ratio between two board sizes is noisy: a small taproom
+    # broken up by posts measures tiny, and comparing against it says more
+    # about where the furniture fell than about the room. A HALL is the biggest
+    # clear span any built place on this board has — seventy by forty-five feet
+    # is a big inn's public floor — and nothing may exceed it however large the
+    # board gets.
+    WIDEST = int(round(_RMAX / 5)) + 2
+    for name in _BUILT:
+        _sm, small = _biggest_room(_gm4(name, width=24, height=18, seed=7))
+        _bg, big = _biggest_room(_gm4(name, width=48, height=36, seed=7))
+        check(f"a big {name} is no WIDER than it was, only longer",
+              big <= WIDEST,
+              f"widest clear span {small * 5} ft at 24x18 -> {big * 5} ft at "
+              f"48x36 (a room is {_RMAX} ft)")
+    # A tight board must not be CONDEMNED for being tight. The floor for "this
+    # generator collapsed" was an eighth of the BOARD, which grows with the
+    # area while the walkable content of a corridor-shaped place grows with its
+    # length — so a 48x36 mountain pass was thrown away and silently replaced
+    # with a meadow.
+    for name in ("mountain-pass", "sewer", "dungeon-complex"):
+        gen = _gm4(name, width=48, height=36, seed=7)
+        check(f"a big {name} is still a {name}",
+              gen.archetype == name and gen.description
+              and "meadow" not in (gen.description or ""),
+              (gen.description or "")[:48])
+    solid = sum(1 for r in _gm4("mountain-pass", width=48, height=36,
+                                seed=7).grid.to_rows() for c in r if c == "R")
+    check("...and a pass at four times the size is still mostly rock",
+          solid > 700, f"{solid} squares of rock")
+
     section("ground: a hillside is not a flight of stairs")
     # Elevation is stored per square as whole feet, so ground drawn at one
     # height per square is a flight of terraces. The corner average bends the

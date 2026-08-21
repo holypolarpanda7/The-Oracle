@@ -70,16 +70,23 @@ ENCLOSED = frozenset({
 #: Named scales a DM can force when the fiction wants more room than the
 #: roster implies — the charge that starts with two riders and ends with forty.
 SCALES: dict[str, tuple[int, int]] = {
-    "duel":     (16, 12),
-    "skirmish": (20, 16),
-    "battle":   (30, 24),
-    "pitched":  (44, 34),
-    "mounted":  (48, 36),
+    # A duel is still a duel — two people and a circle — and stays where it
+    # was. Everything else moved up with the defaults: see DEFAULT_SIZE in
+    # vtt/scene.py for why, and note that "skirmish" is the word for the thing
+    # the old sizes could not accommodate.
+    "duel":     (20, 16),
+    "skirmish": (40, 30),
+    "battle":   (52, 40),
+    "pitched":  (64, 48),
+    "mounted":  (72, 54),
 }
 
 #: Hard limits. The floor is a board you can still manoeuvre on; the ceiling is
 #: what ``mapgen`` will generate and what a phone can still read.
-MIN_SIDE, MAX_SIDE = 8, 60
+#: The ceiling moved with them. It is what `mapgen` will generate and what a
+#: phone can still read — and the generators hold their feature sizes in FEET
+#: now, so a bigger board is more of the place rather than a bigger one.
+MIN_SIDE, MAX_SIDE = 8, 80
 
 
 def board_size_for(base: tuple[int, int], *, archetype: str = "open",

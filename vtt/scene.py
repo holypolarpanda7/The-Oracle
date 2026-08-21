@@ -86,13 +86,28 @@ def _default_engine(database_url: Optional[str] = None) -> Engine:
 
 #: Board sizes by scene kind — big enough to manoeuvre, small enough to read on
 #: a phone. (width, height) in squares.
+#: How big a board of each kind starts out, in squares. A square is five feet.
+#:
+#: Roughly FOUR TIMES the area they were, and the reason is a report from the
+#: table: a 24x18 board is 120 by 90 feet, which is enough to stand and trade
+#: blows on and not enough to skirmish, break off, or kite anything. A bow
+#: reaches 80 feet and a longbow 150 — on a board 120 across, backing out of
+#: reach means backing off the map.
+#:
+#: The area is the whole change here. Nothing was STRETCHED to fill it: a
+#: chamber is still twenty to forty-five feet, a roadway is still a cart and
+#: two people passing, and a bigger board holds more rooms, more street and
+#: more camp rather than one of each blown up. See the doctrine at the top of
+#: vtt/mapgen.py, and the selftest that holds it.
 DEFAULT_SIZE: dict[str, tuple[int, int]] = {
-    SceneKind.COMBAT: (24, 18),
-    SceneKind.PUZZLE: (16, 14),
-    SceneKind.CHASE: (34, 14),
-    SceneKind.HAZARD: (20, 16),
-    SceneKind.EXPLORE: (30, 24),
-    SceneKind.SOCIAL: (16, 12),
+    SceneKind.COMBAT: (46, 34),
+    SceneKind.PUZZLE: (24, 20),
+    SceneKind.CHASE: (56, 24),
+    SceneKind.HAZARD: (34, 26),
+    SceneKind.EXPLORE: (52, 40),
+    # A conversation is not a battlefield: this one is deliberately the size
+    # of a room somebody is standing in.
+    SceneKind.SOCIAL: (18, 14),
 }
 
 def _landmarks_from(asked: Optional[str | Sequence[str]],
