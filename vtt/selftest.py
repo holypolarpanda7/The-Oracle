@@ -1470,6 +1470,59 @@ def test_vessels() -> None:
     from . import mapgen as _mg
     from . import vessels as _v
 
+    section("ground: a hillside is not a flight of stairs")
+    # Elevation is stored per square as whole feet, so ground drawn at one
+    # height per square is a flight of terraces. The corner average bends the
+    # SURFACE between square centres and changes no rule — but two things have
+    # to hold or it is a lie rather than a drawing.
+    from .isocam import corner_lift_ft as _lift
+    from .terrain import GROUND_RIPPLE_FT as _RIP, SMOOTH_STEP_FT as _STEP
+
+    _flat = ["ggg", "ggg", "ggg"]
+    # A corner is a property of the CORNER. Anything that reads the asking
+    # square gives the two squares sharing an edge two answers there, and the
+    # ground tears along every seam.
+    _a = _lift(_flat, {"1,1": _STEP}, 1, 1, 1, 1)
+    _b = _lift(_flat, {"1,1": _STEP}, 0, 0, 1, 1)
+    check("two squares sharing a corner agree about its height",
+          abs(_a - _b) < 1e-9, f"{_a:.3f} vs {_b:.3f}")
+    check("...and a knoll's corner really is between the two heights",
+          0 < _a < _STEP, f"{_a:.2f} ft on a {_STEP} ft step")
+    # A LEDGE is the height the rules make you decide about, and a picture that
+    # ramps it lies about the one thing worth reading off the board.
+    _hi = _lift(_flat, {"1,1": 10}, 1, 1, 1, 1)
+    _lo = _lift(_flat, {"1,1": 10}, 0, 0, 1, 1)
+    check("a LEDGE keeps its vertical face — no ramp is drawn",
+          _hi == 10.0 and _lo == 0.0, f"{_hi} / {_lo}")
+    # Laid things are flat. A dungeon dais must not slope into its own floor.
+    check("something LAID beside soft ground does not slope",
+          _lift(["g.g", "ggg", "ggg"], {"1,0": 5}, 1, 0, 1, 1) == 5.0)
+    check("...and a floor next to a floor does not either",
+          _lift(["...", "...", "..."], {"1,1": 5}, 1, 1, 1, 1) == 5.0)
+    # The ripple is DRAWING and stays small enough to be one.
+    _rip = [abs(_lift(_flat, {}, 1, 1, cx, cz))
+            for cx in (1, 2) for cz in (1, 2)]
+    check("bare flat ground still wanders a little",
+          any(r > 1e-6 for r in _rip), f"up to {max(_rip):.2f} ft")
+    check("...and never by more than the stated ripple",
+          all(r <= _RIP + 1e-9 for r in _rip), f"{max(_rip):.2f} of {_RIP} ft")
+    # The SKIN decides, because the code cannot: `.` is scree on a mountain
+    # pass and cobbles on a street.
+    from . import skins as _sk2
+    check("a skin says whether its surface may slope, and they disagree",
+          _sk2.SKINS["scree"].soft and not _sk2.SKINS["cobbles"].soft)
+    _pass = _lift(["...", "...", "..."], {"1,1": _STEP}, 1, 1, 1, 1,
+                  lambda c, x, z: "scree")
+    _road = _lift(["...", "...", "..."], {"1,1": _STEP}, 1, 1, 1, 1,
+                  lambda c, x, z: "cobbles")
+    check("...so the same tile slopes on a pass and lies flat on a street",
+          _pass < _STEP and _road == float(_STEP),
+          f"scree {_pass:.2f}, cobbles {_road:.2f}")
+    # And nothing about this reaches the rules: `drawnTopFt`'s Python twin is
+    # the occlusion march, which reads the stored integer and never the lift.
+    check("the stored elevation is untouched by any of it",
+          _lift(_flat, {"1,1": 4}, 1, 1, 9, 9) == 4.0)
+
     section("roofs: a building is bigger than a square")
     # The townhouse skin carried a GABLE PER SQUARE, so a terrace of houses
     # came out a sawtooth of one-square huts — twelve little ridges over what

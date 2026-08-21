@@ -820,6 +820,31 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   what keeps the roof where it belongs when the square takes its quarter turn.
   Drawing them from one square is not laziness: only one storey is ever drawn
   at a time, so from the ground the platform is something you look at.
+- **A hillside was a flight of stairs, because elevation is stored per SQUARE.**
+  Whole feet per square drawn at one height per square is a terrace, and the
+  terracing is most of what makes an outdoor board read as stacked blocks — a
+  meadow with a knoll on it came out a wedding cake. `isocam.corner_lift_ft`
+  (mirrored by `boardView.cornerLiftFt`, and now compared by the alignment
+  gate) bends the SURFACE between square centres by averaging the shared
+  CORNERS. **A corner's height must be a property of the CORNER**: anything
+  that reads the asking square gives the two squares sharing an edge two
+  different answers there, and the ground tears along every seam.
+  Two guards keep it a drawing rather than a lie. It applies to natural ground
+  only — a floor, a road, a quay and a deck are LAID, and laid things are flat
+  — and **the SKIN decides, because the tile code cannot**: `.` is scree on a
+  mountain pass and cobbles on a street, which is exactly the distinction a
+  skin exists to make (`Skin.soft`, with `terrain.SOFT_GROUND` as the fallback
+  for a square wearing none). And it only joins a difference of one STEP: a
+  LEDGE is the height the rules make you decide about, and ramping one draws a
+  ramp where the board says there is a fall.
+  **`GROUND_RIPPLE_FT` is the other half**, and it is the `HEIGHT_JITTER`
+  precedent applied to the ground: outdoor relief is mostly built from LEDGES,
+  which must stay hard, so everything between them was still a dead-flat plate.
+  A wander of a foot and a bit, hashed from the corner so both squares agree,
+  riding on the smoothed average so it appears only where the ground was
+  already allowed to slope. No rule reads it and the occlusion march never
+  sees it — a creature stands at its square's stated elevation and every
+  distance, cover and area check reads the integer.
 - **`elevation` is DRAWN now, and was not for a long time.** It is stored per
   square, shipped in `state()`, and folded into every distance, reach, cover
   and spell-area check since the board went 3D — and neither renderer read it.

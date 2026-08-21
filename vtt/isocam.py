@@ -206,6 +206,91 @@ def _quad(buf, pts, zs, rgb=None, colour=None, tint: float = 1.0) -> None:
 WALL_THICKNESS = 0.34
 
 
+def corner_lift_ft(rows, elevation, x: int, z: int,
+                   cx: int, cz: int, skin_of=None) -> float:
+    """The GROUND's height at a grid corner, in feet — averaged where it may be.
+
+    Elevation is stored per square as whole feet, so a hillside is drawn as
+    terraces: every square a flat plate at its own height with a step to its
+    neighbour. Real ground does not do that, and the terracing is most of why
+    an outdoor board reads as stacked blocks — the mountain pass came out a
+    flight of stairs and a meadow with a knoll on it a wedding cake.
+
+    A corner is shared by up to four squares and takes the mean of the ones
+    that may JOIN this one: natural ground (a floor, a road, a bridge and a
+    deck are LAID, and laid things are flat) within one STEP of it. A
+    neighbour outside that is not counted, which is what keeps a ledge a
+    cliff — the corner then reads this square's own height and the face
+    between them stays vertical.
+
+    Drawing only: a creature stands at its square's stated height and every
+    rule reads the integer. Mirrored by ``cornerLiftFt`` in
+    activity-ui/src/lib/boardView.ts, and compared by the alignment gate — a
+    corner the two programs disagree about is a seam in the ground that the
+    painting is then baked over.
+    """
+    from . import skins as _skins
+    from .terrain import GROUND_RIPPLE_FT, SMOOTH_STEP_FT, SOFT_GROUND
+
+    def _at(ax: int, az: int) -> float:
+        return float((elevation or {}).get(f"{ax},{az}", 0) or 0)
+
+    def _code(ax: int, az: int):
+        if 0 <= az < len(rows) and 0 <= ax < len(rows[az]):
+            return rows[az][ax]
+        return None
+
+    def _soft(ax: int, az: int) -> bool:
+        """May this square's surface slope?
+
+        The SKIN answers first, and has to: ``.`` is scree on a mountain pass
+        and cobbles on a street, which is exactly the distinction a skin exists
+        to make. A square wearing none falls back to the tile code.
+        """
+        c = _code(ax, az)
+        if c is None:
+            return False
+        if skin_of is not None:
+            sk = _skins.skin(skin_of(c, ax, az) or "")
+            if sk is not None:
+                return bool(getattr(sk, "soft", False))
+        return c in SOFT_GROUND
+
+    own = _at(x, z)
+    # A CORNER'S height must be a property of the CORNER, not of whichever
+    # square is asking — anything that reads the asker's own code or height
+    # gives the two squares sharing an edge two different answers there, and
+    # the ground tears along every seam. So: the squares meeting at this
+    # corner, and nothing else.
+    around = [(ax, az) for ax, az in ((cx - 1, cz - 1), (cx, cz - 1),
+                                      (cx - 1, cz), (cx, cz))
+              if _code(ax, az) is not None]
+    if not around:
+        return own
+    if any(not _soft(ax, az) for ax, az in around):
+        return own                          # something LAID meets here
+    fts = [_at(ax, az) for ax, az in around]
+    if max(fts) - min(fts) > SMOOTH_STEP_FT:
+        return own                          # a LEDGE: the face stays vertical
+    # …and a WANDER on top, hashed from the corner so both squares sharing it
+    # get the same number and the ground cannot tear. See GROUND_RIPPLE_FT: it
+    # is drawing and no rule reads it.
+    wobble = ((_hash(cx, cz, 26699, 45989) % 2048) / 2048.0 - 0.5) * 2.0
+    return sum(fts) / len(fts) + wobble * GROUND_RIPPLE_FT
+
+
+def surface_lift_ft(rows, elevation, x: int, z: int,
+                    u: float, v: float, skin_of=None) -> float:
+    """The ground's height at a point INSIDE a square, bilinear over its
+    corners. The floor is drawn as a fan over an outline that may have been
+    chamfered, so every vertex has to land on the same surface or it tears."""
+    a = corner_lift_ft(rows, elevation, x, z, x, z, skin_of)
+    b = corner_lift_ft(rows, elevation, x, z, x + 1, z, skin_of)
+    c = corner_lift_ft(rows, elevation, x, z, x, z + 1, skin_of)
+    d = corner_lift_ft(rows, elevation, x, z, x + 1, z + 1, skin_of)
+    return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v
+
+
 def exposed(is_open, x: int, z: int) -> bool:
     """Is any of this solid square's EIGHT neighbours open floor?
 
@@ -1234,7 +1319,16 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 side_ends[0], side_ends[2], side_ends[3], side_ends[1], inset)
             # Floor under everything — cut to the outline, so a hull that steps
             # a square at a time is drawn as the diagonal it should be.
-            face([(x + px, here, z + pz) for px, pz in poly])
+            #
+            # The SURFACE, not the plate: elevation is stored per square as
+            # whole feet, so a hillside drawn at one height per square is a
+            # flight of terraces. Every vertex takes its own height off the
+            # shared CORNERS (see corner_lift_ft), so two squares meet exactly
+            # and a ledge still keeps its vertical face.
+            def _ground(u: float, v: float, _x=x, _z=z) -> float:
+                return units(surface_lift_ft(rows, elev, _x, _z, u, v, skin_of))
+
+            face([(x + px, _ground(px, pz), z + pz) for px, pz in poly])
             for k, closed in enumerate(edge_ends):
                 if not closed:
                     continue
@@ -1253,8 +1347,10 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 # opens a wedge of daylight wherever the outline turns.
                 if shade:
                     shade(_tint_for(-ez / run, 0.0, ex / run))
-                face([(x + ax, here, z + az), (x + low[k][0], drop, z + low[k][1]),
-                      (x + low[m][0], drop, z + low[m][1]), (x + bx, here, z + bz)])
+                face([(x + ax, _ground(ax, az), z + az),
+                      (x + low[k][0], drop, z + low[k][1]),
+                      (x + low[m][0], drop, z + low[m][1]),
+                      (x + bx, _ground(bx, bz), z + bz)])
             if shade:
                 shade(TOP_TINT)
             if ft <= 0:

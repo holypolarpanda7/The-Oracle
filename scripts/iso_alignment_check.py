@@ -81,10 +81,11 @@ _TS = r"""
 import { project, unproject, boundsOf, YAW_DEG, PITCH_DEG } from "./isocam.js";
 import {
   variantOf, yawOf, heightScale, hullFootprint, outAxis, rotatePart, sameBody,
-  setpieceRotate,
+  setpieceRotate, cornerLiftFt,
 } from "./boardView.js";
 const samples = %s, unprojects = %s, bounds = %s, squares = %s;
 const ends = %s, solid = %s, inset = %s, spin = %s;
+const groundCases = %s;
 console.log(JSON.stringify({
   yaw: YAW_DEG, pitch: PITCH_DEG,
   project: samples.map(([x, y, z]) => { const p = project(x, y, z); return [p.x, p.y, p.depth]; }),
@@ -114,8 +115,31 @@ console.log(JSON.stringify({
   // beside them is not.
   bodies: [sameBody("sea-deck", "railing"), sameBody("sea-deck", "mast"),
            sameBody("sea-deck", ""), sameBody("cliff", "coral")],
+  // The GROUND's height at a corner. Two squares share every corner, so the
+  // two programs disagreeing there is a seam torn down the middle of a
+  // hillside — and the painting is then baked over the wrong one.
+  ground: groundCases.map(([rows, elev, x, z, cx, cz]) =>
+    cornerLiftFt({ width: rows[0].length, height: rows.length, square_ft: 5,
+                   terrain: rows, elevation: elev }, x, z, cx, cz, 0)),
 }));
 """
+
+
+#: Ground corners the two programs must agree about, as
+#: ``(rows, elevation, square, corner)``. Every case is a distinction the rule
+#: turns on: a knoll seen from both of the squares that share its corner, a
+#: LEDGE (which must stay a cliff), something LAID beside soft ground, and the
+#: board's own edge where fewer than four squares meet.
+GROUND_CASES = [
+    (["ggg", "ggg", "ggg"], {"1,1": 5}, 1, 1, 1, 1),
+    (["ggg", "ggg", "ggg"], {"1,1": 5}, 0, 0, 1, 1),
+    (["ggg", "ggg", "ggg"], {"1,1": 10}, 1, 1, 1, 1),
+    (["ggg", "ggg", "ggg"], {"1,1": 10}, 0, 0, 1, 1),
+    (["g.g", "ggg", "ggg"], {"1,0": 5}, 1, 0, 1, 1),
+    (["ggg", "ggg", "ggg"], {"0,0": 5}, 0, 0, 0, 0),
+    (["gg", "gg"], {"0,0": 5, "1,1": 5}, 0, 0, 1, 1),
+    (["mmm", "m~m", "mmm"], {"1,1": -5}, 1, 1, 1, 1),
+]
 
 
 def _run_ts() -> dict:
@@ -154,7 +178,8 @@ def _run_ts() -> dict:
         (work / "probe.mjs").write_text(
             _TS % (json.dumps(SAMPLES), json.dumps(UNPROJECTS), json.dumps(BOUNDS),
                    json.dumps(SQUARES), json.dumps(ENDS), json.dumps(SOLID),
-                   json.dumps(SKIRT_INSET_PROBE), json.dumps(SPIN)),
+                   json.dumps(SKIRT_INSET_PROBE), json.dumps(SPIN),
+                   json.dumps(GROUND_CASES)),
             encoding="utf8")
         r = subprocess.run(["npx", "node", ".isocam-check/probe.mjs"], cwd=ui,
                            capture_output=True, text=True,
@@ -298,6 +323,11 @@ def main(argv=None) -> int:
 
     # Round-trip: projecting a point on the ground and unprojecting it must
     # return the same square. Catches a self-consistent but wrong pair.
+    print("\nthe GROUND at a corner (two squares share every one of them)")
+    for (rows, elev, x, z, cx, cz), t in zip(GROUND_CASES, ts["ground"]):
+        check(f"{''.join(rows)} {elev} sq({x},{z}) corner({cx},{cz})",
+              py.corner_lift_ft(rows, elev, x, z, cx, cz), t, a.tol)
+
     print("\nround trip (project -> unproject, ground plane)")
     for x, _y, z in SAMPLES:
         p = py.project(x, 0, z)

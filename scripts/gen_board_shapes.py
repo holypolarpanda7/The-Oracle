@@ -109,7 +109,8 @@ def render() -> str:
         SKIRT_FT, SKIRT_INSET, WALL_THICKNESS,
     )
     from vtt.decor import DECOR_KINDS, MAX_DECOR_HEIGHT_FT
-    from vtt.terrain import STAND_HEIGHT_FT, TILES
+    from vtt.terrain import (GROUND_RIPPLE_FT, SMOOTH_STEP_FT,
+                             SOFT_GROUND, STAND_HEIGHT_FT, TILES)
 
     lines = [_HEADER, _PART_TYPE]
     lines.append("/** How thick a wall is DRAWN, as a fraction of its square.\n"
@@ -120,6 +121,22 @@ def render() -> str:
                  " *  Never applied where the RULES quote a height — see heightScale. */\n"
                  f"export const HEIGHT_JITTER = {_num(HEIGHT_JITTER)};\n")
 
+    lines.append("/** Ground whose SURFACE may slope between squares.\n"
+                 " *  Elevation is stored per square as whole feet, so a hillside is\n"
+                 " *  drawn as terraces unless the corners are averaged. Natural ground\n"
+                 " *  only — a floor, a road, a bridge and a deck are LAID, and laid\n"
+                 " *  things are flat. Mirrors SOFT_GROUND in vtt/terrain.py. */\n"
+                 "export const SOFT_GROUND: ReadonlySet<string> = new Set(["
+                 + ", ".join(f'"{c}"' if c != '"' else "'\"'"
+                             for c in sorted(SOFT_GROUND)) + "]);\n")
+    lines.append("/** The largest difference two squares may have and still be joined\n"
+                 " *  by a slope, in feet. One STEP: a LEDGE is the height the rules\n"
+                 " *  make you decide about, and ramping one draws a lie. */\n"
+                 f"export const SMOOTH_STEP_FT = {_num(SMOOTH_STEP_FT)};\n")
+    lines.append("/** How far natural ground WANDERS between one corner and the\n"
+                 " *  next, in feet. Drawing only — no rule reads it, and the\n"
+                 " *  occlusion march ignores it. Mirrors vtt/terrain.py. */\n"
+                 f"export const GROUND_RIPPLE_FT = {_num(GROUND_RIPPLE_FT)};\n")
     lines.append("/** How tall each tile SCREENS a creature, in feet, per the rules.\n"
                  " *  Non-zero means the height is an ANSWER a player reads off the\n"
                  " *  board, so it must be drawn exactly and never jittered. */\n"
@@ -218,6 +235,11 @@ def render() -> str:
         "  /** Pick the arrangement from a COARSE hash, so neighbours agree.\n"
         "   *  For a MASS (rock, coral) rather than a set of objects. */\n"
         "  readonly smooth: boolean;\n"
+        "  /** May this SURFACE slope between squares? The tile code cannot\n"
+        "   *  answer it — `.` is scree on a mountain pass and cobbles on a\n"
+        "   *  street — so the skin carries it and SOFT_GROUND is the\n"
+        "   *  fallback for a square wearing no skin at all. */\n"
+        "  readonly soft: boolean;\n"
         "  /** Feet. Non-zero means this FLOOR carries its own side wherever\n"
         "   *  it meets something that is not the same BODY — how a ship gets\n"
         "   *  a hull, since deep water is not a hole. 0 = the board rule. */\n"
@@ -244,6 +266,7 @@ def render() -> str:
             f"directional: {'true' if sk.directional else 'false'}, "
             f"outward: {'true' if sk.outward else 'false'},\n"
             f"    smooth: {'true' if sk.smooth else 'false'}, "
+            f"soft: {'true' if getattr(sk, 'soft', False) else 'false'}, "
             f'    skirtFt: {_num(sk.skirt_ft)}, '
             f"skirtInset: {_num(sk.skirt_inset)}, "
             f'body: "{sk.body}", '

@@ -41,7 +41,7 @@ import {
   CELL, DECOR_KINDS, DECOR_TINT, HOLE_CODES, OBJECT_VARIANTS, SKINS,
   SKIRT_FT, SKIRT_INSET,
   STRUCTURE_CODES, awayDir, cutawayHeightScale, cuttingAway, exposedRock,
-  hullFootprint, squareUnderRay,
+  hullFootprint, squareUnderRay, surfaceLiftFt,
   isSetpieceSkin, isSolid, materialSlot,
   outAxis, outCorner, occludedAt, runAxis, setpieceYaw,
   sameBody,
@@ -835,11 +835,21 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // a hull that steps a square at a time is drawn as the diagonal it
         // means rather than as a staircase.
         const uv = tileUVs(x, z);
+        // The surface, not the plate. Elevation is stored per square as whole
+        // feet, so a hillside drawn at one height per square is a flight of
+        // terraces — which is most of why an outdoor board reads as stacked
+        // blocks. Every vertex of the fan takes its own height off the shared
+        // CORNERS (see surfaceLiftFt), so two squares meet exactly and a ledge
+        // still keeps its vertical face.
+        const ground = (u: number, w: number) =>
+          base + heightUnits(scene, surfaceLiftFt(scene, x, z, u, w, level));
         for (let k = 1; k < pts.length - 1; k++) {
-          mb.quad(v3(x + pts[0][0], here, z + pts[0][1]),
-                  v3(x + pts[k][0], here, z + pts[k][1]),
-                  v3(x + pts[k + 1][0], here, z + pts[k + 1][1]),
-                  v3(x + pts[0][0], here, z + pts[0][1]), color, uv);
+          mb.quad(v3(x + pts[0][0], ground(pts[0][0], pts[0][1]), z + pts[0][1]),
+                  v3(x + pts[k][0], ground(pts[k][0], pts[k][1]), z + pts[k][1]),
+                  v3(x + pts[k + 1][0], ground(pts[k + 1][0], pts[k + 1][1]),
+                     z + pts[k + 1][1]),
+                  v3(x + pts[0][0], ground(pts[0][0], pts[0][1]), z + pts[0][1]),
+                  color, uv);
         }
         for (let k = 0; k < pts.length; k++) {
           if (!edgeEnds[k]) continue;
@@ -856,14 +866,18 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           // vertex — offsetting each side along its own normal keeps a straight
           // run coplanar and opens a wedge of daylight wherever the outline
           // turns, which on a hull is every corner of the bow.
-          mb.quad(v3(x + ax, here, z + az), v3(x + low[k][0], drop, z + low[k][1]),
-                  v3(x + low[m][0], drop, z + low[m][1]), v3(x + bx, here, z + bz),
+          mb.quad(v3(x + ax, ground(ax, az), z + az),
+                  v3(x + low[k][0], drop, z + low[k][1]),
+                  v3(x + low[m][0], drop, z + low[m][1]),
+                  v3(x + bx, ground(bx, bz), z + bz),
                   color);
         }
 
         if (showGrid && seenAt(x, z) !== Seen.Never) {
-          gridPts.push(x, here, z, x + 1, here, z);
-          gridPts.push(x, here, z, x, here, z + 1);
+          // The grid follows the ground, or a slope has its own squares
+          // floating over it.
+          gridPts.push(x, ground(0, 0), z, x + 1, ground(1, 0), z);
+          gridPts.push(x, ground(0, 0), z, x, ground(0, 1), z + 1);
         }
 
         if (h > 0 && isSetpieceSkin(skinAt(scene, code, x, z))) {

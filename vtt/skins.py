@@ -242,6 +242,16 @@ class Skin:
     #: side against its own mast, so the board had a shaft sunk round the mast
     #: and a paper-thin outer rim where the rail met the water.
     body: str = ""
+    #: May this surface SLOPE between squares?
+    #:
+    #: Elevation is stored per square as whole feet, so ground drawn at one
+    #: height per square is a flight of terraces. Natural ground does not do
+    #: that; a floor, a road, a quay and a deck are LAID, and laid things are
+    #: flat. The tile code alone cannot answer it — ``.`` is scree on a
+    #: mountain pass and cobbles on a street, which is exactly the distinction
+    #: a skin exists to make — so the skin carries it and
+    #: ``terrain.SOFT_GROUND`` is only the fallback for a square wearing none.
+    soft: bool = False
     #: How far above this square's drawn height the ROOF's ridge stands, in
     #: feet. Non-zero means the squares wearing this skin are a BUILDING, and
     #: one roof is traced over each contiguous run of them (:func:`vtt.hull.
@@ -1006,7 +1016,7 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          variants=_FIELD_STONE),
     Skin("scree", "scree",
          "close-up of loose shale and broken slate scree",
-         words="the ground is loose shale and scree"),
+         words="the ground is loose shale and scree", soft=True),
     Skin("cave-rock", "limestone",
          "a flat expanse of damp grey limestone rock, mineral streaks and "
          "flowstone, filling the whole frame",
@@ -1034,16 +1044,16 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="everything here is UNDERWATER on a sunlit sand shelf — the "
                "sand is seen through clear turquoise water, dappled with "
                "caustics; this is the sea floor, not a pond seen from the bank",
-         negative=_SEABED_NEG),
+         negative=_SEABED_NEG, soft=True),
     Skin("seabed-deep", "deep-channel",
          "underwater: a deep blue-green trench cut into a pale sand floor, the "
          "bottom lost in darkness, fine silt, dappled light fading out with "
          "depth",
          words="the deeper channels drop away into blue-green darkness",
-         negative=_SEABED_NEG),
+         negative=_SEABED_NEG, soft=True),
     Skin("seabed-sand", "sunlit-shallows", _SEABED_ART,
          words="the flats are pale rippled sand on the sea bed",
-         negative=_SEABED_NEG),
+         negative=_SEABED_NEG, soft=True),
     Skin("drowned-column", "drowned-stone",
          "a flat expanse of pale ancient cut stone crusted with barnacles and "
          "green weed, filling the whole frame",

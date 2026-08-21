@@ -34,7 +34,8 @@ import type { VttScene } from "./types";
 export {
   COVER_HEIGHT_FT, DECOR_KINDS, DECOR_TINT, HEIGHT_JITTER, HOLE_CODES,
   MAX_DECOR_HEIGHT_FT, OBJECT_VARIANTS, SKINS, SKIRT_FT,
-  SKIRT_INSET, STRUCTURE_CODES,
+  GROUND_RIPPLE_FT, SKIRT_INSET, SMOOTH_STEP_FT, SOFT_GROUND,
+  STRUCTURE_CODES,
   TILE_HEIGHT_FT, WALL_THICKNESS, isSolid,
 } from "./boardShapes.generated";
 export type {
@@ -42,7 +43,10 @@ export type {
 } from "./boardShapes.generated";
 import {
   COVER_HEIGHT_FT as _COVER, HEIGHT_JITTER as _JITTER,
-  HOLE_CODES as _HOLES, SKINS as _SKINS, STRUCTURE_CODES as _STRUCTURE,
+  HOLE_CODES as _HOLES, SKINS as _SKINS,
+  GROUND_RIPPLE_FT as _RIPPLE, SMOOTH_STEP_FT as _SMOOTH,
+  SOFT_GROUND as _SOFT,
+  STRUCTURE_CODES as _STRUCTURE,
   TILE_HEIGHT_FT as _HEIGHT, WALL_THICKNESS as _THICK, isSolid as _isSolid,
 } from "./boardShapes.generated";
 import type { Part } from "./boardShapes.generated";
@@ -512,8 +516,7 @@ export function drawnTopFt(scene: VttScene, x: number, z: number,
                            yawDeg: number = YAW_DEG, level = 0): number {
   const row = rowsOf(scene, level)[z];
   // This storey's ground, not the ground floor's — see `rowsOf`.
-  const elev = ((level ? scene.levels?.[level]?.elevation : undefined)
-    ?? scene.elevation)?.[`${x},${z}`] ?? 0;
+  const elev = elevationAt(scene, x, z, level);
   let top = -Infinity;
   if (row !== undefined && x >= 0 && x < row.length) {
     const code = row[x];
@@ -533,6 +536,88 @@ export function drawnTopFt(scene: VttScene, x: number, z: number,
     }
   }
   return top;
+}
+
+/** The GROUND's height at a grid corner, in feet — averaged where it may be.
+ *
+ *  Elevation is stored per square as whole feet, so a hillside is drawn as
+ *  terraces: every square a flat plate at its own height with a step to its
+ *  neighbour. Real ground does not do that, and the terracing is most of why
+ *  an outdoor board reads as stacked blocks — the mountain pass came out a
+ *  flight of stairs and a meadow with a knoll on it a wedding cake.
+ *
+ *  A corner is shared by up to four squares. It takes the mean of the ones
+ *  that may JOIN this square: natural ground (a floor, a road, a bridge and a
+ *  deck are LAID, and laid things are flat) within one STEP of it. A
+ *  neighbour outside that is simply not counted, which is what keeps a ledge a
+ *  cliff — the corner then reads this square's own height and the face between
+ *  them stays vertical.
+ *
+ *  Drawing only. A creature stands at its square's stated height, every
+ *  distance and cover check reads the integer, and only the surface between
+ *  square centres bends. Mirrors `corner_lift_ft` in vtt/isocam.py, and the
+ *  alignment gate compares them — a corner the two programs disagree about is
+ *  a seam in the ground that the painting is then baked over. */
+export function cornerLiftFt(scene: VttScene, x: number, z: number,
+                             cx: number, cz: number, level = 0): number {
+  const rows = rowsOf(scene, level);
+  const own = elevationAt(scene, x, z, level);
+  // A CORNER'S height must be a property of the CORNER, not of whichever
+  // square is asking — anything that reads the asker's own code or height
+  // gives the two squares sharing an edge two different answers there, and the
+  // ground tears along every seam. So: the squares meeting at this corner, and
+  // nothing else.
+  const around: [number, number][] = [];
+  for (const [ax, az] of [[cx - 1, cz - 1], [cx, cz - 1],
+                          [cx - 1, cz], [cx, cz]] as [number, number][]) {
+    if (rows[az]?.[ax] !== undefined) around.push([ax, az]);
+  }
+  if (!around.length) return own;
+  if (around.some(([ax, az]) => !softAt(scene, ax, az, level))) return own;
+  const fts = around.map(([ax, az]) => elevationAt(scene, ax, az, level));
+  // A LEDGE is the height the rules make you decide about, and ramping one
+  // draws a lie. The face between them stays vertical.
+  if (Math.max(...fts) - Math.min(...fts) > _SMOOTH) return own;
+  // …and a WANDER on top, hashed from the CORNER so both squares sharing it
+  // get the same number and the ground cannot tear. Drawing only — see
+  // GROUND_RIPPLE_FT — and the occlusion march never sees it.
+  const wobble = ((hashOf(cx, cz, 26699, 45989) % 2048) / 2048 - 0.5) * 2;
+  return fts.reduce((a, b) => a + b, 0) / fts.length + wobble * _RIPPLE;
+}
+
+/** May this square's surface slope?
+ *
+ *  The SKIN answers first, and has to: `.` is scree on a mountain pass and
+ *  cobbles on a street, which is exactly the distinction a skin exists to
+ *  make. A square wearing none falls back to the tile code. */
+function softAt(scene: VttScene, x: number, z: number, level = 0): boolean {
+  const code = rowsOf(scene, level)[z]?.[x];
+  if (code === undefined) return false;
+  const skin = _SKINS[skinAt(scene, code, x, z)];
+  if (skin) return !!skin.soft;
+  return _SOFT.has(code);
+}
+
+/** A square's own stored elevation, in feet above its storey's floor. */
+export function elevationAt(scene: VttScene, x: number, z: number,
+                            level = 0): number {
+  return ((level ? scene.levels?.[level]?.elevation : undefined)
+    ?? scene.elevation)?.[`${x},${z}`] ?? 0;
+}
+
+/** The ground's height at a point INSIDE a square, bilinear over its corners.
+ *
+ *  `u`/`v` run 0..1 across the square. The floor is drawn as a fan over an
+ *  outline that may have been chamfered, so its vertices are not only the four
+ *  corners — every one of them has to land on the same surface or the fan
+ *  tears. */
+export function surfaceLiftFt(scene: VttScene, x: number, z: number,
+                              u: number, v: number, level = 0): number {
+  const a = cornerLiftFt(scene, x, z, x, z, level);
+  const b = cornerLiftFt(scene, x, z, x + 1, z, level);
+  const c = cornerLiftFt(scene, x, z, x, z + 1, level);
+  const d = cornerLiftFt(scene, x, z, x + 1, z + 1, level);
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
 }
 
 // --------------------------------------------------------------------------

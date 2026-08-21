@@ -63,6 +63,47 @@ def _t(code: str, name: str, cost: Optional[int], **kw) -> Tile:
     return Tile(code=code, name=name, move_cost_ft=cost, **kw)
 
 
+#: Ground whose SURFACE may slope between squares.
+#:
+#: Elevation is stored per square as whole feet, so a hillside is drawn as
+#: terraces: every square a flat plate at its own height with a step to its
+#: neighbour. Real ground does not do that, and the terracing is most of why an
+#: outdoor board reads as stacked blocks — the mountain pass is a flight of
+#: stairs, a meadow with a knoll on it is a wedding cake.
+#:
+#: Smoothing is DRAWING and changes no rule: a creature still stands at its
+#: square's own stated height, every distance and cover check still reads the
+#: integer, and only the surface BETWEEN square centres bends. Two guards keep
+#: that honest. It applies to natural ground only — a flagstone floor, a road,
+#: a bridge and a ship's deck are LAID, and laid things are flat — and only
+#: across a difference of one STEP. A LEDGE is the height the rules make you
+#: decide about, and sloping one would draw a ramp where the board says there
+#: is a drop.
+SOFT_GROUND = frozenset({"g", "s", ",", '"', "m", "~", "W"})
+
+#: The largest difference two squares may have and still be joined by a slope,
+#: in feet. One STEP. See ``mapgen.STEP_FT`` / ``LEDGE_FT``: a step is cheap to
+#: climb and free to come down, so smoothing it misleads nobody; a ledge is a
+#: fall, and a picture that ramps it is a picture that lies about the one
+#: height a player has to decide about.
+SMOOTH_STEP_FT = 5
+
+#: How far natural ground WANDERS between one corner and the next, in feet.
+#:
+#: The other half of the same complaint, and the one the smoothing above cannot
+#: reach: outdoor relief is mostly built from LEDGES, which must stay hard, so
+#: everything between them is still a dead-flat plate. Real ground is never
+#: flat, and a meadow drawn as one is a billiard table with grass on it.
+#:
+#: This is the ``HEIGHT_JITTER`` precedent applied to the ground: a DRAWN
+#: wander that no rule reads. Kept under a foot and a half on purpose — a
+#: creature still stands at its square's stated elevation, every distance,
+#: cover and area check reads the integer, and `drawnTopFt` (which decides who
+#: is hidden) ignores it entirely. It rides on the smoothed corner, so it
+#: appears only where the ground was already allowed to slope: never on a laid
+#: floor, never across a ledge.
+GROUND_RIPPLE_FT = 1.2
+
 #: Every legal tile code. Unknown codes fall back to open floor.
 TILES: dict[str, Tile] = {t.code: t for t in (
     # --- open ground ---
