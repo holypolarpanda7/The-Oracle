@@ -238,6 +238,7 @@ class VttEngine:
                    landmarks: Optional[str | Sequence[str]] = None,
                    rooms: Optional[Sequence[str]] = None,
                    style: str = "",
+                   relief: Optional[dict] = None,
                    auto_close: bool = True) -> TacticalMap:
         """Open a tactical board for a session, closing any board already out.
 
@@ -293,7 +294,7 @@ class VttEngine:
         gen = generate_map(arch, width=w, height=h, seed=seed,
                            lighting=lighting, biome=biome or place_hint or "",
                            landmarks=marks, rooms=tuple(rooms or ()),
-                           style=style or "")
+                           style=style or "", relief=relief or None)
 
         self.close_scene(session_id=session_id)
 
@@ -315,6 +316,11 @@ class VttEngine:
                    # The medium this board is fought in (walk|swim|fly) — spawn
                    # placement and default token movement follow it.
                    "mode": gen.mode,
+                   # How the ground LIES here (placelore.relief_of), kept so a
+                   # regenerated board is the SAME board — without it a street
+                   # rebuilt from its seed loses the gradient its country gave
+                   # it, and the picture and the grid stop agreeing.
+                   "relief": dict(gen.relief or {}),
                    "spawn_party": [list(s) for s in gen.spawn_party[:60]],
                    "spawn_foes": [list(s) for s in gen.spawn_foes[:60]],
                    # Named compartments. In `notes` rather than a column of
@@ -440,7 +446,8 @@ class VttEngine:
         """Rebuild the generator output for a stored map (same seed = same board)."""
         gen = generate_map(row.archetype, width=row.width, height=row.height,
                            seed=row.seed, lighting=row.lighting,
-                           biome=row.biome or "")
+                           biome=row.biome or "",
+                           relief=(row.notes or {}).get("relief") or None)
         # The stored terrain wins — a DM may have edited it after generation.
         gen.grid = self.grid_of(row)
         # ...and so do the stored skins. Regenerating from the seed produces

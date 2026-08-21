@@ -97,6 +97,12 @@ class GeneratedMap:
     # side because a pool's surface is a property of the whole POOL and no
     # square can see one, which is the argument that put vtt.hull here too.
     water: dict[str, float] = field(default_factory=dict)
+    # How the ground LIES here, from placelore.relief_of — an input, like
+    # `style` and `wanted_rooms`. The tactical layer must not know what a world
+    # graph is (the `_bastion_rooms` line), so the caller that HAS a place
+    # hands the answer down; a caller with none leaves this empty and the
+    # generator reads the biome prose instead.
+    relief: dict = field(default_factory=dict)
     # Rooms the CALLER asked for, by name. An input, consumed by the generator
     # exactly as ``style`` is: a bastion airship carries its owner's facilities,
     # and nothing else on the board could know their names.
@@ -359,42 +365,42 @@ LEDGE_FT = 10
 #
 # The street's fall used to be ``rng.randint(3, 8)`` whatever the board said it
 # was standing in, so a town on the plains and a town clinging to a mountain
-# had the same slope on the same die — which is the ``_for_area`` complaint
-# arriving from a different direction. A number that ought to be DERIVED from
-# something the board already knows was rolled instead.
+# had the same slope on the same die — the ``_for_area`` complaint arriving
+# from a different direction. A number that ought to be DERIVED from something
+# the board already knows was rolled instead.
 #
-# The board does already know: ``GeneratedMap.biome`` is the DM's own words for
-# where this is, and ``skins.building_material`` has been reading it to choose
-# stone or timber since the skins went in. Same mechanism, same table shape,
-# and the same fallback — a board whose DM said nothing gets the middling case,
-# which is what every board got before this existed.
+# WHERE the answer lives matters more than the answer. "How rugged is this
+# country" was already settled, in ``eight_card_system.placelore.RELIEF``,
+# beside the closed terrain vocabulary the scene art, the battlemap floor, the
+# drawn map and the travel cost all read — so this module ASKS rather than
+# keeping a second, fuzzier table of its own. It cannot import that side (the
+# tactical layer must not know what a world graph is, the same line that keeps
+# ``_bastion_rooms`` in the backend), so relief arrives as an INPUT the way
+# ``style`` and ``wanted_rooms`` do, and the words below are the fallback for a
+# caller that has none — a demo, the Proving Grounds, the selftest.
 #
-# Two dials, because "steeper" alone is the wrong answer for a mountain. A
-# mountain road is steeper AND it is not a ramp: it climbs, saddles and climbs
-# again, and it falls across its width as well as along its length. Flat
-# country wants the opposite of both — most streets on a plain really are
-# level, so the low end of that range is ZERO and a board is genuinely allowed
-# to come back flat.
-#
-#: ``(words, (least fall, most fall), (least waves, most waves), cross-fall
-#: fraction)``. Falls are in FEET across the whole board; a wave is one full
-#: rise-and-dip on the way. Matched by substring against the biome, first hit
-#: wins, so the specific entries come before the general ones.
-_RELIEF: tuple[tuple[tuple[str, ...], tuple[int, int], tuple[int, int], float], ...] = (
+#: Free text -> the terrain vocabulary. Only for a caller with no relief to
+#: hand over; anything that HAS a place should pass its relief instead.
+_TERRAIN_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("mountain", "alpine", "crag", "peak", "highland", "gorge", "ravine",
-      "cliff", "scarp", "pass", "summit"), (10, 22), (1, 3), 0.45),
+      "cliff", "scarp", "pass", "summit"), "mountains"),
     (("hill", "downs", "upland", "foothill", "moor", "ridge", "vale",
-      "valley", "dale", "terraced"), (4, 10), (0, 2), 0.30),
-    (("plain", "steppe", "prairie", "flat", "delta", "fen", "marsh", "bog",
-      "swamp", "salt", "polder", "lowland", "meadow"), (0, 3), (0, 0), 0.10),
+      "valley", "dale"), "hills"),
+    (("swamp", "marsh", "fen", "bog", "mire", "moss"), "swamp"),
+    (("desert", "dune", "waste", "erg", "badland"), "desert"),
     (("coast", "shore", "harbour", "harbor", "port", "quay", "beach",
-      "estuary", "island"), (2, 7), (0, 1), 0.25),
+      "estuary", "island", "cove"), "coast"),
+    (("forest", "wood", "jungle", "grove", "thicket", "taiga"), "forest"),
+    (("plain", "steppe", "prairie", "flat", "delta", "polder", "lowland",
+      "meadow", "farm", "field", "pasture", "grass"), "farmland"),
+    (("river", "ford", "bank", "floodplain"), "river"),
+    (("city", "town", "street", "village", "urban"), "urban"),
 )
 
-#: What a board that never said where it is gets. Deliberately the numbers the
-#: street had before any of this — a change nobody asked for is not an
+#: What a board that never said where it is gets — deliberately the numbers the
+#: street had before any of this. A change nobody asked for is not an
 #: improvement, and most boards carry no biome at all.
-_RELIEF_DEFAULT = ((3, 8), (0, 1), 0.20)
+_RELIEF_DEFAULT = {"fall_ft": (3, 8), "waves": (0, 1), "cross": 0.20}
 
 #: The steepest a road is allowed to change between one square and the next, in
 #: feet. ONE, which is the smallest step the rules have: climbing it costs the
@@ -404,13 +410,39 @@ _RELIEF_DEFAULT = ((3, 8), (0, 1), 0.20)
 ROAD_MAX_STEP_FT = 1
 
 
-def road_relief(biome: str = "") -> tuple[tuple[int, int], tuple[int, int], float]:
-    """How steep, how wavy and how canted a road across this country is."""
+def terrain_of(biome: str = "") -> str:
+    """The terrain word for some free text, or "" if it says nothing.
+
+    A last resort. ``placelore`` already decides this for every place in the
+    world, and a caller holding one should pass the answer rather than the
+    prose it came from.
+    """
     b = (biome or "").strip().lower()
-    for words, fall, waves, cross in _RELIEF:
+    for words, terrain in _TERRAIN_WORDS:
         if any(w in b for w in words):
-            return fall, waves, cross
-    return _RELIEF_DEFAULT
+            return terrain
+    return ""
+
+
+def road_relief(biome: str = "", relief: Optional[dict] = None) -> dict:
+    """How steep, how wavy and how canted a road across this country is.
+
+    ``relief`` is ``placelore.relief_of(...)`` handed down by a caller that
+    knows where it is; ``biome`` is the DM's own words, read only when nothing
+    better arrived.
+    """
+    if relief:
+        return {"fall_ft": tuple(relief.get("fall_ft") or (3, 8)),
+                "waves": tuple(relief.get("waves") or (0, 1)),
+                "cross": float(relief.get("cross") or 0.0)}
+    name = terrain_of(biome)
+    if not name:
+        return dict(_RELIEF_DEFAULT)
+    try:                       # a checkout with no world graph still lays roads
+        from eight_card_system.placelore import relief_of
+    except Exception:
+        return dict(_RELIEF_DEFAULT)
+    return road_relief(relief=relief_of(name))
 
 
 def _relief_walk(rng: random.Random, n: int, fall: int, waves: int) -> list[int]:
@@ -448,7 +480,8 @@ def _relief_walk(rng: random.Random, n: int, fall: int, waves: int) -> list[int]
 
 
 def road_profile(rng: random.Random, width: int, height: int,
-                 biome: str = "") -> dict[tuple[int, int], int]:
+                 biome: str = "",
+                 relief: Optional[dict] = None) -> dict[tuple[int, int], int]:
     """Ground height per square for a road board, in feet. Sparse-ready.
 
     Along the board's length and ACROSS its width, each a walk of its own, so
@@ -457,13 +490,13 @@ def road_profile(rng: random.Random, width: int, height: int,
     walks respect the one-foot step, so their sum steps at most a foot in
     either direction.
     """
-    fall, waves, cross = road_relief(biome)
-    along_ft = rng.randint(*fall)
-    n_waves = rng.randint(*waves)
+    r = road_relief(biome, relief)
+    along_ft = rng.randint(*r["fall_ft"])
+    n_waves = rng.randint(*r["waves"])
     along = _relief_walk(rng, width, along_ft, n_waves)
     if rng.random() < 0.5:
         along = along[::-1]
-    across_ft = int(round(along_ft * cross))
+    across_ft = int(round(along_ft * r["cross"]))
     lateral = _relief_walk(rng, height, across_ft,
                            1 if (n_waves and across_ft >= 4) else 0)
     if rng.random() < 0.5:
@@ -1262,7 +1295,7 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # HOW steep is the COUNTRY's business, not a die's: see road_profile. A
     # town on the plains is usually level and a town on a mountainside climbs,
     # saddles and climbs again, canted across its width as it goes.
-    ground = road_profile(rng, g.width, g.height, out.biome)
+    ground = road_profile(rng, g.width, g.height, out.biome, out.relief)
     # A BUILDING IS LEVEL INSIDE, and the steeper the street the more that
     # matters: a house six squares deep on a mountain road would otherwise have
     # six feet of fall across its own floor. A floor is LAID — the same
@@ -2903,7 +2936,8 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
                  lighting: Optional[str] = None,
                  style: str = "", biome: str = "",
                  landmarks: Sequence[str] = (),
-                 rooms: Sequence[str] = ()) -> GeneratedMap:
+                 rooms: Sequence[str] = (),
+                 relief: Optional[dict] = None) -> GeneratedMap:
     """Build a board. The same ``(archetype, width, height, seed, style)``
     always produces the identical grid — so a map can be regenerated from its
     row.
@@ -2931,7 +2965,7 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
     rng = _rng(seed)
     grid = Grid.blank(width, height)
     out = GeneratedMap(grid=grid, archetype=archetype, seed=seed, style=style,
-                       biome=biome,
+                       biome=biome, relief=dict(relief or {}),
                        wanted_rooms=tuple(str(r) for r in rooms if str(r).strip()))
     ARCHETYPES[archetype](grid, rng, out)
 

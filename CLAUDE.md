@@ -1746,11 +1746,11 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `rng.randint(3, 8)` whatever the board said it stood in, so a town on the
   plains and a town clinging to a mountain got the same slope off the same
   roll — the `_for_area` complaint arriving from another direction, a number
-  DERIVED from something the board already knows being rolled instead.
-  `mapgen.road_profile` reads `GeneratedMap.biome`, the DM's own words, exactly
-  as `skins.building_material` has read it to choose stone or timber since the
-  skins went in: same table shape, same substring match, same fallback to the
-  numbers every board had before. Two dials, because "steeper" alone is the
+  DERIVED from something the board already knows being rolled instead. The
+  answer lives in `placelore.RELIEF` (see the terrain rule below), handed DOWN
+  as an input the way `style` and `wanted_rooms` are; `mapgen.terrain_of` reads
+  the DM's prose only for a caller that has no place — a demo, the Grounds, the
+  selftest. Two dials, because "steeper" alone is the
   wrong answer for a mountain — a mountain road is steeper AND it is not a
   ramp, so it climbs, saddles and climbs again and is CANTED across its width
   as well, which is most of what makes one read as cut into a hillside. Flat
@@ -2114,6 +2114,30 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   player-named item — the entry keeps `base` and every mechanical lookup must
   go through it. `_compute_ac` already lost a suit of armour's entire AC to
   this once.
+- **HOW THE GROUND LIES is one answer, and it lives beside the one terrain.**
+  `placelore` already owned a CLOSED terrain vocabulary that three renderers
+  shared — farmland, forest, hills, river, swamp, mountains, desert, coast,
+  sea, underdark, dungeon, urban, interior — and three other systems were each
+  answering "how rugged is this country" their own way. The street generator
+  rolled a fall off a die; `survival/travel.py` kept a private terrain table
+  whose words only HALF overlap these; and the cartographer painted country
+  with nothing to say about relief. `placelore.RELIEF` is keyed on the same
+  words and carries what each caller needs: `fall_ft`/`waves`/`cross` for a
+  board's ground, `travel` for the journey, `map_words` for the drawn sheet.
+  **The travel half was a live bug, and a silent one**:
+  `TERRAIN.get(name, TERRAIN["grassland"])` never complains about a word it
+  has not got, so farmland, river, coast, **sea**, underdark, dungeon and
+  interior were every one of them costed as a stroll over a meadow — a sea
+  crossing included. `_place_terrain` says what country a place is IN;
+  `_travel_terrain` is the only thing that may hand that to `survival.travel`.
+  `scripts/routes_smoke.py` fails if the two vocabularies drift apart again,
+  and it checks the mapping MEANS something (rough country must cost more than
+  easy) rather than merely resolving.
+  Relief reaches a board as an INPUT (`generate_map(relief=)`, stored in
+  `notes` so a regenerated board is the same board) because `vtt/` must not
+  know what a world graph is — the `_bastion_rooms` line. It reaches the
+  cartographer as a clause on the DOMINANT country only: three sectors' worth
+  of hachuring instructions is a prompt about hachures rather than country.
 - **A map is painted country under inked truth.** `eight_card_system/mapmaker.py`
   draws every dot, name, route, compass and scale bar from real spherical
   coordinates; the `worldmap` image kind paints only the TERRAIN under it,

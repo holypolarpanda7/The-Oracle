@@ -3597,8 +3597,28 @@ _ROUTE_KINDS = (
 
 
 def _place_terrain(ent) -> str:
+    """The world's own word for this country — farmland, coast, mountains…
+
+    The graph speaks `placelore`'s closed vocabulary, which is what the scene
+    art, the battlemap floor and the drawn map all read. Callers wanting the
+    TRAVEL cost of it must go through `_travel_terrain` below rather than
+    handing this string to `survival.travel`: the two tables were written
+    years apart and only half their words overlap.
+    """
     attrs = (getattr(ent, "attributes", None) or {})
     return str(attrs.get("terrain") or attrs.get("biome") or "grassland")
+
+
+def _travel_terrain(ent) -> str:
+    """…and the key that country goes by in `survival.travel.TERRAIN`.
+
+    `TERRAIN.get(name, TERRAIN["grassland"])` never complains about a word it
+    does not know, so farmland, river, coast, SEA, underdark, dungeon and
+    interior were every one of them costed as a stroll over a meadow — a sea
+    crossing included. One mapping, in `placelore` beside the terrain it maps.
+    """
+    from eight_card_system.placelore import travel_terrain
+    return travel_terrain(_place_terrain(ent))
 
 
 def extract_routes_hooks(text: str) -> tuple[str, list[str]]:
@@ -3627,7 +3647,7 @@ def _routes_to(pc_slug: str, destination: str) -> list[dict]:
     miles = geo.distance_mi(a, b)
     if miles <= 0.5:
         return []
-    terrain = _place_terrain(there)
+    terrain = _travel_terrain(there)
     danger_here = str((there.attributes or {}).get("danger") or "moderate")
     out: list[dict] = []
     for label, factor, danger, blurb in _ROUTE_KINDS:
@@ -8076,6 +8096,26 @@ def _vtt_place_context(ctx_obj) -> tuple[Optional[str], Optional[str], Optional[
         return None, None, None, None
 
 
+def _vtt_place_relief(place_slug: Optional[str], name: str = "") -> dict:
+    """How the ground LIES where this board is — placelore's one answer.
+
+    Read off ``terrain`` rather than ``biome``: a taproom's surface is
+    floorboards and the street outside it still climbs whatever hill the town
+    is built on. Handed DOWN to the generator rather than looked up there,
+    because the tactical layer must not know what a world graph is — the same
+    line that keeps ``_bastion_rooms`` on this side.
+    """
+    try:
+        from eight_card_system import placelore
+        ch = placelore.character_of(world, place_slug or name)
+        if ch is None:
+            return {}
+        return placelore.relief_of(ch.terrain or ch.biome)
+    except Exception as e:
+        print(f"[vtt] relief unavailable: {e}")
+        return {}
+
+
 def _vtt_place_look(place_slug: Optional[str]) -> str:
     """The ground texture of a place, for the battlemap prompt. "" if unknown."""
     if not place_slug:
@@ -8213,6 +8253,11 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
         archetype=arch,
         place_slug=place_slug,
         biome=biome,
+        # What the COUNTRY does, not just what it is: a street on a mountain
+        # town climbs and one on the plains does not. See placelore.RELIEF —
+        # the same answer the journey's cost and the drawn map's hachuring
+        # come from.
+        relief=_vtt_place_relief(place_slug, place_name or ""),
         width=width, height=height,
         creatures=creatures,
         board_scale=board_scale,

@@ -292,7 +292,7 @@ class TerrainSurvey:
         the same clause three times — repetition in a CLIP prompt reads as
         emphasis, and emphasising a sector doesn't make it appear there.
         """
-        from .placelore import terrain_words
+        from .placelore import relief_of, terrain_words
 
         by_biome: dict[str, list[str]] = {}
         for sector, biome in self.sectors.items():
@@ -303,6 +303,18 @@ class TerrainSurvey:
         for biome in order:
             where = by_biome[biome]
             words = terrain_words(biome, "map")
+            # WHAT the country is, and then what the ground DOES. Relief is
+            # most of what a drawn map is for — a reader wants to know whether
+            # the road climbs — and the terrain phrasing alone could only say
+            # "wooded hills", never how hard the going is. Carried on the
+            # dominant country only: three sectors' worth of hachuring
+            # instructions is a prompt about hachures rather than about
+            # country. See placelore.RELIEF, which is the same answer the
+            # street's gradient and the journey's cost are computed from.
+            if biome == order[0]:
+                lie = relief_of(biome).get("map_words") or ""
+                if lie:
+                    words = f"{words}, {lie}"
             if "centre" in where and len(where) == 1:
                 parts.append(f"{words} at the centre")
             elif len(where) >= 6:

@@ -169,6 +169,99 @@ _CLIMATE_BIOME = {
 }
 
 
+#: HOW THE GROUND LIES, per terrain — the one answer, beside the one terrain.
+#:
+#: "Terrain" was already a closed vocabulary that three renderers shared, and
+#: three OTHER systems were each answering "how rugged is this country" their
+#: own way: the street generator rolled a fall off a die, `survival.travel` kept
+#: a private terrain table whose words only half overlapped these, and the
+#: cartographer painted country with nothing to say about relief. A second
+#: answer to a settled question is the thing this module exists to prevent, so
+#: relief lives here, keyed on the same words.
+#:
+#: What each field is FOR, since they serve different callers:
+#:
+#: ``fall_ft``    how far a board-sized stretch of ground climbs, in feet, as
+#:                (least, most). Read by ``vtt.mapgen.road_profile``.
+#: ``waves``      how many rise-and-dips on the way, as (least, most). Steeper
+#:                is not the same as broken: a dune sea rolls without climbing,
+#:                a scarp climbs without rolling.
+#: ``cross``      how much of the fall is ACROSS the line of travel rather than
+#:                along it — the cant that makes ground read as cut into a
+#:                hillside rather than laid on a table.
+#: ``travel``     the key this country goes by in ``survival.travel.TERRAIN``.
+#:                The two vocabularies were written years apart and only half
+#:                overlap; naming the mapping HERE is what stops a sea crossing
+#:                being costed as a stroll over grassland, which is what
+#:                ``TERRAIN.get(terrain, TERRAIN["grassland"])`` quietly did to
+#:                farmland, river, coast, sea, underdark, dungeon and interior.
+#: ``map_words``  what the RELIEF looks like drawn, for the cartographer's
+#:                survey. Beside ``terrain_words(.., "map")``, which says what
+#:                the country is rather than what it does.
+RELIEF: dict[str, dict] = {
+    "farmland":  {"fall_ft": (0, 4),   "waves": (0, 1), "cross": 0.15,
+                  "travel": "grassland",
+                  "map_words": "barely any relief, near-level going"},
+    "forest":    {"fall_ft": (2, 8),   "waves": (0, 2), "cross": 0.25,
+                  "travel": "forest",
+                  "map_words": "relief hidden under the canopy"},
+    "hills":     {"fall_ft": (6, 14),  "waves": (1, 3), "cross": 0.35,
+                  "travel": "hills",
+                  "map_words": "hachured throughout, no level going anywhere"},
+    "river":     {"fall_ft": (1, 5),   "waves": (0, 1), "cross": 0.30,
+                  "travel": "grassland",
+                  "map_words": "a flat floodplain either side of it"},
+    "swamp":     {"fall_ft": (0, 3),   "waves": (0, 0), "cross": 0.10,
+                  "travel": "swamp",
+                  "map_words": "dead flat, no relief at all"},
+    "mountains": {"fall_ft": (12, 24), "waves": (1, 3), "cross": 0.45,
+                  "travel": "mountains",
+                  "map_words": "heavy hachuring, deep valleys between the ridges"},
+    "desert":    {"fall_ft": (2, 9),   "waves": (1, 3), "cross": 0.20,
+                  "travel": "desert",
+                  "map_words": "long dune ridges, rolling without climbing"},
+    "coast":     {"fall_ft": (2, 8),   "waves": (0, 2), "cross": 0.30,
+                  "travel": "grassland",
+                  "map_words": "ground falling away to the water"},
+    "sea":       {"fall_ft": (0, 0),   "waves": (0, 0), "cross": 0.0,
+                  "travel": "sea",
+                  "map_words": "no relief at all"},
+    "underdark": {"fall_ft": (4, 12),  "waves": (1, 3), "cross": 0.35,
+                  "travel": "underdark",
+                  "map_words": "shelves and drops on a broken floor"},
+    "dungeon":   {"fall_ft": (0, 5),   "waves": (0, 1), "cross": 0.15,
+                  "travel": "underdark",
+                  "map_words": "worked floors a step apart"},
+    "urban":     {"fall_ft": (2, 8),   "waves": (0, 2), "cross": 0.25,
+                  "travel": "road",
+                  "map_words": "streets following the lie of the ground"},
+    "interior":  {"fall_ft": (0, 0),   "waves": (0, 0), "cross": 0.0,
+                  "travel": "road",
+                  "map_words": ""},
+}
+
+#: What country nobody has surveyed does. Deliberately the middling case, which
+#: is what every caller assumed before relief was written down.
+GENERIC_RELIEF = {"fall_ft": (3, 8), "waves": (0, 1), "cross": 0.20,
+                  "travel": "grassland", "map_words": "broken country"}
+
+
+def relief_of(terrain: str) -> dict:
+    """How the ground lies in this country. Never raises; never returns None.
+
+    An unknown terrain gets the generic middling answer rather than a
+    KeyError — a caller that cannot cost a journey is worse than one that
+    costs it as ordinary country, which is the direction every other fallback
+    in this module errs in.
+    """
+    return dict(RELIEF.get((terrain or "").strip().lower(), GENERIC_RELIEF))
+
+
+def travel_terrain(terrain: str) -> str:
+    """This country's key in :data:`survival.travel.TERRAIN`."""
+    return str(relief_of(terrain)["travel"])
+
+
 def terrain_words(biome: str, register: str = "scene") -> str:
     """The visual phrasing for a biome in one of three registers.
 

@@ -20,6 +20,14 @@ TERRAIN = {
     "desert":    {"speed": 0.75, "nav_dc": 10, "forage_dc": 10, "forage_base": 20},
     "arctic":    {"speed": 0.5, "nav_dc": 10, "forage_dc": 10, "forage_base": 20},
     "urban":     {"speed": 1.0, "nav_dc": -10, "forage_dc": -5, "forage_base": 5},
+    # The world graph's own country reaches this table through
+    # `placelore.travel_terrain`, and these are the two kinds of going it had
+    # no word for at all. Without them `TERRAIN.get(t, TERRAIN["grassland"])`
+    # costed a sea crossing and a march through the Underdark as a stroll over
+    # a meadow — silently, because a dict lookup with a default never
+    # complains. See eight_card_system/placelore.py: RELIEF.
+    "sea":       {"speed": 1.0, "nav_dc": 10, "forage_dc": 0, "forage_base": 10},
+    "underdark": {"speed": 0.5, "nav_dc": 15, "forage_dc": 10, "forage_base": 20},
 }
 
 PACES = ("fast", "normal", "slow")

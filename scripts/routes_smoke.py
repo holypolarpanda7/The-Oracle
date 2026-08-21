@@ -68,5 +68,41 @@ if m._routes_to(pc.slug, "Nowhere At All"): fails.append("routed to an unknown p
 here = m.world.location_of(pc.slug)
 if m._routes_to(pc.slug, here.slug): fails.append("routed to where the PC already stands")
 
+# 5. ONE terrain vocabulary. `placelore` decides what country a place is in —
+#    the closed set the scene art, the battlemap floor and the drawn map all
+#    read — and `survival.travel` keeps its own, older, half-overlapping set.
+#    `TERRAIN.get(name, TERRAIN["grassland"])` never complains about a word it
+#    has not got, so farmland, river, coast, SEA, underdark, dungeon and
+#    interior were each costed as a stroll over a meadow. This is the check
+#    that fails when the two drift apart again.
+from eight_card_system.placelore import RELIEF, _TERRAIN, relief_of, travel_terrain
+from survival.travel import TERRAIN as TRAVEL_TERRAIN, travel as _tv
+
+missing = sorted(set(_TERRAIN) - set(RELIEF))
+if missing:
+    fails.append(f"terrain with no relief: {missing}")
+strays = sorted(set(RELIEF) - set(_TERRAIN))
+if strays:
+    fails.append(f"relief for a terrain that does not exist: {strays}")
+unknown = sorted(t for t in RELIEF if travel_terrain(t) not in TRAVEL_TERRAIN)
+if unknown:
+    fails.append(f"terrain travel.TERRAIN has never heard of: {unknown}")
+# ...and the mapping has to MEAN something: rough country must cost more than
+# easy country, or naming it changed nothing.
+easy = _tv(60, terrain=travel_terrain("farmland"))["days"]
+hard = _tv(60, terrain=travel_terrain("mountains"))["days"]
+if not hard > easy:
+    fails.append(f"mountains cost no more than farmland ({hard} vs {easy} days)")
+if _tv(60, terrain=travel_terrain("sea"))["days"] <= 0:
+    fails.append("a sea crossing takes no time")
+# Every country says how its ground lies, for the boards and the cartographer.
+for t in RELIEF:
+    r = relief_of(t)
+    lo, hi = r["fall_ft"]
+    if lo > hi or hi < 0:
+        fails.append(f"{t} has a nonsense fall {r['fall_ft']}")
+    if t not in ("interior",) and not r["map_words"]:
+        fails.append(f"{t} tells the cartographer nothing about its relief")
+
 print("\nFAILS:", fails or "none")
 sys.exit(1 if fails else 0)

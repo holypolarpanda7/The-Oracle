@@ -1609,8 +1609,11 @@ def test_vessels() -> None:
              for s in (11, 23, 41, 57)]
     _steep = [_road("a high mountain road under the peaks", s)[1]
               for s in (11, 23, 41, 57)]
+    # Six feet over a 230-ft board is a 2.6% grade: nearly level, and the low
+    # end of the range is a genuine ZERO — a street on a plain is allowed to
+    # come back flat.
     check("a street on the plains is nearly level",
-          max(_flat) <= 4, f"falls {_flat} ft")
+          max(_flat) <= 6 and min(_flat) <= 1, f"falls {_flat} ft")
     check("...and one on a mountainside climbs",
           min(_steep) >= 12, f"falls {_steep} ft")
     check("...by a good deal more than the flat one, every time",
