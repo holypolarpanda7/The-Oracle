@@ -711,6 +711,48 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   silhouettes — a cliff fills its square so neighbours merge into a face, a
   boulder stands alone and needs an outline — so sharing one drew every fallen
   stone as a full-square fourteen-foot block.
+- **A ROOF is bigger than a square too, and that is why a street looked like
+  huts.** The `townhouse` skin carried a gable PER SQUARE, so a terrace of
+  close-packed two-storey houses came out a sawtooth of one-square huts —
+  twelve little ridges over one building. No amount of shape authoring inside a
+  square fixes that: what is wrong is the SIZE OF THE UNIT, which is the
+  `vtt/hull.py` argument arriving from the other side. `hull.roofs` traces each
+  contiguous run of a roofed skin and puts one roof on it, computed on the
+  server and shipped in `state()` for the same reason a hull is — an algorithm
+  over the board is the one kind of geometry two languages cannot be trusted to
+  agree about. A skin opts in with `roof_ft` (how far the ridge stands above
+  the eaves) and `roof_at` (where the eaves sit in its drawn height).
+  **The ridge is a uniform inward OFFSET of the footprint**, which is the
+  straight skeleton for any rectangle and close enough for the rest, and two
+  things about it are load-bearing. The corner factor is `d / |bisector|²`,
+  not `d / |bisector|` — the average of two unit normals is shorter than either,
+  so a corner has to travel `d / cos` to put both edges at `d`, and getting
+  that wrong by one factor left a two-square terrace with a ridge half a square
+  across, which is a flat-topped slab. And **a polygon collapsed to a line is
+  the ANSWER, not a failure**: that is exactly what a ridge IS over a building
+  narrower than twice the inset, and over a square one it collapses to a point,
+  which is a pyramid. What must be rejected is an offset that has turned itself
+  inside out, told apart by asking whether any edge now runs backwards — and
+  then halved and retried rather than abandoned.
+  **Winding is normalized, never trusted** (the `skins.solid` rule, and it
+  bites twice as hard on shipped geometry): a loop traced the other way shades
+  the near pitch as though it faced away and, in the browser, culls the roof
+  outright — the building comes back with no top and neither program looks
+  broken. Both renderers walk the SAME cycle: eaves i, eaves j, ridge j,
+  ridge i.
+  **A BATTER is a property of a mass, so it cannot be per square.** The
+  townhouse and tower walls were given a lean as part of the same pass and a
+  terrace came back with a bright hairline slot up the face at every square
+  boundary — two neighbours both tapering in leave a wedge between them. Where
+  a shape belongs to something bigger than a square, the square is the wrong
+  place to put it, which is the same sentence the traced roof answers.
+  Two tools came out of doing this and are worth knowing about:
+  `scripts/shape_probe.py` draws any archetype's GEOMETRY in colour with no GPU
+  and no browser (the rasterizer already took a `_colour_of` and nothing had
+  ever passed one, so the only way to look at a silhouette was to build the
+  app), and `scripts/demo_textures.py --board <archetype>` stages a REAL
+  generated board over the offline demo so the browser can be pointed at a
+  street or a reef without a backend or a session.
 - **A thing bigger than a square cannot be drawn a square at a time.** A
   vessel's deck is carved out of a grid, so its outline is a staircase, and
   cutting each step's outer corner within its own square joins the steps into a

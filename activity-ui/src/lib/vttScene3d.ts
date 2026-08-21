@@ -982,6 +982,46 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       }
     }
 
+    // ROOFS. One per building, traced over its footprint — see vtt/hull.py's
+    // `roofs` for why a gable per square makes a terrace into a row of huts.
+    // Drawn into the SKIN's own builder, so a roof wears the material of the
+    // building under it rather than a colour of its own.
+    for (const roof of scene.roofs ?? []) {
+      const eaves = roof.eaves ?? [];
+      const ridge = roof.ridge ?? eaves;
+      if (eaves.length < 3 || ridge.length !== eaves.length) continue;
+      const slot = materialSlot("#", roof.skin);
+      const mb = builderFor(slot);
+      mb.at = 0;
+      const col = new THREE.Color(
+        textured.has(slot) ? "#ffffff" : tileStyle("#").fill);
+      const lo = base + heightUnits(scene, roof.eaves_ft || 0);
+      const hi = base + heightUnits(scene, roof.ridge_ft || 0);
+      for (let i = 0; i < eaves.length; i++) {
+        const j = (i + 1) % eaves.length;
+        // A pitch. Where the ridge has collapsed the quad's two upper corners
+        // coincide and it degenerates to the triangle a hip end really is.
+        // The SAME cycle the depth map walks (vtt/isocam.py): eaves i, eaves j,
+        // ridge j, ridge i. Reversed, the normal points into the roof and the
+        // pitch is culled — the building comes back with no top, and neither
+        // program looks wrong on its own.
+        mb.quad(v3(eaves[i][0], lo, eaves[i][1]), v3(eaves[j][0], lo, eaves[j][1]),
+                v3(ridge[j][0], hi, ridge[j][1]), v3(ridge[i][0], hi, ridge[i][1]),
+                col);
+      }
+      // The ridge itself, so a hip is closed rather than open to the sky.
+      const flat = ridge.every((p) => Math.abs(p[0] - ridge[0][0]) < 1e-9
+                                   && Math.abs(p[1] - ridge[0][1]) < 1e-9);
+      if (!flat) {
+        for (let i = 1; i + 1 < ridge.length; i++) {
+          mb.quad(v3(ridge[0][0], hi, ridge[0][1]),
+                  v3(ridge[i][0], hi, ridge[i][1]),
+                  v3(ridge[i + 1][0], hi, ridge[i + 1][1]),
+                  v3(ridge[0][0], hi, ridge[0][1]), col);
+        }
+      }
+    }
+
     // Scenery, into its own builder so it shares the plain untextured material
     // and never inherits a wall's swatch. It stands ON the floor and occludes
     // nothing the rules care about, so it needs no ordering.

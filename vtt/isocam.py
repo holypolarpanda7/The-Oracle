@@ -863,6 +863,57 @@ def draw_parts(face, shade, parts, turns: int, ox: float, oz: float,
 
 
 
+@lru_cache(maxsize=32)
+def _obj_triangles(path: str) -> tuple[tuple[tuple[float, float, float], ...], ...]:
+    """An OBJ's faces as triangles, in the file's own units.
+
+    Deliberately minimal: ``v`` and ``f`` and nothing else. No materials, no
+    normals, no texture coordinates — the geometry here is a DEPTH OCCLUDER,
+    and the painted layer supplies every appearance the board ever shows. That
+    is also why the catalogue prefers OBJ over glTF: this is the whole loader,
+    and it needs no dependency the server did not already have.
+
+    Faces of more than three vertices are fanned, matching what ``face()``
+    does with a polygon everywhere else on the board.
+    """
+    verts: list[tuple[float, float, float]] = []
+    tris: list[tuple[tuple[float, float, float], ...]] = []
+    try:
+        with open(path, "r", errors="ignore") as fh:
+            for line in fh:
+                if line.startswith("v "):
+                    p = line.split()
+                    if len(p) >= 4:
+                        try:
+                            verts.append((float(p[1]), float(p[2]), float(p[3])))
+                        except ValueError:
+                            pass
+                elif line.startswith("f "):
+                    idx: list[int] = []
+                    for tok in line.split()[1:]:
+                        # "f v/vt/vn" — only the vertex index is wanted.
+                        head = tok.split("/")[0]
+                        try:
+                            i = int(head)
+                        except ValueError:
+                            continue
+                        # OBJ is 1-based and allows NEGATIVE indices counting
+                        # back from the newest vertex. Reading a -1 as an
+                        # absolute index silently builds a mesh out of the
+                        # wrong corners, which looks like a broken model rather
+                        # than a broken parser.
+                        idx.append(i - 1 if i > 0 else len(verts) + i)
+                    for k in range(1, len(idx) - 1):
+                        try:
+                            tris.append((verts[idx[0]], verts[idx[k]],
+                                         verts[idx[k + 1]]))
+                        except IndexError:
+                            continue
+    except OSError:
+        return ()
+    return tuple(tris)
+
+
 def setpiece_triangles(inst: dict, mesh_file: str, *,
                        floor_y: float = 0.0) -> list[tuple[tuple[float, float, float], ...]]:
     """A landmark's triangles placed on the board, in board units.
@@ -951,7 +1002,8 @@ def coverage_mask(rows: Sequence[str], **kw) -> bytes:
 
 
 def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
-                skin_of=None, elevation=None, shells=None, setpieces=None,
+                skin_of=None, elevation=None, shells=None, roofs=None,
+                setpieces=None,
                 _mask_only: bool = False, _colour_of=None, _flat: bool = False,
                 square_ft: int = 5,
                 px_per_square: int = 48, pad_squares: float = FRAME_PAD_SQUARES,
@@ -1335,6 +1387,43 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
             face([(ax, top, az), (low[i][0], drop, low[i][1]),
                   (low[j][0], drop, low[j][1]), (bx, top, bz)])
         shade(TOP_TINT)
+
+    # ROOFS. One per building, traced over its whole footprint rather than a
+    # gable per square — see vtt.hull.roofs. Drawn after the walls it sits on
+    # and before the scenery, which is the same place in the order a shell
+    # takes for the same reason.
+    for roof in (roofs or []):
+        eaves = roof.get("eaves") or []
+        ridge = roof.get("ridge") or eaves
+        if len(eaves) < 3 or len(ridge) != len(eaves):
+            continue
+        lo = units(float(roof.get("eaves_ft") or 0))
+        hi = units(float(roof.get("ridge_ft") or 0))
+        if _colour_of:
+            cur_colour[0] = _colour_of("#", str(roof.get("skin") or ""))
+        n = len(eaves)
+        for i in range(n):
+            j = (i + 1) % n
+            ax, az = eaves[i]
+            bx, bz = eaves[j]
+            cx, cz = ridge[j]
+            dx, dz = ridge[i]
+            ex, ez = bx - ax, bz - az
+            run = math.sqrt(ex * ex + ez * ez)
+            if run < 1e-9:
+                continue
+            # A roof PITCH catches the light differently from a wall, which is
+            # most of what tells the two apart from a camera on the ceiling.
+            shade(_tint_for(-ez / run, 0.55, ex / run))
+            if abs(cx - dx) < 1e-9 and abs(cz - dz) < 1e-9:
+                face([(ax, lo, az), (bx, lo, bz), (cx, hi, cz)])
+            else:
+                face([(ax, lo, az), (bx, lo, bz), (cx, hi, cz), (dx, hi, dz)])
+        # The ridge itself, so a hip is closed rather than open to the sky.
+        if any(abs(ridge[i][0] - ridge[0][0]) > 1e-9
+               or abs(ridge[i][1] - ridge[0][1]) > 1e-9 for i in range(n)):
+            shade(TOP_TINT)
+            face([(p[0], hi, p[1]) for p in ridge])
 
     # Scenery last: it stands ON the floor and never occludes anything the
     # rules care about, so it needs no ordering of its own.

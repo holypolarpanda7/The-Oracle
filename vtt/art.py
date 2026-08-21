@@ -790,6 +790,10 @@ def conditioning_kwargs(gen: GeneratedMap, *, skin_of=None) -> dict:
         square_ft=5, structure=STRUCTURE_CODES, skin_of=skin_of,
         elevation=gen.elevation,
         shells=_hull.shells(gen.grid.rows, skin_of, gen.elevation),
+        # One roof per BUILDING, traced over its footprint. Without it the
+        # painter is conditioned on a terrace of houses with no roofs at all,
+        # which is a stranger picture than the sawtooth it replaced.
+        roofs=_hull.roofs(gen.grid.rows, skin_of, gen.elevation),
         # The landmarks, or the painter is conditioned on a depth map with a
         # HOLE where the colossus stands — it would paint open ground there and
         # the geometry would then be a statue nothing in the picture agrees

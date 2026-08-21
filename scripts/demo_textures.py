@@ -35,6 +35,7 @@ from sqlmodel import Session, select                      # noqa: E402
 
 from imagery import ImageStore                            # noqa: E402
 from imagery.models import EntityImage, slugify           # noqa: E402
+from vtt import skins as _skins                          # noqa: E402
 from vtt import surface as S                              # noqa: E402
 from vtt.art import material_ref                          # noqa: E402
 
@@ -47,7 +48,11 @@ DIST = ROOT / "activity-ui" / "dist" / "imagery"
 SEAM = ROOT / "activity-ui" / "dist" / "demo-surfaces.json"
 
 
-def stage() -> int:
+def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "") -> int:
+    """Copy the swatches for these tile codes into the build, with their
+    derived surfaces. ``arch`` names the board they belong to, because a
+    material is filed per (code, skin, look) and the tavern's floor is not the
+    street's."""
     store = ImageStore()
     with Session(store.engine) as s:
         rows = {r.ref_slug: r for r in s.exec(
@@ -55,8 +60,9 @@ def stage() -> int:
     (DIST / "image").mkdir(parents=True, exist_ok=True)
     materials: dict[str, int] = {}
     surfaces: dict[str, dict] = {}
-    for code in DEMO_CODES:
-        slug = slugify(material_ref(code, ""))
+    skinned = _skins.skins_for(arch) if arch else {}
+    for code in codes:
+        slug = slugify(material_ref(code, skinned.get(code, "")))
         row = rows.get(slug)
         if row is None:
             print(f"  {code!r:>4} -> no swatch ({slug})")
@@ -90,6 +96,53 @@ def stage() -> int:
     return 0
 
 
+def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
+    """A REAL generated board, in the shape `state()` ships.
+
+    The demo is a tavern, so judging how a STREET or a REEF looks in the
+    browser used to mean standing up a backend and a session for it. This is
+    the same geometry the engine would ship — including the pieces that are
+    TRACED rather than derived per square, which are exactly the ones worth
+    looking at in a browser, because nothing about them can be checked by the
+    alignment gate (the server computes them and both renderers draw the
+    answer).
+    """
+    from vtt import decor as _decor
+    from vtt import hull as _hull
+    from vtt import skins as _skins
+    from vtt.mapgen import generate_map
+    from vtt.terrain import tile, tile_height_ft
+
+    w, h = size
+    gen = generate_map(arch, width=w, height=h, seed=seed)
+    codes = _skins.skins_for(arch, style=gen.style or "")
+    squares = dict(gen.skins or {})
+
+    def skin_of(c: str, x: int, z: int) -> str:
+        return _skins.skin_at(c, x, z, codes=codes, squares=squares)
+
+    rows = gen.grid.to_rows()
+    return {
+        "width": w, "height": h,
+        "terrain": rows,
+        "levels": [{"name": "Ground", "base_ft": 0, "terrain": rows,
+                    "elevation": dict(gen.elevation or {}), "stairs": []}],
+        "elevation": dict(gen.elevation or {}),
+        "skins": {"codes": codes, "squares": squares},
+        "decor": _decor.decor_for(rows, seed=gen.seed,
+                                  standing=lambda c: tile_height_ft(c) > 0,
+                                  archetype=arch),
+        "shells": _hull.shells(rows, skin_of, gen.elevation),
+        "roofs": _hull.roofs(rows, skin_of, gen.elevation),
+        "objects": [{"x": x, "y": z, "code": rows[z][x],
+                     "name": tile(rows[z][x]).name}
+                    for z in range(h) for x in range(w)
+                    if tile(rows[z][x]).name and rows[z][x] in "Oon Aw+/p"],
+        "doors": [], "fog": None, "sight": None, "light": None,
+        "description": gen.description or arch,
+    }
+
+
 def clear() -> int:
     shutil.rmtree(DIST, ignore_errors=True)
     SEAM.unlink(missing_ok=True)
@@ -101,5 +154,29 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", action="store_true")
     ap.add_argument("--clear", action="store_true")
+    ap.add_argument("--board", default="",
+                    help="stage a REAL generated board of this archetype over "
+                         "the demo's tavern, so its geometry can be looked at "
+                         "in a browser")
+    ap.add_argument("--seed", type=int, default=11)
+    ap.add_argument("--size", default="24x18")
     a = ap.parse_args()
-    raise SystemExit(clear() if a.clear else stage())
+    if a.clear:
+        raise SystemExit(clear())
+    if a.board:
+        import json as _json
+        w, h = (int(v) for v in a.size.lower().split("x"))
+        made = board(a.board, a.seed, (w, h))
+        # The swatches for THIS board's codes, not the tavern's — a staged
+        # street lit by a taproom's floorboards is a probe of nothing.
+        rc = stage(tuple(sorted({c for r in made["terrain"] for c in r})),
+                   arch=a.board)
+        got = _json.loads(SEAM.read_text(encoding="utf-8")) if SEAM.exists() else {}
+        got.update(made)
+        SEAM.write_text(_json.dumps(got), encoding="utf-8")
+        print(f"staged the {a.board} board ({w}x{h}, seed {a.seed}): "
+              f"{len(got.get('roofs') or [])} roof(s), "
+              f"{len(got.get('shells') or [])} hull(s)")
+    else:
+        rc = stage()
+    raise SystemExit(rc)

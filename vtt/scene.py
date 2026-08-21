@@ -1049,6 +1049,33 @@ class VttEngine:
                                           style=row.board_style or ""),
                 "squares": dict(row.skins or {})}
 
+    def roofs_for(self, map_id: int) -> list[dict]:
+        """One roof per BUILDING on this board, traced over its footprint.
+
+        The same argument as :meth:`shells_for`, arriving from the other
+        direction: a roof is bigger than a square, and drawing it a square at a
+        time gave a terrace of houses a sawtooth of one-square huts. Traced
+        HERE, once, and both renderers draw the answer — an algorithm over the
+        board is the one kind of geometry two languages cannot be trusted to
+        agree about. See :mod:`vtt.hull`.
+        """
+        from . import hull as _hull
+        from . import skins as _skins
+
+        row = self.get_scene(map_id)
+        if row is None:
+            return []
+        codes = _skins.skins_for(row.archetype or "", style=row.board_style or "")
+        squares = dict(row.skins or {})
+        names = list(codes.values()) + list(squares.values())
+        if not any(getattr(_skins.skin(n), "roof_ft", 0) for n in names):
+            return []                      # nothing here is a building
+
+        def skin_of(c: str, x: int, z: int) -> str:
+            return _skins.skin_at(c, x, z, codes=codes, squares=squares)
+
+        return _hull.roofs(list(row.terrain or []), skin_of, row.elevation or {})
+
     def shells_for(self, map_id: int) -> list[dict]:
         """Every vessel SHELL on this board — one traced hull per body.
 
@@ -3837,6 +3864,10 @@ class VttEngine:
             # A vessel's hull, traced as one outline rather than a side per
             # square. Empty on every board that is not a ship. See vtt/hull.py.
             "shells": self.shells_for(map_id),
+            # One roof per BUILDING, traced over its whole footprint. Same
+            # reason as the shells above: a roof is bigger than a square, and a
+            # gable drawn on each of them makes a terrace a row of huts.
+            "roofs": self.roofs_for(map_id),
             # The route the last walk actually took, so a viewer can animate a
             # creature AROUND the wall rather than through it.
             "last_move": self.last_move(map_id),

@@ -242,6 +242,21 @@ class Skin:
     #: side against its own mast, so the board had a shaft sunk round the mast
     #: and a paper-thin outer rim where the rail met the water.
     body: str = ""
+    #: How far above this square's drawn height the ROOF's ridge stands, in
+    #: feet. Non-zero means the squares wearing this skin are a BUILDING, and
+    #: one roof is traced over each contiguous run of them (:func:`vtt.hull.
+    #: roofs`) instead of a gable being drawn on every square.
+    #:
+    #: That distinction is the whole point. A roof is bigger than a square, so
+    #: drawing it a square at a time gives a terrace of houses a SAWTOOTH of
+    #: one-square huts — twelve little ridges over what the prompt calls
+    #: "close-packed two-storey townhouses" — and no amount of shape authoring
+    #: inside one square can fix it, because what is wrong is the size of the
+    #: unit. Same argument as a vessel's hull, arriving from the other side.
+    roof_ft: float = 0.0
+    #: Where the eaves sit, as a fraction of the drawn height. Below this the
+    #: square draws its own wall; above it the traced roof takes over.
+    roof_at: float = 1.0
     #: Extra NEGATIVE terms for this skin's swatch, on top of
     #: ``art.MATERIAL_NEGATIVE``.
     #:
@@ -473,36 +488,20 @@ _POST = _v(
            0.88, 0.97)),
 )
 
+#: A townhouse WALL — and only the wall. The roof used to be here, a gable per
+#: square, which is why a street of them came back a sawtooth of huts; it is
+#: traced over the whole building now (:func:`vtt.hull.roofs`).
+#:
+#: FLUSH, and that is a lesson rather than a preference. A batter — a wall
+#: leaning in as it rises — is a property of a MASS, and applied per square it
+#: makes a wedge-shaped gap with every neighbour: a terrace came back with a
+#: bright hairline slot up the face at every square boundary. Where a shape
+#: belongs to something bigger than a square, the square is the wrong place to
+#: put it, which is the same sentence the roof above is an answer to.
 _TOWNHOUSE = _v(
-    # Gabled along x: the ridge runs east-west. The wall is battered by a
-    # hundredth over two storeys — nothing you would measure, and the line
-    # between a built thing and a carton at this distance.
-    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.01, 0.99, 0.01, 0.99),
-           0.0, _ROOF_HIGH),
-     solid(((0.0, -0.06), (1.0, -0.06), (1.0, 1.06), (0.0, 1.06)),
-           ((0.0, 0.5), (1.0, 0.5), (1.0, 0.5), (0.0, 0.5)),
-           _ROOF_HIGH, 1.0)),
-    # Gabled along z, and a storey lower.
-    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.01, 0.99, 0.01, 0.99),
-           0.0, _ROOF_LOW),
-     solid(((-0.06, 0.0), (1.06, 0.0), (1.06, 1.0), (-0.06, 1.0)),
-           ((0.5, 0.0), (0.5, 0.0), (0.5, 1.0), (0.5, 1.0)),
-           _ROOF_LOW, 0.94)),
-    # Flat-topped with a parapet — a merchant's counting house. The parapet
-    # courses are COPED: a top plan narrower than the bottom, so the cap sheds
-    # and the roof line is a line rather than a kerb.
-    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.01, 0.99, 0.01, 0.99),
-           0.0, 0.86),
-     slab(0.0, 1.0, 0.0, 0.12, 0.86, 1.0, chamfer=0.12),
-     slab(0.0, 1.0, 0.88, 1.0, 0.86, 1.0, chamfer=0.12),
-     slab(0.0, 0.12, 0.0, 1.0, 0.86, 1.0, chamfer=0.12),
-     slab(0.88, 1.0, 0.0, 1.0, 0.86, 1.0, chamfer=0.12)),
-    # Hipped: drawn in on all four sides to a short ridge.
-    ((0.0, 1.0, 0.0, 1.0, 0.0, _ROOF_HIGH),
-     solid(((-0.06, -0.06), (1.06, -0.06), (1.06, 1.06), (-0.06, 1.06)),
-           ((0.28, 0.40), (0.72, 0.40), (0.72, 0.60), (0.28, 0.60)),
-           _ROOF_HIGH, 1.0)),
+    ((0.0, 1.0, 0.0, 1.0, 0.0, _ROOF_HIGH),),
 )
+
 
 #: Half cover, four feet, out in a field: that is a BOULDER, not a crate.
 #:
@@ -727,19 +726,16 @@ _TENT_CANOPY = _v((
 #:
 #: Two arrangements with the merlons in different places, quarter-turned per
 #: square, so a ring of them crenellates unevenly instead of marching.
-#: A stone tower: a battered wall under capped merlons.
+#: A stone tower: a plain wall under CAPPED merlons.
 #:
-#: The batter is tiny (a fortieth of a square over sixteen feet) and it is the
-#: difference between masonry and a carton: real walls lean in as they rise,
-#: and the one line the eye reads at this distance is the one where a face
-#: stops being parallel to its neighbour's.
+#: The wall is flush for the reason `_TOWNHOUSE` is — a batter is a property of
+#: a mass and per square it opens a slot against every neighbour. The merlons
+#: are where the shape lives, and they are single squares, so they may be cut.
 _TOWER = _v(
-    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.015, 0.985, 0.015, 0.985),
-           0.0, 0.86),
+    ((0.00, 1.00, 0.00, 1.00, 0.0, 0.86),
      slab(0.02, 0.40, 0.02, 0.40, 0.86, 1.00, chamfer=0.10),
      slab(0.60, 0.98, 0.02, 0.40, 0.86, 1.00, chamfer=0.10)),
-    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.015, 0.985, 0.015, 0.985),
-           0.0, 0.86),
+    ((0.00, 1.00, 0.00, 1.00, 0.0, 0.86),
      slab(0.30, 0.70, 0.02, 0.40, 0.86, 1.00, chamfer=0.10),
      slab(0.02, 0.34, 0.60, 0.98, 0.86, 1.00, chamfer=0.10)),
 )
@@ -1099,7 +1095,13 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="the street is walled by the fronts of close-packed two-storey "
                "townhouses — lime plaster and dark timber framing, shuttered "
                "windows, doors onto the street, steep tiled roofs above",
-         variants=_TOWNHOUSE, height_ft=24, smooth=True),
+         # A BUILDING: its roof is traced over the whole block rather than
+         # drawn on each square. The eaves sit where the per-square gable used
+         # to spring from (0.70 of the drawn height) and the ridge reaches the
+         # same twenty-four feet the block always stood — so the proportions
+         # are the ones that were tuned, and only the SIZE OF THE UNIT changed.
+         variants=_TOWNHOUSE, height_ft=24, smooth=True,
+         roof_ft=7.2, roof_at=0.70),
     Skin("cobbles", "cobble",
          "close-up of a worn cobbled street surface, rounded granite setts and "
          "the gaps between them",

@@ -455,6 +455,9 @@ function demoVtt(stage: number): VttScene {
         blocks_sight: false, concentration: false, expires_round: null },
     ],
     legend: "# wall, o crates, O pillar, ~ shallow water, , rubble",
+    // LAST, so a staged board replaces the demo's own terrain, skins,
+    // elevation and traced geometry outright rather than sitting under it.
+    ...(DEMO_SURFACES ?? {}),
   };
 }
 

@@ -1470,6 +1470,79 @@ def test_vessels() -> None:
     from . import mapgen as _mg
     from . import vessels as _v
 
+    section("roofs: a building is bigger than a square")
+    # The townhouse skin carried a GABLE PER SQUARE, so a terrace of houses
+    # came out a sawtooth of one-square huts — twelve little ridges over what
+    # the prompt calls "close-packed two-storey townhouses". No amount of shape
+    # authoring inside one square fixes that: what is wrong is the size of the
+    # unit. Traced over the footprint, the same terrace is one roof.
+    from . import hull as _hl
+    from . import skins as _sk
+    from .mapgen import generate_map as _gm3
+
+    _st = _gm3("street", width=30, height=22, seed=7)
+    _codes = _sk.skins_for("street", style=_st.style or "")
+    _sq = dict(_st.skins or {})
+
+    def _skin3(c, x, z):
+        return _sk.skin_at(c, x, z, codes=_codes, squares=_sq)
+
+    _rows3 = _st.grid.to_rows()
+    _roofs = _hl.roofs(_rows3, _skin3, _st.elevation)
+    _houses = sum(1 for r in _rows3 for c in r if c == "#")
+    check("a street of buildings gets roofs", bool(_roofs), f"{len(_roofs)}")
+    check("...one per BUILDING, not one per square",
+          0 < len(_roofs) < _houses / 4,
+          f"{len(_roofs)} roof(s) over {_houses} building squares")
+    check("every roof's ridge matches its eaves point for point",
+          all(len(r["ridge"]) == len(r["eaves"]) >= 3 for r in _roofs))
+    check("...and stands ABOVE them, or it is a floor",
+          all(r["ridge_ft"] > r["eaves_ft"] for r in _roofs))
+    # The eaves OVERHANG: an eave flush with its wall is a flat top, and the
+    # shadow line under an overhang is most of what says "roof" from above.
+    _wide = [max(p[0] for p in r["eaves"]) - min(p[0] for p in r["eaves"])
+             for r in _roofs]
+    check("the eaves stand proud of the wall they cover",
+          all(w > 1.0 for w in _wide), f"widest {max(_wide):.1f} squares")
+    # Winding is NORMALIZED, never trusted: a loop traced the other way round
+    # shades the near pitch as though it faced away and, in the browser, culls
+    # the roof outright — the building comes back with no top and neither
+    # program looks broken. Counter-clockwise seen from above is NEGATIVE under
+    # this shoelace, because z grows southward.
+    def _shoelace(loop):
+        n = len(loop)
+        return sum(loop[i][0] * loop[(i + 1) % n][1]
+                   - loop[(i + 1) % n][0] * loop[i][1] for i in range(n)) / 2
+
+    check("every roof is wound the way the renderers expect",
+          all(_shoelace(r["eaves"]) < 0 for r in _roofs),
+          str([round(_shoelace(r["eaves"]), 1) for r in _roofs][:4]))
+    # A hip over a SQUARE building collapses to a point, and that is a pyramid
+    # rather than a failure; over a long one it collapses to a LINE, which is
+    # the ridge. Both must survive, because rejecting a degenerate offset is
+    # what made a two-square terrace come back flat-topped.
+    from .hull import _offset_loop as _off
+    _line = _off([(0, 0), (4, 0), (4, 2), (0, 2)], 1.0)
+    _pt = _off([(0, 0), (3, 0), (3, 3), (0, 3)], 1.5)
+    check("a hip over a long building collapses to a ridge LINE",
+          len({(round(p[0], 3), round(p[1], 3)) for p in _line}) == 2,
+          str([tuple(round(v, 2) for v in p) for p in _line]))
+    check("...and over a square one to a POINT, which is a pyramid",
+          len({(round(p[0], 3), round(p[1], 3)) for p in _pt}) == 1,
+          str([tuple(round(v, 2) for v in p) for p in _pt]))
+    check("...and an offset that would turn inside out is pulled back",
+          _off([(0, 0), (4, 0), (4, 2), (0, 2)], 9.0)
+          != [(2.0, 1.0)] * 4)
+    # A board with no buildings on it must trace nothing at all.
+    _cave = _gm3("cave", width=24, height=18, seed=7)
+    _cc = _sk.skins_for("cave", style=_cave.style or "")
+    _cs = dict(_cave.skins or {})
+    check("a board with no buildings gets no roofs",
+          not _hl.roofs(_cave.grid.to_rows(),
+                        lambda c, x, z: _sk.skin_at(c, x, z, codes=_cc,
+                                                    squares=_cs),
+                        _cave.elevation))
+
     section("vessels: a hull is the vessel's, not the board's")
 
     seen: set[str] = set()

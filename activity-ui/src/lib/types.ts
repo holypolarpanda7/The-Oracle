@@ -516,6 +516,21 @@ export interface VttScene {
      *  gave up, so the planking reaches its own hull. */
     fill: [number, number][][];
   }[];
+  /** One ROOF per building, traced over its whole footprint.
+   *
+   *  The same argument as `shells`, from the other side: a roof is bigger than
+   *  a square, and a gable drawn on each square made a terrace of houses a
+   *  sawtooth of one-square huts. `eaves` and `ridge` have the same number of
+   *  points and correspond one to one, so each pitch is the quad between
+   *  them — degenerate to a triangle where the ridge has collapsed to a point,
+   *  which is what a hipped roof over a square building is. */
+  roofs?: {
+    skin: string;
+    eaves_ft: number;
+    ridge_ft: number;
+    eaves: [number, number][];
+    ridge: [number, number][];
+  }[];
   /** Discrete things standing on squares — read off the grid by the server. */
   objects?: VttObject[];
   /** Scenery — drawn by every view, honoured by none of the rules. Never tall

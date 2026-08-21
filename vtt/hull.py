@@ -28,6 +28,7 @@ code says it stands.
 """
 from __future__ import annotations
 
+import math
 from typing import Callable, Optional, Sequence
 
 from . import skins as _skins
@@ -240,4 +241,167 @@ def shells(rows: Sequence[str], skin_of: Optional[Callable] = None,
                     "fill": [[[a[0], a[1]], [b[0], b[1]], [c[0], c[1]]]
                              for a, b, c in fill],
                 })
+    return out
+
+
+# --------------------------------------------------------------------------
+# Roofs
+#
+# The same argument as a hull, arriving from the other direction. A roof is
+# bigger than a square, so it cannot be drawn a square at a time — and drawing
+# it a square at a time is exactly what the board did: the ``townhouse`` skin
+# carried a gable per square, so a terrace of houses came out a SAWTOOTH of
+# one-square huts, twelve little ridges over what the prompt calls "close-packed
+# two-storey townhouses". No amount of shape authoring inside one square fixes
+# that, because the thing that is wrong is the size of the unit.
+#
+# So a building is traced like a vessel, and one roof is put on it. Everything
+# the hull tracer learned applies unchanged: only the OUTER loop (a building's
+# footprint is full of holes where a doorway or a chimney replaced its tile),
+# the notch vertices dropped so a staircase outline becomes a line, and the
+# whole thing computed HERE and shipped, because an algorithm over the board is
+# the one kind of geometry two languages cannot be trusted to agree about.
+# --------------------------------------------------------------------------
+
+#: How far a roof's eaves overhang the wall below, in squares. Small, and
+#: load-bearing for the same reason ``HULL_TAPER`` is: an eave flush with its
+#: wall is a flat top, and the shadow line under an overhang is most of what
+#: says "roof" from above.
+ROOF_EAVES = 0.12
+
+
+def _offset_loop(loop: Sequence[Pt], d: float) -> list[Pt]:
+    """The loop moved by ``d`` — inward when positive, out when negative.
+
+    A true hipped roof's ridge is the straight skeleton of its footprint, which
+    is a real piece of computational geometry and far more than this needs. A
+    uniform offset is the same thing for any rectangle — which nearly every
+    building footprint is — and close enough for the rest.
+
+    Two things it has to get right, and the first version got both wrong.
+
+    **The corner factor is ``d / |bisector|²``, not ``d / |bisector|``.** The
+    average of two unit normals is SHORTER than either (its length is the
+    cosine of the half-angle), so a corner offset along it has to travel
+    ``d / cos`` to put both edges at ``d`` — and scaling a vector of length
+    ``cos`` to length ``d / cos`` is a factor of ``d / cos²``. Getting that
+    wrong by the one factor left a two-square-wide terrace with a ridge half a
+    square across instead of a ridge LINE, which is a flat-topped slab.
+
+    **A polygon collapsed to a line is the ANSWER, not a failure.** That is
+    exactly what a ridge is over a building narrower than twice ``d``. What
+    must be rejected is an offset that has passed THROUGH the middle and turned
+    itself inside out, which is a different thing and is told apart by asking
+    whether any edge now runs backwards. When one does, the offset is halved
+    and tried again — so a footprint with an awkward notch gets a shallower
+    roof rather than a knot.
+    """
+    n = len(loop)
+    if n < 3 or d == 0:
+        return list(loop)
+    sign = -1.0 if _area(loop) < 0 else 1.0
+    for _ in range(7):
+        out: list[Pt] = []
+        for i in range(n):
+            a, b, c = loop[i - 1], loop[i], loop[(i + 1) % n]
+            norms = []
+            for (px, pz), (qx, qz) in ((a, b), (b, c)):
+                ex, ez = qx - px, qz - pz
+                ln = math.hypot(ex, ez)
+                if ln:
+                    norms.append((-ez / ln * sign, ex / ln * sign))
+            if not norms:
+                out.append(b)
+                continue
+            mx = sum(v[0] for v in norms) / len(norms)
+            mz = sum(v[1] for v in norms) / len(norms)
+            ln2 = mx * mx + mz * mz
+            k = d / ln2 if ln2 > 1e-9 else 0.0
+            out.append((b[0] + mx * k, b[1] + mz * k))
+        # Inside out? An edge that now runs the other way means the offset has
+        # crossed the middle. A DEGENERATE edge (zero length) is fine: that is
+        # two corners meeting, which is what a hip does.
+        flipped = False
+        for i in range(n):
+            j = (i + 1) % n
+            ox, oz = loop[j][0] - loop[i][0], loop[j][1] - loop[i][1]
+            nx, nz = out[j][0] - out[i][0], out[j][1] - out[i][1]
+            if ox * nx + oz * nz < -1e-9:
+                flipped = True
+                break
+        if not flipped:
+            return out
+        d *= 0.5
+    return list(loop)
+
+
+def roofs(rows: Sequence[str], skin_of: Optional[Callable] = None,
+          elevation: Optional[dict] = None) -> list[dict]:
+    """One roof per BUILDING on this board, traced from its footprint.
+
+    A square joins a building when its skin declares ``roof_ft`` — how far
+    above the square's own drawn height the ridge stands. Contiguous squares of
+    the same skin are one building, which is what makes a terrace one long
+    roof; a different skin beside it is a different building, and gets its own.
+    """
+    if skin_of is None:
+        return []
+    elev = elevation or {}
+    by_skin: dict[str, set[tuple[int, int]]] = {}
+    for z, row in enumerate(rows):
+        for x, code in enumerate(row):
+            name = skin_of(code, x, z) or ""
+            sk = _skins.skin(name)
+            if sk is not None and getattr(sk, "roof_ft", 0):
+                by_skin.setdefault(name, set()).add((x, z))
+
+    out: list[dict] = []
+    for name, cells in sorted(by_skin.items()):
+        sk = _skins.skin(name)
+        if sk is None:
+            continue
+        for region in _regions(cells):
+            loops = _loops(region)
+            if not loops:
+                continue
+            loop = max(loops, key=lambda lp: abs(_area(lp)))
+            pts, _fill = _smooth(_simplify(loop))
+            if len(pts) < 3:
+                continue
+            base = min(int(elev.get(f"{x},{z}", 0) or 0) for x, z in region)
+            # The eaves stand a little proud of the wall, and the ridge is set
+            # in by half the SHORT dimension — a hip. Measured off the traced
+            # outline rather than the bounding box, so an L-shaped block gets a
+            # roof that follows it.
+            xs = [p[0] for p in pts]
+            zs = [p[1] for p in pts]
+            short = max(1.0, min(max(xs) - min(xs), max(zs) - min(zs)))
+            # Eaves OUT, ridge IN. The ridge is set in by half the short
+            # dimension, which is what a hip is: over a building narrower than
+            # its own inset the offset collapses to a line, and that line IS
+            # the ridge. Over a square one it collapses to a point, and that is
+            # a pyramid — both are the right answer rather than a failure.
+            eaves = _offset_loop(pts, -ROOF_EAVES)
+            ridge = _offset_loop(eaves, short / 2.0 + ROOF_EAVES)
+            if len(ridge) != len(eaves):
+                continue
+            # WINDING IS NORMALIZED HERE, NEVER TRUSTED — the `skins.solid`
+            # rule, and it bites twice as hard on shipped geometry. Every face
+            # of a pitch takes its normal from the order of its vertices, so a
+            # loop traced the other way round shades the near pitch as though
+            # it faced away and, in the browser, culls the roof outright: the
+            # building simply has no top and nothing in either program looks
+            # broken. Counter-clockwise seen from above, which is negative
+            # under this shoelace because z grows southward.
+            if _area(eaves) > 0:
+                eaves = list(reversed(eaves))
+                ridge = list(reversed(ridge))
+            out.append({
+                "skin": name, "slot": "",
+                "eaves_ft": base + float(sk.height_ft or 0) * float(sk.roof_at),
+                "ridge_ft": base + float(sk.height_ft or 0) * float(sk.roof_at)
+                            + float(sk.roof_ft),
+                "eaves": [[p[0], p[1]] for p in eaves],
+                "ridge": [[p[0], p[1]] for p in ridge],
+            })
     return out
