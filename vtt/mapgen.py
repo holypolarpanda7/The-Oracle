@@ -355,6 +355,125 @@ LEDGE_FT = 10
 
 
 # --------------------------------------------------------------------------
+# A ROAD IS AS STEEP AS THE COUNTRY IT CROSSES.
+#
+# The street's fall used to be ``rng.randint(3, 8)`` whatever the board said it
+# was standing in, so a town on the plains and a town clinging to a mountain
+# had the same slope on the same die — which is the ``_for_area`` complaint
+# arriving from a different direction. A number that ought to be DERIVED from
+# something the board already knows was rolled instead.
+#
+# The board does already know: ``GeneratedMap.biome`` is the DM's own words for
+# where this is, and ``skins.building_material`` has been reading it to choose
+# stone or timber since the skins went in. Same mechanism, same table shape,
+# and the same fallback — a board whose DM said nothing gets the middling case,
+# which is what every board got before this existed.
+#
+# Two dials, because "steeper" alone is the wrong answer for a mountain. A
+# mountain road is steeper AND it is not a ramp: it climbs, saddles and climbs
+# again, and it falls across its width as well as along its length. Flat
+# country wants the opposite of both — most streets on a plain really are
+# level, so the low end of that range is ZERO and a board is genuinely allowed
+# to come back flat.
+#
+#: ``(words, (least fall, most fall), (least waves, most waves), cross-fall
+#: fraction)``. Falls are in FEET across the whole board; a wave is one full
+#: rise-and-dip on the way. Matched by substring against the biome, first hit
+#: wins, so the specific entries come before the general ones.
+_RELIEF: tuple[tuple[tuple[str, ...], tuple[int, int], tuple[int, int], float], ...] = (
+    (("mountain", "alpine", "crag", "peak", "highland", "gorge", "ravine",
+      "cliff", "scarp", "pass", "summit"), (10, 22), (1, 3), 0.45),
+    (("hill", "downs", "upland", "foothill", "moor", "ridge", "vale",
+      "valley", "dale", "terraced"), (4, 10), (0, 2), 0.30),
+    (("plain", "steppe", "prairie", "flat", "delta", "fen", "marsh", "bog",
+      "swamp", "salt", "polder", "lowland", "meadow"), (0, 3), (0, 0), 0.10),
+    (("coast", "shore", "harbour", "harbor", "port", "quay", "beach",
+      "estuary", "island"), (2, 7), (0, 1), 0.25),
+)
+
+#: What a board that never said where it is gets. Deliberately the numbers the
+#: street had before any of this — a change nobody asked for is not an
+#: improvement, and most boards carry no biome at all.
+_RELIEF_DEFAULT = ((3, 8), (0, 1), 0.20)
+
+#: The steepest a road is allowed to change between one square and the next, in
+#: feet. ONE, which is the smallest step the rules have: climbing it costs the
+#: foot per foot the SRD charges and nothing on a road is ever a fall. It is a
+#: cap on the WALK rather than on the budget, so a mountain road does not get a
+#: gentler slope for being long — it spends the whole board climbing.
+ROAD_MAX_STEP_FT = 1
+
+
+def road_relief(biome: str = "") -> tuple[tuple[int, int], tuple[int, int], float]:
+    """How steep, how wavy and how canted a road across this country is."""
+    b = (biome or "").strip().lower()
+    for words, fall, waves, cross in _RELIEF:
+        if any(w in b for w in words):
+            return fall, waves, cross
+    return _RELIEF_DEFAULT
+
+
+def _relief_walk(rng: random.Random, n: int, fall: int, waves: int) -> list[int]:
+    """A height profile ``n`` squares long, in whole feet from its own lowest.
+
+    Built as a WALK toward a target curve rather than by sampling the curve,
+    which is what enforces :data:`ROAD_MAX_STEP_FT` by construction: each
+    square moves at most a foot toward where the curve wants it, so no amount
+    of budget or waviness can put a drop in a street. A road that cannot spend
+    its whole fall simply arrives at the far end still climbing, which is what
+    a road too steep for its country does in life as well.
+    """
+    if n <= 1 or fall <= 0:
+        return [0] * max(1, n)
+    # The target: a ramp, plus `waves` full rise-and-dips riding on it. The
+    # ramp is what makes one end of the street worth more than the other; the
+    # waves are what stop a mountain road being an inclined plane.
+    amp = fall * (0.35 if waves else 0.0)
+    phase = rng.random() * math.tau
+    targets = []
+    for i in range(n):
+        t = i / (n - 1)
+        y = t * fall
+        if waves:
+            y += amp * math.sin(phase + t * math.tau * waves)
+        targets.append(y)
+    out: list[float] = [targets[0]]
+    for want in targets[1:]:
+        cur = out[-1]
+        out.append(cur + max(-ROAD_MAX_STEP_FT,
+                             min(ROAD_MAX_STEP_FT, want - cur)))
+    ints = [int(round(v)) for v in out]
+    low = min(ints)
+    return [v - low for v in ints]
+
+
+def road_profile(rng: random.Random, width: int, height: int,
+                 biome: str = "") -> dict[tuple[int, int], int]:
+    """Ground height per square for a road board, in feet. Sparse-ready.
+
+    Along the board's length and ACROSS its width, each a walk of its own, so
+    a mountain street is canted as well as climbing — which is most of what
+    makes one read as cut into a hillside rather than laid on a table. Both
+    walks respect the one-foot step, so their sum steps at most a foot in
+    either direction.
+    """
+    fall, waves, cross = road_relief(biome)
+    along_ft = rng.randint(*fall)
+    n_waves = rng.randint(*waves)
+    along = _relief_walk(rng, width, along_ft, n_waves)
+    if rng.random() < 0.5:
+        along = along[::-1]
+    across_ft = int(round(along_ft * cross))
+    lateral = _relief_walk(rng, height, across_ft,
+                           1 if (n_waves and across_ft >= 4) else 0)
+    if rng.random() < 0.5:
+        lateral = lateral[::-1]
+    return {(x, y): along[x] + lateral[y]
+            for x in range(width) for y in range(height)}
+
+
+
+# --------------------------------------------------------------------------
 # A BIGGER BOARD MEANS MORE OF THE PLACE, NOT A BIGGER PLACE.
 #
 # A square is five feet. That makes almost every dimension on a board a real
@@ -1134,17 +1253,33 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # A TOWN IS ON GROUND, and ground is not a billiard table. The roadway was
     # dead flat, which is what made a street read as a diagram: nothing to
     # shoot down, nothing to labour up, no reason for one end to be worth more
-    # than the other. A gentle fall across the board in ONE-FOOT steps — the
-    # smallest the rules have — so climbing it costs the foot per foot the SRD
-    # charges and nothing ever becomes a drop. The cobble skin is `soft`, so
-    # the surface between the steps is drawn as a slope rather than as
-    # terraces; see terrain.SOFT_GROUND.
-    fall = rng.randint(3, 8)
-    down = rng.random() < 0.5
-    for x, y in g.squares():
-        t = (g.width - 1 - x) / max(1, g.width - 1) if down \
-            else x / max(1, g.width - 1)
-        ft = int(round(t * fall))
+    # than the other. Everything is in ONE-FOOT steps — the smallest the rules
+    # have — so climbing it costs the foot per foot the SRD charges and nothing
+    # on a street ever becomes a drop. The cobble skin is `soft`, so the
+    # surface between the steps is drawn as a slope rather than as terraces;
+    # see terrain.SOFT_GROUND.
+    #
+    # HOW steep is the COUNTRY's business, not a die's: see road_profile. A
+    # town on the plains is usually level and a town on a mountainside climbs,
+    # saddles and climbs again, canted across its width as it goes.
+    ground = road_profile(rng, g.width, g.height, out.biome)
+    # A BUILDING IS LEVEL INSIDE, and the steeper the street the more that
+    # matters: a house six squares deep on a mountain road would otherwise have
+    # six feet of fall across its own floor. A floor is LAID — the same
+    # sentence that keeps a flagstone hall flat — so the builder cuts and fills
+    # the plot to one height and the difference lands OUTSIDE, as the step up
+    # to the door that every hill town has.
+    for b in out.buildings:
+        plot = [(x, y)
+                for x in range(int(b["x"]), int(b["x"]) + int(b["w"]))
+                for y in range(int(b["y"]), int(b["y"]) + int(b["h"]))
+                if g.in_bounds(x, y)]
+        if not plot:
+            continue
+        sill = sorted(ground[sq] for sq in plot)[len(plot) // 2]
+        for sq in plot:
+            ground[sq] = sill
+    for (x, y), ft in ground.items():
         if ft:
             _raise(out, [(x, y)], ft)
     _scatter(g, rng, "o", 0.05, only_on=("=",))

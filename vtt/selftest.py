@@ -1578,10 +1578,74 @@ def test_vessels() -> None:
     check("a street falls across the board rather than lying flat",
           len(set(_town.elevation.values())) >= 3,
           f"heights {sorted(set(_town.elevation.values()))}")
-    check("...in steps small enough that nothing on it is a fall",
-          max(_town.elevation.values(), default=0)
-          - min(_town.elevation.values(), default=0) < 10,
-          f"{max(_town.elevation.values(), default=0)} ft over the board")
+
+    # HOW steep is the COUNTRY's business, not a die's. The fall used to be
+    # rng.randint(3, 8) whatever the board said it stood in, so a town on the
+    # plains and a town on a mountainside had the same slope on the same die.
+    def _road(biome: str, seed: int):
+        m = _gm5("street", width=46, height=34, seed=seed, biome=biome)
+        v = list(m.elevation.values()) or [0]
+        # The one-foot rule is about the ROADWAY. A plot that was cut and
+        # filled level meets the street at a threshold, and that step is the
+        # thing hill towns are made of — measured separately, below.
+        plots = {(_x, _y) for _b in m.buildings
+                 for _x in range(_b["x"], _b["x"] + _b["w"])
+                 for _y in range(_b["y"], _b["y"] + _b["h"])}
+        step = sill = 0
+        for _x, _y in m.grid.squares():
+            _a = m.elevation.get(f"{_x},{_y}", 0)
+            for _dx, _dy in ((1, 0), (0, 1)):
+                _b2 = (_x + _dx, _y + _dy)
+                if _b2[0] >= m.grid.width or _b2[1] >= m.grid.height:
+                    continue
+                _d = abs(_a - m.elevation.get(f"{_b2[0]},{_b2[1]}", 0))
+                if (_x, _y) in plots or _b2 in plots:
+                    sill = max(sill, _d)
+                else:
+                    step = max(step, _d)
+        return m, max(v) - min(v), step, sill
+
+    _flat = [_road("rolling plains, wheat to the horizon", s)[1]
+             for s in (11, 23, 41, 57)]
+    _steep = [_road("a high mountain road under the peaks", s)[1]
+              for s in (11, 23, 41, 57)]
+    check("a street on the plains is nearly level",
+          max(_flat) <= 4, f"falls {_flat} ft")
+    check("...and one on a mountainside climbs",
+          min(_steep) >= 12, f"falls {_steep} ft")
+    check("...by a good deal more than the flat one, every time",
+          all(a > b for a, b in zip(_steep, _flat)),
+          f"{_steep} vs {_flat}")
+    # A mountain road is steeper AND it is not a ramp: it climbs, saddles and
+    # climbs again. A monotone profile has exactly one local maximum.
+    _m3, _, _, _ = _road("a high mountain road under the peaks", 11)
+    _spine = [_m3.elevation.get(f"{_x},{_m3.grid.height // 2}", 0)
+              for _x in range(_m3.grid.width)]
+    _tops = sum(1 for _i in range(1, len(_spine) - 1)
+                if _spine[_i] > _spine[_i - 1] and _spine[_i] >= _spine[_i + 1])
+    check("...and it saddles on the way rather than being a ramp", _tops >= 2,
+          f"{_tops} crest(s) along the street")
+    # Whatever the country, the step between two squares is a foot, so the
+    # climb costs the foot per foot the SRD charges and nothing is ever a fall.
+    _biomes = ("", "rolling plains", "a high mountain road", "green hills",
+               "a harbour town on the shore")
+    check("...in one-foot steps along the roadway, whatever the country",
+          all(_road(_b, 11)[2] <= 1 for _b in _biomes),
+          f"steps {[_road(_b, 11)[2] for _b in _biomes]} ft")
+    # A threshold is allowed to be a step up. It is never allowed to be a fall.
+    check("...and a doorstep is a step up, never a drop",
+          all(_road(_b, 11)[3] < 10 for _b in _biomes),
+          f"sills {[_road(_b, 11)[3] for _b in _biomes]} ft")
+    # A house six squares deep on a mountain road would have six feet of fall
+    # across its own floor. A floor is LAID, so the plot is cut and filled and
+    # the difference lands outside as the step up to the door.
+    _hill, _, _, _ = _road("a high mountain road under the peaks", 23)
+    _sloped = [_b for _b in _hill.buildings
+               if len({_hill.elevation.get(f"{_x},{_y}", 0)
+                       for _x in range(_b["x"], _b["x"] + _b["w"])
+                       for _y in range(_b["y"], _b["y"] + _b["h"])}) > 1]
+    check("...and no house is built with a sloping floor",
+          not _sloped, f"{len(_sloped)} of {len(_hill.buildings)} sloped")
     # And a ruin has survivors: a site drawn only as broken outlines is walls
     # to run between and never anything to be inside.
     _ruin = _gm5("ruins", width=46, height=34, seed=11)

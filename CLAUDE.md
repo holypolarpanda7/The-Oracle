@@ -1739,9 +1739,32 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   **A road is LAID and it is not FLAT.** "Laid things are flat" is about a
   FLOOR — a dungeon's flagstones, a ship's deck — where the builder levelled
   the site, and nobody levels a hillside to put a street on it. `cobbles` is
-  `soft`, and a street falls three to eight feet across the board in ONE-FOOT
-  steps: the smallest the rules have, so climbing it costs the foot per foot
-  the SRD charges and nothing on it is ever a drop.
+  `soft`, and a street falls across the board in ONE-FOOT steps: the smallest
+  the rules have, so climbing it costs the foot per foot the SRD charges and
+  nothing on the roadway is ever a drop.
+  **HOW steep is the COUNTRY's business, not a die's.** The fall was
+  `rng.randint(3, 8)` whatever the board said it stood in, so a town on the
+  plains and a town clinging to a mountain got the same slope off the same
+  roll — the `_for_area` complaint arriving from another direction, a number
+  DERIVED from something the board already knows being rolled instead.
+  `mapgen.road_profile` reads `GeneratedMap.biome`, the DM's own words, exactly
+  as `skins.building_material` has read it to choose stone or timber since the
+  skins went in: same table shape, same substring match, same fallback to the
+  numbers every board had before. Two dials, because "steeper" alone is the
+  wrong answer for a mountain — a mountain road is steeper AND it is not a
+  ramp, so it climbs, saddles and climbs again and is CANTED across its width
+  as well, which is most of what makes one read as cut into a hillside. Flat
+  country wants the opposite of both, and the low end of its range is ZERO: a
+  street on a plain is genuinely allowed to come back level.
+  The profile is a WALK toward a target curve rather than a sampling of it,
+  which is what enforces `ROAD_MAX_STEP_FT` by construction — no budget and no
+  amount of waviness can put a drop in a street, and a road too steep for its
+  country simply arrives at the far end still climbing. **A BUILDING is level
+  INSIDE**, and the steeper the street the more that matters: a house six
+  squares deep on a mountain road would otherwise have six feet of fall across
+  its own floor. The plot is cut and filled to one height and the difference
+  lands OUTSIDE, as the step up to the door that every hill town has — allowed
+  to be a step, never allowed to be a fall.
   The same treatment reaches `ruins`: one standing building in three, with a
   doorway and sometimes a floor still up. A ruin drawn only as broken outlines
   is walls to run between and never anything to be inside, and the survivors
