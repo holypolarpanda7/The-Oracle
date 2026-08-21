@@ -349,44 +349,6 @@ function panelBlock(mb: MeshBuilder, x0: number, x1: number, z0: number,
   boxFaces(mb, x0, x1, z0, z1, y0, y1, color, () => true);
 }
 
-/** An upright n-sided prism, chamfered at the top.
- *
- *  What stops a pillar being a cube. Structure is genuinely box-shaped and
- *  should stay that way — a wall IS a rectangular run — but a pillar, a tree
- *  and an altar are not, and drawing them as full-square blocks is most of what
- *  reads as voxel. Eight sides is plenty at this camera distance and keeps the
- *  triangle count near a box's.
- *
- *  This is not only cosmetic. The painted layer is conditioned on a depth map
- *  rendered FROM this geometry, so a cube-shaped pillar hands the model a
- *  cube-shaped silhouette and it paints a cube. Shape here is what the painting
- *  inherits. */
-function prism(mb: MeshBuilder, cx: number, cz: number, r: number,
-               y0: number, y1: number, sides: number, color: THREE.Color): void {
-  const b = Math.min(BEVEL, r / 3);
-  const top = y1;
-  const rim = Math.max(y0, y1 - b);
-  const pt = (i: number, rad: number) => {
-    const a = (i / sides) * Math.PI * 2 + Math.PI / sides;
-    return [cx + Math.cos(a) * rad, cz + Math.sin(a) * rad] as const;
-  };
-  // Top cap as a fan of quads from the centre (two triangles each, one
-  // degenerate — cheaper than a separate triangle path in MeshBuilder).
-  for (let i = 0; i < sides; i++) {
-    const [ax, az] = pt(i, r - b);
-    const [bx, bz] = pt(i + 1, r - b);
-    mb.quad(v3(cx, top, cz), v3(ax, top, az), v3(bx, top, bz), v3(cx, top, cz), color);
-  }
-  for (let i = 0; i < sides; i++) {
-    const [ax, az] = pt(i, r);
-    const [bx, bz] = pt(i + 1, r);
-    const [iax, iaz] = pt(i, r - b);
-    const [ibx, ibz] = pt(i + 1, r - b);
-    mb.quad(v3(ax, y0, az), v3(ax, rim, az), v3(bx, rim, bz), v3(bx, y0, bz), color);
-    mb.quad(v3(ax, rim, az), v3(iax, top, iaz), v3(ibx, top, ibz), v3(bx, rim, bz), color);
-  }
-}
-
 /** A PRISMATOID: two polygons at two heights, joined edge by edge.
  *
  *  The primitive that stops everything being a cube. A box is the special case
@@ -970,9 +932,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             // a 5-ft square is a big place, and a pillar filling one is the
             // single loudest voxel tell on the board.
             const cx = x + 0.5, cz = z + 0.5;
-            if (code === "O") {
-              prism(mb, cx, cz, 0.32, here, top, 8, color);
-            } else if (OBJECT_VARIANTS[code]) {
+            if (OBJECT_VARIANTS[code]) {
               // A built silhouette, in one of several arrangements chosen by the
               // square itself — shared with the depth map the painted layer is
               // conditioned on, so what stands here is what gets painted here.

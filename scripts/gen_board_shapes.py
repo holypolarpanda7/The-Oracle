@@ -106,7 +106,7 @@ def render() -> str:
     from vtt.art import STRUCTURE_CODES
     from vtt.isocam import (
         HEIGHT_JITTER, HOLE_CODES, OBJECT_VARIANTS,
-        PILLAR_RADIUS, SKIRT_FT, SKIRT_INSET, WALL_THICKNESS,
+        SKIRT_FT, SKIRT_INSET, WALL_THICKNESS,
     )
     from vtt.decor import DECOR_KINDS, MAX_DECOR_HEIGHT_FT
     from vtt.terrain import STAND_HEIGHT_FT, TILES
@@ -116,8 +116,6 @@ def render() -> str:
                  " *  The square stays fully solid in the RULES; this only stops the\n"
                  " *  wall's top face swallowing the room at this camera angle. */\n"
                  f"export const WALL_THICKNESS = {_num(WALL_THICKNESS)};\n")
-    lines.append("/** Radius of a pillar or tree trunk, as a fraction of its square. */\n"
-                 f"export const PILLAR_RADIUS = {_num(PILLAR_RADIUS)};\n")
     lines.append("/** How much a tile's DRAWN height may wander, as a fraction.\n"
                  " *  Never applied where the RULES quote a height — see heightScale. */\n"
                  f"export const HEIGHT_JITTER = {_num(HEIGHT_JITTER)};\n")

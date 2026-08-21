@@ -30,7 +30,7 @@ from typing import Optional, Sequence
 # The shape vocabulary itself — a part, and the prismatoid constructor that
 # normalizes its winding. `skins` imports nothing from this package, so this is
 # a plain import rather than the deferred ones further down.
-from .skins import Part, solid
+from .skins import Part, rect, ring as _ring, slab as _slab, solid
 
 #: Rotation about the vertical axis. 45° puts the board corner-on, so both wall
 #: faces of a corner are visible and neither runs parallel to the screen edge.
@@ -204,10 +204,6 @@ def _quad(buf, pts, zs, rgb=None, colour=None, tint: float = 1.0) -> None:
 #: the movement wash and the outline all still say the square is solid.
 #: Mirrored by WALL_THICKNESS in activity-ui/src/lib/boardView.ts.
 WALL_THICKNESS = 0.34
-
-#: Radius of a pillar or a tree trunk, as a fraction of its square. Round
-#: rather than square because the model paints the silhouette it is handed.
-PILLAR_RADIUS = 0.32
 
 
 def exposed(is_open, x: int, z: int) -> bool:
@@ -607,17 +603,6 @@ def footprint(e_w: bool, e_e: bool, e_n: bool, e_s: bool,
 #: activity-ui/src/lib/boardView.ts; the depth map and the geometry must be the
 #: same object or the painting is conditioned on something the player is not
 #: looking at.
-def _ring(r: float, cx: float = 0.5, cz: float = 0.5, wob: float = 0.0,
-          n: int = 8) -> tuple[tuple[float, float], ...]:
-    """A rounded plan of ``n`` points, wobbled so it is not a wheel."""
-    out = []
-    for i in range(n):
-        a = i * 2 * math.pi / n + math.pi / n
-        k = r * (1.0 + wob * math.cos(3 * a))
-        out.append((cx + math.cos(a) * k, cz + math.sin(a) * k))
-    return tuple(out)
-
-
 OBJECT_VARIANTS: dict[str, tuple[tuple[Part, ...], ...]] = {
     # A TREE: a slim trunk under a crown that is wider than it is tall.
     #
@@ -666,40 +651,103 @@ OBJECT_VARIANTS: dict[str, tuple[tuple[Part, ...], ...]] = {
     ),
     # Sarcophagus / altar: a long chest with an overhanging tapered lid, and a
     # squatter cracked-open one.
+    # ALTAR: a plinth, a battered die and a proud cornice under the slab.
+    #
+    # Two stacked boxes before, which is a wedding cake. The parts here are the
+    # parts a mason would actually cut, and the reason they read is that each
+    # one is a PRISMATOID: the plinth sits (battered in at the foot), the die
+    # leans in as it rises, the cornice throws out over it, and the mensa on top
+    # has its arris taken off. None of it is decoration — at this camera the
+    # only thing that says "worked stone" rather than "block" is the line where
+    # two planes of slightly different size meet.
     "A": (
-        ((0.10, 0.90, 0.30, 0.70, 0.00, 0.72),
-         (0.06, 0.94, 0.26, 0.74, 0.72, 1.00)),
-        ((0.14, 0.86, 0.28, 0.72, 0.00, 0.62),
-         (0.10, 0.62, 0.24, 0.76, 0.62, 0.94),
-         (0.66, 0.96, 0.30, 0.70, 0.62, 0.82)),
+        (_slab(0.08, 0.92, 0.26, 0.74, 0.00, 0.14, batter=0.05, chamfer=0.06),
+         _slab(0.14, 0.86, 0.30, 0.70, 0.14, 0.74, chamfer=0.05),
+         _slab(0.10, 0.90, 0.27, 0.73, 0.74, 0.88, batter=0.22),
+         _slab(0.06, 0.94, 0.24, 0.76, 0.88, 1.00, chamfer=0.10)),
+        # A broken one: the mensa slid off and the die is open to the weather.
+        (_slab(0.12, 0.88, 0.26, 0.74, 0.00, 0.12, batter=0.06, chamfer=0.05),
+         _slab(0.16, 0.84, 0.30, 0.70, 0.12, 0.66, chamfer=0.07),
+         solid(rect(0.10, 0.64, 0.24, 0.78), rect(0.16, 0.58, 0.28, 0.72),
+               0.66, 0.94),
+         _slab(0.62, 0.98, 0.30, 0.70, 0.58, 0.80, chamfer=0.14)),
     ),
-    # Table: a top on four legs. The legs are what stop it being a block.
+    # TABLE: turned legs, an apron between them, and a top with an edge.
+    #
+    # Four square posts and a slab before. A leg that TAPERS reads as turned
+    # even at eight sides and thirty feet up; the apron is what makes it
+    # joinery rather than four sticks holding a board; and the top's chamfer is
+    # what keeps it from reading as a lid lying on them.
     "n": (
-        ((0.12, 0.22, 0.16, 0.26, 0.00, 0.72),
-         (0.78, 0.88, 0.16, 0.26, 0.00, 0.72),
-         (0.12, 0.22, 0.74, 0.84, 0.00, 0.72),
-         (0.78, 0.88, 0.74, 0.84, 0.00, 0.72),
-         (0.06, 0.94, 0.10, 0.90, 0.72, 1.00)),
-        # Overturned: the top on edge, legs in the air.
-        ((0.10, 0.24, 0.12, 0.88, 0.00, 1.00),
-         (0.24, 0.34, 0.20, 0.30, 0.62, 0.78),
-         (0.24, 0.34, 0.70, 0.80, 0.62, 0.78)),
+        (solid(_ring(0.055, 0.17, 0.21), _ring(0.075, 0.17, 0.21), 0.00, 0.68),
+         solid(_ring(0.055, 0.83, 0.21), _ring(0.075, 0.83, 0.21), 0.00, 0.68),
+         solid(_ring(0.055, 0.17, 0.79), _ring(0.075, 0.17, 0.79), 0.00, 0.68),
+         solid(_ring(0.055, 0.83, 0.79), _ring(0.075, 0.83, 0.79), 0.00, 0.68),
+         _slab(0.14, 0.86, 0.16, 0.84, 0.54, 0.68),          # the apron
+         _slab(0.06, 0.94, 0.10, 0.90, 0.68, 0.80, chamfer=0.16),
+         _slab(0.04, 0.96, 0.08, 0.92, 0.80, 1.00, chamfer=0.05)),
+        # Overturned: the top on edge, legs in the air, one of them snapped.
+        (solid(rect(0.10, 0.26, 0.12, 0.88), rect(0.13, 0.23, 0.14, 0.86),
+               0.00, 1.00),
+         solid(_ring(0.05, 0.34, 0.26), _ring(0.035, 0.34, 0.26), 0.58, 0.82),
+         solid(_ring(0.05, 0.34, 0.74), _ring(0.035, 0.34, 0.74), 0.58, 0.76),
+         _slab(0.24, 0.44, 0.20, 0.80, 0.50, 0.60, chamfer=0.12)),
     ),
-    # Crates: stacked and offset, never one cube filling the square.
+    # CRATES: stacked and offset, and each one a box with its LID proud.
+    #
+    # The overhang is the whole tell. A crate drawn as a plain cuboid is a
+    # cuboid — and a square full of them is the crypt-of-dice failure with a
+    # different label. A battered body, a chamfered top edge and a lid standing
+    # a little wider than what it closes is what a packing case looks like from
+    # above, which is the only angle this board has.
     "o": (
-        ((0.08, 0.58, 0.10, 0.62, 0.00, 0.62),
-         (0.46, 0.92, 0.36, 0.90, 0.00, 0.48),
-         (0.16, 0.56, 0.18, 0.58, 0.62, 1.00)),
-        ((0.12, 0.66, 0.14, 0.70, 0.00, 1.00),
-         (0.62, 0.94, 0.52, 0.92, 0.00, 0.54)),
-        ((0.10, 0.52, 0.20, 0.64, 0.00, 0.70),
-         (0.54, 0.90, 0.14, 0.56, 0.00, 0.86),
-         (0.34, 0.74, 0.60, 0.94, 0.00, 0.44)),
+        (_slab(0.08, 0.58, 0.10, 0.62, 0.00, 0.52, batter=0.04, chamfer=0.05),
+         _slab(0.06, 0.60, 0.08, 0.64, 0.52, 0.62, chamfer=0.14),
+         _slab(0.46, 0.92, 0.36, 0.90, 0.00, 0.40, batter=0.04, chamfer=0.05),
+         _slab(0.44, 0.94, 0.34, 0.92, 0.40, 0.48, chamfer=0.14),
+         _slab(0.16, 0.56, 0.18, 0.58, 0.62, 0.92, batter=0.04, chamfer=0.05),
+         _slab(0.14, 0.58, 0.16, 0.60, 0.92, 1.00, chamfer=0.14)),
+        (_slab(0.12, 0.66, 0.14, 0.70, 0.00, 0.90, batter=0.03, chamfer=0.04),
+         _slab(0.10, 0.68, 0.12, 0.72, 0.90, 1.00, chamfer=0.12),
+         _slab(0.62, 0.94, 0.52, 0.92, 0.00, 0.46, batter=0.04, chamfer=0.05),
+         _slab(0.60, 0.96, 0.50, 0.94, 0.46, 0.54, chamfer=0.14)),
+        # A broken one among them: staves sprung, no lid left.
+        (_slab(0.10, 0.52, 0.20, 0.64, 0.00, 0.60, batter=0.04, chamfer=0.05),
+         _slab(0.08, 0.54, 0.18, 0.66, 0.60, 0.70, chamfer=0.14),
+         solid(rect(0.54, 0.90, 0.14, 0.56), rect(0.50, 0.94, 0.10, 0.60),
+               0.00, 0.86),
+         _slab(0.34, 0.74, 0.60, 0.94, 0.00, 0.36, batter=0.05, chamfer=0.06),
+         _slab(0.32, 0.76, 0.58, 0.96, 0.36, 0.44, chamfer=0.16)),
     ),
-    # Low wall: a coping course on a thinner base, so it reads as masonry.
+    # LOW WALL: a battered course under a coping that sheds.
+    #
+    # Two boxes before, which is a kerb. A wall is thicker at the foot than at
+    # the head, and its coping is proud of both faces and weathered to one side
+    # — the coping's top plan is offset, so the cap slopes, which is the one
+    # line that says masonry rather than concrete at this distance.
     "w": (
-        ((0.18, 0.82, 0.00, 1.00, 0.00, 0.80),
-         (0.10, 0.90, 0.00, 1.00, 0.80, 1.00)),
+        (solid(rect(0.16, 0.84, 0.00, 1.00), rect(0.22, 0.78, 0.00, 1.00),
+               0.00, 0.78),
+         solid(rect(0.10, 0.90, 0.00, 1.00), rect(0.16, 0.86, 0.00, 1.00),
+               0.78, 1.00)),
+    ),
+    # PILLAR: a base, a shaft with entasis, and a capital.
+    #
+    # It was `prism(cx, cz, 0.32)` written by hand in BOTH renderers and in
+    # neither table — the last shape in the project that lived where the
+    # generated gate could not see it, and the exact arrangement the tree was
+    # moved out of for having drifted between the two languages. A plain
+    # cylinder is also a post: what makes a column a column is that it swells
+    # slightly at a third of its height and carries something at the top.
+    "O": (
+        (solid(_ring(0.40), _ring(0.34), 0.00, 0.10),
+         solid(_ring(0.34), _ring(0.335), 0.10, 0.34),
+         solid(_ring(0.335), _ring(0.30), 0.34, 0.88),
+         solid(_ring(0.30), _ring(0.40), 0.88, 1.00)),
+        # A plainer one, square-set: a pier rather than a column.
+        (_slab(0.14, 0.86, 0.14, 0.86, 0.00, 0.09, chamfer=0.16),
+         _slab(0.20, 0.80, 0.20, 0.80, 0.09, 0.90, chamfer=0.06),
+         _slab(0.14, 0.86, 0.14, 0.86, 0.90, 1.00, batter=0.18)),
     ),
 }
 
@@ -813,74 +861,6 @@ def draw_parts(face, shade, parts, turns: int, ox: float, oz: float,
                  base + top * py1, y0=base + top * py0, shade=shade)
 
 
-def _prism(face, cx: float, cz: float, r: float, y1: float,
-           y0: float = 0.0, sides: int = 8) -> None:
-    """An upright n-sided prism — a pillar, or a tree's trunk and crown.
-
-    Mirrors the shapes ``vttScene3d.ts`` builds, and that correspondence is the
-    point rather than a nicety: the model paints the silhouette it is handed, so
-    a square column in the depth map comes back as a square column in the
-    picture however round the geometry beside it happens to be.
-    """
-    pts = []
-    for i in range(sides + 1):
-        a = (i / sides) * 2 * math.pi + math.pi / sides
-        pts.append((cx + math.cos(a) * r, cz + math.sin(a) * r))
-    for i in range(sides):
-        (ax, az), (bx, bz) = pts[i], pts[i + 1]
-        face([(cx, y1, cz), (ax, y1, az), (bx, y1, bz), (cx, y1, cz)])
-        face([(ax, y0, az), (ax, y1, az), (bx, y1, bz), (bx, y0, bz)])
-
-
-@lru_cache(maxsize=32)
-def _obj_triangles(path: str) -> tuple[tuple[tuple[float, float, float], ...], ...]:
-    """An OBJ's faces as triangles, in the file's own units.
-
-    Deliberately minimal: ``v`` and ``f`` and nothing else. No materials, no
-    normals, no texture coordinates — the geometry here is a DEPTH OCCLUDER,
-    and the painted layer supplies every appearance the board ever shows. That
-    is also why the catalogue prefers OBJ over glTF: this is the whole loader,
-    and it needs no dependency the server did not already have.
-
-    Faces of more than three vertices are fanned, matching what ``face()``
-    does with a polygon everywhere else on the board.
-    """
-    verts: list[tuple[float, float, float]] = []
-    tris: list[tuple[tuple[float, float, float], ...]] = []
-    try:
-        with open(path, "r", errors="ignore") as fh:
-            for line in fh:
-                if line.startswith("v "):
-                    p = line.split()
-                    if len(p) >= 4:
-                        try:
-                            verts.append((float(p[1]), float(p[2]), float(p[3])))
-                        except ValueError:
-                            pass
-                elif line.startswith("f "):
-                    idx: list[int] = []
-                    for tok in line.split()[1:]:
-                        # "f v/vt/vn" — only the vertex index is wanted.
-                        head = tok.split("/")[0]
-                        try:
-                            i = int(head)
-                        except ValueError:
-                            continue
-                        # OBJ is 1-based and allows NEGATIVE indices counting
-                        # back from the newest vertex. Reading a -1 as an
-                        # absolute index silently builds a mesh out of the
-                        # wrong corners, which looks like a broken model rather
-                        # than a broken parser.
-                        idx.append(i - 1 if i > 0 else len(verts) + i)
-                    for k in range(1, len(idx) - 1):
-                        try:
-                            tris.append((verts[idx[0]], verts[idx[k]],
-                                         verts[idx[k + 1]]))
-                        except IndexError:
-                            continue
-    except OSError:
-        return ()
-    return tuple(tris)
 
 
 def setpiece_triangles(inst: dict, mesh_file: str, *,
@@ -1283,13 +1263,6 @@ def depth_image(rows: Sequence[str], *, height_ft, cover_ft=None, decor=None,
                 for wx0, wx1, wz0, wz1 in wall_parts(is_open, x, z):
                     _box(face, x + wx0, x + wx1, z + wz0, z + wz1,
                          here + top, y0=here, shade=shade)
-            elif code == "O":
-                # Round, because the model paints the silhouette it is handed
-                # and a square column comes back as a square column. A TREE was
-                # here too, drawn as a second cylinder on top of this one; it is
-                # in OBJECT_VARIANTS now, where the browser reads the same table
-                # instead of a copy that had already drifted from this one.
-                _prism(face, x + 0.5, z + 0.5, PILLAR_RADIUS, here + top, y0=here)
             elif code in OBJECT_VARIANTS:
                 # A built silhouette. Drawn as one cube these came back as DICE
                 # — a crypt of thirty four-foot cubes reads as a board game

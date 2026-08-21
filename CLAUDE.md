@@ -632,6 +632,35 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   timber, brass or grown chitin). A skin that only says what the model would
   paint anyway is not free — `masonry` on the dungeon boards bought nothing
   and was removed.
+- **The prismatoid existed for a year and almost nothing used it.** Measured:
+  **106 of 178 skin parts were still boxes**, every single piece of FURNITURE
+  was boxes (altar 5, table 8, crate 8, low wall 2, zero prismatoids between
+  them), and the pillar was `prism(cx, cz, 0.32)` written by hand in BOTH
+  renderers and in neither table — the last shape in the project living where
+  the generated gate could not see it, which is the exact arrangement the tree
+  was moved out of for having drifted between the two languages. So the board
+  read as stacked blocks not because the geometry could not do better but
+  because nobody had filled the table in. Down to **25**, and the ones left are
+  things that really are flat: a plank deck, a canvas plane, a rung.
+  `skins.slab(...)` is the workhorse — a box with `chamfer` (top plan pulled
+  in) and `batter` (bottom plan pulled in), both zero by default so it degrades
+  to exactly the box it replaces. What it buys is that **the only thing that
+  says "worked" rather than "block" at this camera is the line where two planes
+  of slightly different size meet**: a crate's lid proud of the body it closes,
+  a coping that sheds, a die that leans in as it rises, a cornice that throws
+  out over it. A tower's batter is a fortieth of a square over sixteen feet —
+  nothing you would measure, and the difference between masonry and a carton.
+  Two cases where the WORDS had been describing something the silhouette flatly
+  contradicted, which is the arrangement this whole table exists to prevent: a
+  taproom post whose `words` have said "chamfered" since the day it was written
+  and which was a plain box, and a chitin hull whose own comment promised "no
+  straight line anywhere" and whose every part was a rectangle. Round things
+  are round now — logs, masts, stanchions, column drums, pipes, ladder
+  rungs — because a square top face is most of what this camera sees, and it
+  says "sawn" however loudly the prompt says "split log". `ring`, `rect`,
+  `inset` and `slab` live in `skins.py` beside `solid`, not in the renderer
+  that happened to need them first: skins is imported BY isocam, so a skin
+  cannot reach the other way.
 - **A part may be a PRISMATOID, and that is what stops everything being a
   cube.** A part was six numbers — an axis-aligned box — so every silhouette
   was built by stacking boxes, and a slope came out as a flight of terraces.

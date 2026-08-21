@@ -33,7 +33,7 @@ import type { VttScene } from "./types";
 // lands on furniture the player is not looking at.
 export {
   COVER_HEIGHT_FT, DECOR_KINDS, DECOR_TINT, HEIGHT_JITTER, HOLE_CODES,
-  MAX_DECOR_HEIGHT_FT, OBJECT_VARIANTS, PILLAR_RADIUS, SKINS, SKIRT_FT,
+  MAX_DECOR_HEIGHT_FT, OBJECT_VARIANTS, SKINS, SKIRT_FT,
   SKIRT_INSET, STRUCTURE_CODES,
   TILE_HEIGHT_FT, WALL_THICKNESS, isSolid,
 } from "./boardShapes.generated";

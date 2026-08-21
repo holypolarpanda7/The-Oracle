@@ -47,6 +47,8 @@ elevation and decoration:
 """
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
@@ -110,6 +112,52 @@ def solid(bottom: Sequence[tuple[float, float]],
     if _signed_area(b) > 0:
         b, t = tuple(reversed(b)), tuple(reversed(t))
     return (b, t, float(y0), float(y1))
+
+
+def ring(r: float, cx: float = 0.5, cz: float = 0.5, wob: float = 0.0,
+          n: int = 8) -> tuple[tuple[float, float], ...]:
+    """A rounded plan of ``n`` points, wobbled so it is not a wheel."""
+    out = []
+    for i in range(n):
+        a = i * 2 * math.pi / n + math.pi / n
+        k = r * (1.0 + wob * math.cos(3 * a))
+        out.append((cx + math.cos(a) * k, cz + math.sin(a) * k))
+    return tuple(out)
+
+
+
+def rect(x0: float, x1: float, z0: float, z1: float
+          ) -> tuple[tuple[float, float], ...]:
+    """A four-point plan. The polygon form of the box everything used to be."""
+    return ((x0, z0), (x1, z0), (x1, z1), (x0, z1))
+
+
+def inset(poly: Sequence[tuple[float, float]], by: float,
+           cx: float = 0.5, cz: float = 0.5) -> tuple[tuple[float, float], ...]:
+    """The same plan pulled in toward a centre. A chamfer, in one call.
+
+    ``by`` is a fraction of the distance to the centre, so a ring stays a ring
+    and a rectangle stays a rectangle — which is what makes it safe to use as
+    the TOP of a prismatoid: a chamfer that changed the shape of the plan would
+    twist the faces between them.
+    """
+    k = 1.0 - by
+    return tuple((cx + (x - cx) * k, cz + (z - cz) * k) for x, z in poly)
+
+
+def slab(x0: float, x1: float, z0: float, z1: float, y0: float, y1: float,
+          *, chamfer: float = 0.0, batter: float = 0.0) -> Part:
+    """A block with its edges taken off — the workhorse of everything below.
+
+    ``chamfer`` pulls the TOP plan in, which is what stops a lid, a coping or a
+    table top reading as a slab of cheese. ``batter`` pulls the BOTTOM plan in,
+    which is what makes a plinth sit rather than float. Both are zero by
+    default, so this degrades to exactly the box it replaces.
+    """
+    base = rect(x0, x1, z0, z1)
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    return solid(inset(base, batter, cx, cz), inset(base, chamfer, cx, cz),
+                 y0, y1)
 
 
 def is_solid(part: Part) -> bool:
@@ -406,32 +454,49 @@ _ROOF_LOW, _ROOF_HIGH = 0.62, 0.70
 #: denoise. A post is two feet through, sits on a plinth, and carries a bracket
 #: that runs the full width of its square at the head, which is a shape no
 #: candle has.
+#: A taproom post: a chamfered oak post on a stone pad, carrying a beam.
+#:
+#: Its own ``words`` have said "chamfered" since the day it was written, and it
+#: was a plain box — the prompt describing something the silhouette flatly
+#: contradicted, which is the arrangement the whole shape table exists to
+#: prevent. An eight-sided plan IS the chamfer, the pad spreads under it, and
+#: the beam it carries gets its arris taken off so the two do not read as one
+#: cross of the same stuff.
 _POST = _v(
-    ((0.30, 0.70, 0.30, 0.70, 0.0, 1.0),
-     (0.00, 1.00, 0.40, 0.60, 0.88, 0.97),
-     (0.24, 0.76, 0.24, 0.76, 0.0, 0.08)),
-    ((0.30, 0.70, 0.30, 0.70, 0.0, 1.0),
-     (0.40, 0.60, 0.00, 1.00, 0.88, 0.97),
-     (0.24, 0.76, 0.24, 0.76, 0.0, 0.08)),
+    (slab(0.22, 0.78, 0.22, 0.78, 0.0, 0.07, chamfer=0.22),
+     solid(ring(0.21), ring(0.19), 0.07, 1.0),
+     solid(rect(0.00, 1.00, 0.41, 0.59), rect(0.00, 1.00, 0.43, 0.57),
+           0.88, 0.97)),
+    (slab(0.22, 0.78, 0.22, 0.78, 0.0, 0.07, chamfer=0.22),
+     solid(ring(0.21), ring(0.19), 0.07, 1.0),
+     solid(rect(0.41, 0.59, 0.00, 1.00), rect(0.43, 0.57, 0.00, 1.00),
+           0.88, 0.97)),
 )
 
 _TOWNHOUSE = _v(
-    # Gabled along x: the ridge runs east-west.
-    ((0.0, 1.0, 0.0, 1.0, 0.0, _ROOF_HIGH),
+    # Gabled along x: the ridge runs east-west. The wall is battered by a
+    # hundredth over two storeys — nothing you would measure, and the line
+    # between a built thing and a carton at this distance.
+    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.01, 0.99, 0.01, 0.99),
+           0.0, _ROOF_HIGH),
      solid(((0.0, -0.06), (1.0, -0.06), (1.0, 1.06), (0.0, 1.06)),
            ((0.0, 0.5), (1.0, 0.5), (1.0, 0.5), (0.0, 0.5)),
            _ROOF_HIGH, 1.0)),
     # Gabled along z, and a storey lower.
-    ((0.0, 1.0, 0.0, 1.0, 0.0, _ROOF_LOW),
+    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.01, 0.99, 0.01, 0.99),
+           0.0, _ROOF_LOW),
      solid(((-0.06, 0.0), (1.06, 0.0), (1.06, 1.0), (-0.06, 1.0)),
            ((0.5, 0.0), (0.5, 0.0), (0.5, 1.0), (0.5, 1.0)),
            _ROOF_LOW, 0.94)),
-    # Flat-topped with a parapet — a merchant's counting house.
-    ((0.0, 1.0, 0.0, 1.0, 0.0, 0.86),
-     (0.0, 1.0, 0.0, 0.12, 0.86, 1.0),
-     (0.0, 1.0, 0.88, 1.0, 0.86, 1.0),
-     (0.0, 0.12, 0.0, 1.0, 0.86, 1.0),
-     (0.88, 1.0, 0.0, 1.0, 0.86, 1.0)),
+    # Flat-topped with a parapet — a merchant's counting house. The parapet
+    # courses are COPED: a top plan narrower than the bottom, so the cap sheds
+    # and the roof line is a line rather than a kerb.
+    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.01, 0.99, 0.01, 0.99),
+           0.0, 0.86),
+     slab(0.0, 1.0, 0.0, 0.12, 0.86, 1.0, chamfer=0.12),
+     slab(0.0, 1.0, 0.88, 1.0, 0.86, 1.0, chamfer=0.12),
+     slab(0.0, 0.12, 0.0, 1.0, 0.86, 1.0, chamfer=0.12),
+     slab(0.88, 1.0, 0.0, 1.0, 0.86, 1.0, chamfer=0.12)),
     # Hipped: drawn in on all four sides to a short ridge.
     ((0.0, 1.0, 0.0, 1.0, 0.0, _ROOF_HIGH),
      solid(((-0.06, -0.06), (1.06, -0.06), (1.06, 1.06), (-0.06, 1.06)),
@@ -510,39 +575,72 @@ _CORAL = _v(
 #: A snapped column. Ruins and drowned ruins want the pillar to have ALREADY
 #: fallen — an intact colonnade on a seabed is a stranger sight than a broken
 #: one, and the board had no way to say so.
+#: ROUND, because a column is turned and a drum is a drum. Squared off, a
+#: colonnade of these read as a field of broken fenceposts — which is the
+#: crypt-of-dice failure again, on the seabed. The break is a plan slightly
+#: wider than the drum below it, since stone shears out rather than in.
 _BROKEN_COLUMN = _v(
-    ((0.30, 0.70, 0.30, 0.70, 0.0, 0.44), (0.32, 0.68, 0.32, 0.68, 0.44, 0.52)),
-    ((0.30, 0.70, 0.30, 0.70, 0.0, 0.70), (0.34, 0.64, 0.30, 0.60, 0.70, 0.78)),
-    ((0.32, 0.68, 0.32, 0.68, 0.0, 0.28), (0.10, 0.86, 0.22, 0.48, 0.0, 0.14)),
-    ((0.28, 0.66, 0.34, 0.72, 0.0, 0.58), (0.30, 0.62, 0.36, 0.68, 0.58, 0.66),
-     (0.60, 0.92, 0.30, 0.54, 0.0, 0.16)),
+    (solid(ring(0.20), ring(0.185), 0.0, 0.44),
+     solid(ring(0.195), ring(0.175, 0.52, 0.47), 0.44, 0.52)),
+    (solid(ring(0.20), ring(0.18), 0.0, 0.70),
+     solid(ring(0.19, 0.49, 0.45), ring(0.16, 0.47, 0.43), 0.70, 0.78)),
+    (solid(ring(0.185), ring(0.175), 0.0, 0.28),
+     # The rest of it, lying where it fell: a drum on its side is an oval in
+     # plan, and this one is snapped at both ends.
+     solid(ring(0.13, 0.48, 0.35, n=8), ring(0.12, 0.48, 0.35, n=8), 0.0, 0.14)),
+    (solid(ring(0.19, 0.47, 0.53), ring(0.175, 0.47, 0.53), 0.0, 0.58),
+     solid(ring(0.18, 0.46, 0.52), ring(0.155, 0.45, 0.51), 0.58, 0.66),
+     solid(ring(0.15, 0.76, 0.42, n=8), ring(0.14, 0.76, 0.42, n=8), 0.0, 0.16)),
 )
 
 #: A mast: a pole, a yard across it, and a top. One variant on purpose — a ship
 #: has one mast and it is not a random thing.
+#: A mast: a round spar, thicker at the partners than at the head, with two
+#: yards crossed on it. Square-sectioned it was a post with two planks nailed
+#: across — and a mast is the one thing on a ship's deck that is unmistakably
+#: turned.
 _MAST = _v(
-    ((0.43, 0.57, 0.43, 0.57, 0.0, 1.0),
-     (0.06, 0.94, 0.46, 0.54, 0.60, 0.655),
-     (0.20, 0.80, 0.47, 0.53, 0.84, 0.875),
-     (0.34, 0.66, 0.34, 0.66, 0.0, 0.06)),
+    (slab(0.32, 0.68, 0.32, 0.68, 0.0, 0.06, chamfer=0.24),
+     solid(ring(0.085), ring(0.055), 0.06, 1.0),
+     solid(rect(0.06, 0.94, 0.455, 0.545),
+           rect(0.10, 0.90, 0.47, 0.53), 0.60, 0.655),
+     solid(rect(0.20, 0.80, 0.465, 0.535),
+           rect(0.24, 0.76, 0.478, 0.522), 0.84, 0.875)),
 )
 
 #: A ship's rail: stanchions and a top rail, so you can see the sea THROUGH it.
 #: Drawn along the run, and at exactly the three feet the rules quote — the
 #: shape changes, the height may not.
 _RAILING = _v(
-    ((0.08, 0.20, 0.42, 0.58, 0.0, 1.0), (0.44, 0.56, 0.42, 0.58, 0.0, 1.0),
-     (0.80, 0.92, 0.42, 0.58, 0.0, 1.0),
-     (0.00, 1.00, 0.44, 0.56, 0.80, 1.00),
-     (0.00, 1.00, 0.45, 0.55, 0.34, 0.46)),
+    (solid(ring(0.062, 0.14, 0.5), ring(0.05, 0.14, 0.5), 0.0, 1.0),
+     solid(ring(0.062, 0.50, 0.5), ring(0.05, 0.50, 0.5), 0.0, 1.0),
+     solid(ring(0.062, 0.86, 0.5), ring(0.05, 0.86, 0.5), 0.0, 1.0),
+     # The top rail is moulded — wider at its underside than its top, which is
+     # what a handrail is and what stops it reading as a plank on sticks.
+     solid(rect(0.00, 1.00, 0.425, 0.575),
+           rect(0.00, 1.00, 0.445, 0.555), 0.80, 1.00),
+     solid(rect(0.00, 1.00, 0.455, 0.545),
+           rect(0.00, 1.00, 0.465, 0.535), 0.34, 0.46)),
 )
 
 #: A palisade: sharpened logs shoulder to shoulder, pointed tops.
+#:
+#: ROUND, and that is the whole difference. Written as boxes this was a row of
+#: square posts with smaller square posts on top — a fence of table legs — and
+#: at this camera the top face is most of what you see, so a square top says
+#: "sawn timber" however loudly the words say "split logs". A log is a taper
+#: with a point on it, and the point is a taper to almost nothing rather than
+#: to an apex: an exact apex is a spike, and a palisade of spikes reads as a
+#: trap rather than a wall.
+def _log(cx: float, r: float, top: float) -> tuple:
+    return (solid(ring(r, cx, 0.5), ring(r * 0.94, cx, 0.5), 0.0, top),
+            solid(ring(r * 0.94, cx, 0.5), ring(r * 0.18, cx, 0.5),
+                  top, min(1.0, top + 0.12)))
+
+
 _PALISADE = _v(
-    ((0.00, 0.24, 0.34, 0.66, 0.0, 0.90), (0.04, 0.20, 0.40, 0.60, 0.90, 1.0),
-     (0.26, 0.50, 0.34, 0.66, 0.0, 0.96), (0.30, 0.46, 0.40, 0.60, 0.96, 1.0),
-     (0.52, 0.76, 0.34, 0.66, 0.0, 0.88), (0.56, 0.72, 0.40, 0.60, 0.88, 1.0),
-     (0.78, 1.00, 0.34, 0.66, 0.0, 0.94)),
+    (*_log(0.12, 0.13, 0.86), *_log(0.38, 0.14, 0.92),
+     *_log(0.64, 0.13, 0.84), *_log(0.89, 0.14, 0.90)),
 )
 
 #: A tent wall: one canvas plane running from the pegs up and INWARD.
@@ -629,13 +727,21 @@ _TENT_CANOPY = _v((
 #:
 #: Two arrangements with the merlons in different places, quarter-turned per
 #: square, so a ring of them crenellates unevenly instead of marching.
+#: A stone tower: a battered wall under capped merlons.
+#:
+#: The batter is tiny (a fortieth of a square over sixteen feet) and it is the
+#: difference between masonry and a carton: real walls lean in as they rise,
+#: and the one line the eye reads at this distance is the one where a face
+#: stops being parallel to its neighbour's.
 _TOWER = _v(
-    ((0.00, 1.00, 0.00, 1.00, 0.0, 0.86),
-     (0.02, 0.40, 0.02, 0.40, 0.86, 1.00),
-     (0.60, 0.98, 0.02, 0.40, 0.86, 1.00)),
-    ((0.00, 1.00, 0.00, 1.00, 0.0, 0.86),
-     (0.30, 0.70, 0.02, 0.40, 0.86, 1.00),
-     (0.02, 0.34, 0.60, 0.98, 0.86, 1.00)),
+    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.015, 0.985, 0.015, 0.985),
+           0.0, 0.86),
+     slab(0.02, 0.40, 0.02, 0.40, 0.86, 1.00, chamfer=0.10),
+     slab(0.60, 0.98, 0.02, 0.40, 0.86, 1.00, chamfer=0.10)),
+    (solid(rect(-0.01, 1.01, -0.01, 1.01), rect(0.015, 0.985, 0.015, 0.985),
+           0.0, 0.86),
+     slab(0.30, 0.70, 0.02, 0.40, 0.86, 1.00, chamfer=0.10),
+     slab(0.02, 0.34, 0.60, 0.98, 0.86, 1.00, chamfer=0.10)),
 )
 
 #: A doorway: two jambs and a lintel over an OPEN passage.
@@ -645,9 +751,15 @@ _TOWER = _v(
 #: which reads as a missing wall, not a way in. The passage is left clear below
 #: the lintel; the square stays exactly as walkable as it always was.
 _DOORWAY = _v(
-    ((0.00, 0.15, 0.28, 0.72, 0.00, 1.00),
-     (0.85, 1.00, 0.28, 0.72, 0.00, 1.00),
-     (0.00, 1.00, 0.28, 0.72, 0.58, 1.00)),
+    # Jambs SPLAYED — a doorway cut through a thick wall is wider on the
+    # outside than in the reveal, which is the only cue at this angle that the
+    # opening is cut through something rather than painted on it.
+    (solid(rect(0.00, 0.17, 0.26, 0.74), rect(0.00, 0.13, 0.28, 0.72),
+           0.00, 1.00),
+     solid(rect(0.83, 1.00, 0.26, 0.74), rect(0.87, 1.00, 0.28, 0.72),
+           0.00, 1.00),
+     solid(rect(0.00, 1.00, 0.26, 0.74), rect(0.00, 1.00, 0.28, 0.72),
+           0.58, 1.00)),
 )
 
 #: A tent flap: the canvas rolled back at the jambs, a valance across the top.
@@ -732,30 +844,54 @@ _LADDER = _v((
     solid(((0.67, 0.84), (0.76, 0.84), (0.76, 0.93), (0.67, 0.93)),
           ((0.67, 0.44), (0.76, 0.44), (0.76, 0.53), (0.67, 0.53)),
           0.00, 1.00),
-    (0.26, 0.74, 0.80, 0.88, 0.14, 0.18),
-    (0.26, 0.74, 0.72, 0.80, 0.36, 0.40),
-    (0.26, 0.74, 0.64, 0.72, 0.58, 0.62),
-    (0.26, 0.74, 0.56, 0.64, 0.80, 0.84),
+    # Rungs, and a rung is a stick: round, and slightly thinner at the middle
+    # where a hundred boots have worn it.
+    solid(rect(0.26, 0.74, 0.805, 0.875), rect(0.26, 0.74, 0.815, 0.865),
+          0.14, 0.18),
+    solid(rect(0.26, 0.74, 0.725, 0.795), rect(0.26, 0.74, 0.735, 0.785),
+          0.36, 0.40),
+    solid(rect(0.26, 0.74, 0.645, 0.715), rect(0.26, 0.74, 0.655, 0.705),
+          0.58, 0.62),
+    solid(rect(0.26, 0.74, 0.565, 0.635), rect(0.26, 0.74, 0.575, 0.625),
+          0.80, 0.84),
 ))
 
 #: A stone parapet: a merloned roof edge, for the platform ON TOP of a tower.
 _PARAPET = _v(
-    ((0.00, 1.00, 0.30, 0.70, 0.0, 0.62),
-     (0.00, 0.30, 0.26, 0.74, 0.62, 1.00),
-     (0.42, 0.72, 0.26, 0.74, 0.62, 1.00)),
+    (solid(rect(0.00, 1.00, 0.28, 0.72), rect(0.00, 1.00, 0.31, 0.69),
+           0.0, 0.62),
+     slab(0.00, 0.30, 0.26, 0.74, 0.62, 1.00, chamfer=0.11),
+     slab(0.42, 0.72, 0.26, 0.74, 0.62, 1.00, chamfer=0.11)),
 )
 
 #: Steampunk plating: riveted panels and a pipe run along the hull.
 _PLATING = _v(
-    ((0.00, 1.00, 0.32, 0.68, 0.0, 0.84), (0.00, 1.00, 0.26, 0.74, 0.84, 1.0),
-     (0.10, 0.34, 0.20, 0.30, 0.30, 0.62), (0.62, 0.88, 0.20, 0.30, 0.30, 0.62)),
+    (solid(rect(0.00, 1.00, 0.31, 0.69), rect(0.00, 1.00, 0.33, 0.67),
+           0.0, 0.84),
+     # A capping strake that throws out over the plate below it.
+     slab(0.00, 1.00, 0.24, 0.76, 0.84, 1.0, chamfer=0.09),
+     # The pipe run is a PIPE — the one round thing on a riveted hull, and
+     # square it was indistinguishable from the panels it runs across.
+     solid(ring(0.055, 0.22, 0.25), ring(0.055, 0.22, 0.25), 0.30, 0.62),
+     solid(ring(0.055, 0.75, 0.25), ring(0.055, 0.75, 0.25), 0.30, 0.62)),
 )
 
 #: A grown hull: ribbed chitin, no straight line anywhere.
+#: Its own comment promised "no straight line anywhere" and every part of it
+#: was a rectangular box. A carapace swells and closes: each course is wider at
+#: its waist than where it meets the next, which is what makes a run of them
+#: read as segments of one body rather than as a stack of trays.
 _CHITIN = _v(
-    ((0.00, 1.00, 0.34, 0.66, 0.0, 0.58), (0.06, 0.94, 0.28, 0.72, 0.58, 0.86),
-     (0.22, 0.78, 0.36, 0.64, 0.86, 1.00)),
-    ((0.00, 1.00, 0.30, 0.70, 0.0, 0.70), (0.14, 0.86, 0.36, 0.64, 0.70, 1.00)),
+    (solid(rect(0.00, 1.00, 0.33, 0.67), rect(0.00, 1.00, 0.28, 0.72),
+           0.0, 0.58),
+     solid(rect(0.04, 0.96, 0.27, 0.73), rect(0.14, 0.86, 0.33, 0.67),
+           0.58, 0.86),
+     solid(rect(0.18, 0.82, 0.34, 0.66), rect(0.30, 0.70, 0.42, 0.58),
+           0.86, 1.00)),
+    (solid(rect(0.00, 1.00, 0.29, 0.71), rect(0.00, 1.00, 0.25, 0.75),
+           0.0, 0.70),
+     solid(rect(0.10, 0.90, 0.30, 0.70), rect(0.26, 0.74, 0.40, 0.60),
+           0.70, 1.00)),
 )
 
 
