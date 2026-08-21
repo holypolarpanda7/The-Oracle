@@ -1112,10 +1112,25 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          # are the ones that were tuned, and only the SIZE OF THE UNIT changed.
          variants=_TOWNHOUSE, height_ft=24, smooth=True,
          roof_ft=7.2, roof_at=0.70),
+    # What is left standing in a ruin. Its own skin rather than `townhouse`
+    # because the roof tracer keys on one — a ruin's remaining roof is lower,
+    # and a burnt-out shell should not be drawn under a townhouse's steep tile.
+    Skin("ruin-house", "ruined-masonry",
+         "close-up of fire-blackened rubble masonry, mortar washed out of the "
+         "joints, weeds rooted in the courses",
+         words="a few houses still stand — soot-stained walls, roofs half "
+               "fallen in, doorways open to the weather",
+         variants=_TOWNHOUSE, height_ft=18, smooth=True,
+         roof_ft=4.5, roof_at=0.70),
     Skin("cobbles", "cobble",
          "close-up of a worn cobbled street surface, rounded granite setts and "
          "the gaps between them",
          words="the roadway is worn granite cobbles, rutted and greasy with use",
+         # A road is LAID and it is not FLAT: it is laid over ground, and it
+         # follows the ground. The "laid things are flat" rule is about a
+         # floor — a dungeon's flagstones, a ship's deck — where the builder
+         # levelled the site. Nobody levels a hillside to put a street on it.
+         soft=True,
          misread=""),
     # A TAPROOM, and the three things a room the model already knows still gets
     # wrong. The floor is the reason this set exists: with the ground-only init

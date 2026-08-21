@@ -271,7 +271,7 @@ export const SKINS: Record<string, SkinShape> = {
       [[[[-0.1, 1.1], [1.1, 1.1], [1.1, -0.1], [-0.1, -0.1]], [[-0.04, 1.06], [1.08, 1], [1.04, -0.02], [0, 0.06]], 0, 0.54]],
       [[[[-0.1, 1.1], [1.1, 1.1], [1.1, -0.1], [-0.1, -0.1]], [[0.02, 0.78], [1.02, 0.9], [0.94, 0.22], [0.1, 0.02]], 0, 0.7], [[[0.08, 0.72], [0.92, 0.84], [0.86, 0.28], [0.14, 0.1]], [[0.24, 0.62], [0.66, 0.72], [0.62, 0.4], [0.26, 0.28]], 0.7, 0.96]]] },
   cobbles: { substance: "cobble", heightFt: 0, directional: false, outward: false,
-    smooth: false, soft: false,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
+    smooth: false, soft: true,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
     variants: null },
   coral: { substance: "coral", heightFt: 9, directional: false, outward: false,
     smooth: true, soft: false,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
@@ -346,6 +346,10 @@ export const SKINS: Record<string, SkinShape> = {
   "ruin-floor": { substance: "ruined-paving", heightFt: 0, directional: false, outward: false,
     smooth: false, soft: false,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
     variants: null },
+  "ruin-house": { substance: "ruined-masonry", heightFt: 18, directional: false, outward: false,
+    smooth: true, soft: false,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
+    variants: [
+      [[0, 1, 0, 1, 0, 0.7]]] },
   "ruin-stub": { substance: "dressed-stone", heightFt: 0, directional: true, outward: false,
     smooth: false, soft: false,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
     variants: [

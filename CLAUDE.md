@@ -1692,6 +1692,40 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   high ground AND that the DM board states it with what it costs. The offline
   demo board carries a dais for the same reason: it is the only board a browser
   can draw with no backend, and it was flat while every real board grew height.
+- **A town is somewhere you go IN.** A street was a block of solid `#` with a
+  roof traced over it: scenery you fought around, never in. A house is not a
+  different KIND of thing from a tent — `structures.townhouse` is
+  :func:`shelter` with a party wall on each side and its door on a NAMED side —
+  so everything a tent already earns comes with it: the inside is real squares,
+  cover and sight read the walls, and the way in is a `/` doorway the engine
+  already understands. `shelter` had to learn `door_side` for it: a door is
+  onto the STREET, and one rolled onto the back wall of a terrace opens into
+  the neighbour's masonry. The selftest checks that every open square on a town
+  board is reachable from every other, which is the check that catches exactly
+  that.
+  **A TERRACE IS NOT ONE BUILDING**, and two things had to say so. The roof
+  tracer groups by SKIN, and every house on a terrace wears the same plaster —
+  so the whole row came back under one roof, which is a warehouse.
+  `hull.roofs(footprints=…)` takes the generator's own list of houses
+  (`GeneratedMap.buildings`, carried into `notes` so `state()` can trace it
+  again), and each gets its own. And a terrace is not one HEIGHT: houses stand
+  one or two storeys taller than their neighbours, which is what per-storey
+  elevation on the rooftops level is for.
+  **Frontage cannot be found by scanning.** The first version looked for runs
+  of wall with a road beside them, and one alley put a road square in every
+  row, so every row read as facing a street and no terrace was ever laid. The
+  BLOCKS are derived from the lane positions instead — the roads are laid by
+  the generator, so it already knows where they are.
+  **A road is LAID and it is not FLAT.** "Laid things are flat" is about a
+  FLOOR — a dungeon's flagstones, a ship's deck — where the builder levelled
+  the site, and nobody levels a hillside to put a street on it. `cobbles` is
+  `soft`, and a street falls three to eight feet across the board in ONE-FOOT
+  steps: the smallest the rules have, so climbing it costs the foot per foot
+  the SRD charges and nothing on it is ever a drop.
+  The same treatment reaches `ruins`: one standing building in three, with a
+  doorway and sometimes a floor still up. A ruin drawn only as broken outlines
+  is walls to run between and never anything to be inside, and the survivors
+  are what make the outlines read as ruins.
 - **A bigger board is MORE OF THE PLACE, not a bigger place.** Boards are
   roughly **four times the area** they were (combat 24x18 -> 46x34, which is
   230 by 170 feet), because a 120-ft board is enough to stand and trade blows
@@ -1714,7 +1748,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   and rings it with side chambers, **unless the margin is too small to hold
   one**, in which case the hall takes it — a board that was already one room
   must stay one room; the street lays a BLOCK GRID with a real roadway and
-  cross streets, and hollows any block deeper than two buildings into a yard;
+  cross streets, and blocks are two buildings deep so nothing is left solid;
   the sewer's bore is a bore and a bigger board holds more tunnels; the camp
   pitches more tents. Open country needs no rule at all: a meadow, a forest and
   a marsh SHOULD be one region four times the size, because that is what more

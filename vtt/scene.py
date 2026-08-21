@@ -321,7 +321,11 @@ class VttEngine:
                    # their own because a room is not a rule — its walls and its
                    # doorway are already tiles by the time this is written, and
                    # what is left is what the place is CALLED.
-                   "rooms": [dict(r) for r in gen.rooms]},
+                   "rooms": [dict(r) for r in gen.rooms],
+                   # Where one HOUSE ends and the next begins. A terrace is all
+                   # one skin, so without this the roof tracer puts the whole
+                   # row under one roof — see vtt/hull.roofs.
+                   "buildings": [dict(b) for b in gen.buildings]},
         )
         # Reuse the earlier render for a place we've already painted.
         if prior is not None and prior.background_image_id:
@@ -1098,7 +1102,10 @@ class VttEngine:
         def skin_of(c: str, x: int, z: int) -> str:
             return _skins.skin_at(c, x, z, codes=codes, squares=squares)
 
-        return _hull.roofs(list(row.terrain or []), skin_of, row.elevation or {})
+        return _hull.roofs(list(row.terrain or []), skin_of,
+                           row.elevation or {},
+                           footprints=((row.notes or {}).get("buildings")
+                                       or None))
 
     def shells_for(self, map_id: int) -> list[dict]:
         """Every vessel SHELL on this board — one traced hull per body.

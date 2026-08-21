@@ -88,6 +88,10 @@ class GeneratedMap:
     # CALLED, which is the difference between a deckhouse and the armoury of a
     # bastion that flies.
     rooms: list[dict] = field(default_factory=list)
+    # Buildings this layout raised, as [{"x","y","w","h","storeys"}]. Each is
+    # one HOUSE with its own inside — the roof tracer needs them one at a time
+    # or a terrace comes back under a single roof, which is a warehouse.
+    buildings: list[dict] = field(default_factory=list)
     # Rooms the CALLER asked for, by name. An input, consumed by the generator
     # exactly as ``style`` is: a bastion airship carries its owner's facilities,
     # and nothing else on the board could know their names.
@@ -1008,14 +1012,79 @@ def _gen_clearing(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         out.description += ", a green barrow mound at its centre"
 
 
+def _terrace_houses(g: Grid, rng: random.Random, out: GeneratedMap,
+                    blocks: list[tuple[int, int, int, int]]) -> None:
+    """Build a terrace along every side of every block that faces a road.
+
+    A house is not a different KIND of thing from a tent — it is
+    :func:`structures.townhouse`, which is a shelter with a party wall on each
+    side and its door on a NAMED side — and everything a tent already earns
+    comes with it: the inside is real squares, sight and cover read the walls,
+    and the way in is a doorway the engine understands. The street used to be a
+    block of solid masonry with a roof traced over it, which is scenery you
+    fight around rather than in.
+
+    Houses are fifteen to thirty feet across, laid shoulder to shoulder with a
+    party wall between neighbours, and some of them stand a storey or two
+    taller. That is what a street looks like, and it is also the cheapest
+    vertical terrain a town has: a real floor, reached by a real stair, from
+    which a real archer shoots down into the road.
+    """
+    from . import structures
+
+    lo_w, hi_w = _sq(structures.HOUSE_FT[0]), _sq(structures.HOUSE_FT[1])
+    deep = _sq(BLOCK_FT)
+    placed: list[dict] = []
+
+    def _road_beyond(x: int, y: int) -> bool:
+        return (not g.in_bounds(x, y)) or g.get(x, y) == "="
+
+    for bx0, by0, bx1, by1 in blocks:
+        bw, bh = bx1 - bx0 + 1, by1 - by0 + 1
+        if bw < 4 or bh < 4:
+            continue
+        # Which sides of this block front onto a road, and how deep a terrace
+        # may run back from each without meeting the one opposite.
+        sides = []
+        if _road_beyond(bx0, by0 - 1):
+            sides.append(("s", bx0, by0, bw, min(deep, bh)))     # door faces N
+        if _road_beyond(bx0, by1 + 1) and bh > deep:
+            sides.append(("n", bx0, by1 - min(deep, bh) + 1, bw, min(deep, bh)))
+        elif _road_beyond(bx0, by1 + 1) and not sides:
+            sides.append(("n", bx0, by0, bw, bh))
+        for side, ox, oy, run_w, run_h in sides:
+            # `side` is the wall the door goes IN, so a block whose road is to
+            # the north has its doors in its north wall.
+            door_side = "n" if side == "s" else "s"
+            at = 0
+            while at + lo_w <= run_w:
+                wide = min(rng.randint(lo_w, hi_w), run_w - at)
+                if wide < lo_w:
+                    break
+                b_storeys = rng.choice((0, 0, 1, 1, 2))
+                b = structures.townhouse(
+                    g, rng, out, ox + at, oy, wide, run_h,
+                    street=door_side, storeys=b_storeys)
+                if b.interior:
+                    out.skins.update(b.skins)
+                    out.doors.extend(b.doors)
+                    placed.append({"x": ox + at, "y": oy, "w": wide,
+                                   "h": run_h, "storeys": b_storeys})
+                    # An ALLEY between some of them: the best kiting ground a
+                    # town has, and the only way through a terrace.
+                    at += wide + (1 if rng.random() < 0.22 else 0)
+                else:
+                    at += wide
+    out.buildings = placed
+
+
 def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
-    # A town is BLOCKS, and both numbers here are real measurements: a roadway
-    # a cart and two people can pass on, and a block of houses about forty feet
-    # deep with a yard behind. Sized as fractions of the board instead — which
-    # is how this was written — a bigger street came back a boulevard between
-    # buildings a hundred feet deep, which is a warehouse district nobody asked
-    # for. Held in feet, the same code lays one street across a small board and
-    # a district of crossings on a large one.
+    # A town is BLOCKS with HOUSES on them, and every number here is a real
+    # measurement: a roadway a cart and two people can pass on, a block of
+    # houses about forty feet deep, a house fifteen to thirty feet across its
+    # frontage. Sized as fractions of the board — which is how this was
+    # written — a bigger street came back a boulevard between buildings a
+    # hundred feet deep, which is a warehouse district nobody asked for.
     road = _sq(STREET_FT)
     block = _sq(BLOCK_FT)
     g.fill_rect(0, 0, g.width - 1, g.height - 1, WALL)
@@ -1023,65 +1092,56 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     def _lanes(span: int) -> list[int]:
         """Where the roadways run. Pitch is two blocks back to back plus the
         road between them, which is what a town actually is."""
-        pitch = block * 2 + road
         out_ = []
         at = block
         while at + road + block <= span:
             out_.append(at)
-            at += pitch
+            at += block * 2 + road
         return out_ or ([max(0, (span - road) // 2)] if span >= road + 2 else [])
 
-    for y0 in _lanes(g.height):
+    hlanes = _lanes(g.height)
+    # Cross streets only once the board is long enough to want one: a roadway
+    # running the whole way with no way off it is more street and the same
+    # corridor.
+    vlanes = _lanes(g.width) if g.width >= block * 2 + road * 2 else []
+    for y0 in hlanes:
         g.fill_rect(0, y0, g.width - 1, min(g.height - 1, y0 + road - 1), "=")
-    # Cross streets on the same pitch, once the board is long enough to want
-    # one: a roadway running the whole way with no way off it is more street
-    # and the same corridor.
-    if g.width >= block * 2 + road * 2:
-        for x0 in _lanes(g.width):
-            g.fill_rect(x0, 0, min(g.width - 1, x0 + road - 1), g.height - 1, "=")
+    for x0 in vlanes:
+        g.fill_rect(x0, 0, min(g.width - 1, x0 + road - 1), g.height - 1, "=")
 
-    # Alleys break the frontage, so a block is not one unbroken wall — and a
-    # one-square gap between two buildings is the best kiting ground a town
-    # has. Counted by the RUN they break rather than by area: an alley is a
-    # gap in a frontage, so twice as much frontage wants twice as many, not
-    # four times.
-    for _ in range(max(1, g.width // 16)):
-        ax = rng.randrange(1, g.width - 1)
-        for y in range(g.height):
-            if g.get(ax, y) == WALL:
-                g.set(ax, y, "=")
-    for _ in range(max(1, g.height // 16)):
-        ay = rng.randrange(1, g.height - 1)
-        for x in range(g.width):
-            if g.get(x, ay) == WALL:
-                g.set(x, ay, "=")
+    # The BLOCKS are the rectangles the roads left, derived rather than
+    # searched for. Scanning the grid for frontage cannot work once anything
+    # else has touched it: one alley put a road square in every row, so every
+    # row read as facing a street and no terrace was ever laid.
+    def _spans(lanes: list[int], span: int) -> list[tuple[int, int]]:
+        cuts = [(-road, 0)] + [(a, a + road - 1) for a in lanes] + [(span, span)]
+        out_ = []
+        for (_, e), (b, _) in zip(cuts, cuts[1:]):
+            if b - 1 >= e + 1:
+                out_.append((e + 1, b - 1))
+        return out_
 
-    # YARDS. A building is about forty feet deep from its own frontage, and a
-    # block deeper than two of them has ground in the middle of it — a yard, a
-    # garden, a midden — not another eighty feet of masonry. Measured from the
-    # road rather than laid out, so it self-adjusts: a shallow block stays
-    # solid and a deep one is hollow, whatever the board's proportions are.
-    deep = _sq(BLOCK_FT)
-    reach: dict[Square, int] = {}
-    front = [(x, y) for x, y in g.squares() if g.get(x, y) != WALL]
-    for sq in front:
-        reach[sq] = 0
-    edge = list(front)
-    while edge:
-        nxt = []
-        for x, y in edge:
-            d = reach[(x, y)] + 1
-            if d > deep:
-                continue
-            for ax, ay in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-                if g.in_bounds(ax, ay) and (ax, ay) not in reach \
-                        and g.get(ax, ay) == WALL:
-                    reach[(ax, ay)] = d
-                    nxt.append((ax, ay))
-        edge = nxt
+    blocks = [(x0, y0, x1, y1)
+              for x0, x1 in _spans(vlanes, g.width)
+              for y0, y1 in _spans(hlanes, g.height)]
+    _terrace_houses(g, rng, out, blocks)
+
+    # A TOWN IS ON GROUND, and ground is not a billiard table. The roadway was
+    # dead flat, which is what made a street read as a diagram: nothing to
+    # shoot down, nothing to labour up, no reason for one end to be worth more
+    # than the other. A gentle fall across the board in ONE-FOOT steps — the
+    # smallest the rules have — so climbing it costs the foot per foot the SRD
+    # charges and nothing ever becomes a drop. The cobble skin is `soft`, so
+    # the surface between the steps is drawn as a slope rather than as
+    # terraces; see terrain.SOFT_GROUND.
+    fall = rng.randint(3, 8)
+    down = rng.random() < 0.5
     for x, y in g.squares():
-        if g.get(x, y) == WALL and (x, y) not in reach:
-            g.set(x, y, "g")
+        t = (g.width - 1 - x) / max(1, g.width - 1) if down \
+            else x / max(1, g.width - 1)
+        ft = int(round(t * fall))
+        if ft:
+            _raise(out, [(x, y)], ft)
     _scatter(g, rng, "o", 0.05, only_on=("=",))
     _scatter(g, rng, "n", 0.02, only_on=("=",))
     _scatter(g, rng, ",", 0.04, only_on=("=",))
@@ -1091,7 +1151,13 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # the buildings were solid blocks with nothing on top. The roof level is
     # laid over the building squares only, so the street itself stays open sky
     # from up there — you can see down into it, shoot into it, and fall into it.
-    roof = [(x, y) for x, y in g.squares() if g.get(x, y) == WALL]
+    # Every square of every HOUSE, not every wall on the board: the block's
+    # back land is not a roof, and since the terrace went in the two are no
+    # longer the same set.
+    roof = sorted({(x, y) for b in out.buildings
+                   for x in range(b["x"], b["x"] + b["w"])
+                   for y in range(b["y"], b["y"] + b["h"])
+                   if g.in_bounds(x, y)})
     if len(roof) > 12:
         level = _storey(out, g, "Rooftops", 20, roof)
         if level:
@@ -1156,6 +1222,21 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                     _raise(out, [sq], LEDGE_FT, level)
                 elif d >= 1:
                     _raise(out, [sq], STEP_FT, level)
+            # A TERRACE IS NOT ONE HEIGHT. Every house on it stands where its
+            # neighbours do not, and a roof level drawn at one height is the
+            # thing that made a street read as one warehouse. Per-storey
+            # elevation is exactly what this is for: the level's `base_ft` is
+            # where the lowest roof sits and each house's own storeys raise its
+            # squares above that.
+            for b in out.buildings:
+                extra = int(b.get("storeys") or 0) * 10
+                if not extra:
+                    continue
+                for x in range(b["x"], b["x"] + b["w"]):
+                    for y in range(b["y"], b["y"] + b["h"]):
+                        key = f"{x},{y}"
+                        cur = _elev_of(out, level).get(key, 0)
+                        _raise(out, [(x, y)], cur + extra, level)
             out.description += ", roofs above it reached by an outside stair"
 
 
@@ -1496,16 +1577,44 @@ def _gen_ruins(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # More of them on a bigger board, each the size a building is. Sized as a
     # third of the board they grew instead, so a big ruin was three enormous
     # halls rather than a village somebody burned.
+    from . import structures
+
+    houses: list[dict] = []
     for _ in range(_for_area(g, 4.5, most=40)):
         w = rng.randint(3, _sq(ROOM_MAX_FT))
         h = rng.randint(3, _sq(ROOM_MAX_FT))
         x0 = rng.randint(0, max(0, g.width - w - 1))
         y0 = rng.randint(0, max(0, g.height - h - 1))
+        # ONE IN THREE IS STILL A BUILDING. A ruin drawn only as broken
+        # outlines is a set of walls to run between and never anything to be
+        # INSIDE — and the whole point of a ruin is that some of it is still
+        # standing. A survivor gets a real doorway, a real inside, and now and
+        # then a floor still up above it. The rest are the outlines they always
+        # were, which is what makes the survivors read as survivors.
+        if w >= 5 and h >= 5 and rng.random() < 0.34:
+            b = structures.townhouse(
+                g, rng, out, x0, y0, w, h,
+                street=rng.choice(("n", "s", "e", "w")),
+                storeys=1 if rng.random() < 0.35 else 0,
+                skin="ruin-house")
+            if b.interior:
+                out.skins.update(b.skins)
+                out.doors.extend(b.doors)
+                houses.append({"x": x0, "y": y0, "w": w, "h": h})
+                # …and then time takes some of it. Only the WALLS, never the
+                # doorway or the floor: a ruin you cannot get into is a block.
+                for x in range(x0, x0 + w):
+                    for y in range(y0, y0 + h):
+                        if g.get(x, y) == WALL and rng.random() < 0.22:
+                            g.set(x, y, "w")
+                            out.skins.pop(f"{x},{y}", None)
+                continue
         # Broken walls: outline, then knock chunks out of it.
         g.outline_rect(x0, y0, x0 + w, y0 + h, "w" if rng.random() < 0.5 else WALL)
         for x, y in list(g.squares()):
             if g.get(x, y) in (WALL, "w") and rng.random() < 0.45:
                 g.set(x, y, ",")
+    out.buildings = houses
     _scatter(g, rng, "O", 0.03, only_on=(",",))
     _scatter(g, rng, "\"", 0.06, only_on=(",",))
     _connect_regions(g, rng)

@@ -92,7 +92,7 @@ def shelter(g: Grid, rng: random.Random, x0: int, y0: int, w: int, h: int, *,
             door: str = "/", on: tuple[str, ...] = (),
             interior_floor: Optional[str] = None,
             door_skin: str = "", interior_skin: str = "",
-            margin: int = 1) -> Built:
+            margin: int = 1, door_side: str = "") -> Built:
     """A walled enclosure with a floor inside and one way in. The base shape.
 
     Tents, huts, cabins and tower bases are all this with different materials
@@ -146,7 +146,13 @@ def shelter(g: Grid, rng: random.Random, x0: int, y0: int, w: int, h: int, *,
 
     # The way in goes on a side, never a corner — a corner opening leaves the
     # two walls meeting nowhere and reads as a collapse.
-    side = rng.choice(("n", "s", "e", "w"))
+    #
+    # ``door_side`` names WHICH side, and a house needs it: a door is onto the
+    # STREET, and one rolled onto the back wall of a terrace opens into the
+    # neighbour's masonry. A tent in a field has no such constraint, which is
+    # why the roll is still the default.
+    side = door_side if door_side in ("n", "s", "e", "w") \
+        else rng.choice(("n", "s", "e", "w"))
     if side in ("n", "s"):
         dx = rng.randrange(x0 + 1, x0 + w - 1)
         dy = y0 if side == "n" else y0 + h - 1
@@ -179,6 +185,84 @@ def tent(g: Grid, rng: random.Random, x0: int, y0: int, *,
     h = rng.choice((4, 4, 5))
     return shelter(g, rng, x0, y0, w, h, skin="canvas", door_skin="flap",
                    interior_skin="tent-canopy", on=on, interior_floor=FLOOR)
+
+
+#: A storey, floor to floor. Ten feet: a room you can stand in and a floor.
+STOREY_FT = 10
+
+#: How wide a town house is across its frontage, in feet. A terrace is narrow
+#: houses shoulder to shoulder — that is what makes it a terrace — and the
+#: whole street was one solid block before, so this is the number that turns a
+#: mass of masonry into somebody's house next to somebody else's.
+HOUSE_FT = (15, 30)
+
+
+def townhouse(g: Grid, rng: random.Random, out, x0: int, y0: int,
+              w: int, h: int, *, street: str, storeys: int = 1,
+              skin: str = "townhouse") -> Built:
+    """One HOUSE, with an inside, a door onto the street and maybe an upstairs.
+
+    The street used to be walls: a block of solid `#` with a roof traced over
+    it, so the whole town was scenery you fought around rather than in. A
+    building is not a different KIND of thing from a tent — it is
+    :func:`shelter` with a party wall on each side and its door on a named
+    side — and everything a tent already earns comes with it: the inside is
+    real squares, sight and cover read the walls, and the way in is a doorway
+    the engine already understands.
+
+    ``storeys`` above the ground floor are real levels with a stair, because a
+    house is the cheapest vertical terrain a town has and the board has carried
+    upper floors since the gallery went in.
+
+    Returns an empty :class:`Built` if it will not fit, so a caller may simply
+    try a narrower one.
+    """
+    built = shelter(g, rng, x0, y0, w, h, skin=skin, wall=WALL, floor=FLOOR,
+                    door_side=street, margin=0)
+    if not built.interior:
+        return built
+    # A ground floor deeper than a single room is a shop and a back room, which
+    # is what a town house is — and one internal doorway is what keeps it a
+    # place to fight through rather than a box.
+    if h >= 7 and w >= 4:
+        py = y0 + h // 2
+        for x in range(x0 + 1, x0 + w - 1):
+            g.set(x, py, WALL)
+            built.skins[f"{x},{py}"] = skin
+        dx = rng.randrange(x0 + 1, x0 + w - 1)
+        g.set(dx, py, "/")
+        built.skins.pop(f"{dx},{py}", None)
+    elif w >= 7 and h >= 4:
+        px = x0 + w // 2
+        for y in range(y0 + 1, y0 + h - 1):
+            g.set(px, y, WALL)
+            built.skins[f"{px},{y}"] = skin
+        dy = rng.randrange(y0 + 1, y0 + h - 1)
+        g.set(px, dy, "/")
+        built.skins.pop(f"{px},{dy}", None)
+
+    for n in range(1, max(0, storeys) + 1):
+        base = STOREY_FT * n
+        level = _upper_level(out, g, base, f"floor {n + 1}")
+        rows = [list(r) for r in out.levels[level - 1]["terrain"]]
+        for x in range(x0, x0 + w):
+            for y in range(y0, y0 + h):
+                edge = x in (x0, x0 + w - 1) or y in (y0, y0 + h - 1)
+                rows[y][x] = WALL if edge else FLOOR
+                if edge:
+                    built.skins[f"{x},{y}"] = skin
+        out.levels[level - 1]["terrain"] = ["".join(r) for r in rows]
+        # The stair. In a CORNER of the room below, because the middle of a
+        # room is where the fight is, and against the same square upstairs so
+        # the two really join.
+        sx = x0 + 1 if rng.random() < 0.5 else x0 + w - 2
+        sy = y0 + 1 if rng.random() < 0.5 else y0 + h - 2
+        if n == 1:
+            g.set(sx, sy, "u")
+        out.stairs.append({"level": n - 1, "x": sx, "y": sy,
+                           "to_level": level, "to_x": sx, "to_y": sy,
+                           "kind": "stair"})
+    return built
 
 
 def _upper_level(out, g: Grid, base_ft: int, name: str) -> int:

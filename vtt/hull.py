@@ -336,27 +336,48 @@ def _offset_loop(loop: Sequence[Pt], d: float) -> list[Pt]:
 
 
 def roofs(rows: Sequence[str], skin_of: Optional[Callable] = None,
-          elevation: Optional[dict] = None) -> list[dict]:
+          elevation: Optional[dict] = None,
+          footprints: Optional[Sequence[dict]] = None) -> list[dict]:
     """One roof per BUILDING on this board, traced from its footprint.
 
     A square joins a building when its skin declares ``roof_ft`` — how far
-    above the square's own drawn height the ridge stands. Contiguous squares of
-    the same skin are one building, which is what makes a terrace one long
-    roof; a different skin beside it is a different building, and gets its own.
+    above the square's own drawn height the ridge stands.
+
+    ``footprints`` is how a generator says where one house ENDS and the next
+    begins. Without it, contiguous squares of the same skin are one building —
+    which is right for a lone hut and wrong for a terrace, where every house
+    wears the same plaster and the whole row came back under one roof. A run of
+    separate houses under one roof is a warehouse, and the party wall between
+    two of them is invisible from above unless somebody says it is there.
     """
     if skin_of is None:
         return []
     elev = elevation or {}
     by_skin: dict[str, set[tuple[int, int]]] = {}
-    for z, row in enumerate(rows):
-        for x, code in enumerate(row):
-            name = skin_of(code, x, z) or ""
-            sk = _skins.skin(name)
-            if sk is not None and getattr(sk, "roof_ft", 0):
-                by_skin.setdefault(name, set()).add((x, z))
+    if footprints:
+        for i, fp in enumerate(footprints):
+            cells = {(x, z)
+                     for x in range(int(fp["x"]), int(fp["x"]) + int(fp["w"]))
+                     for z in range(int(fp["y"]), int(fp["y"]) + int(fp["h"]))
+                     if 0 <= z < len(rows) and 0 <= x < len(rows[z])}
+            named = {skin_of(rows[z][x], x, z) or "" for x, z in cells}
+            roofed = [n for n in named
+                      if getattr(_skins.skin(n), "roof_ft", 0)]
+            if cells and roofed:
+                # Keyed so each house is its own group even though every one
+                # of them wears the same skin.
+                by_skin[f"{roofed[0]}#{i}"] = cells
+    else:
+        for z, row in enumerate(rows):
+            for x, code in enumerate(row):
+                name = skin_of(code, x, z) or ""
+                sk = _skins.skin(name)
+                if sk is not None and getattr(sk, "roof_ft", 0):
+                    by_skin.setdefault(name, set()).add((x, z))
 
     out: list[dict] = []
-    for name, cells in sorted(by_skin.items()):
+    for key, cells in sorted(by_skin.items()):
+        name = key.split("#")[0]
         sk = _skins.skin(name)
         if sk is None:
             continue

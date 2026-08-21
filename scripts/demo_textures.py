@@ -133,7 +133,8 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
                                   standing=lambda c: tile_height_ft(c) > 0,
                                   archetype=arch),
         "shells": _hull.shells(rows, skin_of, gen.elevation),
-        "roofs": _hull.roofs(rows, skin_of, gen.elevation),
+        "roofs": _hull.roofs(rows, skin_of, gen.elevation,
+                             footprints=gen.buildings or None),
         "objects": [{"x": x, "y": z, "code": rows[z][x],
                      "name": tile(rows[z][x]).name}
                     for z in range(h) for x in range(w)

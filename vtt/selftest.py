@@ -1510,6 +1510,86 @@ def test_vessels() -> None:
     check("a kind with no model at all is not an error",
           _fn.fit("#") is None and _fn.mesh_path("#") is None)
 
+    section("buildings: a town is somewhere you go IN")
+    # A street used to be a block of solid masonry with a roof traced over it:
+    # scenery you fought around rather than in. A house is not a different KIND
+    # of thing from a tent — it is `structures.townhouse`, a shelter with a
+    # party wall on each side and its door on a NAMED side — so everything a
+    # tent already earns comes with it.
+    from collections import deque as _dq
+    from .mapgen import generate_map as _gm5
+    from . import hull as _hl2
+    from . import skins as _sk5
+
+    _town = _gm5("street", width=46, height=34, seed=11)
+    _rows5 = _town.grid.to_rows()
+    check("a street raises real HOUSES", len(_town.buildings) >= 6,
+          f"{len(_town.buildings)}")
+    check("...each with an inside you can stand in",
+          all(b["w"] >= 3 and b["h"] >= 3 for b in _town.buildings))
+    check("...and a way in", sum(r.count("/") for r in _rows5) >= 6,
+          f"{sum(r.count('/') for r in _rows5)} doorways")
+    # Every inside must be REACHABLE. A house with its door opening into the
+    # neighbour's masonry is a sealed box, which is what a door rolled onto a
+    # random side gives you in a terrace.
+    _open5 = set(".=,ou/nu")
+    _seen: set[tuple[int, int]] = set()
+    _big = 0
+    for _y in range(len(_rows5)):
+        for _x in range(len(_rows5[0])):
+            if (_x, _y) in _seen or _rows5[_y][_x] not in _open5:
+                continue
+            _q = _dq([(_x, _y)])
+            _seen.add((_x, _y))
+            _n = 0
+            while _q:
+                _a, _b = _q.popleft()
+                _n += 1
+                for _c, _d in ((_a + 1, _b), (_a - 1, _b),
+                               (_a, _b + 1), (_a, _b - 1)):
+                    if 0 <= _d < len(_rows5) and 0 <= _c < len(_rows5[0]) \
+                            and (_c, _d) not in _seen \
+                            and _rows5[_d][_c] in _open5:
+                        _seen.add((_c, _d))
+                        _q.append((_c, _d))
+            _big = max(_big, _n)
+    check("...that opens onto the street, not into the neighbour's wall",
+          _big == len(_seen), f"{_big} of {len(_seen)} open squares reachable")
+    # A TERRACE IS NOT ONE BUILDING. Every house wears the same plaster, so
+    # without the footprints the roof tracer puts the whole row under one roof
+    # — which is a warehouse.
+    _codes5 = _sk5.skins_for("street", style=_town.style or "")
+    _sq5 = dict(_town.skins or {})
+
+    def _sk5f(c, x, z):
+        return _sk5.skin_at(c, x, z, codes=_codes5, squares=_sq5)
+
+    _r_one = _hl2.roofs(_rows5, _sk5f, _town.elevation)
+    _r_each = _hl2.roofs(_rows5, _sk5f, _town.elevation,
+                         footprints=_town.buildings)
+    check("every house gets its OWN roof, not one over the terrace",
+          len(_r_each) >= len(_town.buildings) > len(_r_one),
+          f"{len(_r_one)} traced by skin, {len(_r_each)} by footprint, "
+          f"{len(_town.buildings)} houses")
+    # Storeys, and a road that is not a billiard table.
+    _ups = [l for l in _town.levels if l.get("base_ft")]
+    check("some of them stand a storey or two taller", len(_ups) >= 2,
+          ", ".join(f"{l['name']} +{l['base_ft']}ft" for l in _town.levels))
+    check("a street falls across the board rather than lying flat",
+          len(set(_town.elevation.values())) >= 3,
+          f"heights {sorted(set(_town.elevation.values()))}")
+    check("...in steps small enough that nothing on it is a fall",
+          max(_town.elevation.values(), default=0)
+          - min(_town.elevation.values(), default=0) < 10,
+          f"{max(_town.elevation.values(), default=0)} ft over the board")
+    # And a ruin has survivors: a site drawn only as broken outlines is walls
+    # to run between and never anything to be inside.
+    _ruin = _gm5("ruins", width=46, height=34, seed=11)
+    check("a ruin has houses still standing, with doorways",
+          len(_ruin.buildings) >= 2 and any("/" in r
+                                            for r in _ruin.grid.to_rows()),
+          f"{len(_ruin.buildings)} standing")
+
     section("scale: a bigger board is more of the place, not a bigger place")
     # A square is five feet, which makes almost every dimension on a board a
     # real measurement. Hold the FEATURES in feet and let the COUNTS grow, and
@@ -1627,15 +1707,19 @@ def test_vessels() -> None:
     # The SKIN decides, because the code cannot: `.` is scree on a mountain
     # pass and cobbles on a street.
     from . import skins as _sk2
+    # A DECK is laid and levelled; scree and cobbles are laid over GROUND and
+    # follow it. Nobody levels a hillside to put a street on it, which is why
+    # the cobble is soft and the deck is not — the rule is about whether the
+    # builder levelled the site, not about whether somebody laid something.
     check("a skin says whether its surface may slope, and they disagree",
-          _sk2.SKINS["scree"].soft and not _sk2.SKINS["cobbles"].soft)
+          _sk2.SKINS["scree"].soft and not _sk2.SKINS["sea-deck"].soft)
     _pass = _lift(["...", "...", "..."], {"1,1": _STEP}, 1, 1, 1, 1,
                   lambda c, x, z: "scree")
-    _road = _lift(["...", "...", "..."], {"1,1": _STEP}, 1, 1, 1, 1,
-                  lambda c, x, z: "cobbles")
-    check("...so the same tile slopes on a pass and lies flat on a street",
-          _pass < _STEP and _road == float(_STEP),
-          f"scree {_pass:.2f}, cobbles {_road:.2f}")
+    _deck = _lift(["bbb", "bbb", "bbb"], {"1,1": _STEP}, 1, 1, 1, 1,
+                  lambda c, x, z: "sea-deck")
+    check("...so the same step slopes on a hillside and is a step on a deck",
+          _pass < _STEP and _deck == float(_STEP),
+          f"scree {_pass:.2f}, deck {_deck:.2f}")
     # And nothing about this reaches the rules: `drawnTopFt`'s Python twin is
     # the occlusion march, which reads the stored integer and never the lift.
     check("the stored elevation is untouched by any of it",
