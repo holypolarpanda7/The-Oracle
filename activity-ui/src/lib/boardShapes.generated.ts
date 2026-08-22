@@ -310,6 +310,9 @@ export const SKINS: Record<string, SkinShape> = {
     smooth: false, soft: false,     skirtFt: 0, skirtInset: 0, body: "tent", exact: true,
     variants: [
       [[[[0, 1], [0.17, 1], [0.17, 0], [0, 0]], [[0, 0.3], [0.13, 0.3], [0.13, 0], [0, 0]], 0, 0.7], [[[0.83, 1], [1, 1], [1, 0], [0.83, 0]], [[0.87, 0.3], [1, 0.3], [1, 0], [0.87, 0]], 0, 0.7], [0, 1, 0, 0.24, 0.56, 0.78]]] },
+  "house-floor": { substance: "taproom-boards", heightFt: 0, directional: false, outward: false,
+    smooth: false, soft: false,     skirtFt: 0, skirtInset: 0, body: "", exact: false,
+    variants: null },
   hull: { substance: "tarred-planking", heightFt: 0, directional: false, outward: false,
     smooth: false, soft: false,     skirtFt: 0, skirtInset: 0, body: "ship", exact: true,
     variants: null },

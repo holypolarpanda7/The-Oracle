@@ -1143,6 +1143,18 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "warm mid brown, scuffed and stained, black gaps between the boards",
          words="the floor is wide oak boards, dark with age and spilled ale",
          misread=""),
+    # A HOUSE FLOOR is not a street, and a laid floor does not RIPPLE.
+    # A town house's inside was skinned by the archetype default for `.`, which
+    # on a street is `cobbles` — deliberately `soft`, because a road follows
+    # the ground it is laid over. A floor does not: somebody levelled the plot
+    # and laid boards on it, which is the "laid things are flat" rule the
+    # dungeon's flagstones and a ship's deck already keep. Sharing the taproom's
+    # SUBSTANCE, so it costs no second swatch (see `substances`), with words of
+    # its own — a dwelling's boards are not black with spilled ale.
+    Skin("house-floor", "taproom-boards",
+         "close-up of a worn oak plank floor, wide dark boards running one way, "
+         "warm mid brown, scuffed and stained, black gaps between the boards",
+         words="the floors indoors are plain scrubbed boards"),
     Skin("taproom-wall", "plaster-timber",
          "close-up of a timber-framed wall, white lime plaster between dark "
          "oak beams",

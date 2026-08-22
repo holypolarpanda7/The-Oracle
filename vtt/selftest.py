@@ -1621,13 +1621,25 @@ def test_vessels() -> None:
           f"{_steep} vs {_flat}")
     # A mountain road is steeper AND it is not a ramp: it climbs, saddles and
     # climbs again. A monotone profile has exactly one local maximum.
-    _m3, _, _, _ = _road("a high mountain road under the peaks", 11)
-    _spine = [_m3.elevation.get(f"{_x},{_m3.grid.height // 2}", 0)
-              for _x in range(_m3.grid.width)]
-    _tops = sum(1 for _i in range(1, len(_spine) - 1)
-                if _spine[_i] > _spine[_i - 1] and _spine[_i] >= _spine[_i + 1])
-    check("...and it saddles on the way rather than being a ramp", _tops >= 2,
-          f"{_tops} crest(s) along the street")
+    # Read along the ROADWAY, not along an arbitrary row: a row through the
+    # middle of the board crosses house plots, and those are cut and filled
+    # level, so it measures the builders rather than the hill.
+    def _crests(seed: int) -> int:
+        _m3, _, _, _ = _road("a high mountain road under the peaks", seed)
+        _rows3 = _m3.grid.to_rows()
+        _spine = []
+        for _x in range(_m3.grid.width):
+            _col = [_m3.elevation.get(f"{_x},{_y}", 0)
+                    for _y in range(_m3.grid.height) if _rows3[_y][_x] == "="]
+            if _col:
+                _spine.append(min(_col))
+        return sum(1 for _i in range(1, len(_spine) - 1)
+                   if _spine[_i] > _spine[_i - 1]
+                   and _spine[_i] >= _spine[_i + 1])
+
+    _saddled = [_crests(_s) for _s in (11, 23, 41, 57)]
+    check("...and it saddles on the way rather than being a ramp",
+          max(_saddled) >= 2, f"crests along the roadway: {_saddled}")
     # Whatever the country, the step between two squares is a foot, so the
     # climb costs the foot per foot the SRD charges and nothing is ever a fall.
     _biomes = ("", "rolling plains", "a high mountain road", "green hills",
@@ -1649,6 +1661,38 @@ def test_vessels() -> None:
                        for _y in range(_b["y"], _b["y"] + _b["h"])}) > 1]
     check("...and no house is built with a sloping floor",
           not _sloped, f"{len(_sloped)} of {len(_hill.buildings)} sloped")
+    # A LAID floor does not ripple either. The inside used to take the street's
+    # own `cobbles`, which is `soft` on purpose because a road follows the
+    # ground it is laid over — so every house floor got the ground wander drawn
+    # across it, plainly visible once the street was allowed to be steep.
+    _icodes = _sk5.skins_for("street")
+    _floors = {_sk5.skin_at(".", _x, _y, codes=_icodes, squares=dict(_hill.skins))
+               for _b in _hill.buildings
+               for _x in range(_b["x"] + 1, _b["x"] + _b["w"] - 1)
+               for _y in range(_b["y"] + 1, _b["y"] + _b["h"] - 1)
+               if _hill.grid.get(_x, _y) == "."}
+    # No two houses may be built on the same ground. Both frontages used to
+    # take min(deep, block height) INDEPENDENTLY, so any block between one and
+    # two houses deep had its terraces overlap — measured at 175 pairs over 120
+    # boards, the second house overwriting the first's walls and its roof left
+    # traced over squares that were no longer there.
+    _pairs = 0
+    for _ws in range(24):
+        for _w2, _h2 in ((46, 34), (30, 24), (56, 40)):
+            _bs = _gm5("street", width=_w2, height=_h2, seed=_ws).buildings
+            for _i, _a in enumerate(_bs):
+                for _b2 in _bs[_i + 1:]:
+                    if (_a["x"] < _b2["x"] + _b2["w"]
+                            and _b2["x"] < _a["x"] + _a["w"]
+                            and _a["y"] < _b2["y"] + _b2["h"]
+                            and _b2["y"] < _a["y"] + _a["h"]):
+                        _pairs += 1
+    check("no two houses are built on the same ground", _pairs == 0,
+          f"{_pairs} overlapping pair(s) over 72 boards")
+    check("...and the floor inside is a floor, not the street's cobbles",
+          _floors and not any(getattr(_sk5.skin(_f), "soft", False)
+                              for _f in _floors),
+          f"{sorted(_floors)}")
     # And a ruin has survivors: a site drawn only as broken outlines is walls
     # to run between and never anything to be inside.
     _ruin = _gm5("ruins", width=46, height=34, seed=11)
@@ -1708,6 +1752,41 @@ def test_vessels() -> None:
         check("...and a pass nobody described is still a MOUNTAIN pass",
               _pass_top() == _pass_top("mountains"),
               f"{_pass_top()} ft")
+        # ...and the same dial reaches the rest of the outdoors, not only the
+        # open field. Woodland on a plain rolls in steps; woodland on a
+        # hillside has ledges in it.
+        def _tallest(arch: str, terrain=None, n: int = 30) -> int:
+            return max(max(_gm5(arch, width=46, height=34, seed=_s,
+                                relief=_rel(terrain) if terrain else None
+                                ).elevation.values() or [0])
+                       for _s in range(n))
+
+        for _arch in ("forest", "clearing"):
+            check(f"{_arch}: a plain gets steps, high country gets ledges",
+                  _tallest(_arch, "farmland") <= 5
+                  and _tallest(_arch, "mountains") >= 10,
+                  f"{_tallest(_arch, 'farmland')} ft vs "
+                  f"{_tallest(_arch, 'mountains')} ft")
+        # A bog is flat wherever it is, and that is the ANSWER rather than an
+        # omission: `swamp` says so in RELIEF, so relief must change nothing.
+        check("a swamp is flat whatever country it lies in",
+              _tallest("swamp", "mountains") <= 5,
+              f"{_tallest('swamp', 'mountains')} ft")
+        # HOW MANY features, though, is the board's size — the `_for_area`
+        # rule. A hummock is the only dry ground in a bog, and three of them
+        # scattered over four times the mire is running out of the one thing
+        # that makes it worth fighting in.
+        def _raised(arch: str, w: int, h: int, n: int = 20) -> int:
+            got = sorted(sum(1 for _v in _gm5(arch, width=w, height=h,
+                                              seed=_s).elevation.values()
+                             if _v > 0) for _s in range(n))
+            return got[n // 2]
+
+        for _arch in ("swamp", "forest"):
+            _small, _big = _raised(_arch, 24, 18), _raised(_arch, 46, 34)
+            check(f"{_arch}: four times the board is four times the relief",
+                  _big >= _small * 2.5, f"{_small} -> {_big} raised squares")
+
         # Every terrain answers, and the dial is monotone in the fall it names.
         _dial = {_t: _rug(_gm5("open", width=20, height=16, seed=1,
                                relief=_rel(_t))) for _t in _RELIEF}

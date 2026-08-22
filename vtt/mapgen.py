@@ -1169,14 +1169,23 @@ def _gen_forest(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _connect_regions(g, rng)
     out.lighting = rng.choice(["bright", "dim"])
     out.description = "old woodland — thick trunks, tangled undergrowth, a shallow stream"
-    # Woodland is not a table top: a knoll to hold and a hollow to be caught in.
-    _mound(g, rng, out, rng.randrange(2, max(3, g.width - 2)),
-           rng.randrange(2, max(3, g.height - 2)),
-           rng.uniform(2.0, 3.5), STEP_FT, on=("g", "\""))
-    if rng.random() < 0.6:
+    # Woodland is not a table top: knolls to hold and hollows to be caught in.
+    # HOW MANY grows with the board (the `_for_area` rule — one knoll was
+    # right at 24x18 and is a curiosity on four times the ground) and HOW HIGH
+    # is the country's: woodland on a plain rolls in steps, woodland on a
+    # hillside has ledges in it. Default forest, because that is what this
+    # archetype IS when nobody has said otherwise.
+    rug = _ruggedness(out, default="forest")
+    lift = LEDGE_FT if rug >= 0.4 else STEP_FT
+    for _ in range(_for_area(g, 1, most=6)):
         _mound(g, rng, out, rng.randrange(2, max(3, g.width - 2)),
                rng.randrange(2, max(3, g.height - 2)),
-               rng.uniform(2.0, 3.0), -STEP_FT, on=("g", "\""))
+               rng.uniform(2.0, 3.5), lift, on=("g", "\""))
+    for _ in range(_for_area(g, 1, most=5)):
+        if rng.random() < 0.3 + rug:
+            _mound(g, rng, out, rng.randrange(2, max(3, g.width - 2)),
+                   rng.randrange(2, max(3, g.height - 2)),
+                   rng.uniform(2.0, 3.0), -STEP_FT, on=("g", "\""))
 
 
 def _gen_clearing(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
@@ -1192,13 +1201,19 @@ def _gen_clearing(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         out.effects.append({"kind": "light", "name": "campfire", "shape": "sphere",
                             "x": cx, "y": cy, "radius_ft": 20, "color": "#ffb347"})
     out.description = "a open glade ringed by dark trees"
-    if rng.random() < 0.28:
-        _plateaus(g, rng, out, tiers=2, on=("g", "\"", ","), face="R", ramps=2)
+    # A glade is ONE glade, so this stays one feature however big the board —
+    # what the country decides is which feature, and how likely. Default
+    # forest: a clearing is a hole in woodland.
+    rug = _ruggedness(out, default="forest")
+    if rng.random() < min(0.85, rug):
+        _plateaus(g, rng, out, tiers=2, on=("g", "\"", ","), face="R", ramps=2,
+                  step_ft=LEDGE_FT if rug >= 0.4 else STEP_FT)
         out.description += ", the ground stepping up to a higher shelf"
-    elif rng.random() < 0.75:
+    elif rng.random() < 0.45 + rug:
         _mound(g, rng, out, g.width // 2 + rng.randint(-4, 4),
                g.height // 2 + rng.randint(-3, 3),
-               rng.uniform(2.5, 4.0), LEDGE_FT, on=("g", "\"", ","))
+               rng.uniform(2.5, 4.0),
+               LEDGE_FT if rug >= 0.4 else STEP_FT, on=("g", "\"", ","))
         out.description += ", a green barrow mound at its centre"
 
 
@@ -1229,28 +1244,79 @@ def _terrace_houses(g: Grid, rng: random.Random, out: GeneratedMap,
     def _road_beyond(x: int, y: int) -> bool:
         return (not g.in_bounds(x, y)) or g.get(x, y) == "="
 
+    def _plan(run_w: int, must_alley: bool) -> list[int]:
+        """House widths along a frontage, with 0 standing for an ALLEY.
+
+        Planned before anything is built, because an alley has to be DECIDED
+        rather than discovered: a terrace with a yard behind it and no way
+        through is a sealed block, and `_connect_regions` then carves its own
+        hole in somebody's wall — which reads as nothing at all, exactly as it
+        does when it punches through a cliff.
+        """
+        run: list[int] = []
+        at = 0
+        while at + lo_w <= run_w:
+            wide = min(rng.randint(lo_w, hi_w), run_w - at)
+            if wide < lo_w:
+                break
+            run.append(wide)
+            at += wide
+            if at + 1 + lo_w <= run_w and rng.random() < 0.22:
+                run.append(0)
+                at += 1
+        if must_alley and 0 not in run and len(run) >= 2:
+            # No room was left for one, so BUY it: the narrowest house on the
+            # frontage gives up a square. Refused if that would take it under
+            # the smallest house a street has, and the caller then has a block
+            # with no yard rather than a terrace of sheds.
+            i = min(range(len(run)), key=lambda k: run[k])
+            if run[i] - 1 >= lo_w:
+                run[i] -= 1
+                run.insert(i + 1, 0)
+        return run
+
     for bx0, by0, bx1, by1 in blocks:
         bw, bh = bx1 - bx0 + 1, by1 - by0 + 1
         if bw < 4 or bh < 4:
             continue
         # Which sides of this block front onto a road, and how deep a terrace
-        # may run back from each without meeting the one opposite.
-        sides = []
-        if _road_beyond(bx0, by0 - 1):
-            sides.append(("s", bx0, by0, bw, min(deep, bh)))     # door faces N
-        if _road_beyond(bx0, by1 + 1) and bh > deep:
-            sides.append(("n", bx0, by1 - min(deep, bh) + 1, bw, min(deep, bh)))
-        elif _road_beyond(bx0, by1 + 1) and not sides:
-            sides.append(("n", bx0, by0, bw, bh))
+        # may run back from each.
+        #
+        # Depth is SHARED, and getting that wrong is how 175 pairs of houses in
+        # 120 boards came to be built on top of each other: both frontages took
+        # `min(deep, bh)` independently, so any block between one and two
+        # houses deep had its two terraces overlap, the second overwriting the
+        # first's walls and leaving its roof traced over squares that were no
+        # longer there.
+        north, south = _road_beyond(bx0, by0 - 1), _road_beyond(bx0, by1 + 1)
+        sides: list[tuple[str, int, int, int, int]] = []
+        yard = 0
+        if north and south:
+            if bh <= 2 * deep:
+                front = bh // 2                    # back to back, no overlap
+                sides = [("s", bx0, by0, bw, front),
+                         ("n", bx0, by0 + front, bw, bh - front)]
+            else:
+                sides = [("s", bx0, by0, bw, deep),
+                         ("n", bx0, by1 - deep + 1, bw, deep)]
+                yard = bh - 2 * deep
+        elif north:
+            sides = [("s", bx0, by0, bw, min(deep, bh))]
+            yard = max(0, bh - deep)
+        elif south:
+            sides = [("n", bx0, by1 - min(deep, bh) + 1, bw, min(deep, bh))]
+            yard = max(0, bh - deep)
         for side, ox, oy, run_w, run_h in sides:
+            if run_h < 4:
+                continue
             # `side` is the wall the door goes IN, so a block whose road is to
             # the north has its doors in its north wall.
             door_side = "n" if side == "s" else "s"
             at = 0
-            while at + lo_w <= run_w:
-                wide = min(rng.randint(lo_w, hi_w), run_w - at)
-                if wide < lo_w:
-                    break
+            for wide in _plan(run_w, bool(yard)):
+                if not wide:                       # an ALLEY: the best kiting
+                    at += 1                        # ground a town has, and the
+                    continue                       # only way through a terrace
                 b_storeys = rng.choice((0, 0, 1, 1, 2))
                 b = structures.townhouse(
                     g, rng, out, ox + at, oy, wide, run_h,
@@ -1260,11 +1326,7 @@ def _terrace_houses(g: Grid, rng: random.Random, out: GeneratedMap,
                     out.doors.extend(b.doors)
                     placed.append({"x": ox + at, "y": oy, "w": wide,
                                    "h": run_h, "storeys": b_storeys})
-                    # An ALLEY between some of them: the best kiting ground a
-                    # town has, and the only way through a terrace.
-                    at += wide + (1 if rng.random() < 0.22 else 0)
-                else:
-                    at += wide
+                at += wide
     out.buildings = placed
 
 
@@ -1802,7 +1864,10 @@ def _gen_ruins(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                 g, rng, out, x0, y0, w, h,
                 street=rng.choice(("n", "s", "e", "w")),
                 storeys=1 if rng.random() < 0.35 else 0,
-                skin="ruin-house")
+                skin="ruin-house",
+                # Nothing was scrubbing these boards. A ruin's inside is the
+                # same heaved paving as the rest of the site.
+                floor_skin="ruin-floor")
             if b.interior:
                 out.skins.update(b.skins)
                 out.doors.extend(b.doors)
@@ -2273,7 +2338,13 @@ def _gen_swamp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     out.description = "black bog water between hummocks of reed and drowned trees"
     # Hummocks: dry ground a step above the mire, which is where anyone with
     # sense stands and what everyone else has to wade to.
-    for _ in range(rng.randint(3, 6)):
+    # HOW MANY grows with the board. Three to six was right at 24x18 and is a
+    # scattering of islands across four times the mire — and a hummock is the
+    # only dry ground here, so running out of them is running out of the one
+    # thing that makes a bog worth fighting in. The HEIGHT does not scale: a
+    # bog is flat wherever it is, which is what `swamp` says in RELIEF, and a
+    # hummock is a step by definition.
+    for _ in range(_for_area(g, rng.randint(3, 6), most=22)):
         _mound(g, rng, out, rng.randrange(g.width), rng.randrange(g.height),
                rng.uniform(1.5, 3.0), STEP_FT, on=("g", "m", "\""))
 

@@ -1731,6 +1731,27 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   again), and each gets its own. And a terrace is not one HEIGHT: houses stand
   one or two storeys taller than their neighbours, which is what per-storey
   elevation on the rooftops level is for.
+  **DEPTH IS SHARED between a block's two frontages**, and getting that wrong
+  is how 175 pairs of houses across 120 boards came to be built on top of each
+  other: both took `min(deep, block height)` independently, so any block
+  between one and two houses deep had its terraces overlap — the second house
+  overwriting the first's walls, and the first's roof left traced over squares
+  that were no longer there. A block up to two houses deep is split down the
+  middle, back to back; a deeper one gets a terrace at each road and a YARD
+  between them. **An alley is DECIDED, never discovered**: a yard with no way
+  through is a sealed block, and `_connect_regions` then carves its own hole in
+  somebody's wall, which reads as nothing at all — exactly as it does when it
+  punches through a cliff. So the frontage is PLANNED before anything is built
+  (`_plan`), and where a yard exists the narrowest house on the run gives up a
+  square to buy the alley — refused if that would take it under the smallest
+  house a street has, which leaves a block with no yard rather than a terrace
+  of sheds.
+  **A LAID floor does not ripple.** The inside of a house took the archetype's
+  default for `.`, which on a street is `cobbles` — `soft` on purpose, because
+  a road follows the ground it is laid over. A floor does not: somebody
+  levelled the plot and laid boards on it. `house-floor` shares the taproom's
+  SUBSTANCE so it costs no second swatch, with words of its own; a ruin's
+  inside gets `ruin-floor`, since nothing was scrubbing those boards.
   **Frontage cannot be found by scanning.** The first version looked for runs
   of wall with a road beside them, and one alley put a road square in every
   row, so every row read as facing a street and no terrace was ever laid. The
@@ -2166,6 +2187,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   keeps it (`_ruggedness(default="mountains")`) — a mountain pass is
   mountainous whether or not the DM said so, and reading the generic middling
   answer there would make it gentler than it was before relief existed.
+  It reaches `forest` and `clearing` the same way, and `swamp` deliberately
+  gets nothing from it: **a bog is flat wherever it lies**, which is the ANSWER
+  rather than an omission — `swamp` says so in `RELIEF`. What a swamp DID need
+  was the `_for_area` rule, since a hummock is the only dry ground in a mire
+  and three of them scattered over four times the bog is running out of the one
+  thing that makes it worth fighting in.
   Relief reaches a board as an INPUT (`generate_map(relief=)`, stored in
   `notes` so a regenerated board is the same board) because `vtt/` must not
   know what a world graph is — the `_bastion_rooms` line. It reaches the

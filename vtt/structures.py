@@ -199,7 +199,7 @@ HOUSE_FT = (15, 30)
 
 def townhouse(g: Grid, rng: random.Random, out, x0: int, y0: int,
               w: int, h: int, *, street: str, storeys: int = 1,
-              skin: str = "townhouse") -> Built:
+              skin: str = "townhouse", floor_skin: str = "house-floor") -> Built:
     """One HOUSE, with an inside, a door onto the street and maybe an upstairs.
 
     The street used to be walls: a block of solid `#` with a roof traced over
@@ -221,6 +221,14 @@ def townhouse(g: Grid, rng: random.Random, out, x0: int, y0: int,
                     door_side=street, margin=0)
     if not built.interior:
         return built
+    # INSIDE is a floor, not a street. Without this the interior takes the
+    # archetype default for `.`, which on a street is `cobbles` — `soft` on
+    # purpose, because a road follows the ground it is laid over. A floor is
+    # LAID: the plot was levelled and boards were put on it, so it must not
+    # take the ground ripple, and on a steep street that is plainly visible.
+    if floor_skin:
+        for fx, fy in built.interior:
+            built.skins[f"{fx},{fy}"] = floor_skin
     # A ground floor deeper than a single room is a shop and a back room, which
     # is what a town house is — and one internal doorway is what keeps it a
     # place to fight through rather than a box.
@@ -249,8 +257,12 @@ def townhouse(g: Grid, rng: random.Random, out, x0: int, y0: int,
             for y in range(y0, y0 + h):
                 edge = x in (x0, x0 + w - 1) or y in (y0, y0 + h - 1)
                 rows[y][x] = WALL if edge else FLOOR
-                if edge:
-                    built.skins[f"{x},{y}"] = skin
+                # An upper storey's skins live in the same flat map as the
+                # ground's — one square, one material — so a floor above is
+                # skinned exactly as the floor below.
+                built.skins[f"{x},{y}"] = skin if edge else (floor_skin or "")
+                if not edge and not floor_skin:
+                    built.skins.pop(f"{x},{y}", None)
         out.levels[level - 1]["terrain"] = ["".join(r) for r in rows]
         # The stair. In a CORNER of the room below, because the middle of a
         # room is where the fight is, and against the same square upstairs so
