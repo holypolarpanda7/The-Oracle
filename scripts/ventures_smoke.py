@@ -498,6 +498,27 @@ lines = V.catch_up_lines(W, pc.slug, day_left - 1)
 check("a PC who walked away is told how it ended",
       any("Nock Brackwater" in ln for ln in lines), str(lines))
 
+# ---------------------------------------------------------------------------
+# 12. every family a venture can BE has an ending written for it
+# ---------------------------------------------------------------------------
+# `_RELICS.get(fam, _RELICS["common"])` never complains about a family it has
+# not got, and three of the eight were missing: a soldier, a merchant and a
+# farmer who went after a relic and got it came home with the generic "Find"
+# while the priest and the thief got something that fits their trade. Nothing
+# failed — the venture resolved and an item entity was created — it was simply
+# the wrong item, every time, for three families out of eight.
+_fams = set(V._ROLE_FAMILY) | {"common"}
+for _table, _name in ((V._RELICS, "_RELICS"), (V._PROMOTION, "_PROMOTION")):
+    _gap = sorted(_fams - set(_table))
+    check(f"{_name} has an entry for every venture family",
+          not _gap, f"missing: {_gap}")
+# ...and the trades really do land in different families, or the tables above
+# are eight names for one thing.
+_seen = {V.family_for(_r) for _r in
+         ("blacksmith", "priest", "sergeant-at-arms", "wool merchant",
+          "hedge scholar", "rat-catcher", "shepherd", "wandering minstrel")}
+check("a trade lands in a family of its own", len(_seen) >= 6, str(sorted(_seen)))
+
 print()
 print(f"{len(fails)} failure(s)" if fails else "ALL PASS")
 if fails:

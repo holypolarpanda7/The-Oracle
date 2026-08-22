@@ -23,6 +23,24 @@ _KIND_FRAMING = {
         "centered on a plain neutral background, even museum lighting"
     ),
     ImageKind.PC: "heroic character portrait, head and shoulders, detailed face, single figure, adventurer",
+    # A MESH REFERENCE is an instrument reading, not a picture: nobody ever
+    # looks at it, and TRELLIS reads its silhouette and its matte. Without an
+    # entry here it fell to the CREATURE framing below — "dynamic pose,
+    # menacing presence" — which contradicted every careful word landmark3d was
+    # appending after it, and two prompts giving overlapping orders is the same
+    # fault as a second rulebook. Three-quarter view because a mesher given a
+    # flat-on photograph has nothing to infer depth from; even light because a
+    # cast shadow is baked into the geometry as a dent.
+    ImageKind.MESHREF: (
+        "a single isolated object photographed in three-quarter view from "
+        "slightly above, the whole object inside the frame with clear space "
+        "around it, standing upright on flat neutral ground, plain flat "
+        "mid-grey seamless background, even diffuse studio lighting from every "
+        "side, no cast shadow, sharp focus throughout, product photograph of a "
+        "museum piece, a solid three-dimensional physical object with real "
+        "depth and volume, photographed from an angle so that two sides of it "
+        "are visible at once"
+    ),
     # Deliberately NOT "dynamic action, mid-motion": a scene is whatever was
     # described, and a player who asks to see a quiet throne room should not get
     # a fight. The framing says "draw this moment", the description says which.

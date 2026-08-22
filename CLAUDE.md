@@ -3268,6 +3268,37 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Hex maps were intentionally dropped (not worth the complexity). Do NOT reintroduce
   hex/terrain-render code under `eight_card_system`.
 
+## The silent fallback
+
+**`d.get(key, d["fallback"])` and `x if x in VOCAB else default` never complain
+about a word they have not got.** Where the key comes from somewhere else —
+another module's table, a roll, a derivation from latitude — the two sides
+drift and NOTHING ANYWHERE FAILS. Four of these turned up in one week, all
+identical in shape and every one silent:
+
+- `TERRAIN.get(name, TERRAIN["grassland"])` costed a **sea crossing** as a
+  stroll over a meadow, along with farmland, river, coast, underdark and
+  dungeon.
+- `climate if climate in CLIMATES else "temperate"` made four of the world's
+  seven latitude bands temperate: **the subarctic never froze.**
+- `_RELICS.get(fam, _RELICS["common"])` handed a soldier, a merchant and a
+  farmer the generic prize for a quest they had just won.
+- `_KIND_FRAMING.get(kind, ...CREATURE)` framed a **mesh reference** — an
+  instrument reading nobody ever looks at — as "dynamic pose, menacing
+  presence", then argued with sixty words of careful framing after it.
+
+None raised. Every one resolved to something plausible and wrong, and each was
+found only by going looking. **`scripts/vocab_audit.py` is the standing
+guard**: it names each producer/consumer pair explicitly and asks whether the
+consumer knows every key the producer can make. Deliberately a REGISTER and not
+a scan — a scan finds the `.get` calls and can never tell which of them matter,
+and the interesting half is knowing what makes the key. Adding a pair there is
+how a new vocabulary joins the guard. Verified to fail on all four.
+
+When writing one of these, the question to ask is not "what should the default
+be" but **"who produces this key, and can they produce one I do not have?"** If
+the answer is yes, the default is a bug with a plausible face on it.
+
 ## Conventions
 - Prefer editing existing files over adding new ones; keep modules single-purpose.
 - Don't reintroduce DDB-as-storage assumptions.

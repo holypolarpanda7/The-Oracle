@@ -896,11 +896,25 @@ _PROMOTION = {
 # What a `relic` venture puts in somebody's hands. Deliberately vague on
 # mechanics — this is a world ITEM entity for the fiction to hang on, not a
 # rules row; a party that wants it takes it up with its owner.
+#
+# EVERY family `family_for` can return has an entry. Three did not — martial,
+# mercantile and rustic — so a soldier, a merchant and a farmer who went after
+# a relic and got it came home with "the Find", the generic one, while the
+# priest and the thief got something that fits their trade. Nothing failed: the
+# venture resolved, an item entity was created, and it was simply the wrong
+# item. The kind of hole that only shows up if you go looking for it, which is
+# why `scripts/ventures_smoke.py` now compares the two tables.
 _RELICS = {
     "devout": ("the {home} Reliquary", "A relic carried home from far away."),
     "craft": ("the {npc} Piece", "The one thing its maker will be remembered for."),
     "learned": ("the {away} Inscription", "A copy of writing nobody else can read."),
     "underworld": ("the {away} Take", "Something valuable, taken from somewhere careful."),
+    "martial": ("the {away} Standard",
+                "Taken off a field somebody lost, and never given back."),
+    "mercantile": ("the {away} Consignment",
+                   "Goods no other house could get out, and proof of it."),
+    "rustic": ("the {away} Seed-Stock",
+               "Something that grows where it should not, brought back alive."),
     "common": ("the {away} Find", "Brought back from out there, and worth something."),
 }
 

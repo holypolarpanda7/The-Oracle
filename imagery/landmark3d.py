@@ -51,15 +51,11 @@ REFERENCE_PX = 768
 #: own idea of how such a thing is photographed, and a trailing modifier loses
 #: to it. Three-quarter rather than the board's overhead — a mesher needs to see
 #: front and side, and the board's own camera never looks at the reference.
-_MESH_FRAMING = (
-    ", a single isolated object photographed in three-quarter view from "
-    "slightly above, the whole object inside the frame with clear space around "
-    "it, standing upright on flat neutral ground, plain flat mid-grey seamless "
-    "background, even diffuse studio lighting from every side, no cast shadow, "
-    "sharp focus throughout, product photograph of a museum piece, "
-    "a solid three-dimensional physical object with real depth and volume, "
-    "photographed from an angle so that two sides of it are visible at once"
-)
+#: The framing lives with every other kind's, in `imagery/prompt_build.py`
+#: under `ImageKind.MESHREF`. It was here as well, appended to the phrase,
+#: while the kind had no entry of its own and fell back to CREATURE — so the
+#: prompt opened with "dynamic pose, menacing presence" and then argued with
+#: itself for another sixty words. One kind, one framing, one place.
 
 #: The whole art direction, replacing the house style for this kind. Flat,
 #: even, documentary — the opposite of everything the game's own look asks
@@ -150,8 +146,12 @@ def enabled() -> bool:
 # --------------------------------------------------------------------------
 
 def reference_prompt(phrase: str) -> str:
-    """What the picture is of. The DM's own words, framed for a mesher."""
-    return " ".join((phrase or "").strip().split()) + _MESH_FRAMING
+    """What the picture is OF — the DM's own words, tidied.
+
+    How it is framed is `ImageKind.MESHREF`'s business and is stated once,
+    beside every other kind's framing. See the note above.
+    """
+    return " ".join((phrase or "").strip().split())
 
 
 def render_reference(phrase: str, slug: str, *, store=None) -> Optional[bytes]:
