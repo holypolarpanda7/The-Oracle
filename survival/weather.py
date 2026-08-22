@@ -46,14 +46,75 @@ def _seed(world_day: int, climate: str) -> int:
     return int(world_day) * 1000003 + idx * 97 + 7
 
 
-def generate_weather(world_day: int, *, climate: str = "temperate", month: int = 1) -> Dict:
-    """Deterministic weather for a day. Returns temperature band, precip, and wind."""
+def _bias(terrain: str) -> Dict:
+    """What this country does to the sky. Empty where there is no world graph.
+
+    Guarded, because `survival/` must stand up in a checkout with no world at
+    all — the same reason `threads.people_vocabulary` imports lazily.
+    """
+    if not terrain:
+        return {"temp": 0, "damp": 0.0, "wind": 0.0}
+    try:
+        from eight_card_system.placelore import weather_bias_of
+    except Exception:
+        return {"temp": 0, "damp": 0.0, "wind": 0.0}
+    return weather_bias_of(terrain)
+
+
+#: What a day turns into when the country makes it wetter, by temperature.
+#: A marsh does not make it SNOW harder — it closes in — so the damp ladder is
+#: read off the band rather than off the precipitation it is replacing.
+_WETTER = {"clear": ("fog", "light rain"), "fog": ("light rain", "fog"),
+           "light rain": ("heavy rain", "heavy rain"),
+           "heavy rain": ("heavy rain", "heavy rain"),
+           "snow": ("blizzard", "snow"), "blizzard": ("blizzard", "blizzard")}
+_DRIER = {"blizzard": "snow", "heavy rain": "light rain", "light rain": "clear",
+          "snow": "clear", "fog": "clear", "clear": "clear"}
+
+
+def _damp(rng: random.Random, precip: str, damp: float, band_idx: int) -> str:
+    """Push a day one rung wetter or drier, as often as the country says."""
+    if not damp:
+        return precip
+    if rng.random() >= abs(damp):
+        return precip
+    if damp > 0:
+        pair = _WETTER.get(precip)
+        return (pair[0] if band_idx <= 1 or band_idx >= 4 else pair[1]) \
+            if pair else precip
+    return _DRIER.get(precip, precip)
+
+
+def _wind_weights(wind: float) -> list[float]:
+    """Re-weight the wind table toward (or away from) the exposed end.
+
+    A weighting rather than a re-roll, so the whole distribution moves: a coast
+    is not "sometimes suddenly a gale", it is windier on an ordinary day.
+    """
+    k = 1.0 + max(-0.9, min(2.0, wind))
+    return [5.0 / k, 4.0, 2.0 * k, 1.0 * k * k]
+
+
+def generate_weather(world_day: int, *, climate: str = "temperate", month: int = 1,
+                    terrain: str = "") -> Dict:
+    """Deterministic weather for a day. Returns temperature band, precip, and wind.
+
+    ``terrain`` is the country it is happening OVER, in the world graph's own
+    vocabulary (see ``eight_card_system.placelore.WEATHER_BIAS``). Without it a
+    mountain top and the marsh in the valley below it — same latitude, same
+    climate band, same day — got identical weather every time, and the fog that
+    is most of what a marsh IS arrived there no more often than on a ploughed
+    field. Optional and defaulting to no bias, so every caller written before
+    this keeps the weather it had.
+    """
     climate = climate if climate in CLIMATES else "temperate"
     season = season_for_month(month)
     rng = random.Random(_seed(world_day, climate))
+    bias = _bias(terrain)
 
     base = _CLIMATE_SEASON_BASE[climate][season]
-    band_idx = max(0, min(len(_TEMP_BANDS) - 1, base + rng.randint(-1, 1)))
+    band_idx = max(0, min(len(_TEMP_BANDS) - 1,
+                          base + rng.randint(-1, 1) + int(bias["temp"])))
     temperature = _TEMP_BANDS[band_idx]
 
     # Precipitation weighted by temperature: cold -> snow, hot -> mostly clear.
@@ -63,12 +124,14 @@ def generate_weather(world_day: int, *, climate: str = "temperate", month: int =
         precip = rng.choice(["clear", "clear", "clear", "light rain", "fog"])
     else:
         precip = rng.choice(_PRECIP[:3] + ["clear", "fog"])
+    precip = _damp(rng, precip, float(bias["damp"]), band_idx)
 
-    wind = rng.choices(_WIND, weights=[5, 4, 2, 1])[0]
+    wind = rng.choices(_WIND, weights=_wind_weights(float(bias["wind"])))[0]
 
     return {
         "world_day": int(world_day),
         "climate": climate,
+        "terrain": terrain or "",
         "season": season,
         "temperature": temperature,
         "temperature_index": band_idx,

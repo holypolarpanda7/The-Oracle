@@ -2132,7 +2132,40 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `_travel_terrain` is the only thing that may hand that to `survival.travel`.
   `scripts/routes_smoke.py` fails if the two vocabularies drift apart again,
   and it checks the mapping MEANS something (rough country must cost more than
-  easy) rather than merely resolving.
+  easy) rather than merely resolving — including that nothing in that table is
+  UNREACHABLE, which is how the last two orphans were found. **`arctic`** (half
+  speed, +10 nav) needed the CLIMATE, since two of travel's entries are about
+  weather rather than ground: open country in the far north is an arctic march
+  whatever is under the snow. **`road`** (full speed, -5 nav) needed
+  `_ROUTE_KINDS` to say which ways are MADE — all three were costed as the raw
+  country between the places, so the high road was purely longer, which is the
+  opposite of what a built road is for. It is now longer AND faster per mile
+  AND unloseable, so through mountains or marsh it beats the track outright and
+  over grassland it does not. (`urban` is not `road`: you cannot get lost in a
+  town and you do not forage in one, you buy.)
+  **The country reaches the SKY too.** `survival.weather` rolled on CLIMATE
+  alone, so a summit and the marsh in the valley below it — same latitude, same
+  band, same day — got identical weather forever, and the fog that is most of
+  what a marsh IS arrived no more often there than on a ploughed field.
+  `placelore.WEATHER_BIAS` is the sibling table, keyed on the same words and
+  deliberately kept APART from `RELIEF` because they are two different facts:
+  one is the ground, one is the air over it. Hazards need nothing of their own
+  — `hazards_from_weather` is derived from the weather, so the bias flows into
+  extreme cold, heat and wind for free. `generate_weather(terrain=)` defaults
+  to no bias, so every caller written before it keeps the weather it had.
+  **`mapgen._ruggedness` is the same dial for a board's GROUND.** Generators
+  used fixed probabilities for their height features — a third of open boards
+  terraced, four fifths of the rest given a knoll — which is `rng.randint(3,
+  8)` one level up: a salt flat and an alpine meadow were equally likely to
+  come back a stack of mesas. Measured over 60 boards: a marsh is stepped 5% of
+  the time and flat 63%, the high country stepped 100%… which was capped to
+  85%, because a board that is ALWAYS terraced stops being a thing anyone
+  notices. The STEP is the country's as well as the odds: a knoll on a plain is
+  five feet and in hill country it is the ten a player has to decide about,
+  which is a decision and not a jitter. An archetype that NAMES its own country
+  keeps it (`_ruggedness(default="mountains")`) — a mountain pass is
+  mountainous whether or not the DM said so, and reading the generic middling
+  answer there would make it gentler than it was before relief existed.
   Relief reaches a board as an INPUT (`generate_map(relief=)`, stored in
   `notes` so a regenerated board is the same board) because `vtt/` must not
   know what a world graph is — the `_bastion_rooms` line. It reaches the

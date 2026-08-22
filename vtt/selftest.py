@@ -1657,6 +1657,67 @@ def test_vessels() -> None:
                                             for r in _ruin.grid.to_rows()),
           f"{len(_ruin.buildings)} standing")
 
+    section("relief: the country decides, not the die")
+    # `_ruggedness` is the same complaint as the street's fall, one level up:
+    # a third of open boards came back terraced whatever the DM said the
+    # country was, so a salt flat and an alpine meadow were equally likely to
+    # be a stack of mesas. See eight_card_system/placelore.py: RELIEF.
+    from .mapgen import _ruggedness as _rug
+    try:
+        from eight_card_system.placelore import RELIEF as _RELIEF, relief_of as _rel
+    except Exception:                       # a checkout with no world graph
+        _RELIEF, _rel = {}, None
+
+    if _rel is not None:
+        def _stepped(terrain: str, n: int = 60) -> tuple[int, int]:
+            steps = flat = 0
+            for _s in range(n):
+                _m = _gm5("open", width=30, height=24, seed=_s,
+                          relief=_rel(terrain))
+                if "mesas" in _m.description:
+                    steps += 1
+                if not _m.elevation:
+                    flat += 1
+            return steps, flat
+
+        _sw, _swf = _stepped("swamp")
+        _hi, _hif = _stepped("mountains")
+        check("a marsh is nearly always flat ground",
+              _swf >= 30 and _sw <= 12, f"{_sw}/60 stepped, {_swf}/60 flat")
+        check("...and the high country nearly always is not",
+              _hif == 0 and _hi >= 40, f"{_hi}/60 stepped, {_hif}/60 flat")
+        check("...but never ALWAYS, or the terracing stops being noticed",
+              _hi < 60, f"{_hi}/60")
+        # A knoll on a plain is a STEP; in hill country it is a ledge worth
+        # taking. Height is a rules number, so which one is a decision.
+        _knolls = [max(_gm5("open", width=30, height=24, seed=_s,
+                            relief=_rel("farmland")).elevation.values() or [0])
+                   for _s in range(40)]
+        check("a knoll on a plain is a step, never a cliff",
+              max(_knolls) <= 5, f"tallest {max(_knolls)} ft")
+        # A pass through hill country is fewer benches than one through peaks —
+        # and an archetype that NAMES its own country keeps it when nobody says.
+        def _pass_top(terrain=None):
+            _m = _gm5("mountain-pass", width=46, height=34, seed=5,
+                      relief=_rel(terrain) if terrain else None)
+            return max(_m.elevation.values() or [0])
+
+        check("a pass through the peaks steps higher than one through hills",
+              _pass_top("mountains") > _pass_top("hills"),
+              f"{_pass_top('mountains')} ft vs {_pass_top('hills')} ft")
+        check("...and a pass nobody described is still a MOUNTAIN pass",
+              _pass_top() == _pass_top("mountains"),
+              f"{_pass_top()} ft")
+        # Every terrain answers, and the dial is monotone in the fall it names.
+        _dial = {_t: _rug(_gm5("open", width=20, height=16, seed=1,
+                               relief=_rel(_t))) for _t in _RELIEF}
+        check("every country has a ruggedness, and the dial is ordered",
+              _dial["swamp"] < _dial["forest"] < _dial["hills"]
+              < _dial["mountains"] and all(0.0 <= v <= 1.0
+                                           for v in _dial.values()),
+              ", ".join(f"{k} {v:.2f}" for k, v in
+                        sorted(_dial.items(), key=lambda kv: kv[1])[:4]))
+
     section("water: a surface is level, and it lies in a depression")
     # Two faults, both reported by a player looking at a swamp: pools RAN
     # UPHILL into the hummocks beside them, because `~` and `W` were on

@@ -232,11 +232,17 @@ RELIEF: dict[str, dict] = {
     "dungeon":   {"fall_ft": (0, 5),   "waves": (0, 1), "cross": 0.15,
                   "travel": "underdark",
                   "map_words": "worked floors a step apart"},
+    # A town is not a ROAD. `survival.travel` keeps both and they differ where
+    # it matters: you cannot get lost in a town (-10 against the road's -5) and
+    # you do not FORAGE in one, you buy — which is why its forage base is a 5
+    # and a roadside verge's is an 8. `road` is reserved for the built way
+    # BETWEEN places, which is what the high road offers and what nothing else
+    # can reach.
     "urban":     {"fall_ft": (2, 8),   "waves": (0, 2), "cross": 0.25,
-                  "travel": "road",
+                  "travel": "urban",
                   "map_words": "streets following the lie of the ground"},
     "interior":  {"fall_ft": (0, 0),   "waves": (0, 0), "cross": 0.0,
-                  "travel": "road",
+                  "travel": "urban",
                   "map_words": ""},
 }
 
@@ -257,9 +263,72 @@ def relief_of(terrain: str) -> dict:
     return dict(RELIEF.get((terrain or "").strip().lower(), GENERIC_RELIEF))
 
 
-def travel_terrain(terrain: str) -> str:
-    """This country's key in :data:`survival.travel.TERRAIN`."""
-    return str(relief_of(terrain)["travel"])
+#: Climate bands whose GOING is the cold itself, whatever the ground is made
+#: of. `survival.travel` has an "arctic" terrain — half the speed, a navigation
+#: DC of +10 and forage that barely feeds anyone — and nothing in the world
+#: could ever produce it, because the graph records climate and terrain
+#: separately and only the terrain was being consulted. A march over tundra is
+#: not a stroll across a meadow, and the difference is not the meadow.
+_FROZEN_CLIMATES = {"arctic", "subarctic"}
+
+#: …but only OUTDOORS and only over open ground. A tunnel under a glacier is
+#: still a tunnel, a road is still cleared, and a sea is crossed by ship.
+_FROZEN_EXEMPT = {"underdark", "dungeon", "interior", "urban", "sea"}
+
+
+def travel_terrain(terrain: str, climate: str = "") -> str:
+    """This country's key in :data:`survival.travel.TERRAIN`.
+
+    ``climate`` is consulted because two of that table's entries are about the
+    WEATHER rather than the ground: crossing open country in the far north is
+    an arctic march whether the ground beneath the snow is grassland, forest or
+    hill. Left out, the coldest going in the game was unreachable.
+    """
+    name = (terrain or "").strip().lower()
+    if (climate or "").strip().lower() in _FROZEN_CLIMATES \
+            and name not in _FROZEN_EXEMPT:
+        return "arctic"
+    return str(relief_of(name)["travel"])
+
+
+#: WHAT THE COUNTRY DOES TO THE SKY, per terrain.
+#:
+#: Sibling to :data:`RELIEF` and keyed on the same closed vocabulary, kept
+#: apart from it because they are honestly two different facts: relief is about
+#: the ground, this is about the air over it. ``survival.weather`` rolled on
+#: CLIMATE alone, so a mountain top and the marsh in the valley below it — same
+#: latitude, same band — got identical weather every single day, and the fog
+#: that is most of what a marsh IS never arrived any more often there than on a
+#: ploughed field.
+#:
+#: ``temp``  bands to shift the day's temperature by (see ``_TEMP_BANDS``).
+#: ``damp``  how much more (or less) often it comes down wet or closes in.
+#: ``wind``  how much more (or less) exposed to it this country is.
+WEATHER_BIAS: dict[str, dict] = {
+    "farmland":  {"temp": 0,  "damp": 0.0,  "wind": 0.0},
+    "forest":    {"temp": 0,  "damp": 0.1,  "wind": -0.3},
+    "hills":     {"temp": 0,  "damp": 0.0,  "wind": 0.2},
+    "river":     {"temp": 0,  "damp": 0.2,  "wind": 0.0},
+    "swamp":     {"temp": 0,  "damp": 0.4,  "wind": -0.2},
+    "mountains": {"temp": -1, "damp": 0.1,  "wind": 0.5},
+    "desert":    {"temp": 1,  "damp": -0.5, "wind": 0.1},
+    "coast":     {"temp": 0,  "damp": 0.2,  "wind": 0.4},
+    "sea":       {"temp": 0,  "damp": 0.2,  "wind": 0.5},
+    # Under the ground and behind a door there is no weather at all. Reported
+    # as no bias rather than as an exemption: the caller that knows it is
+    # indoors is `PlaceCharacter.indoors`, and this table must not become a
+    # second, quieter answer to that question.
+    "underdark": {"temp": 0,  "damp": 0.0,  "wind": 0.0},
+    "dungeon":   {"temp": 0,  "damp": 0.0,  "wind": 0.0},
+    "urban":     {"temp": 0,  "damp": 0.0,  "wind": -0.2},
+    "interior":  {"temp": 0,  "damp": 0.0,  "wind": 0.0},
+}
+
+
+def weather_bias_of(terrain: str) -> dict:
+    """What this country does to the sky over it. Never raises."""
+    return dict(WEATHER_BIAS.get((terrain or "").strip().lower(),
+                                 {"temp": 0, "damp": 0.0, "wind": 0.0}))
 
 
 def terrain_words(biome: str, register: str = "scene") -> str:
@@ -571,7 +640,12 @@ def character_of(graph, place_ref, *, persist: bool = True) -> Optional[PlaceCha
         _persist_biome(graph, name=name, slug=slug, status=status,
                        attributes=attrs, biome=terrain)
 
-    season, time_of_day, weather, precip = _clock_and_weather(graph, climate)
+    # The country goes with the climate: a marsh closes in and a summit is
+    # colder and windier than the field below it on the very same day. The
+    # TERRAIN, not the biome — weather happens over the land a place stands in,
+    # and a taproom's floorboards have no opinion about the sky.
+    season, time_of_day, weather, precip = _clock_and_weather(
+        graph, climate, terrain)
 
     return PlaceCharacter(
         slug=slug, name=name, scale=scale, biome=biome, terrain=terrain,
@@ -585,7 +659,8 @@ def character_of(graph, place_ref, *, persist: bool = True) -> Optional[PlaceCha
     )
 
 
-def _clock_and_weather(graph, climate: str) -> tuple[str, str, str, str]:
+def _clock_and_weather(graph, climate: str,
+                       terrain: str = "") -> tuple[str, str, str, str]:
     """(season, time_of_day, weather summary, precipitation) — best effort.
 
     Weather is derived, not stored, so a missing survival module or an empty
@@ -603,7 +678,8 @@ def _clock_and_weather(graph, climate: str) -> tuple[str, str, str, str]:
         day = wm.world_day if wm else 0
         month = wm.month if wm else 1
         time_of_day = str(wm.time_of_day if wm else "morning")
-        w = generate_weather(day, climate=climate, month=month)
+        w = generate_weather(day, climate=climate, month=month,
+                             terrain=terrain)
         return (season_for_month(month), time_of_day,
                 str(w.get("summary") or ""), str(w.get("precipitation") or ""))
     except Exception as e:  # noqa: BLE001 — mood is optional, the turn is not

@@ -3586,12 +3586,20 @@ ROUTES_HOOK_PATTERN = re.compile(r"\[\[ROUTES:(.+?)\]\]", re.IGNORECASE)
 
 # How a road's danger reads, and what it costs to take it. The safe way round
 # is longer; the direct way is direct.
+#
+# The fourth field is whether the way is MADE. `survival.travel` has always had
+# a "road" terrain — full pace, a navigation DC of -5 — and nothing could
+# reach it, because all three ways were costed as the raw country between the
+# two places. That made the high road purely longer, which is the opposite of
+# what a built road is for: it is longer AND it is faster per mile AND you
+# cannot get lost on it. The shortcut, by contrast, leaves the road entirely,
+# which is exactly why it is dangerous.
 _ROUTE_KINDS = (
-    ("the high road", 1.35, "low",
+    ("the high road", 1.35, "low", True,
      "Patrolled and well-kept. Longer, and you will meet other travellers."),
-    ("the old track", 1.0, "moderate",
+    ("the old track", 1.0, "moderate", False,
      "The way most take. Rutted, and quiet in the wrong places."),
-    ("the shortcut", 0.72, "high",
+    ("the shortcut", 0.72, "high", False,
      "Half-forgotten, and it cuts hard through country that has no reason to be kind."),
 )
 
@@ -3616,9 +3624,31 @@ def _travel_terrain(ent) -> str:
     does not know, so farmland, river, coast, SEA, underdark, dungeon and
     interior were every one of them costed as a stroll over a meadow — a sea
     crossing included. One mapping, in `placelore` beside the terrain it maps.
+
+    The CLIMATE goes with it, because two of that table's entries are about
+    weather rather than ground: open country in the far north is an arctic
+    march whatever is under the snow.
     """
     from eight_card_system.placelore import travel_terrain
-    return travel_terrain(_place_terrain(ent))
+    return travel_terrain(_place_terrain(ent), _place_climate(ent))
+
+
+def _place_climate(ent) -> str:
+    """The climate band this place sits in — recorded, else derived from where.
+
+    Latitude is the authority (`geo.climate_for`); the attribute is only ever a
+    place that was told what band it is in.
+    """
+    attrs = (getattr(ent, "attributes", None) or {})
+    band = str(attrs.get("climate") or "")
+    if band:
+        return band
+    try:
+        from eight_card_system import geo
+        coords = world.coords_of(getattr(ent, "slug", "") or "")
+        return geo.climate_for(coords) if coords else ""
+    except Exception:
+        return ""
 
 
 def extract_routes_hooks(text: str) -> tuple[str, list[str]]:
@@ -3650,19 +3680,24 @@ def _routes_to(pc_slug: str, destination: str) -> list[dict]:
     terrain = _travel_terrain(there)
     danger_here = str((there.attributes or {}).get("danger") or "moderate")
     out: list[dict] = []
-    for label, factor, danger, blurb in _ROUTE_KINDS:
+    for label, factor, danger, made, blurb in _ROUTE_KINDS:
         dist = round(miles * factor, 1)
-        leg = survival_travel_calc(dist, pace="normal", terrain=terrain)
+        # A MADE way is costed as a road — that is the whole bargain the high
+        # road offers, and until this it offered only the extra miles. Never
+        # over water or under the ground, where there is no road to build.
+        going = "road" if (made and terrain not in ("sea", "underdark")) \
+            else terrain
+        leg = survival_travel_calc(dist, pace="normal", terrain=going)
         out.append({
             "id": label.replace(" ", "-"),
             "label": label,
             "destination": there.name,
             "miles": dist,
             "days": max(0.5, round(leg["days"], 1)),
-            "terrain": terrain,
+            "terrain": going,
             # The road's own danger, floored by how bad the destination is.
             "danger": danger if danger != "low" or danger_here == "low" else "moderate",
-            "nav_dc": navigation_dc(terrain).get("dc"),
+            "nav_dc": navigation_dc(going).get("dc"),
             "blurb": blurb,
         })
     return out

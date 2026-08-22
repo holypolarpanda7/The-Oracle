@@ -76,7 +76,8 @@ if m._routes_to(pc.slug, here.slug): fails.append("routed to where the PC alread
 #    interior were each costed as a stroll over a meadow. This is the check
 #    that fails when the two drift apart again.
 from eight_card_system.placelore import RELIEF, _TERRAIN, relief_of, travel_terrain
-from survival.travel import TERRAIN as TRAVEL_TERRAIN, travel as _tv
+from survival.travel import (TERRAIN as TRAVEL_TERRAIN, navigation_dc,
+                             travel as _tv)
 
 missing = sorted(set(_TERRAIN) - set(RELIEF))
 if missing:
@@ -103,6 +104,61 @@ for t in RELIEF:
         fails.append(f"{t} has a nonsense fall {r['fall_ft']}")
     if t not in ("interior",) and not r["map_words"]:
         fails.append(f"{t} tells the cartographer nothing about its relief")
+
+# 6. Nothing in that table may be UNREACHABLE. A terrain the world cannot
+#    produce is a tuning nobody will ever feel: `arctic` (half speed, +10 nav)
+#    and `road` (full speed, -5 nav) both sat there unreachable, because the
+#    graph records climate and terrain separately and only terrain was read,
+#    and because all three routes were costed as the raw country between the
+#    two places — which made the high road purely longer, the opposite of what
+#    a built road is for.
+reachable = {travel_terrain(t, c) for t in RELIEF
+             for c in ("", "temperate", "arctic", "subarctic")}
+reachable |= {r["terrain"] for r in routes}
+orphans = sorted(set(TRAVEL_TERRAIN) - reachable)
+if orphans:
+    fails.append(f"travel terrain nothing can produce: {orphans}")
+if "road" not in {r["terrain"] for r in routes}:
+    fails.append("no route is costed as a made road")
+# ...and the road has to be WORTH taking where the country is bad: longer, and
+# still faster and safer than cutting across a mountain or a marsh.
+for rough in ("mountains", "swamp"):
+    key = travel_terrain(rough)
+    if not _tv(60 * 1.35, terrain="road")["days"] < _tv(60, terrain=key)["days"]:
+        fails.append(f"the high road is no faster than crossing {rough}")
+    if not navigation_dc("road")["dc"] < navigation_dc(key)["dc"]:
+        fails.append(f"the high road is no easier to follow than {rough}")
+
+# 7. The country reaches the SKY as well as the ground. `generate_weather`
+#    rolled on climate alone, so a summit and the marsh in the valley below it
+#    got identical weather every day of the year.
+from survival.weather import generate_weather as _wx
+
+def _profile(terrain: str) -> tuple[int, int]:
+    wet = gale = 0
+    for day in range(400):
+        w = _wx(day, climate="temperate", month=5, terrain=terrain)
+        if w["precipitation"] != "clear":
+            wet += 1
+        if w["wind"] in ("strong wind", "gale"):
+            gale += 1
+    return wet, gale
+
+marsh_wet, _ = _profile("swamp")
+dune_wet, _ = _profile("desert")
+_, field_gale = _profile("farmland")
+_, peak_gale = _profile("mountains")
+if not marsh_wet > dune_wet:
+    fails.append(f"a marsh is no wetter than a desert ({marsh_wet} vs {dune_wet})")
+if not peak_gale > field_gale:
+    fails.append(f"a summit is no windier than a field ({peak_gale} vs {field_gale})")
+if _wx(3, climate="temperate", month=5, terrain="mountains")["temperature_index"] \
+        >= _wx(3, climate="temperate", month=5, terrain="desert")["temperature_index"]:
+    fails.append("high country is not colder than desert on the same day")
+# A caller that says nothing gets exactly the weather it always got.
+if _wx(9, climate="temperate", month=5) != \
+        _wx(9, climate="temperate", month=5, terrain=""):
+    fails.append("naming no terrain changed the weather")
 
 print("\nFAILS:", fails or "none")
 sys.exit(1 if fails else 0)

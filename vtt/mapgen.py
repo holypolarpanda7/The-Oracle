@@ -479,6 +479,39 @@ def _relief_walk(rng: random.Random, n: int, fall: int, waves: int) -> list[int]
     return [v - low for v in ints]
 
 
+#: The fall, in feet, that counts as country as rough as it gets. Mountains
+#: sit at the top of :data:`placelore.RELIEF` and everything else is read
+#: against them, so ``_ruggedness`` is "how mountainous is this" on a 0..1
+#: scale — which is the shape every generator wants: not a height, a DIAL.
+_RUGGED_FULL_FT = 18.0
+
+
+def _ruggedness(out: "GeneratedMap", default: str = "") -> float:
+    """How broken this board's country is, 0 (a salt flat) to 1 (mountains).
+
+    Generators used fixed probabilities for their height features — a third of
+    open boards terraced, four fifths of the rest given a knoll — which is the
+    ``rng.randint(3, 8)`` complaint one level up: a meadow on the plains and a
+    meadow in the high country were equally likely to come back stepped.
+
+    ``default`` is the country an archetype IS, for the ones that name their
+    own: a mountain pass is mountainous whether or not anybody said so, and
+    reading the generic middling answer there would make it gentler than the
+    board it replaced.
+    """
+    r = out.relief or {}
+    if not r:
+        name = terrain_of(out.biome) or default
+        if name:
+            try:
+                from eight_card_system.placelore import relief_of
+                r = relief_of(name)
+            except Exception:
+                r = {}
+    lo, hi = (r.get("fall_ft") or _RELIEF_DEFAULT["fall_ft"])
+    return max(0.0, min(1.0, ((lo + hi) / 2.0) / _RUGGED_FULL_FT))
+
+
 def road_profile(rng: random.Random, width: int, height: int,
                  biome: str = "",
                  relief: Optional[dict] = None) -> dict[tuple[int, int], int]:
@@ -2292,7 +2325,14 @@ def _gen_pass(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # and the board had ten raised squares on it. The whole track is stepped
     # now: benches of rock at ten and twenty feet with cliff faces between them
     # and ramps of scree where you can get up.
-    _plateaus(g, rng, out, tiers=3, on=(".", ",", "g"), face="R", ramps=2)
+    # HOW MANY benches is the country's: a pass through hill country is two
+    # steps and one through the high peaks is four. The default is MOUNTAINS
+    # rather than the generic middling answer — a mountain pass is mountainous
+    # whether or not the DM said so, and reading the generic case here would
+    # make the archetype gentler than it was before relief existed.
+    rug = _ruggedness(out, default="mountains")
+    tiers = 2 if rug < 0.45 else (3 if rug < 0.9 else 4)
+    _plateaus(g, rng, out, tiers=tiers, on=(".", ",", "g"), face="R", ramps=2)
     out.description += (", the track stepping up in benches of rock with "
                         "cliffs between them")
 
@@ -2552,14 +2592,28 @@ def _gen_open(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # Sometimes the whole field is stepped — a run of low mesas with rock
     # between them — and otherwise it gets a knoll. Both beat a table top, and
     # a board that is ALWAYS terraced stops being a thing you notice.
-    if rng.random() < 0.3:
-        _plateaus(g, rng, out, tiers=2, on=("g", ",", "\""), face="R", ramps=2)
+    # ...and HOW OFTEN is the country's business. A third of open boards used
+    # to come back stepped whatever the DM said the country was, which is the
+    # street's own fall arriving one level up. See _ruggedness.
+    rug = _ruggedness(out)
+    # Capped short of certainty: a board that is ALWAYS terraced stops being a
+    # thing anyone notices, so even the high country sometimes gives a knoll.
+    if rng.random() < min(0.85, rug):
+        # The STEP is the country's too, and for the reason below: a ten-foot
+        # face is the height a player has to decide about, and low country has
+        # no business quoting it.
+        _plateaus(g, rng, out, tiers=2, on=("g", ",", "\""), face="R", ramps=2,
+                  step_ft=LEDGE_FT if rug >= 0.4 else STEP_FT)
         out.description = ("open ground stepping up in low mesas, rock faces "
                            "between them")
-    elif rng.random() < 0.8:
+    elif rng.random() < 0.3 + rug:
+        # A knoll on a plain is a STEP; in hill country it is a ledge worth
+        # taking. Height is a rules number, so which one is a decision and not
+        # a jitter — see "never vary a height the RULES quote".
         _mound(g, rng, out, rng.randrange(g.width // 4, 3 * g.width // 4),
                rng.randrange(g.height // 4, 3 * g.height // 4),
-               rng.uniform(2.5, 4.5), LEDGE_FT, on=("g", ",", "\""))
+               rng.uniform(2.5, 4.5),
+               LEDGE_FT if rug >= 0.4 else STEP_FT, on=("g", ",", "\""))
         out.description = "open ground rising to a knoll, scattered rocks and scrub"
 
 

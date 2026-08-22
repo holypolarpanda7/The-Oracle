@@ -35,9 +35,13 @@ DEFAULT = ("dungeon-room", "street", "camp", "tavern", "mountain-pass",
 
 
 def one(arch: str, seed: int, size: tuple[int, int], out: Path,
-        px: int) -> Path:
+        px: int, terrain: str = "") -> Path:
     w, h = size
-    gen = generate_map(arch, width=w, height=h, seed=seed)
+    relief = None
+    if terrain:
+        from eight_card_system.placelore import relief_of
+        relief = relief_of(terrain)
+    gen = generate_map(arch, width=w, height=h, seed=seed, relief=relief)
     # Exactly what the PAINTER is conditioned on, assembled by the one function
     # that assembles it — skins, elevation, hulls, set pieces and all. Building
     # the kwargs by hand here would make this a probe of a board nobody renders.
@@ -49,7 +53,7 @@ def one(arch: str, seed: int, size: tuple[int, int], out: Path,
     # out the same grey, so a roof and the wall under it are one shape.
     png = depth_image(rows, px_per_square=px, _flat=False,
                       _colour_of=colour_of, **kw)
-    path = out / f"{arch}.png"
+    path = out / (f"{arch}-{terrain}.png" if terrain else f"{arch}.png")
     path.write_bytes(png)
     return path
 
@@ -61,6 +65,9 @@ def main(argv=None) -> int:
     ap.add_argument("--size", default="24x18")
     ap.add_argument("--px", type=int, default=54, help="pixels per square")
     ap.add_argument("--out", default="style-probe/review/shapes")
+    ap.add_argument("--terrain", default="",
+                    help="placelore terrain, so the board gets its relief "
+                         "(farmland, hills, mountains, swamp…)")
     a = ap.parse_args(argv)
 
     want = [s.strip() for s in a.only.split(",") if s.strip()] or list(DEFAULT)
@@ -72,7 +79,7 @@ def main(argv=None) -> int:
     out = ROOT / a.out
     out.mkdir(parents=True, exist_ok=True)
     for arch in want:
-        p = one(arch, a.seed, (w, h), out, a.px)
+        p = one(arch, a.seed, (w, h), out, a.px, a.terrain)
         print(f"  {arch:16s} -> {p.relative_to(ROOT)}")
     print(f"\n{len(want)} board(s) in {out.relative_to(ROOT)}")
     return 0
