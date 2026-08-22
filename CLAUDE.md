@@ -1692,6 +1692,36 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   high ground AND that the DM board states it with what it costs. The offline
   demo board carries a dais for the same reason: it is the only board a browser
   can draw with no backend, and it was flat while every real board grew height.
+- **A thing that is ONE thing is GROWN, not speckled.** `mapgen._blob` throws
+  N independent darts inside a radius, which is right for scattered rock and
+  thin scrub and wrong for anything that is a single object. Measured, it was
+  wrong in three places at once and each had been that way for as long as the
+  generator existed: a bog's pools had a **median size of ONE SQUARE** —
+  eighty-five puddles across a 46x34 board, no water anybody could see, wade or
+  swim, and a foot of basin cut under every one of them; the reef's "coral
+  heads standing in banks", which its own docstring has always promised, were
+  forty-odd single squares; and a kelp bed was confetti. `_patch` grows from
+  the frontier instead, so every square touches another and the outline still
+  wanders. Same coverage, real bodies — median clump 6-12 squares with meres up
+  to 130. `_blob` stays, documented as SPECKLE, for the things that really are
+  scattered. The lesson generalises past water: when a generator's own prose
+  says "bank", "bed", "pool" or "stand" and the picture says confetti, the
+  primitive is the thing to look at.
+- **A SKY ISLAND hangs at ONE height, and it is the whole island.** The height
+  was stamped as a 7x7 BOX on the middle of a round island, so a stone hanging
+  twenty feet up had a square mesa on it and a rim at zero — the picture flatly
+  contradicting the shape, with the rules agreeing with the picture. `_island`
+  returns its squares now and all of them are raised. A knoll on top is fine,
+  because it RIDES on the island's own height; two base heights in one rock is
+  not, and that is what the selftest asks. **Its top being broken is NOT the
+  country's business** — this was the last outdoor archetype with no relief and
+  the obvious move was to hang it off `_ruggedness`, which would be the camp's
+  bank all over again: an island is a torn-off chunk of rock in open air, and
+  what lies a thousand feet below it shaped neither its stone nor its top. What
+  it DID want was `_for_area` (more sky, more islands) and a placement that
+  STOPS when nothing is far enough from its neighbours — two that merge are one
+  continent with a ten-foot cliff through the middle of what the board calls
+  one rock. 2 merged in 345.
 - **A liquid surface is LEVEL, and water lies in a DEPRESSION.** `~` and `W`
   were on `terrain.SOFT_GROUND`, so a pool's surface was averaged with the
   ground around it and given the ordinary ripple — a swamp pool with a hummock

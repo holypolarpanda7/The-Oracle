@@ -278,8 +278,8 @@ def _scatter(grid: Grid, rng: random.Random, code: str, chance: float, *,
 
 
 def _island(grid: Grid, rng: random.Random, cx: int, cy: int, radius: float,
-            code: str) -> int:
-    """A SOLID irregular patch. Returns how many squares it laid.
+            code: str) -> list[Square]:
+    """A SOLID irregular patch. Returns the squares it laid.
 
     ``_blob`` throws random points at a neighbourhood, which is right for
     scattering weed or rubble and wrong for ground: scaled up to island size it
@@ -291,7 +291,7 @@ def _island(grid: Grid, rng: random.Random, cx: int, cy: int, radius: float,
     import math as _m
 
     p1, p2 = rng.random() * _m.tau, rng.random() * _m.tau
-    laid = 0
+    laid: list[Square] = []
     for x, y in grid.squares():
         dx, dy = x - cx, y - cy
         d = _m.hypot(dx, dy)
@@ -302,7 +302,7 @@ def _island(grid: Grid, rng: random.Random, cx: int, cy: int, radius: float,
                        + 0.13 * _m.sin(a * 5 + p2))
         if d <= rr:
             grid.set(x, y, code)
-            laid += 1
+            laid.append((x, y))
     return laid
 
 
@@ -810,9 +810,57 @@ def _stair(out: GeneratedMap, level: int, frm: Square, to: Square,
                        "to_y": int(to[1]), "kind": kind})
 
 
+def _patch(grid: Grid, rng: random.Random, cx: int, cy: int, size: int,
+           code: str, *, on: tuple[str, ...] = ()) -> list[Square]:
+    """A CONNECTED organic patch of ``size`` squares, grown from a point.
+
+    :func:`_blob` throws ``size`` independent darts inside a radius, which is
+    right for SPECKLE — scattered rocks, a few trees — and wrong for anything
+    that is one thing. A bog's pools were blobs, and measured they came back
+    with a MEDIAN SIZE OF ONE SQUARE: eighty-five separate puddles across a
+    46x34 board, none of them a body of water anybody could see, let alone
+    swim. It also meant the water basin was cutting a foot of relief under
+    hundreds of single squares.
+
+    Grown from the frontier instead, so every square touches another and the
+    outline still wanders. ``on`` restricts what may be overwritten and is
+    applied at the END, so the SHAPE is decided by the grow and not by
+    whichever squares happened to be eligible — a patch stopped at a wall
+    would otherwise grow a lobe round it.
+    """
+    if not grid.in_bounds(cx, cy):
+        return []
+    want = max(1, int(size))
+    body = {(cx, cy)}
+    frontier = [(cx, cy)]
+    while len(body) < want and frontier:
+        i = rng.randrange(len(frontier))
+        ax, ay = frontier[i]
+        near = [(ax + dx, ay + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                if grid.in_bounds(ax + dx, ay + dy)
+                and (ax + dx, ay + dy) not in body]
+        if not near:
+            frontier.pop(i)
+            continue
+        nxt = near[rng.randrange(len(near))]
+        body.add(nxt)
+        frontier.append(nxt)
+    out = []
+    for x, y in sorted(body):
+        if on and grid.get(x, y) not in on:
+            continue
+        grid.set(x, y, code)
+        out.append((x, y))
+    return out
+
+
 def _blob(grid: Grid, rng: random.Random, cx: int, cy: int, size: int,
           code: str) -> None:
-    """An organic patch of a tile around a point."""
+    """SPECKLE: ``size`` independent darts inside a radius around a point.
+
+    Deliberately not connected — see :func:`_patch` for the one thing that is
+    one thing. Right for scattered rock and thin scrub, wrong for water.
+    """
     for _ in range(max(1, size)):
         r = rng.random() * math.sqrt(size)
         a = rng.random() * math.tau
@@ -2366,9 +2414,15 @@ def _gen_crypt(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 
 def _gen_swamp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     g.fill_rect(0, 0, g.width - 1, g.height - 1, "m")
-    for _ in range(int(g.width * g.height * 0.03)):
+    # POOLS, and they have to be POOLS. As blobs these came back with a median
+    # size of ONE SQUARE — eighty-five puddles on a 46x34 board — which is not
+    # water anybody can see, wade or swim, and it put a foot of basin under
+    # every one of them. A bog is mostly small ponds with a few real meres in
+    # it, so the size is drawn skewed rather than uniform.
+    for _ in range(int(g.width * g.height * 0.014)):
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
-        _blob(g, rng, cx, cy, rng.randint(3, 9), rng.choice(("~", "~", "W")))
+        wide = rng.randint(18, 40) if rng.random() < 0.3 else rng.randint(4, 12)
+        _patch(g, rng, cx, cy, wide, rng.choice(("~", "~", "W")))
     for _ in range(int(g.width * g.height * 0.01)):
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
         _blob(g, rng, cx, cy, rng.randint(1, 3), "T")
@@ -2546,9 +2600,14 @@ def _gen_reef(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     g.fill_rect(0, 0, g.width - 1, g.height - 1, "s")
     # Coral first, channels second: the water cut THROUGH the reef, and a
     # channel that stops politely at a coral head is a path, not a channel.
-    for _ in range(int(g.width * g.height * 0.03)):
+    # BANKS, which is what this generator's own docstring has always promised
+    # and what a blob cannot make: measured, the median coral "bank" was ONE
+    # SQUARE, forty-odd of them speckled over the shelf. Same coverage, grown
+    # connected — cover you can put your back to instead of confetti.
+    for _ in range(int(g.width * g.height * 0.012)):
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
-        _blob(g, rng, cx, cy, rng.randint(2, 7), "R")      # coral heads
+        wide = rng.randint(12, 24) if rng.random() < 0.25 else rng.randint(4, 10)
+        _patch(g, rng, cx, cy, wide, "R")                  # coral heads
     for _ in range(rng.randint(2, 3)):
         _carve_channel(g, rng, out)
     # Silt and weed over the shelf: difficult going, and never in the channels,
@@ -2596,9 +2655,11 @@ def _gen_reef(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
 def _gen_open_water(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     """Open sea: blue water in every direction, with wreckage to shelter behind."""
     g.fill_rect(0, 0, g.width - 1, g.height - 1, "W")
-    for _ in range(rng.randint(3, 7)):
+    for _ in range(_for_area(g, rng.randint(3, 7), most=22)):
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
-        _blob(g, rng, cx, cy, rng.randint(3, 10), "~")     # kelp / shallows
+        # A kelp bed is a BED. Same argument as the reef's coral banks and the
+        # bog's pools: a thing that is one thing is grown, not speckled.
+        _patch(g, rng, cx, cy, rng.randint(6, 22), "~")    # kelp / shallows
     # Drifting wreckage: something to stand on, something to hide behind.
     for _ in range(rng.randint(2, 5)):
         cx, cy = rng.randrange(1, g.width - 1), rng.randrange(1, g.height - 1)
@@ -2616,7 +2677,7 @@ def _gen_sky(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     """Aloft: floating stone islands in open air. Only a flier (or a very good
     jumper) crosses between them; the islands themselves are solid ground."""
     g.fill_rect(0, 0, g.width - 1, g.height - 1, "^")
-    islands = rng.randint(3, 5)
+    islands = _for_area(g, rng.randint(3, 5), most=9)
     centres: list[tuple[int, int]] = []
     for i in range(islands):
         # Kept APART. Random centres cluster, and three islands that overlap
@@ -2624,25 +2685,46 @@ def _gen_sky(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         # a lot of wasted margin, not a fight in open air. The whole point of
         # the archetype is the gap between them.
         cx = cy = 0
-        for _try in range(40):
+        for _try in range(120):
             cx = rng.randrange(2, max(3, g.width - 2))
             cy = rng.randrange(2, max(3, g.height - 2))
-            if all(math.hypot(cx - ox, cy - oy) >= 9 for ox, oy in centres):
+            if all(math.hypot(cx - ox, cy - oy) >= 11 for ox, oy in centres):
                 break
+        else:
+            # Nowhere left with room. STOP rather than drop one more island on
+            # top of a neighbour: two that merge are one continent with a
+            # ragged edge, and — since each hangs at its OWN height — the seam
+            # between them is a ten-foot cliff through the middle of what the
+            # board calls one rock.
+            break
         centres.append((cx, cy))
         # Big enough to FIGHT on, and SOLID. The old sizes drew a scatter of
         # two- and three-square specks, which is a board where nobody can stand
         # next to anybody — and drawn at that size they read as pixels on a map
         # rather than as stones hanging in the air.
-        _island(g, rng, cx, cy, rng.uniform(2.6, 4.6), "g")
+        ground = _island(g, rng, cx, cy, rng.uniform(2.6, 4.6), "g")
         if rng.random() < 0.5:
             g.set(cx, cy, "R")                              # a spire of rock
-        # Islands hang at different heights — the fight has a third axis.
+        # AN ISLAND HANGS AT ONE HEIGHT, and it is the whole island. This used
+        # to stamp a 7x7 BOX of elevation on the middle of a round island, so
+        # a stone hanging twenty feet up had a square mesa on it and a rim at
+        # zero — the picture flatly contradicting the shape, and the rules
+        # agreeing with the picture. It is one rock; it is at one height.
         height = rng.choice((0, 0, 10, 20))
         if height:
-            for x, y in g.squares():
-                if g.get(x, y) == "g" and abs(x - cx) <= 3 and abs(y - cy) <= 3:
-                    out.elevation[f"{x},{y}"] = height
+            _raise(out, ground, height)
+        # ...and its TOP is often broken, at a rate that is NOT the country's.
+        # This archetype was the last outdoor one with no relief, and the
+        # obvious move was to hang it off `_ruggedness` — which would be the
+        # camp's bank all over again. An island is a torn-off chunk of rock
+        # hanging in open air; what lies a thousand feet below it shaped
+        # neither its stone nor its top. Applied AFTER the island's own height,
+        # because a knoll rides on the island rather than replacing it.
+        if rng.random() < 0.45 and len(ground) > 20:
+            for x, y in _mound(g, rng, out, cx, cy, rng.uniform(1.5, 2.5),
+                               STEP_FT, on=("g",)):
+                out.elevation[f"{x},{y}"] = (
+                    height + int(out.elevation.get(f"{x},{y}", 0) or 0))
     _scatter(g, rng, ",", 0.06, only_on=("g",), mode="fly")
     _scatter(g, rng, "T", 0.03, only_on=("g",), mode="fly")
     out.mode = "fly"

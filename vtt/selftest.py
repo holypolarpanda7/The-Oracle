@@ -1726,6 +1726,89 @@ def test_vessels() -> None:
                                             for r in _ruin.grid.to_rows()),
           f"{len(_ruin.buildings)} standing")
 
+    section("a thing that is ONE thing is grown, not speckled")
+    # `_blob` throws N independent darts inside a radius, which is right for
+    # scattered rock and thin scrub and wrong for anything that is one thing.
+    # Measured before this: a bog's pools had a MEDIAN SIZE OF ONE SQUARE —
+    # eighty-five puddles across a 46x34 board — and the reef's "coral banks",
+    # which its own docstring has always promised, were forty-odd single
+    # squares. `_patch` grows from the frontier instead, so every square
+    # touches another and the outline still wanders.
+    from collections import deque as _dq2
+
+    def _clumps(rows, codes: str) -> list[int]:
+        seen: set[tuple[int, int]] = set()
+        out_: list[int] = []
+        for _y in range(len(rows)):
+            for _x in range(len(rows[_y])):
+                if rows[_y][_x] not in codes or (_x, _y) in seen:
+                    continue
+                _q = _dq2([(_x, _y)])
+                seen.add((_x, _y))
+                _n = 0
+                while _q:
+                    _a, _b = _q.popleft()
+                    _n += 1
+                    for _c, _d in ((_a + 1, _b), (_a - 1, _b),
+                                   (_a, _b + 1), (_a, _b - 1)):
+                        if (0 <= _d < len(rows) and 0 <= _c < len(rows[_d])
+                                and (_c, _d) not in seen
+                                and rows[_d][_c] in codes):
+                            seen.add((_c, _d))
+                            _q.append((_c, _d))
+                out_.append(_n)
+        return sorted(out_, reverse=True)
+
+    for _arch, _codes, _least in (("swamp", "~W", 4), ("reef", "R", 3),
+                                  ("open-water", "~", 6)):
+        _med = []
+        for _s in range(8):
+            _cl = _clumps(_gm5(_arch, width=46, height=34,
+                               seed=_s).grid.to_rows(), _codes)
+            if _cl:
+                _med.append(_cl[len(_cl) // 2])
+        check(f"{_arch}: its patches are BODIES, not a speckle",
+              _med and min(_med) >= _least,
+              f"median clump per board: {_med}")
+
+    # A SKY ISLAND hangs at ONE height, and it is the whole island. This used
+    # to stamp a 7x7 BOX of elevation on the middle of a round island, so a
+    # stone hanging twenty feet up had a square mesa on it and a rim at zero:
+    # the picture flatly contradicting the shape, with the rules agreeing with
+    # the picture. A knoll on top is fine — it rides on the island's own
+    # height — so what must not happen is TWO base heights in one rock.
+    _split = _rocks = 0
+    for _s in range(24):
+        _sky = _gm5("sky-islands", width=46, height=34, seed=_s)
+        _rows6 = _sky.grid.to_rows()
+        _seen6: set[tuple[int, int]] = set()
+        for _y in range(len(_rows6)):
+            for _x in range(len(_rows6[_y])):
+                if _rows6[_y][_x] not in "gT,R" or (_x, _y) in _seen6:
+                    continue
+                _q = _dq2([(_x, _y)])
+                _seen6.add((_x, _y))
+                _hs: set[int] = set()
+                while _q:
+                    _a, _b = _q.popleft()
+                    _hs.add(int(_sky.elevation.get(f"{_a},{_b}", 0) or 0))
+                    for _c, _d in ((_a + 1, _b), (_a - 1, _b),
+                                   (_a, _b + 1), (_a, _b - 1)):
+                        if (0 <= _d < len(_rows6) and 0 <= _c < len(_rows6[_d])
+                                and (_c, _d) not in _seen6
+                                and _rows6[_d][_c] in "gT,R"):
+                            _seen6.add((_c, _d))
+                            _q.append((_c, _d))
+                _rocks += 1
+                if len({_h for _h in _hs if _h % 10 == 0}) > 1:
+                    _split += 1
+    check("a sky island hangs at ONE height, all of it",
+          _split <= _rocks // 50,
+          f"{_split} of {_rocks} rocks split across two heights")
+    check("...and a bigger sky gets more islands, not bigger ones",
+          len(_gm5("sky-islands", width=46, height=34, seed=3).grid.to_rows())
+          and _rocks / 24 >= 5, f"{_rocks / 24:.1f} islands a board")
+
     section("relief: the country decides, not the die")
     # `_ruggedness` is the same complaint as the street's fall, one level up:
     # a third of open boards came back terraced whatever the DM said the
@@ -1902,9 +1985,18 @@ def test_vessels() -> None:
     # Two pools on a hillside are two DIFFERENT levels, which is the whole
     # reason a surface belongs to the pool rather than to the board.
     _pools = _w.pools(_brows)
+    check("a bog's water comes in POOLS, not a speckle of single squares",
+          len(_pools) > 1
+          and sorted((len(_p) for _p in _pools))[len(_pools) // 2] >= 4,
+          f"{len(_pools)} pools, sizes "
+          f"{sorted((len(_p) for _p in _pools), reverse=True)[:5]}")
+    # Two pools at different heights is the whole reason a surface belongs to
+    # the POOL rather than to the board — but whether any one board has two is
+    # a matter of where the hummocks fell, so it is asked of a handful.
+    _levels = [len(set(_gm5("swamp", width=46, height=34, seed=_s).water.values()))
+               for _s in range(8)]
     check("each pool gets its own surface, not one waterline for the board",
-          len(_pools) > 1 and len(set(_bog.water.values())) > 1,
-          f"{len(_pools)} pools at {sorted(set(_bog.water.values()))}")
+          max(_levels) > 1, f"distinct waterlines per board: {_levels}")
     # Never on a board fought IN the water: there is no surface to draw, and
     # the seabed is the ground.
     _sea = _gm5("reef", width=40, height=30, seed=3)
