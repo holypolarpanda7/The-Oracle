@@ -2193,6 +2193,12 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   was the `_for_area` rule, since a hummock is the only dry ground in a mire
   and three of them scattered over four times the bog is running out of the one
   thing that makes it worth fighting in.
+  **The interesting half is knowing which heights are the LAND's and which are
+  somebody's LABOUR.** A camp and a ruin take the ground they were pitched or
+  raised on — but a camp digs the same bank on a plain as in the hills, and a
+  ruin's courses are masonry whose survival is about how long ago it fell, so
+  neither answers to `_ruggedness` and the selftest checks that they DON'T.
+  Reaching for the dial everywhere would be as wrong as never having it.
   Relief reaches a board as an INPUT (`generate_map(relief=)`, stored in
   `notes` so a regenerated board is the same board) because `vtt/` must not
   know what a world graph is — the `_bastion_rooms` line. It reaches the
