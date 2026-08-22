@@ -1758,6 +1758,33 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   gully exists to carry. The surface is capped by the deepest square's own tile
   depth above its own bed, so a stream is two feet deep in a five-foot cut and
   a sunk pond is still full to the brim.
+- **Boards were coming out in fifty pieces, and nothing said so.**
+  `_connect_regions` carved exactly ONE corridor per pass and gave up after
+  twelve. A clearing's ring of trees leaves dozens of four- and five-square
+  pockets between the trunks, and FOUR was the fill threshold, so every one of
+  them qualified for a corridor and only twelve ever got one: **fifty to
+  seventy-eight regions on a finished board**, most of them unreachable. The
+  "did the generator collapse" guard counts WALKABLE squares, not connected
+  ones, so it passed every time. Every outstanding region is carved in ONE pass
+  now — carving only ever ADDS connectivity, so the main region a later carve
+  aims at is still main — and the function RETURNS whether it managed.
+  `POCKET_FLOOR` is 8: two hundred square feet, room for a creature and its
+  reach, which is the smallest space where anything can happen. Absolute, for
+  the `PLAYABLE_FLOOR` reason. Below it a "region" is a gap in the scenery and
+  a corridor to it spends a real passage on somewhere nobody will ever stand.
+- **A LANDMARK may not seal anything off either.** It is stamped AFTER the
+  connectivity net — it has to be, or the net would carve a corridor straight
+  through a colossus — and that means nothing was left to notice. Measured: a
+  nine-square step pyramid landed flush against the right edge of a 56-wide
+  board with its way in facing off the map, and its own thirty-five-square
+  interior became unreachable. `fits` demands a clear margin all round and
+  SKIPS the part of that ring which is out of bounds, so the board edge had
+  been standing in for clear ground — the `_road_beyond` mistake again, in a
+  different file. `setpieces_for(joins=)` re-checks after stamping and UNDOES
+  the placement, then tries elsewhere: a set piece is optional scenery, so
+  refusing is free. The standing guard is that EVERY archetype at three sizes
+  comes out one region, which is a check nothing made before and which both of
+  these were hiding behind.
 - **...and `_scatter` re-flood-filled the whole grid after every crate.** The
   guard is right — a scattered impassable square must not cut the board in half
   — and it was asking the question the most expensive way there is: a full

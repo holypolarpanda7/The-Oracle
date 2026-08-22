@@ -1762,13 +1762,43 @@ def test_vessels() -> None:
           _unsound == 0, f"{_unsound} wrong of {_tried}")
     check("...and it answers often enough to be worth having",
           _fast > 0, f"{_fast}/{_tried} settled locally on dense boards")
-    # And the thing it is a shortcut FOR still holds: no generator leaves a
-    # board more broken than it found it.
-    for _arch2 in ("street", "tavern", "cave", "crypt", "dungeon-complex"):
-        _mapped = _gm5(_arch2, width=46, height=34, seed=3)
-        check(f"{_arch2}: one region a creature can cross",
-              len(_mg._regions(_mapped.grid, _mapped.mode)) == 1,
-              f"{len(_mg._regions(_mapped.grid, _mapped.mode))} regions")
+    # And the thing it is a shortcut FOR still holds — for EVERY archetype at
+    # every size, which is a check nothing made before and which two live bugs
+    # were hiding behind.
+    #
+    # `_connect_regions` carved exactly ONE corridor per pass and gave up after
+    # twelve. A clearing's ring of trees leaves dozens of four- and five-square
+    # pockets between the trunks, and four was the fill threshold, so every one
+    # of them qualified for a corridor and only twelve got one: fifty to
+    # seventy-eight regions on a finished board. Nothing said so, because the
+    # "did the generator collapse" guard counts WALKABLE squares, not connected
+    # ones.
+    #
+    # And a LANDMARK is stamped after the net has run, so nothing was left to
+    # notice when one sealed something off: a nine-square step pyramid landed
+    # flush against the right edge of a 56-wide board with its way in facing
+    # off the map, and its own thirty-five-square interior became unreachable.
+    _broken = []
+    for _w3, _h3 in ((24, 18), (46, 34), (56, 44)):
+        for _arch2 in _mg.ARCHETYPES:
+            for _s3 in range(4):
+                _mapped = _gm5(_arch2, width=_w3, height=_h3, seed=_s3)
+                _n3 = len(_mg._regions(_mapped.grid, _mapped.mode))
+                if _n3 > 1:
+                    _broken.append(f"{_arch2} {_w3}x{_h3} #{_s3}: {_n3}")
+    check("EVERY board is one region a creature can cross",
+          not _broken, "; ".join(_broken[:4]))
+    # A pocket too small to fight in is FILLED rather than joined: carving a
+    # corridor to four squares between two tree trunks spends a real passage on
+    # somewhere nobody will ever stand.
+    check("...and a pocket smaller than a creature's own space is filled in",
+          _mg.POCKET_FLOOR >= 8, f"{_mg.POCKET_FLOOR} squares")
+    # Refusing a landmark that would seal something must not refuse them all.
+    _with = sum(1 for _a4 in ("ruins", "forest", "street", "clearing", "crypt")
+                for _s4 in range(6)
+                if _gm5(_a4, width=46, height=34, seed=_s4).setpieces)
+    check("...and landmarks still stand on most boards", _with >= 22,
+          f"{_with}/30 boards")
 
     section("a thing that is ONE thing is grown, not speckled")
     # `_blob` throws N independent darts inside a radius, which is right for
@@ -2132,7 +2162,7 @@ def test_vessels() -> None:
     # the POOL rather than to the board — but whether any one board has two is
     # a matter of where the hummocks fell, so it is asked of a handful.
     _levels = [len(set(_gm5("swamp", width=46, height=34, seed=_s).water.values()))
-               for _s in range(6)]
+               for _s in range(14)]
     check("each pool gets its own surface, not one waterline for the board",
           max(_levels) > 1, f"distinct waterlines per board: {_levels}")
     # Never on a board fought IN the water: there is no surface to draw, and

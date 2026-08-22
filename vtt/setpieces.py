@@ -1453,7 +1453,8 @@ def suits_climate(slug: str, climate: str = "") -> bool:
 
 def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
                   mode: str = "walk",
-                  clear: Sequence[str] = ()) -> list[Placed]:
+                  clear: Sequence[str] = (),
+                  joins=None) -> list[Placed]:
     """Place the named landmarks on this board, deterministically.
 
     Derived from (layout, seed) and never stored — the :mod:`vtt.decor`
@@ -1469,6 +1470,17 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
     three forests refused a pyramid the DM had already narrated; scanning
     finds one on nearly every board, and where it still finds none, that is now
     a real answer rather than bad luck.
+
+    ``joins(grid) -> bool`` is asked after each piece is stamped and the
+    placement is UNDONE if it says no. Landmarks are laid after the
+    connectivity net has run — they have to be, or the net would carve a
+    corridor straight through a colossus — and that means nothing was left to
+    notice when one sealed something off. Measured: a nine-square step pyramid
+    landed flush against the right edge of a 56-wide board with its way in
+    facing off the map, and its own thirty-five-square interior became
+    unreachable. `fits` demands a clear margin all round and SKIPS the part of
+    that ring which is out of bounds, so the board edge had been standing in
+    for clear ground. A set piece is optional scenery, so refusing is free.
     """
     rng = random.Random((seed * 2654435761) & 0xFFFFFFFF)
     out: list[Placed] = []
@@ -1486,7 +1498,18 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
             if cells & taken or not fits(g, p, x0, y0, yaw, mode=mode,
                                          clear=may_clear):
                 continue
-            out.append(place(g, p, x0, y0, yaw, clear=may_clear, mode=mode))
+            before = None
+            if joins is not None:
+                before = {(x, y): g.get(x, y)
+                          for x in range(x0 - 1, x0 + w + 1)
+                          for y in range(y0 - 1, y0 + d + 1)
+                          if g.in_bounds(x, y)}
+            placed = place(g, p, x0, y0, yaw, clear=may_clear, mode=mode)
+            if before is not None and not joins(g):
+                for (x, y), was in before.items():
+                    g.set(x, y, was)
+                continue                 # try somewhere else on this board
+            out.append(placed)
             taken |= cells
             break
     return out

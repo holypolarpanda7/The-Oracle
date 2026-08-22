@@ -259,27 +259,53 @@ def _dominant_blocker(grid: Grid, mode: str = "walk") -> str:
     return max(counts, key=counts.get) if counts else WALL  # type: ignore[arg-type]
 
 
-def _connect_regions(grid: Grid, rng: random.Random, mode: str = "walk") -> None:
-    """Carve corridors until every traversable square is reachable from the main
-    region; anything too small to bother with is filled back in as solid."""
+#: A pocket smaller than this is FILLED rather than joined, in squares.
+#:
+#: Eight, which is two hundred square feet: room for a creature and the reach
+#: around it, which is the smallest space where anything can actually happen.
+#: Below that a "region" is a gap in the scenery — four squares between the
+#: trunks of a treeline — and carving a corridor to it spends a real passage on
+#: somewhere nobody will ever stand. Absolute rather than a fraction of the
+#: board, for the `PLAYABLE_FLOOR` reason: what a creature needs to stand in
+#: does not change when the board gets bigger.
+POCKET_FLOOR = 8
+
+
+def _connect_regions(grid: Grid, rng: random.Random, mode: str = "walk") -> bool:
+    """Join every traversable region to the main one. Returns whether it could.
+
+    Anything too small to fight in is filled back in as solid; everything else
+    gets a corridor. Every outstanding region is carved in ONE pass rather than
+    one per pass — carving only ever ADDS connectivity, so the main region a
+    later carve aims at is still main — and the loop then re-checks, because
+    filling a pocket can expose another.
+
+    It used to carve exactly ONE corridor per pass and give up after twelve.
+    A clearing's ring of trees leaves dozens of four- and five-square pockets
+    between the trunks, and four was the fill threshold, so they all qualified
+    for a corridor and only twelve ever got one: **fifty to seventy-eight
+    regions on a finished board**, most of them unreachable, and nothing
+    anywhere said so. The "did the generator collapse" guard counts WALKABLE
+    squares, not connected ones, so it passed every time.
+    """
     solid = _dominant_blocker(grid, mode)
     code = _CORRIDOR_CODE.get(mode, FLOOR)
-    for _ in range(12):
+    for _ in range(8):
         regions = _regions(grid, mode)
         if len(regions) <= 1:
-            return
+            return True
         main = regions[0]
+        anchors = _sample(main, rng, 48)
         for other in regions[1:]:
-            if len(other) < 4:
+            if len(other) < POCKET_FLOOR:
                 for x, y in other:
                     grid.set(x, y, solid)
                 continue
             a = min(other, key=lambda s: min(
-                abs(s[0] - m[0]) + abs(s[1] - m[1]) for m in _sample(main, rng, 24)))
-            b = min(_sample(main, rng, 48),
-                    key=lambda s: abs(s[0] - a[0]) + abs(s[1] - a[1]))
+                abs(s[0] - m[0]) + abs(s[1] - m[1]) for m in anchors))
+            b = min(anchors, key=lambda s: abs(s[0] - a[0]) + abs(s[1] - a[1]))
             _carve_corridor(grid, a, b, code)
-            break
+    return len(_regions(grid, mode)) <= 1
 
 
 def _sample(pool: set[Square], rng: random.Random, n: int) -> list[Square]:
@@ -3258,7 +3284,15 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap,
         spent += cost
     if not want:
         return
+    # A landmark may not seal anything off. It is stamped AFTER the
+    # connectivity net — it has to be, or the net would carve a corridor
+    # straight through a colossus — so nothing else is left to notice, and a
+    # set piece is optional scenery, so refusing costs nothing.
+    def _joins(gr: Grid) -> bool:
+        return len(_regions(gr, out.mode)) <= 1
+
     for placed in _sp.setpieces_for(grid, want, seed=out.seed, mode=out.mode,
+                                    joins=_joins,
                                     clear=asked):
         rec = {"slug": placed.slug, "x": placed.x,
                "y": placed.y, "yaw": placed.yaw}
