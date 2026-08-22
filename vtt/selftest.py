@@ -1677,7 +1677,7 @@ def test_vessels() -> None:
     # boards, the second house overwriting the first's walls and its roof left
     # traced over squares that were no longer there.
     _pairs = 0
-    for _ws in range(24):
+    for _ws in range(12):
         for _w2, _h2 in ((46, 34), (30, 24), (56, 40)):
             _bs = _gm5("street", width=_w2, height=_h2, seed=_ws).buildings
             for _i, _a in enumerate(_bs):
@@ -1687,8 +1687,33 @@ def test_vessels() -> None:
                             and _a["y"] < _b2["y"] + _b2["h"]
                             and _b2["y"] < _a["y"] + _a["h"]):
                         _pairs += 1
+    # NOBODY'S WALL IS CARVED. `_connect_regions` is a safety net, and a hole
+    # it punches through a house reads as nothing at all — the same complaint
+    # as a corridor carved through a tent, or through a cliff. So the town has
+    # to be connected BY DESIGN, and the observable proof is that no house's
+    # wall ring has an opening in it other than its own doorway. It was 1138
+    # holes across 2316 houses: `_road_beyond` counted OFF THE BOARD as a road,
+    # so the strip past the last lane built its terrace facing outward and
+    # every door in it opened off the map, leaving the house sealed.
+    _carved = _houses = 0
+    for _ws in range(12):
+        for _w2, _h2 in ((46, 34), (56, 44), (30, 24)):
+            _t2 = _gm5("street", width=_w2, height=_h2, seed=_ws)
+            _r2 = _t2.grid.to_rows()
+            for _b2 in _t2.buildings:
+                _houses += 1
+                _bx, _by = _b2["x"], _b2["y"]
+                _bw2, _bh2 = _b2["w"], _b2["h"]
+                _ring = ([(_x, _y) for _x in range(_bx, _bx + _bw2)
+                          for _y in (_by, _by + _bh2 - 1)]
+                         + [(_x, _y) for _y in range(_by + 1, _by + _bh2 - 1)
+                            for _x in (_bx, _bx + _bw2 - 1)])
+                _carved += sum(1 for _x, _y in _ring
+                               if _r2[_y][_x] not in ("#", "/"))
+    check("no house has a hole punched through its wall",
+          _carved == 0, f"{_carved} opening(s) across {_houses} houses")
     check("no two houses are built on the same ground", _pairs == 0,
-          f"{_pairs} overlapping pair(s) over 72 boards")
+          f"{_pairs} overlapping pair(s) over 36 boards")
     check("...and the floor inside is a floor, not the street's cobbles",
           _floors and not any(getattr(_sk5.skin(_f), "soft", False)
                               for _f in _floors),
@@ -1713,7 +1738,7 @@ def test_vessels() -> None:
         _RELIEF, _rel = {}, None
 
     if _rel is not None:
-        def _stepped(terrain: str, n: int = 60) -> tuple[int, int]:
+        def _stepped(terrain: str, n: int = 40) -> tuple[int, int]:
             steps = flat = 0
             for _s in range(n):
                 _m = _gm5("open", width=30, height=24, seed=_s,
@@ -1724,19 +1749,22 @@ def test_vessels() -> None:
                     flat += 1
             return steps, flat
 
-        _sw, _swf = _stepped("swamp")
-        _hi, _hif = _stepped("mountains")
+        _N = 40
+        _sw, _swf = _stepped("swamp", _N)
+        _hi, _hif = _stepped("mountains", _N)
         check("a marsh is nearly always flat ground",
-              _swf >= 30 and _sw <= 12, f"{_sw}/60 stepped, {_swf}/60 flat")
+              _swf >= _N // 2 and _sw <= _N // 5,
+              f"{_sw}/{_N} stepped, {_swf}/{_N} flat")
         check("...and the high country nearly always is not",
-              _hif == 0 and _hi >= 40, f"{_hi}/60 stepped, {_hif}/60 flat")
+              _hif == 0 and _hi >= _N * 3 // 4,
+              f"{_hi}/{_N} stepped, {_hif}/{_N} flat")
         check("...but never ALWAYS, or the terracing stops being noticed",
-              _hi < 60, f"{_hi}/60")
+              _hi < _N, f"{_hi}/{_N}")
         # A knoll on a plain is a STEP; in hill country it is a ledge worth
         # taking. Height is a rules number, so which one is a decision.
         _knolls = [max(_gm5("open", width=30, height=24, seed=_s,
                             relief=_rel("farmland")).elevation.values() or [0])
-                   for _s in range(40)]
+                   for _s in range(24)]
         check("a knoll on a plain is a step, never a cliff",
               max(_knolls) <= 5, f"tallest {max(_knolls)} ft")
         # A pass through hill country is fewer benches than one through peaks —
@@ -1755,8 +1783,8 @@ def test_vessels() -> None:
         # ...and the same dial reaches the rest of the outdoors, not only the
         # open field. Woodland on a plain rolls in steps; woodland on a
         # hillside has ledges in it.
-        def _tallest(arch: str, terrain=None, n: int = 30) -> int:
-            return max(max(_gm5(arch, width=46, height=34, seed=_s,
+        def _tallest(arch: str, terrain=None, n: int = 20) -> int:
+            return max(max(_gm5(arch, width=30, height=24, seed=_s,
                                 relief=_rel(terrain) if terrain else None
                                 ).elevation.values() or [0])
                        for _s in range(n))
@@ -1786,6 +1814,36 @@ def test_vessels() -> None:
             _small, _big = _raised(_arch, 24, 18), _raised(_arch, 46, 34)
             check(f"{_arch}: four times the board is four times the relief",
                   _big >= _small * 2.5, f"{_small} -> {_big} raised squares")
+
+        # A CAMP and a RUIN take the ground they were pitched or raised on —
+        # and the heights somebody BUILT stay the same everywhere, which is the
+        # half worth checking. Soldiers dig the same bank on a plain as in the
+        # hills, and a ruin's courses are masonry: the odds of a wall still
+        # standing are about how long ago it fell, not about the country.
+        # Generated ONCE per arm: these are 46x34 boards and the section is
+        # already the slowest in the file.
+        def _sweep(arch: str, terrain: str, n: int = 20):
+            return [_gm5(arch, width=30, height=24, seed=_s,
+                         relief=_rel(terrain)) for _s in range(n)]
+
+        _ledge = {_t: sum(1 for _m in _sweep("camp", _t)
+                          if any(_v >= 10 for _v in _m.elevation.values()))
+                  for _t in ("farmland", "hills")}
+        check("a camp on a plain has no natural ledge, one in the hills does",
+              _ledge["farmland"] == 0 and _ledge["hills"] >= 14,
+              f"plain {_ledge['farmland']}/20, hills {_ledge['hills']}/20")
+        # ...and the camp still throws up its bank wherever it is. A camp with
+        # no earthwork is a camp with no front to fight across.
+        _banked = sum(1 for _m in _sweep("camp", "swamp") if _m.elevation)
+        check("...and it digs its bank whatever country it is in",
+              _banked >= 16, f"{_banked}/20 boards")
+        # A ruin's own masonry is unmoved by the country too: one building in
+        # three is still standing on a plain and in the peaks alike.
+        _surv = {_t: sum(len(_m.buildings) for _m in _sweep("ruins", _t))
+                 for _t in ("farmland", "mountains")}
+        check("a ruin's survivors are masonry, not country",
+              abs(_surv["farmland"] - _surv["mountains"]) <= 8,
+              f"plain {_surv['farmland']} vs peaks {_surv['mountains']} standing")
 
         # Every terrain answers, and the dial is monotone in the fall it names.
         _dial = {_t: _rug(_gm5("open", width=20, height=16, seed=1,

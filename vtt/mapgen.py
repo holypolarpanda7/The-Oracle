@@ -1241,8 +1241,19 @@ def _terrace_houses(g: Grid, rng: random.Random, out: GeneratedMap,
     deep = _sq(BLOCK_FT)
     placed: list[dict] = []
 
-    def _road_beyond(x: int, y: int) -> bool:
-        return (not g.in_bounds(x, y)) or g.get(x, y) == "="
+    def _road_at(x: int, y: int) -> bool:
+        """Is there a ROADWAY on this square — a real one, on the board.
+
+        Off the board does NOT count, and treating it as a road is what sealed
+        one house in three: the strip past the last lane has nothing below it
+        but the edge, so its terrace was built facing outward and every door in
+        it opened off the map. `_connect_regions` then punched a hole in the
+        back wall to reach the interior, which is the failure the whole
+        planned-alley pass exists to prevent — arriving from a direction the
+        planning could not see. Every block is bounded by a lane on at least
+        one side by construction, so nothing loses its frontage.
+        """
+        return g.in_bounds(x, y) and g.get(x, y) == "="
 
     def _plan(run_w: int, must_alley: bool) -> list[int]:
         """House widths along a frontage, with 0 standing for an ALLEY.
@@ -1288,7 +1299,7 @@ def _terrace_houses(g: Grid, rng: random.Random, out: GeneratedMap,
         # houses deep had its two terraces overlap, the second overwriting the
         # first's walls and leaving its roof traced over squares that were no
         # longer there.
-        north, south = _road_beyond(bx0, by0 - 1), _road_beyond(bx0, by1 + 1)
+        north, south = _road_at(bx0, by0 - 1), _road_at(bx0, by1 + 1)
         sides: list[tuple[str, int, int, int, int]] = []
         yard = 0
         if north and south:
@@ -1890,6 +1901,19 @@ def _gen_ruins(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _scatter(g, rng, "\"", 0.06, only_on=(",",))
     _connect_regions(g, rng)
     out.description = "toppled masonry and broken colonnades, weeds through the flagstones"
+    # THE HILL IT WAS BUILT ON. Everything below this is masonry — foundations,
+    # retaining walls, a floor still up — and none of it should answer to the
+    # country: a ruin on a plain has exactly the same courses as one in the
+    # hills, because people built them, and the odds of a wall still standing
+    # are about how long ago it fell. What the country decides is the GROUND
+    # the site occupies, and it goes first so the built work sits on top of it.
+    rug = _ruggedness(out)
+    for _ in range(_for_area(g, 1, most=3)):
+        if rng.random() < 0.2 + rug:
+            _mound(g, rng, out, rng.randrange(2, max(3, g.width - 2)),
+                   rng.randrange(2, max(3, g.height - 2)),
+                   rng.uniform(2.5, 4.0),
+                   LEDGE_FT if rug >= 0.5 else STEP_FT, on=(",", "\"", FLOOR))
     # What is left of a building is rarely all at one height. Sometimes the
     # whole site is terraced — foundations at three heights with the retaining
     # walls still standing — and otherwise one floor still stands at the far
@@ -1974,9 +1998,25 @@ def _gen_camp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     out.lighting = "dim"
     out.description = ("a war camp — canvas tents around a guttering fire, a "
                        "log palisade thrown up across one approach")
+    # THE GROUND IT WAS PITCHED ON, before anything anybody built. A camp takes
+    # the country it halted in — the bank below is the other kind of height
+    # entirely, and the two are deliberately not the same decision.
+    rug = _ruggedness(out)
+    for _ in range(_for_area(g, 1, most=4)):
+        if rng.random() < 0.25 + rug:
+            _mound(g, rng, out, rng.randrange(2, max(3, g.width - 2)),
+                   rng.randrange(2, max(3, g.height - 2)),
+                   rng.uniform(2.0, 3.5),
+                   LEDGE_FT if rug >= 0.5 else STEP_FT, on=("g", "\""))
     # A camp that has been anywhere throws up a bank. One side of the board
     # stands a step higher behind it, which is the asymmetry a raid is fought
     # across.
+    #
+    # NOT country. Soldiers dig this, and they dig the same bank on a plain as
+    # in the hills — so unlike the ground above, `_ruggedness` has no business
+    # here. Worth saying out loud: the interesting half of hanging relief off
+    # the terrain is knowing which heights are the LAND's and which are
+    # somebody's labour.
     # Nearly always: it is the camp's only vertical feature, and at 0.7 the
     # selftest's three seeds could all miss it — which they did, the moment the
     # tent count changed the rng stream. A guard that depends on a coin flip is
