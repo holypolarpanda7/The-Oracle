@@ -1471,7 +1471,7 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
     finds one on nearly every board, and where it still finds none, that is now
     a real answer rather than bad luck.
 
-    ``joins(grid) -> bool`` is asked after each piece is stamped and the
+    ``joins(grid, cells) -> bool`` is asked after each piece is stamped and the
     placement is UNDONE if it says no. Landmarks are laid after the
     connectivity net has run — they have to be, or the net would carve a
     corridor straight through a colossus — and that means nothing was left to
@@ -1505,7 +1505,7 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
                           for y in range(y0 - 1, y0 + d + 1)
                           if g.in_bounds(x, y)}
             placed = place(g, p, x0, y0, yaw, clear=may_clear, mode=mode)
-            if before is not None and not joins(g):
+            if before is not None and not joins(g, cells):
                 for (x, y), was in before.items():
                     g.set(x, y, was)
                 continue                 # try somewhere else on this board

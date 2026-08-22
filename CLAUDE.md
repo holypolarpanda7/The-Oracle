@@ -1772,6 +1772,17 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   reach, which is the smallest space where anything can happen. Absolute, for
   the `PLAYABLE_FLOOR` reason. Below it a "region" is a gap in the scenery and
   a corridor to it spends a real passage on somewhere nobody will ever stand.
+- **A dead pocket is filled with SOLID, and most boards had none to hand.**
+  `_dominant_blocker` took the commonest impassable code, and on most outdoor
+  boards the commonest impassable thing is the MEDIUM: a bridge board filled
+  its pockets with CHASM (a hole, and one a flier crosses, so it filled
+  nothing), a ship's deck with DEEP WATER, an open field with CRATES, and the
+  open sea with a stray dungeon wall. `FILL_CODES` is derived from the tile
+  table rather than listed — a fill blocks every medium, it SCREENS (half cover
+  is furniture standing in a gap, not the gap closed), and it is not an
+  aperture — which leaves wall, rock, tree and pillar. The fallback is ROCK
+  rather than wall, because a wall is something somebody BUILT and a board with
+  no solid on it is open country or open sea.
 - **A LANDMARK may not seal anything off either.** It is stamped AFTER the
   connectivity net — it has to be, or the net would carve a corridor straight
   through a colossus — and that means nothing was left to notice. Measured: a
@@ -1795,8 +1806,23 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   split is possible. **Sound in one direction and that is all it may be** — a
   yes skips the real check, so a yes must mean yes, and it is brute-forced
   against the full scan on dense random boards in the selftest, which is the
-  only honest way to pin an approximation. street 170 -> 76 ms, open 127 -> 63,
-  reef 80 -> 38; the whole selftest 51 s -> 33 s.
+  only honest way to pin an approximation.
+  **And it has to actually ANSWER — which for a while it did not.** Written
+  with a stack it is a DEPTH-first search, and on open floor a DFS wanders a
+  hundred squares across the board before it comes back to the neighbour
+  standing right beside where it started; the budget ran out and a single crate
+  dropped in an empty room came back "not joined". Sound, useless, and
+  invisible, because every answer was still right — it just fell through to the
+  full scan every time. It fired on FOUR of 193 placements. Breadth-first, and
+  the selftest now asks how OFTEN the fast path fires as well as whether it
+  lies. street 170 -> 29 ms, ruins 143 -> 48, open 127 -> 7, and 17 ms across
+  the whole catalogue; the selftest 51 s -> 25 s.
+  **A set piece's own passable squares are part of the question.**
+  `_locally_joined_cells` asked only about the RING around a footprint, which
+  is why the pyramid case survived it: flush against the board's edge, the
+  outside stayed joined all the way round and the thirty-five squares inside
+  were sealed. A landmark is not a solid block — a stepped pyramid has terraces
+  you walk on.
   It changes two archetypes' layouts, and the change is the FIX: the old guard
   reverted a crate whenever the BOARD had more than one region, not when that
   crate was what split it — so on a tavern or a cave that momentarily had a

@@ -173,12 +173,30 @@ def _locally_joined(grid: Grid, x: int, y: int, mode: str = "walk") -> bool:
             if grid.in_bounds(nx, ny) and _connective(grid, nx, ny, mode)]
     if len(near) < 2:
         return True                       # a dead end cannot cut anything off
-    want = set(near[1:])
-    seen = {near[0], (x, y)}
-    stack = [near[0]]
+    return _reaches(grid, near[0], set(near[1:]), {(x, y)}, mode,
+                    _LOCAL_BUDGET)
+
+
+def _reaches(grid: Grid, start: Square, want: set, blocked: set,
+             mode: str, budget: int) -> bool:
+    """Breadth-first: can ``start`` reach every square in ``want`` without
+    crossing ``blocked``, inside ``budget`` squares?
+
+    BREADTH first, and that is the whole of it. Written with a stack it is a
+    depth-first search, which on open floor wanders a hundred squares across
+    the board before it comes back to the neighbour standing right beside where
+    it started — so the budget ran out and the answer came back "not joined"
+    for a single crate dropped in the middle of an empty room. Measured: the
+    fast path fired on 4 of 193 placements, which is to say never.
+    """
+    from collections import deque
+
+    want = set(want)
+    seen = set(blocked) | {start}
+    queue = deque([start])
     visited = 0
-    while stack and visited < _LOCAL_BUDGET:
-        ax, ay = stack.pop()
+    while queue and visited < budget:
+        ax, ay = queue.popleft()
         visited += 1
         want.discard((ax, ay))
         if not want:
@@ -188,8 +206,43 @@ def _locally_joined(grid: Grid, x: int, y: int, mode: str = "walk") -> bool:
                 continue
             if grid.in_bounds(nx, ny) and _connective(grid, nx, ny, mode):
                 seen.add((nx, ny))
-                stack.append((nx, ny))
+                queue.append((nx, ny))
     return not want
+
+
+def _locally_joined_cells(grid: Grid, cells, mode: str = "walk") -> bool:
+    """The same question about a whole FOOTPRINT: are the squares around it
+    still joined to each other without going through it?
+
+    A landmark is stamped after the connectivity net has run and must not seal
+    anything off, and the honest check is a full `_regions` scan — which the
+    placer then pays for on every candidate square it tries and rejects, 51
+    whole-board flood fills per ruins board. Same shortcut as
+    :func:`_locally_joined`, and sound in the same one direction: a yes means
+    nothing that used to route past this piece has lost its way, so the caller
+    may skip the real scan; anything else falls through to it.
+
+    The budget scales with the footprint, because getting round a nine-square
+    piece is forty steps before you have gone anywhere.
+    """
+    cells = set(cells)
+    if not cells:
+        return True
+    ring = {(x + dx, y + dy) for x, y in cells
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))}
+    # The piece's OWN passable squares count. A set piece is not a solid block:
+    # a stepped pyramid has terraces you walk on, and they are board a creature
+    # must be able to reach. Asking only about the ring is what let a pyramid
+    # land flush against the right edge of the board with its way in facing off
+    # the map — the outside stayed perfectly joined all the way round, and
+    # thirty-five squares of its interior were sealed in.
+    near = [sq for sq in (ring | cells)
+            if grid.in_bounds(*sq) and _connective(grid, *sq, mode)]
+    if len(near) < 2:
+        return True
+    solid = {sq for sq in cells if sq not in near}
+    return _reaches(grid, near[0], set(near[1:]), solid, mode,
+                    _LOCAL_BUDGET + 6 * len(ring))
 
 
 def _regions(grid: Grid, mode: str = "walk") -> list[set[Square]]:
@@ -248,15 +301,52 @@ def _threshold_doors(grid: Grid, rng: random.Random, rooms, out,
     return made
 
 
+#: What a dead pocket may be filled WITH: solid matter, and nothing else.
+#:
+#: Derived from the tile table rather than listed, so a code added later is
+#: judged rather than forgotten. A fill has to be three things at once — it
+#: blocks every medium (so no water, sky, lava or chasm: those are holes, and a
+#: flier or a swimmer crosses them, which fills nothing), it screens (so no
+#: crate or table: half cover is furniture standing in a gap, not the gap
+#: closed), and it is not an APERTURE (a door is a way through).
+#:
+#: It matters because `_dominant_blocker` took the commonest impassable code,
+#: and on most outdoor boards the commonest impassable thing is the MEDIUM: a
+#: bridge board filled its dead pockets with CHASM (a hole, and one a flier
+#: crosses), a ship's deck with DEEP WATER, an open field with CRATES, and the
+#: open sea with a stray dungeon wall.
+def _fill_codes() -> tuple[str, ...]:
+    from .terrain import APERTURES, TILES
+
+    out = []
+    for code, t in TILES.items():
+        if code == VOID or code in APERTURES:
+            continue
+        if t.move_cost_ft is not None:
+            continue
+        if t.traversable_flying or t.traversable_swimming:
+            continue
+        if t.cover not in ("total", "three-quarters"):
+            continue
+        out.append(code)
+    return tuple(out)
+
+
+FILL_CODES = _fill_codes()
+
+
 def _dominant_blocker(grid: Grid, mode: str = "walk") -> str:
-    """The wall code this map is mostly built from — so filling a dead pocket in
-    a cave leaves rock, not a stray dungeon wall."""
+    """The SOLID this map is mostly built from — so filling a dead pocket in a
+    cave leaves rock, in a wood leaves trees, and in a dungeon leaves wall."""
     counts: dict[str, int] = {}
     for x, y in grid.squares():
         c = grid.get(x, y)
-        if not grid.passable(x, y, mode=mode) and c != VOID:
+        if c in FILL_CODES:
             counts[c] = counts.get(c, 0) + 1
-    return max(counts, key=counts.get) if counts else WALL  # type: ignore[arg-type]
+    # ROCK rather than WALL where a board carries no solid at all. A wall is
+    # something somebody BUILT, and a board with nothing solid on it is open
+    # country or open sea; rock is what both are made of.
+    return max(counts, key=counts.get) if counts else "R"  # type: ignore[arg-type]
 
 
 #: A pocket smaller than this is FILLED rather than joined, in squares.
@@ -3288,8 +3378,9 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap,
     # connectivity net — it has to be, or the net would carve a corridor
     # straight through a colossus — so nothing else is left to notice, and a
     # set piece is optional scenery, so refusing costs nothing.
-    def _joins(gr: Grid) -> bool:
-        return len(_regions(gr, out.mode)) <= 1
+    def _joins(gr: Grid, cells=()) -> bool:
+        return (_locally_joined_cells(gr, cells, out.mode)
+                or len(_regions(gr, out.mode)) <= 1)
 
     for placed in _sp.setpieces_for(grid, want, seed=out.seed, mode=out.mode,
                                     joins=_joins,

@@ -1760,8 +1760,44 @@ def test_vessels() -> None:
         _unsound += 1 if (_guess and not _truth) else 0
     check("the fast connectivity check never says safe when it is not",
           _unsound == 0, f"{_unsound} wrong of {_tried}")
+    # ...and it has to actually ANSWER. Written with a stack it is a
+    # depth-first search, which on open floor wanders a hundred squares across
+    # the board before it comes back to the neighbour standing right beside
+    # where it started — so the budget ran out and a single crate dropped in an
+    # empty room came back "not joined". Sound, useless, and invisible: every
+    # answer was still correct because it fell through to the full scan. It
+    # fired on FOUR of 193 placements until this check existed.
     check("...and it answers often enough to be worth having",
-          _fast > 0, f"{_fast}/{_tried} settled locally on dense boards")
+          _fast >= _tried // 3,
+          f"{_fast}/{_tried} settled locally on dense boards")
+    _g3 = _G2.blank(12, 10)
+    _g3.fill_rect(0, 0, 11, 9, ".")
+    _g3.set(5, 5, "O")
+    check("...on the case it exists for: one crate in an empty room",
+          _mg._locally_joined(_g3, 5, 5))
+    _g4 = _G2.blank(9, 5)
+    _g4.fill_rect(0, 0, 8, 4, "#")
+    for _x4 in range(9):
+        _g4.set(_x4, 2, ".")
+    _g4.set(4, 2, "O")
+    check("...and it refuses the case it exists to catch: a plugged corridor",
+          not _mg._locally_joined(_g4, 4, 2))
+    # The same question about a whole FOOTPRINT, and a set piece's own passable
+    # squares are part of it. Asking only about the surrounding ring is what
+    # let a pyramid land flush against the board's edge with its way in facing
+    # off the map: the outside stayed joined all the way round and
+    # thirty-five squares of its interior were sealed in.
+    _g5 = _G2.blank(16, 12)
+    _g5.fill_rect(0, 0, 15, 11, ".")
+    _shell = {(3 + _dx, 3 + _dy) for _dx in range(5) for _dy in range(5)}
+    for _dx in range(5):
+        for _dy in range(5):
+            _g5.set(3 + _dx, 3 + _dy,
+                    "#" if _dx in (0, 4) or _dy in (0, 4) else ".")
+    check("a landmark that seals its own inside is not called safe",
+          not _mg._locally_joined_cells(_g5, _shell))
+    _g5.set(3, 5, ".")                      # ...and now it has a way in
+    check("...and one with a doorway is", _mg._locally_joined_cells(_g5, _shell))
     # And the thing it is a shortcut FOR still holds — for EVERY archetype at
     # every size, which is a check nothing made before and which two live bugs
     # were hiding behind.
