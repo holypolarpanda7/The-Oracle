@@ -3286,6 +3286,22 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - Hex maps were intentionally dropped (not worth the complexity). Do NOT reintroduce
   hex/terrain-render code under `eight_card_system`.
 
+- **A chase happens SOMEWHERE, and where changes what goes wrong.** The chase
+  minigame picked its complications out of three buckets — urban, wilderness,
+  dungeon — chosen by a keyword scan over whatever the DM wrote in the hook.
+  The DM's words there are almost always about WHO is being chased, so nearly
+  every chase outside a city got "wilderness": a fruit-seller's cart tipping
+  across the way, a startled ox, a temple procession. In a marsh. Meanwhile
+  `placelore` has known what country every place is in since the map-coherence
+  layer went in, and five other systems read it. `_CHASE_FOR_TERRAIN` maps the
+  world's whole vocabulary onto the buckets and six new ones were written
+  (swamp, mountains, forest, desert, coast, river). **The order is: a bucket
+  the DM named outright, then the ground their sentence describes, then WHERE
+  THE PARTY ACTUALLY IS, then the generic** — and making that work needed
+  `_guess_terrain` to return "" rather than "wilderness" when the sentence
+  names no ground, because a default that is always truthy means the caller can
+  never fall through to something better. `scripts/chase_smoke.py` drives the
+  real hook.
 ## The silent fallback
 
 **`d.get(key, d["fallback"])` and `x if x in VOCAB else default` never complain

@@ -7145,16 +7145,151 @@ _CHASE_COMPLICATIONS = {
         "a heavy iron door stands shut across the escape",
         "a warding glyph flares, and something begins to take shape",
     ],
+    "swamp": [
+        "the ground gives underfoot and takes a boot with it",
+        "a mat of reed floats over open water and will not hold a running weight",
+        "a drowned tree lies across the way, its roots a cage above the mud",
+        "black water opens ahead — wade it, or lose the ground going round",
+        "flies come up off the mire in a blinding sheet",
+        "a channel too wide to step and too narrow to swim cuts the path",
+        "the reed closes overhead and the way ahead is guesswork",
+        "something big shifts under the surface, and the water walks with you",
+        "a hummock of dry ground ends without warning in a sinkhole",
+        "leeches, and the choice between stopping and not",
+        "a bank of peat crumbles as it takes your weight",
+    ],
+    "mountains": [
+        "loose scree slides away under the leading foot",
+        "the track narrows to a ledge with a long drop on one side",
+        "a rockfall comes down the slope ahead, unhurried and enormous",
+        "a gully cuts across the path — leap it or climb down and up",
+        "wind off the ridge takes the breath and the footing together",
+        "the way ahead is a chimney of rock: hands as well as feet",
+        "ice in the shadow of the rock, invisible until it is underfoot",
+        "a false crest — the ground keeps rising past where it looked to end",
+        "a cairn marks a fork, and one of the two ways is a dead drop",
+        "thin air, and legs that were fine a hundred feet lower",
+        "a snowfield with a stream running hollow beneath it",
+    ],
+    "forest": [
+        "deadfall across the path, too high to vault and too low to duck",
+        "a briar thicket that will let you through and keep some of you",
+        "low branches at head height, whipping back off the runner ahead",
+        "roots lace the ground like a snare set for exactly this",
+        "the canopy closes and the light goes with it",
+        "a bank of nettles drops away into a dry stream bed",
+        "a stand of saplings too dense to run and too green to break",
+        "a bough gives underfoot where it bridged the gully",
+        "a boar, disturbed, and entirely uninterested in whose side it is on",
+        "the track forks around a fallen giant and both ways look wrong",
+        "leaf litter over a hollow that swallows a leg to the knee",
+    ],
+    "desert": [
+        "the face of a dune slips away and takes the climb with it",
+        "a dry wash cuts across the way, its banks higher than a man",
+        "heat off the sand turns the distance into water that is not there",
+        "wind lifts and the air goes to grit; eyes shut or eyes ruined",
+        "a crust of salt gives way to soft sand beneath",
+        "a rock shelf too hot to touch and too smooth to grip",
+        "the bones of something large, half out of the sand, ankle-high",
+        "the sun, and a waterskin that was never meant for a run",
+        "a thorn scrub that grows in a ring and has no gap in it",
+        "the ground rings hollow — an old cistern, roofed with nothing much",
+        "a caravan track crosses the way, churned to powder by camels",
+    ],
+    "coast": [
+        "shingle underfoot: every stride costs one and a half",
+        "the tide is coming in across the flats, faster than it looks",
+        "a rock pool between two headlands, and no way round it",
+        "wet weed on the rocks, slick as oiled glass",
+        "a fishing net spread to dry across the whole width of the quay",
+        "the cliff path drops to a stair cut in the rock, sea-slippery",
+        "a beached hull, and a choice of over it or the long way round",
+        "spray off the breakwater, and the wind behind it",
+        "a boat pulling out from the steps — jump for it or lose the chance",
+        "sand that was firm a stride ago and is not now",
+        "gulls, in numbers, and defending something",
+    ],
+    "river": [
+        "the ford is deeper than it was, and the current has an opinion",
+        "a bank of clay, undercut, that will not take a landing",
+        "a fallen trunk bridges the water and rolls when weighted",
+        "reeds in the shallows, gripping at every step",
+        "a mill race cuts across the path, walled and quick",
+        "a punt on the far bank, and its owner asleep in it",
+        "the water is waist deep and moving at a run's pace",
+        "a heron goes up in front of you like a thrown sheet",
+        "the towpath ends at a lock, and the gate is standing open",
+        "gravel shoal, ankle-turning, under a foot of fast water",
+        "the bridge is one plank wide and somebody took the plank",
+    ],
 }
 
 
+#: The world's own terrain vocabulary -> the chase's. `placelore` already
+#: decides what country every place is in — the closed set the scene art, the
+#: battlemap floor, the drawn map, the journey's cost and the board's gradient
+#: all read — and this had a three-word guess of its own instead.
+_CHASE_FOR_TERRAIN = {
+    "urban": "urban", "interior": "urban",
+    "dungeon": "dungeon", "underdark": "dungeon",
+    "swamp": "swamp", "mountains": "mountains", "forest": "forest",
+    "desert": "desert", "coast": "coast", "river": "river",
+    "farmland": "wilderness", "hills": "wilderness", "sea": "coast",
+}
+
+
+def _chase_terrain_for(pc_slug: str = "") -> str:
+    """Where the party actually IS, in the chase's own vocabulary.
+
+    Asked before the DM's words, because the DM's words are usually the name of
+    the thing being chased. A chase through a marsh was getting the generic
+    "wilderness" complications — a fruit-seller's cart and a startled ox — on a
+    board where the interesting thing about running is that the ground pulls
+    your boots off. Empty where the place cannot be resolved, and then the
+    caller falls back to guessing from the sentence.
+    """
+    if not pc_slug:
+        return ""
+    try:
+        here = world.location_of(pc_slug)
+        if here is None:
+            return ""
+        return _CHASE_FOR_TERRAIN.get(_place_terrain(here), "")
+    except Exception as e:
+        print(f"[chase] terrain unavailable: {e}")
+        return ""
+
+
 def _guess_terrain(word: str) -> str:
+    """...and the fallback, from whatever the DM wrote.
+
+    Returns "" when the sentence names no ground at all, which is the whole
+    point: it used to default to "wilderness", and a default that is always
+    truthy means the caller can never fall through to something better. The DM
+    writing "the hags come howling after you" has said nothing about terrain,
+    and the world knows the party is in a marsh.
+    """
     w = (word or "").lower()
     if any(k in w for k in ("city", "town", "street", "market", "alley", "urban", "village")):
         return "urban"
     if any(k in w for k in ("dungeon", "cave", "crypt", "vault", "tomb", "sewer", "ruin", "corridor")):
         return "dungeon"
-    return "wilderness"
+    if any(k in w for k in ("swamp", "marsh", "bog", "fen", "mire")):
+        return "swamp"
+    if any(k in w for k in ("mountain", "cliff", "pass", "crag", "scree", "ridge")):
+        return "mountains"
+    if any(k in w for k in ("forest", "wood", "jungle", "thicket", "grove")):
+        return "forest"
+    if any(k in w for k in ("desert", "dune", "waste", "sand")):
+        return "desert"
+    if any(k in w for k in ("coast", "shore", "beach", "harbour", "harbor", "quay", "dock")):
+        return "coast"
+    if any(k in w for k in ("river", "ford", "bank", "stream")):
+        return "river"
+    if any(k in w for k in ("wild", "field", "moor", "heath", "open country")):
+        return "wilderness"
+    return ""
 
 
 def _format_active_chase_block(ac: dict, session_id: str = "") -> str:
@@ -7233,9 +7368,18 @@ def process_chase_hooks(session_id: str, ops: list[dict]) -> list[str]:
             role = role if role in ("flee", "pursue") else "flee"
             adversary = (args[1] if len(args) > 1 and args[1]
                          else ("pursuers" if role == "flee" else "the quarry"))
-            terrain = _guess_terrain(args[2]) if len(args) > 2 and args[2] else "wilderness"
-            if len(args) > 2 and args[2].lower() in _CHASE_COMPLICATIONS:
-                terrain = args[2].lower()
+            # WHERE THE PARTY IS beats a guess from the sentence, and the
+            # sentence is usually about whoever is being chased rather than
+            # about the ground. A marsh was getting the generic complications —
+            # a fruit-seller's cart and a startled ox — on the one board where
+            # what matters about running is that the ground takes your boots.
+            said = args[2] if len(args) > 2 and args[2] else ""
+            if said.lower() in _CHASE_COMPLICATIONS:
+                terrain = said.lower()          # the DM named one outright
+            else:
+                terrain = (_guess_terrain(said) if said else "") \
+                    or _chase_terrain_for(str(meta.get("pc_slug") or "")) \
+                    or "wilderness"
             meta["active_chase"] = {
                 "role": role, "adversary": adversary, "terrain": terrain,
                 "round": 1, "progress": 0, "escape_at": 3, "caught_at": 3,

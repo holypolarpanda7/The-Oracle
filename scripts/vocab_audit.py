@@ -86,6 +86,27 @@ covers("every venture family has a PROMOTION", FAMS, vt._PROMOTION)
 covers("...and a RELIC", FAMS, vt._RELICS,
        note="martial, mercantile and rustic won the generic prize")
 
+print(f"\n{BOLD}what happens when you run{OFF}")
+import importlib.util as _il
+
+_spec = _il.spec_from_file_location(
+    "_dm_audit", str(ROOT / "oracle-dm-backend" / "fastapi-dm.py"))
+_dm = None
+try:                                # importing the backend is optional here
+    import os as _os
+    _os.environ.setdefault("ORACLE_IMAGERY_ENABLED", "0")
+    _dm = _il.module_from_spec(_spec)
+    _spec.loader.exec_module(_dm)
+except Exception as _e:             # pragma: no cover - a bare checkout
+    print(f"  {DIM}(backend not importable here: {_e}){OFF}")
+
+if _dm is not None:
+    covers("every terrain a place can be in has CHASE complications",
+           set(_dm._CHASE_FOR_TERRAIN.values()), _dm._CHASE_COMPLICATIONS,
+           note="a chase through a marsh got a fruit-seller's cart")
+    covers("...and the world's whole terrain vocabulary is mapped",
+           pl.RELIEF, _dm._CHASE_FOR_TERRAIN)
+
 print(f"\n{BOLD}what the board draws{OFF}")
 from vtt import setpieces as sp
 from vtt import terrain as tr
