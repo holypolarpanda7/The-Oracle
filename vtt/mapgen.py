@@ -149,6 +149,49 @@ def _connective(grid: Grid, x: int, y: int, mode: str = "walk") -> bool:
     return grid.passable(x, y, mode=mode) or grid.get(x, y) in APERTURES
 
 
+#: How many squares a local reachability check may visit before giving up and
+#: asking the whole board. Small on purpose: the point is to settle the easy
+#: case — a crate dropped in the middle of open floor — in a few dozen steps
+#: rather than by flood-filling fifteen hundred squares.
+_LOCAL_BUDGET = 96
+
+
+def _locally_joined(grid: Grid, x: int, y: int, mode: str = "walk") -> bool:
+    """Are this square's open NEIGHBOURS still joined to each other without it?
+
+    Sound in one direction and that is all it is asked for: if they are, then
+    filling this square cannot have split the board, because anything that used
+    to route through it can go round inside the budget. If the answer is no —
+    or the budget runs out — the caller falls back to the full scan.
+
+    Worth having because the full scan was the single biggest cost of
+    generating a board. `_scatter` re-flood-filled the entire grid after every
+    impassable square it laid, and a street lays a few dozen: 42 whole-board
+    traversals per board, 1.5 s of the 2.1 s to make eight of them.
+    """
+    near = [(nx, ny) for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
+            if grid.in_bounds(nx, ny) and _connective(grid, nx, ny, mode)]
+    if len(near) < 2:
+        return True                       # a dead end cannot cut anything off
+    want = set(near[1:])
+    seen = {near[0], (x, y)}
+    stack = [near[0]]
+    visited = 0
+    while stack and visited < _LOCAL_BUDGET:
+        ax, ay = stack.pop()
+        visited += 1
+        want.discard((ax, ay))
+        if not want:
+            return True
+        for nx, ny in ((ax + 1, ay), (ax - 1, ay), (ax, ay + 1), (ax, ay - 1)):
+            if (nx, ny) in seen:
+                continue
+            if grid.in_bounds(nx, ny) and _connective(grid, nx, ny, mode):
+                seen.add((nx, ny))
+                stack.append((nx, ny))
+    return not want
+
+
 def _regions(grid: Grid, mode: str = "walk") -> list[set[Square]]:
     """Connected traversable regions (4-way — diagonal-only links don't count as
     a corridor a Large creature could use)."""
@@ -311,8 +354,9 @@ def _scatter(grid: Grid, rng: random.Random, code: str, chance: float, *,
             continue
         prev = grid.get(x, y)
         grid.set(x, y, code)
-        if keep_passable and not grid.passable(x, y, mode=mode) and len(
-                _regions(grid, mode)) > 1:
+        if keep_passable and not grid.passable(x, y, mode=mode) \
+                and not _locally_joined(grid, x, y, mode) \
+                and len(_regions(grid, mode)) > 1:
             grid.set(x, y, prev)
 
 

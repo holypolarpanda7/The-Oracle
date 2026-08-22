@@ -1726,6 +1726,50 @@ def test_vessels() -> None:
                                             for r in _ruin.grid.to_rows()),
           f"{len(_ruin.buildings)} standing")
 
+    section("a scattered crate may not cut the board in half")
+    # `_scatter` re-flood-filled the ENTIRE grid after every impassable square
+    # it laid, which was the single biggest cost of generating a board: 42
+    # whole-board traversals per street, 1.5 s of the 2.1 s to make eight.
+    # `_locally_joined` settles the easy case — a crate dropped in open floor —
+    # by asking whether the square's own neighbours can still reach each other
+    # without it, inside a small budget.
+    #
+    # It is SOUND IN ONE DIRECTION and that is all it may be: a yes must mean
+    # yes, because a yes skips the real check. Brute-forced here against the
+    # full scan on dense random boards, which is the only honest way to pin an
+    # approximation.
+    from .terrain import Grid as _G2
+
+    _rng2 = _mg.random.Random(7)
+    _unsound = _fast = _tried = 0
+    for _t in range(220):
+        _g2 = _G2.blank(14, 12)
+        _g2.fill_rect(0, 0, 13, 11, ".")
+        for _ in range(_rng2.randint(10, 45)):
+            _g2.set(_rng2.randrange(14), _rng2.randrange(12), "#")
+        _open2 = [(x, y) for x, y in _g2.squares() if _g2.get(x, y) == "."]
+        if not _open2:
+            continue
+        _x2, _y2 = _open2[_rng2.randrange(len(_open2))]
+        _was = len(_mg._regions(_g2))
+        _g2.set(_x2, _y2, "#")
+        _truth = len(_mg._regions(_g2)) <= _was
+        _guess = _mg._locally_joined(_g2, _x2, _y2)
+        _tried += 1
+        _fast += 1 if _guess else 0
+        _unsound += 1 if (_guess and not _truth) else 0
+    check("the fast connectivity check never says safe when it is not",
+          _unsound == 0, f"{_unsound} wrong of {_tried}")
+    check("...and it answers often enough to be worth having",
+          _fast > 0, f"{_fast}/{_tried} settled locally on dense boards")
+    # And the thing it is a shortcut FOR still holds: no generator leaves a
+    # board more broken than it found it.
+    for _arch2 in ("street", "tavern", "cave", "crypt", "dungeon-complex"):
+        _mapped = _gm5(_arch2, width=46, height=34, seed=3)
+        check(f"{_arch2}: one region a creature can cross",
+              len(_mg._regions(_mapped.grid, _mapped.mode)) == 1,
+              f"{len(_mg._regions(_mapped.grid, _mapped.mode))} regions")
+
     section("a thing that is ONE thing is grown, not speckled")
     # `_blob` throws N independent darts inside a radius, which is right for
     # scattered rock and thin scrub and wrong for anything that is one thing.

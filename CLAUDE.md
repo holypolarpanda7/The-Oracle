@@ -1758,6 +1758,24 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   gully exists to carry. The surface is capped by the deepest square's own tile
   depth above its own bed, so a stream is two feet deep in a five-foot cut and
   a sunk pond is still full to the brim.
+- **...and `_scatter` re-flood-filled the whole grid after every crate.** The
+  guard is right — a scattered impassable square must not cut the board in half
+  — and it was asking the question the most expensive way there is: a full
+  `_regions` traversal per square laid, ~42 whole-board flood fills per street.
+  `_locally_joined` settles the easy case by asking whether the square's own
+  open NEIGHBOURS can still reach each other without it, inside a small budget:
+  if they can, nothing that used to route through it has lost its way, so no
+  split is possible. **Sound in one direction and that is all it may be** — a
+  yes skips the real check, so a yes must mean yes, and it is brute-forced
+  against the full scan on dense random boards in the selftest, which is the
+  only honest way to pin an approximation. street 170 -> 76 ms, open 127 -> 63,
+  reef 80 -> 38; the whole selftest 51 s -> 33 s.
+  It changes two archetypes' layouts, and the change is the FIX: the old guard
+  reverted a crate whenever the BOARD had more than one region, not when that
+  crate was what split it — so on a tavern or a cave that momentarily had a
+  pocket somewhere else, every impassable scatter square was refused and the
+  room came back with less clutter than the generator asked for. Region counts
+  are unchanged or better on all 22 archetypes.
 - **Landmark placement was 89% of the cost of generating a board.**
   `setpieces.fits` is asked about every square, for every piece and every
   quarter turn, and it called `_turned` each time — rebuilding the rotated
