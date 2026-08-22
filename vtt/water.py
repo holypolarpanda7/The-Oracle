@@ -175,7 +175,19 @@ def surfaces(rows: Sequence[str], elevation: Optional[dict] = None, *,
         _, base = _shore(rows, body, elev)
         if base is None:
             continue
-        top = base - WATERLINE_DROP_FT
+        # Full to just below the bank — UNLESS the hollow is deeper than the
+        # water in it. A pool this module SANK is brim-full by construction,
+        # because the sink cut it exactly deep enough. A bed that was already
+        # lower was cut by a generator for some other reason, and the water
+        # standing in it is only as deep as its own tile says: a forest's
+        # stream runs along the floor of a five-foot gully, and reading the
+        # bank alone filled that gully to the top and drowned a feature whose
+        # own description calls it shallow — 4.6 ft of water in a "shallow
+        # stream", with the relief the gully exists to provide hidden under it.
+        deepest = min(float(elev.get(f"{x},{z}", 0) or 0)
+                      + DEPTH_FT.get(rows[z][x], (2, 1))[0]
+                      for x, z in body)
+        top = min(base - WATERLINE_DROP_FT, deepest)
         for x, z in body:
             key = f"{x},{z}"
             if top > float(elev.get(key, 0) or 0) + 1e-6:

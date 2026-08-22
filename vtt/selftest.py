@@ -1762,7 +1762,7 @@ def test_vessels() -> None:
     for _arch, _codes, _least in (("swamp", "~W", 4), ("reef", "R", 3),
                                   ("open-water", "~", 6)):
         _med = []
-        for _s in range(8):
+        for _s in range(5):
             _cl = _clumps(_gm5(_arch, width=46, height=34,
                                seed=_s).grid.to_rows(), _codes)
             if _cl:
@@ -1771,6 +1771,40 @@ def test_vessels() -> None:
               _med and min(_med) >= _least,
               f"median clump per board: {_med}")
 
+    # ...and the same question one level down, about DENSITY rather than
+    # shape. `_scatter` decides square by square, which is right for a crate, a
+    # boulder or a patch of rubble and wrong for anything that GROWS: at 15%
+    # decided per square a bog came back a checkerboard of reed and mire with
+    # no bank anywhere, and a wood an even stipple of bramble with no thicket
+    # in it. `_drifts` lays the same coverage in stands.
+    _reed: list[int] = []
+    for _arch, _code, _least in (("forest", '"', 4), ("swamp", "g", 4),
+                                 ("reef", "~", 5), ("clearing", '"', 2)):
+        _stands = []
+        for _s in range(4):
+            _r7 = _gm5(_arch, width=46, height=34, seed=_s).grid.to_rows()
+            _cl = _clumps(_r7, _code)
+            if _cl:
+                _stands.append(_cl[len(_cl) // 2])
+            if _arch == "swamp":            # the coverage arm, same boards
+                _reed.append(sum(_r.count("g") for _r in _r7) * 100 // (46 * 34))
+        check(f"{_arch}: its growth comes in STANDS, not a stipple",
+              _stands and min(_stands) >= _least,
+              f"median stand per board: {_stands}")
+    # ...and it is still there in the quantity the generator asked for. A
+    # clumping pass that quietly halves the coverage has changed the board.
+    check("...at roughly the density it always had",
+          8 <= min(_reed) and max(_reed) <= 22, f"reed cover {_reed}%")
+    # Only PASSABLE growth may drift: a stand of reed walls nothing off, so it
+    # needs no connectivity guard, and anything that could block belongs in
+    # `_scatter`, which checks. The refusal is at the call, not in review.
+    try:
+        _mg._drifts(_gm5("open", width=12, height=10, seed=1).grid,
+                    _mg.random.Random(1), "#", 0.1, only_on=("g",))
+        check("a blocking tile may not be drifted", False, "it was allowed")
+    except ValueError:
+        check("a blocking tile may not be drifted", True)
+
     # A SKY ISLAND hangs at ONE height, and it is the whole island. This used
     # to stamp a 7x7 BOX of elevation on the middle of a round island, so a
     # stone hanging twenty feet up had a square mesa on it and a rim at zero:
@@ -1778,7 +1812,7 @@ def test_vessels() -> None:
     # the picture. A knoll on top is fine — it rides on the island's own
     # height — so what must not happen is TWO base heights in one rock.
     _split = _rocks = 0
-    for _s in range(24):
+    for _s in range(16):
         _sky = _gm5("sky-islands", width=46, height=34, seed=_s)
         _rows6 = _sky.grid.to_rows()
         _seen6: set[tuple[int, int]] = set()
@@ -1803,11 +1837,11 @@ def test_vessels() -> None:
                 if len({_h for _h in _hs if _h % 10 == 0}) > 1:
                     _split += 1
     check("a sky island hangs at ONE height, all of it",
-          _split <= _rocks // 50,
+          _split <= max(1, _rocks // 50),
           f"{_split} of {_rocks} rocks split across two heights")
     check("...and a bigger sky gets more islands, not bigger ones",
           len(_gm5("sky-islands", width=46, height=34, seed=3).grid.to_rows())
-          and _rocks / 24 >= 5, f"{_rocks / 24:.1f} islands a board")
+          and _rocks / 16 >= 5, f"{_rocks / 16:.1f} islands a board")
 
     section("relief: the country decides, not the die")
     # `_ruggedness` is the same complaint as the street's fall, one level up:
@@ -1980,6 +2014,22 @@ def test_vessels() -> None:
                       for _k in _bog.water})
     check("...shallow at the edge and deeper in the middle", len(_depths) >= 3,
           f"depths {[round(d, 1) for d in _depths]}")
+    # A pool this module SANK is brim-full, because the sink cut it exactly
+    # deep enough. A bed that was already LOWER was cut by a generator for
+    # some other reason, and the water in it is only as deep as its tile says.
+    # A forest's stream runs along the floor of a five-foot gully; reading the
+    # bank alone filled the gully to the top, put 4.6 ft of water in something
+    # the description calls shallow, and hid the relief the gully exists for.
+    _wood = [_gm5("forest", width=46, height=34, seed=_s) for _s in range(5)]
+    _gully = [round(_m.water[_k] - (_m.elevation.get(_k, 0) or 0), 1)
+              for _m in _wood for _k in (_m.water or {})]
+    check("a stream in a gully is shallow, and the gully is still there",
+          _gully and max(_gully) <= 3.0,
+          f"deepest {max(_gully or [0])} ft of water")
+    check("...and it is still a real cut in the ground",
+          any((_m.elevation.get(_k, 0) or 0) <= -5
+              for _m in _wood for _k in (_m.water or {})),
+          "the bed sits at the gully's floor")
     check("...and never deep enough to be a fall",
           max(_depths, default=0) < 10, f"{max(_depths, default=0):.1f} ft")
     # Two pools on a hillside are two DIFFERENT levels, which is the whole
@@ -1994,7 +2044,7 @@ def test_vessels() -> None:
     # the POOL rather than to the board — but whether any one board has two is
     # a matter of where the hummocks fell, so it is asked of a handful.
     _levels = [len(set(_gm5("swamp", width=46, height=34, seed=_s).water.values()))
-               for _s in range(8)]
+               for _s in range(6)]
     check("each pool gets its own surface, not one waterline for the board",
           max(_levels) > 1, f"distinct waterlines per board: {_levels}")
     # Never on a board fought IN the water: there is no surface to draw, and

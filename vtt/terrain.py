@@ -20,6 +20,7 @@ diffusion model, so what the players see matches what the rules enforce.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Iterable, Iterator, Optional
 
 
@@ -184,6 +185,31 @@ DECOR_CODES = ("o", "n", "O", "T", ",", "\"")
 def tile(code: str) -> Tile:
     """Look up a tile, defaulting to open floor for unknown codes."""
     return TILES.get(code, TILES[FLOOR])
+
+
+@lru_cache(maxsize=None)
+def code_cost(code: str, mode: str = "walk") -> Optional[int]:
+    """Feet to enter a square of this KIND, or None if the mode can't.
+
+    Split out of ``Grid.cost`` and memoised because it is asked constantly and
+    the answer depends on nothing but the code and the medium. Landmark
+    placement tries every square of the board for every piece and every
+    quarter turn, and each try asked this about a hundred and twenty squares:
+    five Python calls deep, three hundred thousand times per handful of boards.
+    """
+    t = tile(code)
+    if mode == "fly":
+        # Fliers ignore ground cost and cross chasms, but not solid matter.
+        if t.move_cost_ft is None and not t.traversable_flying and t.cover == "total":
+            return None
+        if t.move_cost_ft is None and not t.traversable_flying:
+            return None if t.cover in ("total", "three-quarters") else 5
+        return 5
+    if mode == "swim":
+        if t.traversable_swimming:
+            return 10
+        return t.move_cost_ft
+    return t.move_cost_ft
 
 
 def tile_rule(code: str) -> str:
@@ -553,19 +579,7 @@ class Grid:
 
     def cost(self, x: int, y: int, *, mode: str = "walk") -> Optional[int]:
         """Feet to enter this square, or ``None`` if the mode can't enter it."""
-        t = self.tile_at(x, y)
-        if mode == "fly":
-            # Fliers ignore ground cost and cross chasms, but not solid matter.
-            if t.move_cost_ft is None and not t.traversable_flying and t.cover == "total":
-                return None
-            if t.move_cost_ft is None and not t.traversable_flying:
-                return None if t.cover in ("total", "three-quarters") else 5
-            return 5
-        if mode == "swim":
-            if t.traversable_swimming:
-                return 10
-            return t.move_cost_ft
-        return t.move_cost_ft
+        return code_cost(self.get(x, y), mode)
 
     def passable(self, x: int, y: int, *, mode: str = "walk") -> bool:
         return self.cost(x, y, mode=mode) is not None

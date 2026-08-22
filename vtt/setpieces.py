@@ -1228,6 +1228,18 @@ class Placed:
         return out
 
 
+#: ``(slug, yaw) -> rotated footprint``. A rotation depends on the PIECE and
+#: the ANGLE and on nothing else, and `fits` is asked about it once per
+#: candidate square — every square of the board, in a seeded order, for every
+#: piece and every quarter turn. Rebuilding the strings each time was 89% of
+#: the cost of generating a swamp (6.0 s of 6.75 s over six boards), and none
+#: of that work differed from the time before. `SetPiece` is frozen but carries
+#: a dict, so it is not hashable and `lru_cache` cannot key on it; the slug is
+#: the catalogue's own key and an invented piece is registered under one too.
+_TURNED: dict[tuple[str, int], tuple[tuple[str, ...], dict[str, int],
+                                     tuple[str, ...]]] = {}
+
+
 def _turned(p: SetPiece, yaw: int) -> tuple[tuple[str, ...], dict[str, int],
                                             tuple[str, ...]]:
     """The footprint rotated a quarter turn at a time, tiles and all.
@@ -1235,7 +1247,14 @@ def _turned(p: SetPiece, yaw: int) -> tuple[tuple[str, ...], dict[str, int],
     Rotating the mesh without rotating its tiles is the bug this exists to
     prevent: the picture turns and the cover does not, so a creature takes
     three-quarters cover from a face of the statue that is now behind it.
+
+    The result is CACHED and every caller treats it as read-only — the
+    elevation map is copied by whoever stamps from it.
     """
+    key = (p.slug, (yaw // 90) % 4)
+    got = _TURNED.get(key)
+    if got is not None:
+        return got
     tiles, elev, fills = p.tiles, dict(p.elevation), p.fills or ()
     for _ in range((yaw // 90) % 4):
         w, d = len(tiles[0]), len(tiles)
@@ -1246,6 +1265,7 @@ def _turned(p: SetPiece, yaw: int) -> tuple[tuple[str, ...], dict[str, int],
                           for x in range(w))
         elev = {f"{d - 1 - int(k.split(',')[1])},{int(k.split(',')[0])}": v
                 for k, v in elev.items()}
+    _TURNED[key] = (tiles, elev, fills)
     return tiles, elev, fills
 
 

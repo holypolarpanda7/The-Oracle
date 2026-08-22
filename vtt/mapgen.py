@@ -251,6 +251,40 @@ def _carve_corridor(grid: Grid, a: Square, b: Square, code: str = FLOOR) -> None
         grid.set(x, y, code)
 
 
+def _drifts(grid: Grid, rng: random.Random, code: str, chance: float, *,
+            only_on: tuple[str, ...] = (FLOOR,),
+            spread: tuple[int, int] = (3, 12), mode: str = "walk") -> int:
+    """Scatter in CLUMPS to the same coverage. Returns squares laid.
+
+    :func:`_scatter` decides square by square, which is right for a thing that
+    IS one square — a crate, a boulder, a fallen pillar, a patch of rubble. It
+    is wrong for anything that GROWS: reed, undergrowth, weed and scrub come in
+    stands, and a bog with fifteen percent of its squares independently turned
+    to dry grass is not a bog with reed beds in it, it is a checkerboard. Same
+    argument as :func:`_patch` against :func:`_blob`, one level down and about
+    the density rather than the shape.
+
+    Deliberately for PASSABLE cover only, so it needs no connectivity guard of
+    its own: a stand of reed does not wall anything off. Anything that could
+    block belongs in ``_scatter``, which checks.
+    """
+    from .terrain import tile as _tile
+
+    if _tile(code).move_cost_ft is None:
+        raise ValueError(f"_drifts is for passable growth; {code!r} blocks")
+    eligible = [(x, y) for x, y in grid.squares()
+                if grid.get(x, y) in only_on]
+    want = int(len(eligible) * max(0.0, chance))
+    laid = 0
+    tries = 0
+    while laid < want and eligible and tries < 4 * want:
+        tries += 1
+        cx, cy = eligible[rng.randrange(len(eligible))]
+        size = min(rng.randint(*spread), want - laid + spread[0])
+        laid += len(_patch(grid, rng, cx, cy, size, code, on=only_on))
+    return laid
+
+
 def _scatter(grid: Grid, rng: random.Random, code: str, chance: float, *,
              only_on: tuple[str, ...] = (FLOOR,),
              within: Optional[tuple[int, int, int, int]] = None,
@@ -1187,7 +1221,10 @@ def _gen_forest(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     for _ in range(int(g.width * g.height * 0.02)):
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
         _blob(g, rng, cx, cy, rng.randint(1, 4), "T")
-    _scatter(g, rng, "\"", 0.12, only_on=("g",))
+    # Undergrowth comes in THICKETS. Sprinkled square by square, twelve
+    # percent of a wood is an even stipple of bramble with no thicket in it —
+    # nothing to push through, nothing to go round. See _drifts.
+    _drifts(g, rng, "\"", 0.12, only_on=("g",), spread=(4, 16))
     # A stream cutting across, with a ford or a fallen log to cross by — and
     # its BANKS, which is the difference between a stream and a blue stripe. It
     # was two squares wide, flat, and painted over as grass every time: at
@@ -1242,7 +1279,7 @@ def _gen_clearing(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         d = math.hypot(x - g.width / 2, y - g.height / 2)
         if d > min(g.width, g.height) * 0.42 and rng.random() < 0.65:
             g.set(x, y, "T")
-    _scatter(g, rng, "\"", 0.07, only_on=("g",))
+    _drifts(g, rng, "\"", 0.07, only_on=("g",), spread=(4, 12))
     if rng.random() < 0.5:
         cx, cy = g.width // 2, g.height // 2
         g.set(cx, cy, ",")
@@ -1946,7 +1983,7 @@ def _gen_ruins(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
                 g.set(x, y, ",")
     out.buildings = houses
     _scatter(g, rng, "O", 0.03, only_on=(",",))
-    _scatter(g, rng, "\"", 0.06, only_on=(",",))
+    _drifts(g, rng, "\"", 0.06, only_on=(",",), spread=(3, 10))
     _connect_regions(g, rng)
     out.description = "toppled masonry and broken colonnades, weeds through the flagstones"
     # THE HILL IT WAS BUILT ON. Everything below this is masonry — foundations,
@@ -2041,7 +2078,7 @@ def _gen_camp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
             out.skins[f"{x},{wy}"] = "palisade"
 
     _scatter(g, rng, "o", 0.03, only_on=("g",))
-    _scatter(g, rng, "\"", 0.05, only_on=("g",))
+    _drifts(g, rng, "\"", 0.05, only_on=("g",), spread=(3, 9))
     _connect_regions(g, rng)
     out.lighting = "dim"
     out.description = ("a war camp — canvas tents around a guttering fire, a "
@@ -2426,7 +2463,9 @@ def _gen_swamp(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     for _ in range(int(g.width * g.height * 0.01)):
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
         _blob(g, rng, cx, cy, rng.randint(1, 3), "T")
-    _scatter(g, rng, "g", 0.15, only_on=("m",))
+    # Reed grows in BEDS. At fifteen percent decided square by square a bog
+    # came back a checkerboard of dry grass and mire with no bank anywhere.
+    _drifts(g, rng, "g", 0.15, only_on=("m",), spread=(4, 14))
     _connect_regions(g, rng)
     out.lighting = "dim"
     out.description = "black bog water between hummocks of reed and drowned trees"
@@ -2612,7 +2651,7 @@ def _gen_reef(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         _carve_channel(g, rng, out)
     # Silt and weed over the shelf: difficult going, and never in the channels,
     # which are open water.
-    _scatter(g, rng, "~", 0.16, only_on=("s",), mode="swim")
+    _drifts(g, rng, "~", 0.16, only_on=("s",), spread=(5, 18), mode="swim")
 
     # A drowned ruin. Columns on a seabed should already have FALLEN — an intact
     # colonnade underwater is a stranger sight than a broken one, and the board
@@ -2826,7 +2865,7 @@ def _gen_terraces(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
               face="R", ramps=rng.choice((2, 2, 3)))
     # Scrub and fallen rock on the flats, which is what makes a terrace a place
     # rather than a step in a diagram.
-    _scatter(g, rng, "\"", 0.05, only_on=("g",))
+    _drifts(g, rng, "\"", 0.05, only_on=("g",), spread=(3, 9))
     _scatter(g, rng, "o", 0.02, only_on=("g", ","))
     for _ in range(rng.randint(1, 3)):
         cx, cy = rng.randrange(g.width), rng.randrange(g.height)
