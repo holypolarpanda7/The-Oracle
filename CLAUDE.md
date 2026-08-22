@@ -1707,6 +1707,35 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   scattered. The lesson generalises past water: when a generator's own prose
   says "bank", "bed", "pool" or "stand" and the picture says confetti, the
   primitive is the thing to look at.
+  **`_drifts` is the same question one level down**, about DENSITY rather than
+  shape. `_scatter` decides square by square, which is right for a thing that
+  IS one square — a crate, a boulder, a fallen pillar, a patch of rubble — and
+  wrong for anything that GROWS. At 15% decided per square a bog came back a
+  checkerboard of reed and mire with no bank anywhere, and a wood an even
+  stipple of bramble with no thicket in it. Same coverage, laid in stands.
+  Deliberately for PASSABLE growth only, so it needs no connectivity guard of
+  its own and REFUSES a blocking code at the call: a stand of reed walls
+  nothing off, and anything that could belongs in `_scatter`, which checks.
+- **A pool is brim-full ONLY if this code cut the hollow.** `water.surfaces`
+  filled every basin to just under its bank, which is right for a pool `sink`
+  made — the sink cuts it exactly deep enough — and wrong for a bed some
+  generator had already dug for another reason. A forest's stream runs along
+  the floor of a five-foot GULLY, and reading the bank alone put **4.6 ft of
+  water in something the description calls shallow**, hiding the relief the
+  gully exists to carry. The surface is capped by the deepest square's own tile
+  depth above its own bed, so a stream is two feet deep in a five-foot cut and
+  a sunk pond is still full to the brim.
+- **Landmark placement was 89% of the cost of generating a board.**
+  `setpieces.fits` is asked about every square, for every piece and every
+  quarter turn, and it called `_turned` each time — rebuilding the rotated
+  footprint strings from scratch for an answer that depends only on the piece
+  and the angle. Measured on a swamp: **6.0 s of 6.75 s** over six boards, none
+  of it different from the time before. Cached by `(slug, quarter turn)` rather
+  than by the piece, because `SetPiece` is frozen but carries a dict and so is
+  not hashable; every caller treats the result as read-only. **362 ms to 102 ms
+  per board**, byte-identical output with a warm cache and a cold one.
+  `terrain.code_cost` is the same move for the inner loop — a square's cost
+  depends on its code and the medium and nothing else.
 - **A SKY ISLAND hangs at ONE height, and it is the whole island.** The height
   was stamped as a 7x7 BOX on the middle of a round island, so a stone hanging
   twenty feet up had a square mesa on it and a rim at zero — the picture flatly
