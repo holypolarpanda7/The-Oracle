@@ -8131,6 +8131,22 @@ def _vtt_place_context(ctx_obj) -> tuple[Optional[str], Optional[str], Optional[
         return None, None, None, None
 
 
+def _vtt_place_climate(place_slug: Optional[str], name: str = "") -> str:
+    """The climate band this board sits in — latitude, through `placelore`.
+
+    Handed DOWN like the relief, and for the same reason: `vtt/` must not know
+    what a world graph is. Empty where the place cannot be resolved, and an
+    empty band filters nothing.
+    """
+    try:
+        from eight_card_system import placelore
+        ch = placelore.character_of(world, place_slug or name)
+        return str(getattr(ch, "climate", "") or "") if ch else ""
+    except Exception as e:
+        print(f"[vtt] climate unavailable: {e}")
+        return ""
+
+
 def _vtt_place_relief(place_slug: Optional[str], name: str = "") -> dict:
     """How the ground LIES where this board is — placelore's one answer.
 
@@ -8293,6 +8309,11 @@ def _vtt_open(session_id: str, *, kind: str = "combat",
         # the same answer the journey's cost and the drawn map's hachuring
         # come from.
         relief=_vtt_place_relief(place_slug, place_name or ""),
+        # ...and WHERE IN THE WORLD it is. A landmark that grows belongs to a
+        # latitude: a temperate northern wood was coming back with a sixty-foot
+        # palm standing in it, because a piece's `on` says what ground it may
+        # stand on and nothing about the band that ground is in.
+        climate=_vtt_place_climate(place_slug, place_name or ""),
         width=width, height=height,
         creatures=creatures,
         board_scale=board_scale,

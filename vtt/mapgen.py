@@ -97,6 +97,11 @@ class GeneratedMap:
     # side because a pool's surface is a property of the whole POOL and no
     # square can see one, which is the argument that put vtt.hull here too.
     water: dict[str, float] = field(default_factory=dict)
+    # The CLIMATE BAND this board is in, from the world's own latitude — an
+    # input, like `relief` and for the same reason. Empty means nobody said,
+    # and then nothing is filtered on it: a landmark refused for a climate no
+    # caller stated is a landmark that never appears.
+    climate: str = ""
     # How the ground LIES here, from placelore.relief_of — an input, like
     # `style` and `wanted_rooms`. The tactical layer must not know what a world
     # graph is (the `_bastion_rooms` line), so the caller that HAS a place
@@ -3086,9 +3091,13 @@ def archetype_for_place(*, hint: Optional[str] = None, biome: Optional[str] = No
 #: and it simply draws from the board's own geometry until somebody unzips the
 #: pack. That is the same degradation ``source=None`` gets on purpose.
 _SETPIECES: dict[str, tuple[str, ...]] = {
-    "forest": ("jungle-giant", "boulder-heap"),
-    "clearing": ("jungle-giant", "standing-stone"),
-    "swamp": ("jungle-giant", "ruined-wall"),
+    # Both giants are offered and the CLIMATE decides which may stand: the
+    # pool is filtered by `setpieces.suits_climate`, so a northern wood gets
+    # the broadleaf and a jungle gets the palm, and a board that was told no
+    # climate at all gets whichever the budget reaches first.
+    "forest": ("forest-giant", "jungle-giant", "boulder-heap"),
+    "clearing": ("forest-giant", "jungle-giant", "standing-stone"),
+    "swamp": ("forest-giant", "jungle-giant", "ruined-wall"),
     "ruins": ("step-pyramid", "great-statue", "ruined-arch", "broken-pillar",
               "ruined-wall"),
     "crypt": ("mausoleum", "broken-pillar"),
@@ -3164,8 +3173,14 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap,
     from . import setpieces as _sp
 
     asked = [s for s in dict.fromkeys(asked) if _sp.piece(s) is not None]
+    # A landmark that GROWS belongs to a latitude. Reported by a player: a
+    # temperate northern wood came back with a sixty-foot palm standing in it,
+    # because `on` says what ground a piece may stand on and has nothing to say
+    # about where in the world that ground is. The DM's own `landmark=` is NOT
+    # filtered — the pool is a default rather than a permission, and somebody
+    # who narrates a palm in the snow has narrated a palm in the snow.
     pool = [s for s in (_SETPIECES.get(out.archetype) or ())
-            if s not in asked]
+            if s not in asked and _sp.suits_climate(s, out.climate)]
     if not asked and not pool:
         return
     budget = int(grid.width * grid.height * SETPIECE_BUDGET)
@@ -3223,7 +3238,8 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
                  style: str = "", biome: str = "",
                  landmarks: Sequence[str] = (),
                  rooms: Sequence[str] = (),
-                 relief: Optional[dict] = None) -> GeneratedMap:
+                 relief: Optional[dict] = None,
+                 climate: str = "") -> GeneratedMap:
     """Build a board. The same ``(archetype, width, height, seed, style)``
     always produces the identical grid — so a map can be regenerated from its
     row.
@@ -3252,6 +3268,7 @@ def generate_map(archetype: str = "open", *, width: int = 20, height: int = 15,
     grid = Grid.blank(width, height)
     out = GeneratedMap(grid=grid, archetype=archetype, seed=seed, style=style,
                        biome=biome, relief=dict(relief or {}),
+                       climate=str(climate or ""),
                        wanted_rooms=tuple(str(r) for r in rooms if str(r).strip()))
     ARCHETYPES[archetype](grid, rng, out)
 

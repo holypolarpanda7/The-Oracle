@@ -35,6 +35,7 @@ traced to where it came from and the terms it came under.
 | `mausoleum` | 3x5 | 14 ft | Graveyard Kit |
 | `boulder-heap` | 3x3 | 14 ft | Nature Kit |
 | `cave-pillar` | 1x1 | 16 ft | Nature Kit |
+| `forest-giant` | 9x9 | 45 ft | Nature Kit |
 | `jungle-giant` | 9x9 | 60 ft | Nature Kit |
 | `standing-stone` | 1x1 | 11 ft | Nature Kit |
 | `gatehouse-tower` | 3x3 | 40 ft | Pirate Kit |

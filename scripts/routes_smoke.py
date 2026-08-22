@@ -155,6 +155,26 @@ if not peak_gale > field_gale:
 if _wx(3, climate="temperate", month=5, terrain="mountains")["temperature_index"] \
         >= _wx(3, climate="temperate", month=5, terrain="desert")["temperature_index"]:
     fails.append("high country is not colder than desert on the same day")
+# ...and every band the WORLD can produce must be one the weather model knows.
+# `climate if climate in CLIMATES else "temperate"` never complains either, and
+# four of the seven bands `geo.climate_for` derives from latitude were silently
+# coming out temperate: the subarctic never froze and the subtropics were never
+# warm, everywhere, every day.
+from eight_card_system import geo as _geo
+from survival.weather import CLIMATES as _BANDS
+
+_world_bands = {_geo.climate_for((float(_lat), 0.0))
+                for _lat in range(-85, 86, 5)}
+_unknown = sorted(_world_bands - set(_BANDS))
+if _unknown:
+    fails.append(f"climate bands the weather model has never heard of: {_unknown}")
+# ...and knowing them has to MEAN something: the far north must be colder than
+# the tropics on the same day, or the table is decoration.
+_north = _wx(200, climate="subarctic", month=7)["temperature_index"]
+_south = _wx(200, climate="subtropical", month=7)["temperature_index"]
+if not _north < _south:
+    fails.append(f"the subarctic is no colder than the subtropics ({_north} vs {_south})")
+
 # A caller that says nothing gets exactly the weather it always got.
 if _wx(9, climate="temperate", month=5) != \
         _wx(9, climate="temperate", month=5, terrain=""):

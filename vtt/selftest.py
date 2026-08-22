@@ -1805,6 +1805,50 @@ def test_vessels() -> None:
     except ValueError:
         check("a blocking tile may not be drifted", True)
 
+    # A LANDMARK THAT GROWS BELONGS TO A LATITUDE. Reported by a player: a
+    # temperate northern wood came back with a sixty-foot PALM standing in it.
+    # `on` says what ground a piece may stand on and has nothing to say about
+    # where in the world that ground is.
+    from . import setpieces as _sp2
+
+    def _grew(band: str, n: int = 12) -> set:
+        got: set = set()
+        for _s in range(n):
+            got |= {_p["slug"] for _p in
+                    _gm5("forest", width=46, height=34, seed=_s,
+                         climate=band).setpieces}
+        return got
+
+    _north, _south = _grew("subarctic"), _grew("tropical")
+    check("no palm stands in a northern wood",
+          "jungle-giant" not in _north, f"{sorted(_north)}")
+    check("...and the north still gets a great tree of its own",
+          "forest-giant" in _north)
+    check("...while the tropics get the palm and not the oak",
+          "jungle-giant" in _south and "forest-giant" not in _south,
+          f"{sorted(_south)}")
+    # Lenient where it cannot be honest, the direction every gate in that file
+    # errs in: a board told no climate places everything, because a landmark
+    # refused for a climate nobody stated never appears at all.
+    check("...and a board that was told nothing is not left bare",
+          {"forest-giant", "jungle-giant"} & _grew(""), f"{sorted(_grew(''))}")
+    # Masonry needs none of this: a ruined arch is a ruined arch in the snow.
+    check("a piece that names no band stands anywhere",
+          _sp2.suits_climate("ruined-arch", "arctic")
+          and _sp2.suits_climate("boulder-heap", "tropical"))
+    # And the DM's own landmark= is NOT filtered — the pool is a default, not
+    # a permission, and somebody who narrates a palm in the snow has done so.
+    # `generate_map(landmarks=)` takes SLUGS; the loose phrase is resolved one
+    # layer up, so both halves of that path are asked about here.
+    check("a DM's own words still reach the palm",
+          _sp2.landmark_for("a huge banyan tree") == ["jungle-giant"],
+          f"{_sp2.landmark_for('a huge banyan tree')}")
+    _asked = _gm5("forest", width=46, height=34, seed=1, climate="subarctic",
+                  landmarks=["jungle-giant"])
+    check("...and asking for one by name beats the climate",
+          any(_p["slug"] == "jungle-giant" for _p in _asked.setpieces),
+          f"{[_p['slug'] for _p in _asked.setpieces]}")
+
     # A SKY ISLAND hangs at ONE height, and it is the whole island. This used
     # to stamp a 7x7 BOX of elevation on the middle of a round island, so a
     # stone hanging twenty feet up had a square mesa on it and a rim at zero:

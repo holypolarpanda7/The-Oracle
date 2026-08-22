@@ -901,6 +901,39 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   any GOOD — a pedestal that is a perfectly correct altar is the wrong thing in
   a crypt full of coffins, and no measurement catches that. The committed set
   is empty until a person has looked.
+- **A landmark that GROWS belongs to a latitude.** Reported by a player: a
+  temperate northern wood came back with a sixty-foot PALM standing in it.
+  `SetPiece.on` says what GROUND a piece may stand on and has nothing to say
+  about where in the world that ground is, so the jungle giant was in the pool
+  for every forest, clearing and swamp on the planet. `SetPiece.climates` is
+  the declaration and `setpieces.suits_climate` the gate — per PIECE rather
+  than a table somewhere central, because masonry needs none of it (a ruined
+  arch is a ruined arch in the snow) and only the things that grow care.
+  `forest-giant` is the same tree one band north, and it needed no new asset —
+  Kenney's Nature Kit has a broadleaf beside the palm, so it is a different
+  preference order, a different name and forty-five feet instead of sixty,
+  because an oak is not a kapok. Lenient in the direction every gate in that
+  file errs in: a piece naming no band stands anywhere and a board told no
+  climate places everything, since a landmark refused for a climate nobody
+  stated never appears at all. The DM's own `landmark=` is NOT filtered — the
+  pool is a default rather than a permission, and somebody who narrates a palm
+  in the snow has narrated a palm in the snow. `climate` reaches the board as
+  an INPUT (`generate_map(climate=)`, stored in `notes`) exactly as `relief`
+  does, and for the same reason.
+- **Four of the world's seven climate BANDS were silently coming out
+  temperate.** `geo.climate_for` derives a band from LATITUDE and produces
+  arctic, subarctic, cool temperate, temperate, warm temperate, subtropical and
+  tropical; `survival.weather.CLIMATES` knew three of them, and
+  `climate if climate in CLIMATES else "temperate"` never complains about a
+  word it has not got — so the subarctic never froze and the subtropics were
+  never warm, everywhere in the world, every day of the year. The same shape as
+  `TERRAIN.get(name, TERRAIN["grassland"])` costing a sea crossing as a stroll,
+  in the module next door, and found only by going looking for it.
+  `desert`/`coastal`/`mountain` stay in that table and are NOT bands — they are
+  the TERRAIN axis, which arrived because the module was written standalone,
+  and what a desert or a summit does to the sky is `placelore.WEATHER_BIAS`
+  applied on top of whatever the latitude gives. `routes_smoke` now fails if
+  the world can produce a band the weather model has never heard of.
 - **A LANDMARK may be somebody else's mesh, and it still owns no rules.**
   `vtt/setpieces.py`. Everything else the board draws is derived from (tile
   code, skin, x, z), which works because a wall, a cliff and a hull are things

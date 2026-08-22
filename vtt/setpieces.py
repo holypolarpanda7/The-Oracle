@@ -318,6 +318,21 @@ class SetPiece:
     yaw_fix: int = 0
     #: Ground the piece may stand on, as tile codes. Empty = anywhere passable.
     on: tuple[str, ...] = ()
+    #: Climate bands this landmark belongs in. Empty = anywhere.
+    #:
+    #: Reported by a player: a temperate northern wood came back with a
+    #: sixty-foot PALM standing in it. `on` says what GROUND a piece may stand
+    #: on and had nothing to say about latitude, so the jungle giant was in the
+    #: pool for every forest, clearing and swamp on the planet. Masonry needs
+    #: none of this — a ruined arch is a ruined arch in the snow — which is why
+    #: it is a per-piece declaration rather than a table somewhere central:
+    #: only the things that GROW care, and they are the ones that know.
+    #:
+    #: The band names are `survival.weather.CLIMATES`, which are the ones
+    #: `geo.climate_for` derives from latitude. A board that was told nothing
+    #: places everything, because a landmark refused for a climate nobody
+    #: stated is a landmark that never appears.
+    climates: tuple[str, ...] = ()
 
     # ----- derived -----
 
@@ -550,6 +565,23 @@ CATALOGUE: dict[str, SetPiece] = {p.slug: p for p in (
         fills=tuple("    X    " if y == 4 else " " * 9 for y in range(9)),
         words="an enormous buttressed jungle tree, its canopy far overhead",
         on=("g", "\""),
+        climates=("tropical", "subtropical", "coastal"),
+    ),
+    SetPiece(
+        # The same tree one climate band north, and it exists because a player
+        # found a sixty-foot palm standing in a temperate wood. Kenney's pack
+        # has a broadleaf and a pine beside the palm, so this needs no new
+        # asset — only a different preference order and a different name.
+        # Shorter than the jungle giant on purpose: an oak is not a kapok.
+        "forest-giant", "forest giant",
+        Source("kenney-nature",
+               ("tree_tall", "tree_default", "tree_detailed", "tree_oak")),
+        _CANOPY_TILES, height_ft=45.0, elevation=_CANOPY_ELEV,
+        fills=tuple("    X    " if y == 4 else " " * 9 for y in range(9)),
+        words="a vast old tree, its crown spreading far overhead",
+        on=("g", "\""),
+        climates=("subarctic", "cool temperate", "temperate",
+                  "warm temperate", "mountain"),
     ),
     SetPiece(
         "standing-stone", "standing stone",
@@ -755,8 +787,9 @@ _LANDMARK_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
       "raised platform"), "temple-plinth"),
     (("ruined wall", "ruined walls", "collapsed wall", "broken wall",
       "crumbling wall", "temple wall"), "ruined-wall"),
-    (("jungle giant", "great tree", "giant tree", "enormous tree",
-      "ancient tree", "huge tree", "banyan", "kapok"), "jungle-giant"),
+    (("jungle giant", "banyan", "kapok", "palm"), "jungle-giant"),
+    (("great tree", "giant tree", "enormous tree", "ancient tree",
+      "huge tree", "great oak", "old oak"), "forest-giant"),
     (("standing stone", "standing stones", "monolith", "obelisk", "menhir"),
      "standing-stone"),
     (("boulder", "boulders", "fallen rocks", "rockfall", "rubble heap"),
@@ -1400,6 +1433,22 @@ def _spots(g: Grid, p: SetPiece, rng: random.Random) -> Iterable[tuple[int, int,
     rng.shuffle(inner)
     rng.shuffle(rim)
     return inner + rim
+
+
+def suits_climate(slug: str, climate: str = "") -> bool:
+    """May this landmark stand in this climate band?
+
+    Lenient in the direction every other gate in this file errs in: a piece
+    that names no band stands anywhere, and a board that was told no climate
+    places everything. A landmark refused for a climate nobody stated is a
+    landmark that never appears, which is worse than the palm this exists to
+    keep out of the snow.
+    """
+    p = piece(slug)
+    if p is None or not p.climates:
+        return True
+    band = (climate or "").strip().lower()
+    return not band or band in p.climates
 
 
 def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,

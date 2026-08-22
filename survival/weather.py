@@ -11,18 +11,42 @@ import random
 from typing import Dict, List
 
 # Region climates and their seasonal temperature bias (index into _TEMP_BANDS).
-CLIMATES = ("temperate", "arctic", "desert", "coastal", "tropical", "mountain")
+#
+# THE WORLD'S OWN BANDS COME FIRST. `eight_card_system.geo.climate_for` derives
+# a place's band from its LATITUDE and produces seven of them — arctic,
+# subarctic, cool temperate, temperate, warm temperate, subtropical, tropical —
+# and this table knew three. `climate if climate in CLIMATES else "temperate"`
+# never complains about a word it has not got, so **four of the seven silently
+# came out temperate**: the subarctic never froze and the subtropics were never
+# warm, everywhere in the world, every day of the year. Same shape of bug as
+# `TERRAIN.get(name, TERRAIN["grassland"])` costing a sea crossing as a stroll
+# over a meadow, in the module next door.
+#
+# `desert`, `coastal` and `mountain` are kept and are NOT bands — they are the
+# TERRAIN axis, which arrived here because this module was written standalone.
+# Nothing in the world produces them and nothing should: what a desert or a
+# summit does to the sky is `placelore.WEATHER_BIAS`, applied on top of
+# whatever band the latitude gives, so a mountain in the tropics and one in the
+# north are not the same mountain. They stay for a caller that has only a word.
+CLIMATES = ("arctic", "subarctic", "cool temperate", "temperate",
+            "warm temperate", "subtropical", "tropical",
+            "desert", "coastal", "mountain")
 
 _TEMP_BANDS = ["frigid", "cold", "cool", "mild", "warm", "hot", "sweltering"]
 
 # Base band index by (climate, season). 0=frigid .. 6=sweltering.
 _CLIMATE_SEASON_BASE: Dict[str, Dict[str, int]] = {
-    "temperate": {"winter": 1, "spring": 3, "summer": 5, "autumn": 3},
-    "arctic":    {"winter": 0, "spring": 1, "summer": 2, "autumn": 1},
-    "desert":    {"winter": 3, "spring": 5, "summer": 6, "autumn": 5},
-    "coastal":   {"winter": 2, "spring": 3, "summer": 5, "autumn": 4},
-    "tropical":  {"winter": 4, "spring": 5, "summer": 6, "autumn": 5},
-    "mountain":  {"winter": 0, "spring": 2, "summer": 3, "autumn": 2},
+    "arctic":         {"winter": 0, "spring": 1, "summer": 2, "autumn": 1},
+    "subarctic":      {"winter": 0, "spring": 2, "summer": 3, "autumn": 2},
+    "cool temperate": {"winter": 1, "spring": 2, "summer": 4, "autumn": 2},
+    "temperate":      {"winter": 1, "spring": 3, "summer": 5, "autumn": 3},
+    "warm temperate": {"winter": 2, "spring": 4, "summer": 5, "autumn": 4},
+    "subtropical":    {"winter": 3, "spring": 4, "summer": 6, "autumn": 5},
+    "tropical":       {"winter": 4, "spring": 5, "summer": 6, "autumn": 5},
+    # The terrain axis, kept for a caller that has only a word. See above.
+    "desert":         {"winter": 3, "spring": 5, "summer": 6, "autumn": 5},
+    "coastal":        {"winter": 2, "spring": 3, "summer": 5, "autumn": 4},
+    "mountain":       {"winter": 0, "spring": 2, "summer": 3, "autumn": 2},
 }
 
 _PRECIP = ["clear", "light rain", "heavy rain", "snow", "blizzard", "fog"]

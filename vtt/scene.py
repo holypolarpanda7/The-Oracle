@@ -239,6 +239,7 @@ class VttEngine:
                    rooms: Optional[Sequence[str]] = None,
                    style: str = "",
                    relief: Optional[dict] = None,
+                   climate: str = "",
                    auto_close: bool = True) -> TacticalMap:
         """Open a tactical board for a session, closing any board already out.
 
@@ -294,7 +295,8 @@ class VttEngine:
         gen = generate_map(arch, width=w, height=h, seed=seed,
                            lighting=lighting, biome=biome or place_hint or "",
                            landmarks=marks, rooms=tuple(rooms or ()),
-                           style=style or "", relief=relief or None)
+                           style=style or "", relief=relief or None,
+                           climate=climate or "")
 
         self.close_scene(session_id=session_id)
 
@@ -321,6 +323,10 @@ class VttEngine:
                    # rebuilt from its seed loses the gradient its country gave
                    # it, and the picture and the grid stop agreeing.
                    "relief": dict(gen.relief or {}),
+                   # ...and the CLIMATE BAND, kept for the same reason: a
+                   # regenerated board must place the same landmarks, and a
+                   # palm is not a landmark a northern wood may have.
+                   "climate": str(gen.climate or ""),
                    "spawn_party": [list(s) for s in gen.spawn_party[:60]],
                    "spawn_foes": [list(s) for s in gen.spawn_foes[:60]],
                    # Named compartments. In `notes` rather than a column of
@@ -447,7 +453,8 @@ class VttEngine:
         gen = generate_map(row.archetype, width=row.width, height=row.height,
                            seed=row.seed, lighting=row.lighting,
                            biome=row.biome or "",
-                           relief=(row.notes or {}).get("relief") or None)
+                           relief=(row.notes or {}).get("relief") or None,
+                           climate=(row.notes or {}).get("climate") or "")
         # The stored terrain wins — a DM may have edited it after generation.
         gen.grid = self.grid_of(row)
         # ...and so do the stored skins. Regenerating from the seed produces
