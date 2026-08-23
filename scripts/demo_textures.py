@@ -62,10 +62,19 @@ def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "") -> int:
     surfaces: dict[str, dict] = {}
     skinned = _skins.skins_for(arch) if arch else {}
     for code in codes:
-        slug = slugify(material_ref(code, skinned.get(code, "")))
+        skin = skinned.get(code, "")
+        # The board looks a material up by SLOT, not by tile code:
+        # `materialSlot(code, skin)` is "#@townhouse" wherever a skin is on.
+        # Keyed by the bare code, every skinned square on a staged board missed
+        # and fell back to its flat tile colour — which is why a street came
+        # back a field of untextured dark grey while a swamp, whose codes
+        # mostly wear no skin, looked fine. A probe that quietly shows
+        # something other than what the app shows is worse than no probe.
+        slot = f"{code}@{skin}" if skin else code
+        slug = slugify(material_ref(code, skin))
         row = rows.get(slug)
         if row is None:
-            print(f"  {code!r:>4} -> no swatch ({slug})")
+            print(f"  {slot:>16} -> no swatch ({slug})")
             continue
         raw = store.get_image_bytes(row.id)
         if not raw:
@@ -79,14 +88,14 @@ def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "") -> int:
             if data:
                 (out / chan).write_bytes(data)
         rough, metal = S.properties_for(substance)
-        materials[code] = row.id
-        surfaces[code] = {
+        materials[slot] = row.id
+        surfaces[slot] = {
             "substance": substance, "roughness": round(rough, 3),
             "metalness": round(metal, 3),
             "normal": f"/imagery/surface/{row.id}/normal",
             "rough_map": f"/imagery/surface/{row.id}/rough",
         }
-        print(f"  {code!r:>4} -> {substance:<18} roughness {rough:.2f} "
+        print(f"  {slot:>16} -> {substance:<18} roughness {rough:.2f} "
               f"metal {metal:.0f}")
     SEAM.write_text(json.dumps({"materials": materials, "surfaces": surfaces},
                                indent=2), encoding="utf-8")
@@ -126,8 +135,14 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
         "width": w, "height": h,
         "terrain": rows,
         "levels": [{"name": "Ground", "base_ft": 0, "terrain": rows,
-                    "elevation": dict(gen.elevation or {}), "stairs": []}],
+                    "elevation": dict(gen.elevation or {}),
+                    "water": dict(gen.water or {}), "stairs": []}],
         "elevation": dict(gen.elevation or {}),
+        # The level sheet over any pool. Without it a staged swamp is a board
+        # full of sunken basins with nothing in them — which is what the
+        # geometry looks like before the water goes back on top of it, and
+        # exactly the thing this seam exists to let somebody look at.
+        "water": dict(gen.water or {}),
         "skins": {"codes": codes, "squares": squares},
         "decor": _decor.decor_for(rows, seed=gen.seed,
                                   standing=lambda c: tile_height_ft(c) > 0,

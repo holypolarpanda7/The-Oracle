@@ -1077,9 +1077,17 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // ridge j, ridge i. Reversed, the normal points into the roof and the
         // pitch is culled — the building comes back with no top, and neither
         // program looks wrong on its own.
+        // WORLD UVs, not the default 0..1. A quad's corners default to the
+        // unit square, which is right for a floor tile — one square, one
+        // repeat — and stretches the whole swatch across a pitch six squares
+        // long. Every roof on a staged street came back as a set of nested
+        // bands, a ziggurat rather than a roof, and the geometry was correct
+        // the whole time. One unit is one square here, exactly as on the floor.
         mb.quad(v3(eaves[i][0], lo, eaves[i][1]), v3(eaves[j][0], lo, eaves[j][1]),
                 v3(ridge[j][0], hi, ridge[j][1]), v3(ridge[i][0], hi, ridge[i][1]),
-                col);
+                col,
+                [eaves[i] as [number, number], eaves[j] as [number, number],
+                 ridge[j] as [number, number], ridge[i] as [number, number]]);
       }
       // The ridge itself, so a hip is closed rather than open to the sky.
       const flat = ridge.every((p) => Math.abs(p[0] - ridge[0][0]) < 1e-9
@@ -1089,7 +1097,10 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           mb.quad(v3(ridge[0][0], hi, ridge[0][1]),
                   v3(ridge[i][0], hi, ridge[i][1]),
                   v3(ridge[i + 1][0], hi, ridge[i + 1][1]),
-                  v3(ridge[0][0], hi, ridge[0][1]), col);
+                  v3(ridge[0][0], hi, ridge[0][1]), col,
+                  [ridge[0] as [number, number], ridge[i] as [number, number],
+                   ridge[i + 1] as [number, number],
+                   ridge[0] as [number, number]]);
         }
       }
     }

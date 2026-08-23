@@ -1034,6 +1034,25 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   already standing here" and a wreck may not lie in the sea — and an `on` list
   that forgets the archetype's actual floor is the same bug quietly: rubble
   kept every temple piece off the RUINS boards.
+- **A probe that quietly shows something other than the app is worse than no
+  probe.** Two of these, found by finally pointing a browser at a real
+  generated board rather than at the demo's one mill room. `demo_textures`
+  staged its swatches keyed by TILE CODE, and the renderer looks a material up
+  by SLOT (`materialSlot(code, skin)` is `#@townhouse` wherever a skin is on) —
+  so on any board with skins every square missed and fell back to its flat tile
+  colour. A street came back a field of untextured dark grey and a swamp looked
+  fine, purely because a swamp's codes mostly wear no skin. And the seam did
+  not carry `water` at all, so a staged bog was a set of empty sunken basins:
+  the geometry as it looks before the water goes back on top, which is exactly
+  the thing the seam exists to let somebody look at. `board-look.mjs` is the
+  harness; run `--clear` afterwards, because every other harness reads the same
+  seam and a staged street has no gallery for `floors-shot` to climb.
+- **A roof quad needs WORLD uvs.** `MeshBuilder.quad` defaults its corners to
+  the unit square, which is right for a floor tile — one square, one repeat —
+  and stretches the whole swatch across a pitch six squares long. Every roof on
+  a street came back as a set of nested bands, a ziggurat rather than a roof,
+  and the geometry had been correct the whole time. One unit is one square,
+  exactly as on the floor.
 - **The cache key must name everything the picture depends on.** `isoboard_ref`
   hashed the tile grid, and a skin changes materials without changing one
   tile — so a skyship's timber, steampunk and organic styles shared a slug and
