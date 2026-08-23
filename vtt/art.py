@@ -409,6 +409,12 @@ _ARCH_LOOK: dict[str, str] = {
     "ship": "sea", "skyship": "sky", "arena": "town",
     "ruins": "ruins", "bridge": "town", "mountain-pass": "snow",
     "sky-islands": "woodland", "open": "woodland",
+    # The one archetype that had no entry, and so was drawn as a DUNGEON:
+    # stacked plateaus whose own description is "dry rock — flats of scree and
+    # scrub", floored and rubbled out of a crypt. `desert` is the arid half of
+    # what mountain-pass takes from `snow`; a DM who says the plateau is snowy
+    # or wooded still outranks this, as they do for every other archetype here.
+    "terraces": "desert",
 }
 
 #: Words in a free-text biome that outrank the archetype. A dungeon room cut

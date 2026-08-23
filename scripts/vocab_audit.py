@@ -130,6 +130,14 @@ covers("every skin a board defaults to exists",
        sk.SKINS)
 covers("...and every substance a skin names has a swatch subject",
        {p.substance for p in sk.SKINS.values()}, sk.substances())
+from vtt import art as vart
+
+covers("every archetype has a LOOK to draw its surfaces in",
+       ARCHETYPES, vart._ARCH_LOOK,
+       note="a board with no entry is drawn in DUNGEON — `terraces`, stacked "
+            "plateaus of dry rock, was lit and floored like a crypt")
+covers("...and every look an archetype names is one the catalogue holds",
+       vart._ARCH_LOOK.values(), vart.BOARD_LOOKS)
 
 print(f"\n{BOLD}what the picture is of{OFF}")
 from imagery import prompt_build as pb
