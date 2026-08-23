@@ -205,6 +205,47 @@ function requestTexture(id: number, settled: () => void): void {
   );
 }
 
+/** The average colour of a swatch, for geometry that cannot wear it.
+ *
+ *  A mesh out of a FILE has no uvs — the OBJ readers this project ships take
+ *  `v` and `f` and nothing else — so no swatch can ever be laid on a landmark
+ *  or a furniture model. They were drawn in the tile's flat palette colour
+ *  instead, and that palette is chosen for a dark 2D board: a great stone
+ *  statue and a ruined arch both came back VIOLET, standing on stone they were
+ *  supposedly cut from. Worse in the other direction — on a textured board the
+ *  tile colour is white, because it is a multiplier over a picture, so a
+ *  furniture model would have been drawn as a white crate.
+ *
+ *  So a mesh takes the colour of the stuff it is MADE of. One pixel, sampled
+ *  once per swatch: the browser does the averaging in `drawImage`, and an
+ *  average is exactly right here — a textured surface beside it lights as its
+ *  own average times the same light. */
+const SWATCH_TINT = new Map<number, THREE.Color>();
+
+function swatchTint(id: number | undefined | null): THREE.Color | null {
+  if (id == null) return null;
+  const got = SWATCH_TINT.get(id);
+  if (got) return got;
+  const tex = TEXTURES.get(id);
+  const img = tex?.image as { width?: number } | undefined;
+  if (!img?.width) return null;                // not landed yet, or never will
+  try {
+    const c = document.createElement("canvas");
+    c.width = 1;
+    c.height = 1;
+    const g = c.getContext("2d", { willReadFrequently: true });
+    if (!g) return null;
+    g.drawImage(img as CanvasImageSource, 0, 0, 1, 1);
+    const [r, gr, b] = g.getImageData(0, 0, 1, 1).data;
+    const col = new THREE.Color().setRGB(r / 255, gr / 255, b / 255,
+                                         THREE.SRGBColorSpace);
+    SWATCH_TINT.set(id, col);
+    return col;
+  } catch {
+    return null;                               // tainted canvas: keep the flat
+  }
+}
+
 /** Derived surface channels (normal, roughness), by URL.
  *
  *  A second map rather than more entries in `TEXTURES` because these are not
@@ -1022,7 +1063,11 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
               const geom = SETPIECE_MESHES.get(model.mesh);
               if (geom) {
                 const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
-                  color, roughness: 0.86, metalness: 0.0,
+                  // Its own material's colour, never the square's `color` —
+                  // that is white wherever the square is textured, because it
+                  // multiplies a picture this mesh has no uvs to carry.
+                  color: swatchTint(swatches[slot]) ?? color,
+                  roughness: 0.86, metalness: 0.0,
                   ...(backdrop ? { colorWrite: false } : {}),
                 }));
                 const k = model.unit_scale * heightUnits(scene, h);
@@ -1162,8 +1207,11 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       requestSetpiece(sp.mesh, invalidate);
       const geom = SETPIECE_MESHES.get(sp.mesh);
       if (!geom) continue;                     // in flight, or never collected
+      const spSlot = materialSlot(sp.code || "#",
+                                  skinAt(scene, sp.code || "#", sp.x, sp.y));
       const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
-        color: new THREE.Color(tileStyle(sp.code || "#").fill),
+        color: swatchTint(swatches[spSlot])
+               ?? new THREE.Color(tileStyle(sp.code || "#").fill),
         roughness: 0.86, metalness: 0.0,
         ...(backdrop ? { colorWrite: false } : {}),
       }));

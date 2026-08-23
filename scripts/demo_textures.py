@@ -142,6 +142,7 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
     """
     from vtt import decor as _decor
     from vtt import hull as _hull
+    from vtt import setpieces as _sp
     from vtt import skins as _skins
     from vtt.mapgen import generate_map
     from vtt.terrain import tile, tile_height_ft
@@ -157,6 +158,21 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
     rows = gen.grid.to_rows()
     slots = {(rows[z][x], skin_of(rows[z][x], x, z))
              for z in range(h) for x in range(w)}
+    # The LANDMARKS this board placed, read back out of the catalogue exactly
+    # as `scene.setpieces_for` reads them — the mesh, the footprint and the fit
+    # measured off the file. Without them the demo's own broken pillar was left
+    # standing at the mill's coordinates on every staged board, which on a
+    # meadow is a stone column in mid-air.
+    pieces: list[dict] = []
+    for rec in (gen.setpieces or []):
+        if not isinstance(rec, dict):
+            continue
+        slug = str(rec.get("slug") or "")
+        if _sp.piece(slug, str(rec.get("name") or "")) is None:
+            continue
+        pieces.append(_sp.Placed(slug=slug, x=int(rec.get("x") or 0),
+                                 y=int(rec.get("y") or 0),
+                                 yaw=int(rec.get("yaw") or 0)).instance())
     return {
         # Every (code, skin) actually standing on this board, so the staging
         # pass asks for what the renderer will ask for. Popped before the seam
@@ -178,6 +194,7 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
         # exactly the thing this seam exists to let somebody look at.
         "water": dict(gen.water or {}),
         "skins": {"codes": codes, "squares": squares},
+        "setpieces": pieces,
         "decor": _decor.decor_for(rows, seed=gen.seed,
                                   standing=lambda c: tile_height_ft(c) > 0,
                                   archetype=arch),
