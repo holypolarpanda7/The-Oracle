@@ -31,13 +31,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from sqlmodel import Session, select                      # noqa: E402
 
 from imagery import ImageStore                            # noqa: E402
-from imagery.models import EntityImage, slugify           # noqa: E402
+from imagery.models import ImageKind, context_key, slugify  # noqa: E402
 from vtt import skins as _skins                          # noqa: E402
 from vtt import surface as S                              # noqa: E402
-from vtt.art import material_ref                          # noqa: E402
+from vtt.art import board_look, material_look, material_ref  # noqa: E402
 
 #: The tile codes the demo board is built from. Read off DEMO_TERRAIN rather
 #: than guessed — a code with no swatch simply stays flat, which is also what a
@@ -54,9 +53,15 @@ def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "") -> int:
     material is filed per (code, skin, look) and the tavern's floor is not the
     street's."""
     store = ImageStore()
-    with Session(store.engine) as s:
-        rows = {r.ref_slug: r for r in s.exec(
-            select(EntityImage).where(EntityImage.kind == "material")).all()}
+    # A slug is not a swatch. `material-v2-floor` holds TWELVE rows, one per
+    # look, and picking by slug alone took whichever the database happened to
+    # hand back last — the SKY floor on a cave board, the sky's rubble and the
+    # sky's stairs with it. Resolved the way `scene.materials_for` resolves it:
+    # a substance is filed under "any" and everything else under the board's
+    # own look. Same lesson as the slot key one line down — a probe that
+    # quietly shows something other than the app is worse than no probe.
+    look = board_look(archetype=arch)
+    print(f"look: {look}" + ("" if arch else "  (no archetype given)"))
     (DIST / "image").mkdir(parents=True, exist_ok=True)
     materials: dict[str, int] = {}
     surfaces: dict[str, dict] = {}
@@ -72,31 +77,33 @@ def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "") -> int:
         # something other than what the app shows is worse than no probe.
         slot = f"{code}@{skin}" if skin else code
         slug = slugify(material_ref(code, skin))
-        row = rows.get(slug)
-        if row is None:
-            print(f"  {slot:>16} -> no swatch ({slug})")
+        bucket = material_look(code, skin) or look
+        found = store.list_for(ImageKind.MATERIAL, slug, context_key(bucket))
+        if not found:
+            print(f"  {slot:>16} -> no swatch ({slug} @ {bucket})")
             continue
-        raw = store.get_image_bytes(row.id)
+        image_id = found[0]["image_id"]
+        raw = store.get_image_bytes(image_id)
         if not raw:
             continue
-        (DIST / "image" / str(row.id)).write_bytes(raw)
+        (DIST / "image" / str(image_id)).write_bytes(raw)
         substance = slug.replace("material-v2-", "").replace("substance-", "")
-        out = DIST / "surface" / str(row.id)
+        out = DIST / "surface" / str(image_id)
         out.mkdir(parents=True, exist_ok=True)
         for chan, data in (("normal", S.normal_map(raw)),
                            ("rough", S.roughness_map(raw, substance))):
             if data:
                 (out / chan).write_bytes(data)
         rough, metal = S.properties_for(substance)
-        materials[slot] = row.id
+        materials[slot] = image_id
         surfaces[slot] = {
             "substance": substance, "roughness": round(rough, 3),
             "metalness": round(metal, 3),
-            "normal": f"/imagery/surface/{row.id}/normal",
-            "rough_map": f"/imagery/surface/{row.id}/rough",
+            "normal": f"/imagery/surface/{image_id}/normal",
+            "rough_map": f"/imagery/surface/{image_id}/rough",
         }
-        print(f"  {slot:>16} -> {substance:<18} roughness {rough:.2f} "
-              f"metal {metal:.0f}")
+        print(f"  {slot:>16} -> {substance:<18} @{bucket:<11} "
+              f"roughness {rough:.2f} metal {metal:.0f}")
     SEAM.write_text(json.dumps({"materials": materials, "surfaces": surfaces},
                                indent=2), encoding="utf-8")
     kb = sum(f.stat().st_size for f in DIST.rglob("*") if f.is_file()) / 1024
