@@ -27,6 +27,7 @@ import math
 import random
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Callable, Iterable, Optional, Sequence
 
 from . import skins as _skins
@@ -245,26 +246,48 @@ def _locally_joined_cells(grid: Grid, cells, mode: str = "walk") -> bool:
                     _LOCAL_BUDGET + 6 * len(ring))
 
 
+@lru_cache(maxsize=None)
+def _connective_codes(mode: str = "walk") -> frozenset:
+    """The tile codes you can GET through in this medium.
+
+    Connectivity depends on the code and the medium and on nothing else, so it
+    is a set membership rather than five nested calls per square. `_regions`
+    asked `_connective` -> `passable` -> `code_cost` -> `get` -> `in_bounds`
+    for every square AND for every neighbour of every square, and it is the
+    most-called function in the whole generator.
+    """
+    from .terrain import APERTURES, TILES, code_cost
+
+    return frozenset(c for c in TILES
+                     if code_cost(c, mode) is not None or c in APERTURES)
+
+
 def _regions(grid: Grid, mode: str = "walk") -> list[set[Square]]:
     """Connected traversable regions (4-way — diagonal-only links don't count as
     a corridor a Large creature could use)."""
+    ok = _connective_codes(mode)
+    rows = grid.rows
+    h, w = grid.height, grid.width
     seen: set[Square] = set()
     out: list[set[Square]] = []
-    for sq in (s for s in grid.squares() if _connective(grid, *s, mode)):
-        if sq in seen:
-            continue
-        stack, region = [sq], set()
-        seen.add(sq)
-        while stack:
-            x, y = stack.pop()
-            region.add((x, y))
-            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-                if (nx, ny) in seen:
-                    continue
-                if grid.in_bounds(nx, ny) and _connective(grid, nx, ny, mode):
-                    seen.add((nx, ny))
-                    stack.append((nx, ny))
-        out.append(region)
+    for y in range(h):
+        row = rows[y]
+        for x in range(w):
+            if row[x] not in ok or (x, y) in seen:
+                continue
+            stack, region = [(x, y)], set()
+            seen.add((x, y))
+            while stack:
+                ax, ay = stack.pop()
+                region.add((ax, ay))
+                for nx, ny in ((ax + 1, ay), (ax - 1, ay),
+                               (ax, ay + 1), (ax, ay - 1)):
+                    if (nx, ny) in seen or not (0 <= nx < w and 0 <= ny < h):
+                        continue
+                    if rows[ny][nx] in ok:
+                        seen.add((nx, ny))
+                        stack.append((nx, ny))
+            out.append(region)
     return sorted(out, key=len, reverse=True)
 
 

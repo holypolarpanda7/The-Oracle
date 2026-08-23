@@ -1406,6 +1406,38 @@ def place(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0,
     return out
 
 
+def _prefix(g: Grid, bad) -> list[list[int]]:
+    """A summed-area table of ``bad(code) -> bool`` over the grid.
+
+    ``sums[y][x]`` is how many bad squares lie in the rectangle from the origin
+    to (x, y) exclusive, so any rectangle's count is four lookups. Built once
+    per piece and used to reject a spot before :func:`fits` walks its hundred
+    and twenty squares — a swamp offers a nine-by-nine giant every square of a
+    board full of water and drowned trees, and paid 5,100 `fits` calls a board
+    to be told no each time.
+    """
+    w, h = g.width, g.height
+    sums = [[0] * (w + 1) for _ in range(h + 1)]
+    for y in range(h):
+        row, above, out = g.rows[y], sums[y], sums[y + 1]
+        run = 0
+        for x in range(w):
+            if bad(row[x]):
+                run += 1
+            out[x + 1] = above[x + 1] + run
+    return sums
+
+
+def _count(sums: list[list[int]], x0: int, y0: int, x1: int, y1: int) -> int:
+    """How many bad squares in the half-open rectangle, clamped to the board."""
+    h, w = len(sums) - 1, len(sums[0]) - 1
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w, x1), min(h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return 0
+    return sums[y1][x1] - sums[y0][x1] - sums[y1][x0] + sums[y0][x0]
+
+
 def _spots(g: Grid, p: SetPiece, rng: random.Random) -> Iterable[tuple[int, int, int]]:
     """Every square this piece could stand on, inner ground first.
 
@@ -1491,9 +1523,30 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
         if p is None:
             continue
         may_clear = slug in sweep
+        # Two summed-area tables, built once for this piece, so a spot that
+        # cannot possibly work is rejected in eight lookups rather than by
+        # walking its footprint and margin. Permissive on purpose — they may
+        # only ever say "definitely not", and `fits` remains the authority on
+        # everything they let through.
+        def _swept(c: str) -> bool:
+            return may_clear and c in CLEARABLE
+
+        blocked = _prefix(g, lambda c: (tile(c).move_cost_ft is None
+                                        and c != " " and not _swept(c)
+                                        and not (mode == "swim"
+                                                 and tile(c).traversable_swimming)
+                                        and not (mode == "fly"
+                                                 and tile(c).traversable_flying)))
+        off_ground = (_prefix(g, lambda c: c not in p.on and not _swept(c))
+                      if p.on else None)
         for x0, y0, yaw in _spots(g, p, rng):
             tiles, _e, _f = _turned(p, yaw)
             w, d = len(tiles[0]), len(tiles)
+            if _count(blocked, x0 - 1, y0 - 1, x0 + w + 1, y0 + d + 1):
+                continue
+            if off_ground is not None and _count(off_ground, x0, y0,
+                                                 x0 + w, y0 + d):
+                continue
             cells = {(x0 + cx, y0 + cy) for cy in range(d) for cx in range(w)}
             if cells & taken or not fits(g, p, x0, y0, yaw, mode=mode,
                                          clear=may_clear):

@@ -1829,6 +1829,22 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   pocket somewhere else, every impassable scatter square was refused and the
   room came back with less clutter than the generator asked for. Region counts
   are unchanged or better on all 22 archetypes.
+- **A board costs 9 ms now, and it cost over a hundred.** The four things
+  that were expensive, in the order they were found, and none of them was the
+  layout: the rotated footprint rebuilt per candidate square (`_turned`, now
+  cached by slug and quarter turn); a full board flood fill after every
+  scattered crate (`_locally_joined`, a bounded BREADTH-first check); the
+  landmark placer walking a hundred and twenty squares to be told no
+  (`_prefix`/`_count`, two summed-area tables per piece, so a hopeless spot is
+  eight lookups); and `_regions` asking `passable` -> `code_cost` -> `get` ->
+  `in_bounds` per square AND per neighbour, when connectivity depends on the
+  code and the medium and nothing else (`_connective_codes`, a frozen set).
+  **Every one is pinned as an EQUIVALENCE, not as a speed**: byte-identical
+  boards and byte-identical landmark placements across all 22 archetypes, the
+  connective set compared square by square against `passable`, the prefilter
+  compared against `fits` on real boards, and the local check brute-forced
+  against the full scan. A faster answer that is a different answer is not an
+  optimisation.
 - **Landmark placement was 89% of the cost of generating a board.**
   `setpieces.fits` is asked about every square, for every piece and every
   quarter turn, and it called `_turned` each time — rebuilding the rotated

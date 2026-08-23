@@ -1836,6 +1836,52 @@ def test_vessels() -> None:
     check("...and landmarks still stand on most boards", _with >= 22,
           f"{_with}/30 boards")
 
+    # The two shortcuts under all of this, pinned as EQUIVALENCES rather than
+    # as speed. A faster answer that is a different answer is not an
+    # optimisation, and both of these are easy to get subtly wrong.
+    from .terrain import APERTURES as _AP, Grid as _G6, TILES as _TL
+
+    _codes = set()
+    for _a6 in _mg.ARCHETYPES:
+        for _s6 in range(2):
+            for _r6 in _gm5(_a6, width=30, height=24, seed=_s6).grid.to_rows():
+                _codes |= set(_r6)
+    _g6 = _G6.blank(1, 1)
+    _off = []
+    for _mode6 in ("walk", "swim", "fly"):
+        for _c6 in sorted(_codes | set(_TL)):
+            _g6.set(0, 0, _c6)
+            if (_g6.passable(0, 0, mode=_mode6) or _c6 in _AP) \
+                    != (_c6 in _mg._connective_codes(_mode6)):
+                _off.append(f"{_mode6}:{_c6!r}")
+    check("the connective-code set agrees with asking square by square",
+          not _off, f"{_off[:4]}")
+    # The landmark placer's summed-area prefilter may only ever say
+    # "definitely not". It is checked against `fits` itself on real boards.
+    from . import setpieces as _sp6
+
+    _lied = _asked6 = 0
+    for _a6 in ("swamp", "ruins", "forest", "street"):
+        _m6 = _gm5(_a6, width=46, height=34, seed=1)
+        _p6 = _sp6.piece((_mg._SETPIECES.get(_a6) or ("boulder-heap",))[0])
+        if _p6 is None:
+            continue
+
+        _blocked = _sp6._prefix(
+            _m6.grid, lambda c: (_TL.get(c, _TL["."]).move_cost_ft is None
+                                 and c != " "))
+        _w6, _d6 = _p6.width, _p6.depth
+        for _y6 in range(0, _m6.grid.height - _d6 + 1, 3):
+            for _x6 in range(0, _m6.grid.width - _w6 + 1, 3):
+                _asked6 += 1
+                _cheap = _sp6._count(_blocked, _x6 - 1, _y6 - 1,
+                                     _x6 + _w6 + 1, _y6 + _d6 + 1) == 0
+                if not _cheap and _sp6.fits(_m6.grid, _p6, _x6, _y6,
+                                            mode=_m6.mode):
+                    _lied += 1
+    check("...and the placer's prefilter never rejects a spot that fits",
+          _lied == 0, f"{_lied} of {_asked6} spots wrongly refused")
+
     section("a thing that is ONE thing is grown, not speckled")
     # `_blob` throws N independent darts inside a radius, which is right for
     # scattered rock and thin scrub and wrong for anything that is one thing.
