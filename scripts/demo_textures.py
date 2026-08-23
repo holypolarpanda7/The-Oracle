@@ -26,6 +26,7 @@ import argparse
 import json
 import shutil
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,11 +48,21 @@ DIST = ROOT / "activity-ui" / "dist" / "imagery"
 SEAM = ROOT / "activity-ui" / "dist" / "demo-surfaces.json"
 
 
-def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "") -> int:
+def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "",
+          slots: Iterable[tuple[str, str]] = ()) -> int:
     """Copy the swatches for these tile codes into the build, with their
     derived surfaces. ``arch`` names the board they belong to, because a
     material is filed per (code, skin, look) and the tavern's floor is not the
-    street's."""
+    street's.
+
+    ``slots`` names (code, skin) pairs outright. A skin is not always the
+    archetype's: `skin_at` reads a PER-SQUARE table too, and everything built
+    out of composed tiles uses it — a camp's tents are `#` wearing canvas on
+    their own squares while the palisade round them is `#` wearing logs. Staged
+    from the archetype map alone those squares found no swatch and fell back to
+    their flat tile colour, so a field of tents came back as a field of dark
+    holes. The board knows its own slots; it is asked.
+    """
     store = ImageStore()
     # A slug is not a swatch. `material-v2-floor` holds TWELVE rows, one per
     # look, and picking by slug alone took whichever the database happened to
@@ -66,8 +77,8 @@ def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "") -> int:
     materials: dict[str, int] = {}
     surfaces: dict[str, dict] = {}
     skinned = _skins.skins_for(arch) if arch else {}
-    for code in codes:
-        skin = skinned.get(code, "")
+    want = {(c, skinned.get(c, "")) for c in codes} | set(slots)
+    for code, skin in sorted(want):
         # The board looks a material up by SLOT, not by tile code:
         # `materialSlot(code, skin)` is "#@townhouse" wherever a skin is on.
         # Keyed by the bare code, every skinned square on a staged board missed
@@ -138,7 +149,13 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
         return _skins.skin_at(c, x, z, codes=codes, squares=squares)
 
     rows = gen.grid.to_rows()
+    slots = {(rows[z][x], skin_of(rows[z][x], x, z))
+             for z in range(h) for x in range(w)}
     return {
+        # Every (code, skin) actually standing on this board, so the staging
+        # pass asks for what the renderer will ask for. Popped before the seam
+        # is written; the client builds its own slots from `skins`.
+        "_slots": sorted(slots),
         "width": w, "height": h,
         "terrain": rows,
         "levels": [{"name": "Ground", "base_ft": 0, "terrain": rows,
@@ -193,7 +210,7 @@ if __name__ == "__main__":
         # The swatches for THIS board's codes, not the tavern's — a staged
         # street lit by a taproom's floorboards is a probe of nothing.
         rc = stage(tuple(sorted({c for r in made["terrain"] for c in r})),
-                   arch=a.board)
+                   arch=a.board, slots=made.pop("_slots"))
         got = _json.loads(SEAM.read_text(encoding="utf-8")) if SEAM.exists() else {}
         got.update(made)
         SEAM.write_text(_json.dumps(got), encoding="utf-8")
