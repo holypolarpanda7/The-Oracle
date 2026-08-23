@@ -1287,6 +1287,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   is DERIVED from layout + seed (the `objects_for` precedent), the server ships
   it in `state()`, and the DM board names it as having no mechanical effect —
   unnamed, it is scenery the picture has and the board denies.
+- **...and re-tinting from ONE base painted all the scenery white.** `reshade`
+  rewrites every vertex colour as `base x shade`, which is right for terrain
+  merged per material slot — every vertex of it is the same swatch — and wrong
+  for the one builder that carries a colour PER PIECE. Bushes, tussocks,
+  deadfall, stumps and stones all go in with their own tints and were
+  registered with a base of WHITE, so the first shading pass painted the lot of
+  it. **It had looked right for exactly one frame since fog shading went in**,
+  and every board in the game was strewn with identical white blobs. A
+  shadeTarget may now carry `tints`, a copy of the colours as built, and the
+  shade is applied as a FACTOR instead of a replacement. Nothing was ever going
+  to notice this from the inside, which is why the guard in `board-look.mjs` is
+  a pixel count: near-white must stay under 0.15% of the board (it was 0.49%).
 - **Fog, sight and light are re-tinted in place, never rebuilt.** They used to
   sit in the terrain cache key, so every step anyone took threw away the whole
   mesh because a torch had moved. Each vertex records its SQUARE and `reshade`

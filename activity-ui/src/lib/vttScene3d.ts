@@ -629,8 +629,18 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
    *  and it happened on every step anyone took — geometry, normals and UVs all
    *  thrown away and remade because a torch moved. The positions did not
    *  change; only the tint did. */
+  //
+  //  `base` is the ONE colour a mesh starts from, which is right for terrain
+  //  merged per material slot — every vertex of it is the same swatch. A mesh
+  //  whose vertices carry DIFFERENT colours needs `tints`: a copy of the
+  //  colours as built, so shading multiplies them instead of replacing them.
+  //  Without it the scenery mesh — one builder for bushes, tussocks, deadfall,
+  //  stumps and stones, each emitted in its own tint — was registered with a
+  //  base of WHITE, and the first reshade painted every piece of it white. It
+  //  had looked right for exactly one frame since fog shading went in.
   let shadeTargets: { geom: THREE.BufferGeometry; owners: Uint32Array;
-                      base: THREE.Color }[] = [];
+                      base: THREE.Color;
+                      tints?: Float32Array }[] = [];
   let shadeKey = "";
 
   function buildTerrain(scene: VttScene, level: number, showGrid: boolean,
@@ -1157,8 +1167,14 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     shadeTargets = [];
     if (!decorMb.empty) {
       const geom = decorMb.build();
-      shadeTargets.push({ geom, owners: decorMb.owners(),
-                          base: new THREE.Color("#ffffff") });
+      shadeTargets.push({
+        geom, owners: decorMb.owners(), base: WHITE.clone(),
+        // Each piece of scenery is emitted in its OWN tint, so the colours as
+        // built are the thing to shade rather than something to overwrite.
+        tints: Float32Array.from(
+          (geom.getAttribute("color") as THREE.BufferAttribute)
+            .array as Float32Array),
+      });
       terrainGroup.add(new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
         vertexColors: true, roughness: 0.92, metalness: 0.0,
         ...(backdrop ? { colorWrite: false } : {}),
@@ -1206,13 +1222,29 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
    *  nine times per mesh and the per-vertex loop is a table lookup and three
    *  writes. No allocation, no geometry, nothing for the collector.
    */
+  const WHITE = new THREE.Color("#ffffff");
+
+  /** (visibility tier, light level) for a square, as one small integer. */
+  function _shadeKey(scene: VttScene, tile: number, w: number,
+                     fog: string[] | null | undefined,
+                     sight: string[] | null | undefined,
+                     light: string[] | null | undefined): number {
+    const z = (tile / w) | 0;
+    const x = tile - z * w;
+    const seen: Seen = !fog ? Seen.Watched
+      : sight?.[z]?.[x] === "1" ? Seen.Watched
+      : fog[z]?.[x] === "1" ? Seen.Remembered : Seen.Never;
+    const lv = light?.[z]?.[x] ?? "b";
+    return seen * 4 + (lv === "x" ? 2 : lv === "d" ? 1 : 0);
+  }
+
   function reshade(scene: VttScene, level: number, showFog: boolean): void {
     const fog = showFog ? scene.fog : null;
     const sight = showFog ? scene.sight : null;
     const light = scene.light;
     const w = scene.width;
 
-    for (const { geom, owners, base } of shadeTargets) {
+    for (const { geom, owners, base, tints } of shadeTargets) {
       const attr = geom.getAttribute("color") as THREE.BufferAttribute;
       const arr = attr.array as Float32Array;
       // Memoised by (tier, light) — nine possibilities, whatever the board size.
@@ -1220,6 +1252,20 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       let lastTile = -1, r = 0, g = 0, b = 0;
       for (let v = 0; v < owners.length; v++) {
         const tile = owners[v];
+        if (tints) {
+          // Per-vertex colours: shade the vertex's OWN tint. Still nine
+          // multipliers, still a table lookup — the shade is computed against
+          // white and applied as a factor.
+          const i = v * 3;
+          const k = _shadeKey(scene, owners[v], w, fog, sight, light);
+          let f = cache.get(k);
+          if (!f) { f = shade(WHITE, (k >> 2) as Seen, "bdx"[k & 3] ?? "b");
+                    cache.set(k, f); }
+          arr[i] = tints[i] * f.r;
+          arr[i + 1] = tints[i + 1] * f.g;
+          arr[i + 2] = tints[i + 2] * f.b;
+          continue;
+        }
         if (tile !== lastTile) {
           const z = (tile / w) | 0;
           const x = tile - z * w;

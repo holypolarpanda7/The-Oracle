@@ -44,6 +44,38 @@ await page.waitForSelector(".vtt-board", { timeout: 15000 });
 await page.waitForTimeout(2500);
 console.log("canvases:", await page.locator(".vtt-board canvas").count());
 await page.screenshot({ path: `${OUT}/${TAG}-a.png` });
+
+// SCENERY IS NOT WHITE. `reshade` rewrites every vertex colour from the
+// mesh's single `base`, which is right for terrain merged per material slot
+// and wrong for the one builder that carries a colour PER PIECE: bushes,
+// tussocks, deadfall, stumps and stones all went in with their own tints and
+// came out white on the first shading pass. It had looked right for exactly
+// one frame since fog shading went in, and nothing was ever going to notice —
+// which is why this is a pixel count and not a unit test.
+const board = await page.locator(".vtt-board canvas").first().boundingBox();
+const shot = await page.screenshot({ clip: board });
+const white = await page.evaluate(async (b64) => {
+  const img = new Image();
+  img.src = "data:image/png;base64," + b64;
+  await img.decode();
+  const c = document.createElement("canvas");
+  c.width = img.width; c.height = img.height;
+  const g = c.getContext("2d");
+  g.drawImage(img, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i] > 228 && d[i + 1] > 228 && d[i + 2] > 228) n++;
+  }
+  return (n * 10000) / (d.length / 4) / 100;
+}, shot.toString("base64"));
+console.log(`near-white: ${white.toFixed(2)}% of the board`);
+if (white > 0.15) {
+  console.log("FAIL  the scenery is being painted white — see reshade/tints");
+  process.exitCode = 1;
+} else {
+  console.log("PASS  scenery keeps its own colours through shading");
+}
 const turn = page.locator(".vtt-icon", { hasText: "⟳" });
 if (await turn.count()) {
   await turn.first().click();
