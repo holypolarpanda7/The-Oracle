@@ -37,7 +37,8 @@ from imagery import ImageStore                            # noqa: E402
 from imagery.models import ImageKind, context_key, slugify  # noqa: E402
 from vtt import skins as _skins                          # noqa: E402
 from vtt import surface as S                              # noqa: E402
-from vtt.art import board_look, material_look, material_ref  # noqa: E402
+from vtt.art import (board_look, material_look, material_ref,
+                     material_subject)  # noqa: E402
 
 #: The tile codes the demo board is built from. Read off DEMO_TERRAIN rather
 #: than guessed — a code with no swatch simply stays flat, which is also what a
@@ -87,6 +88,11 @@ def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "",
         # mostly wear no skin, looked fine. A probe that quietly shows
         # something other than what the app shows is worse than no probe.
         slot = f"{code}@{skin}" if skin else code
+        # A void square is not a missing swatch. `^` (open sky), a chasm and
+        # blank space are in NO_MATERIAL by design, and reporting them as gaps
+        # sends whoever reads this output looking for a render nobody owes.
+        if not material_subject(code, skin):
+            continue
         slug = slugify(material_ref(code, skin))
         bucket = material_look(code, skin) or look
         found = store.list_for(ImageKind.MATERIAL, slug, context_key(bucket))

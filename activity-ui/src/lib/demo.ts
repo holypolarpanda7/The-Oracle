@@ -317,7 +317,7 @@ const DEMO_SURFACES: { materials?: Record<string, number>;
 
 function demoVtt(stage: number): VttScene {
   const warriorDown = stage >= 2;
-  return {
+  return stagedFooting({
     id: 1,
     session_id: "demo:1",
     encounter_id: 1,
@@ -460,7 +460,7 @@ function demoVtt(stage: number): VttScene {
     // LAST, so a staged board replaces the demo's own terrain, skins,
     // elevation and traced geometry outright rather than sitting under it.
     ...(DEMO_SURFACES ?? {}),
-  };
+  });
 }
 
 /* The demo board is interactive: positions the player pushes around live here,
@@ -476,6 +476,50 @@ function demoScene(): VttScene {
     const moved = demoMoved.get(t.id);
     return pos ? { ...t, x: pos[0], y: pos[1], moved_ft: moved ?? t.moved_ft } : t;
   });
+  return scene;
+}
+
+/** Put the demo's people on the board that is actually on screen.
+ *
+ *  Only when a harness has staged one. The mill's five tokens keep the mill's
+ *  coordinates, which on a staged skyship is five creatures standing in the
+ *  open air off the bow, with their markers and their threatened squares drawn
+ *  on nothing — the same complaint as the wash costed against the mill's floor
+ *  plan, and the same answer: a probe must show what the app would. Squares are
+ *  taken from a walk out of the board's middle, so the party lands together on
+ *  real ground whatever shape the board is. */
+function stagedFooting(scene: VttScene): VttScene {
+  if (!DEMO_SURFACES?.terrain) return scene;
+  const want = scene.tokens.length;
+  const cx = Math.floor(scene.width / 2);
+  const cy = Math.floor(scene.height / 2);
+  const seen = new Set<string>([`${cx},${cy}`]);
+  const queue: [number, number][] = [[cx, cy]];
+  const spots: [number, number][] = [];
+  while (queue.length && spots.length < want) {
+    const [x, y] = queue.shift()!;
+    if (demoTileCost(x, y) != null) spots.push([x, y]);
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const nx = x + dx;
+      const ny = y + dy;
+      const k = `${nx},${ny}`;
+      if (nx < 0 || ny < 0 || nx >= scene.width || ny >= scene.height) continue;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      queue.push([nx, ny]);
+    }
+  }
+  if (spots.length < want) return scene;      // nowhere to stand: leave it be
+  scene.tokens = scene.tokens.map((t, i) => ({ ...t, x: spots[i][0],
+                                               y: spots[i][1] }));
+  // The mill's own spell areas belong to the mill. Left where they were, a
+  // staged skyship carries a ring of Bless hanging in the sky off the bow.
+  scene.effects = (scene.effects ?? []).filter(
+    (e) => (e.squares ?? []).every(([x, y]) => demoTileCost(x, y) != null));
+  // Same for the mill's broken pillar: a square of wreckage floating in the
+  // air beside a skyship reads as a bug in the board and is a bug in the seam.
+  scene.debris = (scene.debris ?? []).filter(
+    (d) => demoTileCost(d.x, d.y) != null);
   return scene;
 }
 
