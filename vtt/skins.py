@@ -267,6 +267,20 @@ class Skin:
     #: Where the eaves sit, as a fraction of the drawn height. Below this the
     #: square draws its own wall; above it the traced roof takes over.
     roof_at: float = 1.0
+    #: What the ROOF is made of, when that is not the wall.
+    #:
+    #: The traced roof wore the building's own material, on the reasoning that
+    #: it should not invent a colour of its own. A declared material is not an
+    #: invented colour, and the reasoning cost a street its legibility: a town
+    #: of lime-plastered houses came back white walls under white roofs, one
+    #: pale mass with a road through it. This skin's OWN words have said "steep
+    #: tiled roofs above" since the day it was written — the same complaint the
+    #: chamfered taproom post and the chitin hull answered, where the prose
+    #: described something the geometry flatly contradicted.
+    #:
+    #: Empty keeps the old behaviour, which is right wherever the roof really
+    #: is the wall carried over: a ruin's soot-stained shell has no tiles left.
+    roof_skin: str = ""
     #: Extra NEGATIVE terms for this skin's swatch, on top of
     #: ``art.MATERIAL_NEGATIVE``.
     #:
@@ -1099,6 +1113,15 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # terrain image at all (it is built up, so the depth map is the only
     # conditioning) — which is precisely when the material CLAUSE is the whole
     # of what the model has to go on.
+    # The roof of a townhouse, and nothing else: no square ever wears it, so it
+    # has no silhouette and no variants — it is a MATERIAL, reached through
+    # `roof_skin`. Filed as a skin so it joins the swatch catalogue, the
+    # staging seam and the vocabulary audit by the same door as every other
+    # material rather than by a special case.
+    Skin("roof-tile", "clay-tile",
+         "close-up of a roof of overlapping curved clay pantiles, warm "
+         "terracotta and weathered russet, moss in the laps",
+         words="the roofs are steep and tiled, russet clay darkened by weather"),
     Skin("townhouse", "plaster-timber",
          "close-up of a timber-framed wall, white lime plaster between dark "
          "oak beams",
@@ -1111,7 +1134,7 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          # same twenty-four feet the block always stood — so the proportions
          # are the ones that were tuned, and only the SIZE OF THE UNIT changed.
          variants=_TOWNHOUSE, height_ft=24, smooth=True,
-         roof_ft=7.2, roof_at=0.70),
+         roof_ft=7.2, roof_at=0.70, roof_skin="roof-tile"),
     # What is left standing in a ruin. Its own skin rather than `townhouse`
     # because the roof tracer keys on one — a ruin's remaining roof is lower,
     # and a burnt-out shell should not be drawn under a townhouse's steep tile.

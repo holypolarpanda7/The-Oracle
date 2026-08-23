@@ -1191,6 +1191,7 @@ class VttEngine:
         sk = self.skins_for(map_id)
         code_skins, square_skins = sk["codes"], sk["squares"]
         out: dict[str, int] = {}
+        wanted: list[tuple[str, str]] = []
         for lvl in range(len(self.levels_of(row))):
             g = self.grid_of(row, lvl)
             # Keyed by (code, skin) rather than code alone: a board can carry a
@@ -1204,22 +1205,33 @@ class VttEngine:
                 skin = _skins.skin_at(code, x, y, codes=code_skins,
                                       squares=square_skins) if lvl == 0 else \
                     str(code_skins.get(code) or "")
-                slot = f"{code}@{skin}" if skin else code
-                if slot in out:
-                    continue
-                # A look-agnostic surface is filed once, under "any" — lava is
-                # lava wherever it is, and asking for a dungeon's lava would
-                # miss a bucket that already holds the answer.
-                bucket = material_look(code, skin) or look
-                key = (slot, bucket)
-                if key not in _MATERIAL_IDS:
-                    found = self.image_store.list_for(
-                        ImageKind.MATERIAL, slugify(material_ref(code, skin)),
-                        context_key(bucket))
-                    _MATERIAL_IDS[key] = found[0]["image_id"] if found else None
-                got = _MATERIAL_IDS[key]
-                if got:
-                    out[slot] = got
+                wanted.append((code, skin))
+                # A ROOF may be made of something no square is. It is traced
+                # over a whole building rather than drawn per square, so its
+                # material would never be reached by this walk — and a town of
+                # lime-plastered houses under lime-plastered roofs is one pale
+                # mass. See Skin.roof_skin.
+                roof = getattr(_skins.skin(skin), "roof_skin", "") if skin \
+                    else ""
+                if roof:
+                    wanted.append(("#", roof))
+        for code, skin in wanted:
+            slot = f"{code}@{skin}" if skin else code
+            if slot in out:
+                continue
+            # A look-agnostic surface is filed once, under "any" — lava is
+            # lava wherever it is, and asking for a dungeon's lava would
+            # miss a bucket that already holds the answer.
+            bucket = material_look(code, skin) or look
+            key = (slot, bucket)
+            if key not in _MATERIAL_IDS:
+                found = self.image_store.list_for(
+                    ImageKind.MATERIAL, slugify(material_ref(code, skin)),
+                    context_key(bucket))
+                _MATERIAL_IDS[key] = found[0]["image_id"] if found else None
+            got = _MATERIAL_IDS[key]
+            if got:
+                out[slot] = got
         return out
 
     def surfaces_for(self, map_id: int) -> dict[str, dict]:

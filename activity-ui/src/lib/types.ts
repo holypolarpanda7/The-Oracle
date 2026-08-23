@@ -550,6 +550,9 @@ export interface VttScene {
    *  which is what a hipped roof over a square building is. */
   roofs?: {
     skin: string;
+    /** The material slot the roof wears, when it is not the building's own —
+     *  a townhouse is plaster and its roof is clay tile. Empty falls back. */
+    slot?: string;
     eaves_ft: number;
     ridge_ft: number;
     eaves: [number, number][];

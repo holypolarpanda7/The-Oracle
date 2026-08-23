@@ -158,6 +158,11 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
     rows = gen.grid.to_rows()
     slots = {(rows[z][x], skin_of(rows[z][x], x, z))
              for z in range(h) for x in range(w)}
+    # A roof's material belongs to no square (Skin.roof_skin), so the square
+    # walk can never reach it — the same hole `scene.materials_for` had.
+    slots |= {("#", getattr(_skins.skin(k), "roof_skin", ""))
+              for _c, k in list(slots)
+              if k and getattr(_skins.skin(k), "roof_skin", "")}
     # The LANDMARKS this board placed, read back out of the catalogue exactly
     # as `scene.setpieces_for` reads them — the mesh, the footprint and the fit
     # measured off the file. Without them the demo's own broken pillar was left

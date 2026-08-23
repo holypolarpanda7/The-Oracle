@@ -418,7 +418,14 @@ def roofs(rows: Sequence[str], skin_of: Optional[Callable] = None,
                 eaves = list(reversed(eaves))
                 ridge = list(reversed(ridge))
             out.append({
-                "skin": name, "slot": "",
+                "skin": name,
+                # The material this roof wears, when it is not the building's.
+                # `slot` has been in this record since roofs were traced and
+                # nothing ever filled it; the client falls back to the wall's
+                # material when it is empty, so a skin that declares no roof
+                # material is drawn exactly as before.
+                "slot": (f"#@{sk.roof_skin}" if getattr(sk, "roof_skin", "")
+                         else ""),
                 "eaves_ft": base + float(sk.height_ft or 0) * float(sk.roof_at),
                 "ridge_ft": base + float(sk.height_ft or 0) * float(sk.roof_at)
                             + float(sk.roof_ft),

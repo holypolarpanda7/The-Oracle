@@ -1140,7 +1140,10 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const eaves = roof.eaves ?? [];
       const ridge = roof.ridge ?? eaves;
       if (eaves.length < 3 || ridge.length !== eaves.length) continue;
-      const slot = materialSlot("#", roof.skin);
+      // A roof may be made of something no square is — see Skin.roof_skin.
+      // The server names that material outright; empty means the roof wears
+      // the building's own, which is right for a ruin whose tiles are gone.
+      const slot = roof.slot || materialSlot("#", roof.skin);
       const mb = builderFor(slot);
       mb.at = 0;
       const col = new THREE.Color(
