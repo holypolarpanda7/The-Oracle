@@ -1047,12 +1047,72 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   the thing the seam exists to let somebody look at. `board-look.mjs` is the
   harness; run `--clear` afterwards, because every other harness reads the same
   seam and a staged street has no gallery for `floors-shot` to climb.
-- **A roof quad needs WORLD uvs.** `MeshBuilder.quad` defaults its corners to
-  the unit square, which is right for a floor tile — one square, one repeat —
-  and stretches the whole swatch across a pitch six squares long. Every roof on
-  a street came back as a set of nested bands, a ziggurat rather than a roof,
-  and the geometry had been correct the whole time. One unit is one square,
-  exactly as on the floor.
+  **Four more of them, all found by pointing that harness at the other twenty
+  archetypes.** A slug is not a swatch: `material-v2-floor` holds TWELVE rows,
+  one per look, and picking by slug alone staged the SKY's floor on a cave —
+  resolved now the way `scene.materials_for` resolves it, and the look is
+  printed. A skin is not always the archetype's, so a camp's tents (`#` wearing
+  canvas inside a palisade that is `#` wearing logs) found no swatch and came
+  back as dark holes; the board is asked for its own slots. `demoTileCost` read
+  the mill's floor plan whatever was on screen, so the reachable wash hung in
+  the OPEN SKY between two floating islands. And the mill's own people, spell
+  areas, wreckage and landmark stayed at the mill's coordinates on every staged
+  board — five creatures standing in mid-air off a skyship's bow. Every one of
+  them reads as a bug in the BOARD rather than in the seam, which is how a probe
+  wastes somebody's morning.
+- **Every quad needs WORLD uvs: one unit is one square.** First found on a
+  roof — the unit square is right for a floor tile, one square one repeat, and
+  stretches the whole swatch across a pitch six squares long, so every roof on a
+  street was a set of nested bands with the geometry correct the whole time. It
+  is the same everywhere else, because "this face, whatever its size, shows
+  exactly one copy" makes a sixteen-foot tower face and a four-foot crate face
+  four times each other's scale and squeezes a whole swatch into the BEVEL
+  strip round every block top. A flat face is read off the floor plan, an
+  upright one along its own run and up its own height, so two coplanar
+  neighbours continue each other.
+  **And a square no longer TURNS its swatch.** `tileUVs` rotated and mirrored
+  per square — eight arrangements, so the eye would not read the repeat — and
+  what it bought was that nothing on the board was continuous: a tiling swatch
+  is seamless with itself in ONE orientation, so a turned square meets its four
+  neighbours along mismatched edges and the grid shows through as a lattice of
+  chevrons over grass, mire and stone alike. On anything with a GRAIN it was
+  ruinous: a caravel's deck came back as basketwork and a taproom's boarded
+  walls and floor as a maze of nested outlines, which I twice mistook for
+  aliasing before zooming in far enough to see the planks pointing four ways.
+  The variety it gave was variety of ORIENTATION, on materials that have one.
+  The cost is honest and worth stating: the repeat is now visible as a rhythm at
+  five feet, where before it was visible as a lattice.
+- **A MESH cannot wear a swatch, so it takes the colour of the stuff it is made
+  of.** Everything out of a FILE — a landmark, a furniture model — has no uvs,
+  because the OBJ readers this project ships take `v` and `f` and nothing else.
+  Drawn in the tile's flat palette colour instead (that palette is for a dark 2D
+  board) a ruins board's great stone stag and its ruined arch both came back
+  VIOLET, standing on the pale sandstone they were cut from; and on a TEXTURED
+  square the tile colour is white, because it multiplies a picture, so a crate
+  model would have been drawn as a white crate. One pixel per swatch, sampled
+  once, the browser doing the averaging — and an average is exactly right, since
+  a textured surface beside it lights as its own average times the same light.
+- **A roof is not made of the wall.** `Skin.roof_skin`. The traced roof wore the
+  building's own material so as not to invent a colour of its own, and a
+  declared material is not an invented colour: a street of lime-plastered houses
+  came back white walls under white roofs, one pale mass with a road through it,
+  while the townhouse skin's own words have said "steep tiled roofs above" since
+  the day it was written. Empty keeps the old behaviour, which is right for a
+  ruin whose tiles are gone. Two notes: `roofs()` had carried an unfilled `slot`
+  field since roofs were traced (the hole was already the right shape), and
+  `materials_for` walks SQUARES — a roof's material belongs to no square, so
+  without a pass for it the slot resolves to nothing and falls back to flat.
+- **A board fought INSIDE the water gets the water back.** The painted layer has
+  put the column back since the reef pass (`art._underwater_grade`) and the
+  GEOMETRY never did, so an unpainted swim board — every one of them until its
+  picture lands, every one offline, and every one at an angle away from the bake
+  — was a dry seabed: open water came back a corrugated beige plain. It is fog,
+  because a water column is what fog IS, ranged off the four corners' depths
+  along the view axis so it follows the camera wherever it is turned. `state()`
+  had shipped the board's MEDIUM since boards gained one and the client never
+  declared it. The depth must use all THREE components of FORWARD — the lens
+  looks down as well as along, and dropping the y term loses a constant the size
+  of the camera's own height and draws the board as one flat slab of sea.
 - **The cache key must name everything the picture depends on.** `isoboard_ref`
   hashed the tile grid, and a skin changes materials without changing one
   tile — so a skyship's timber, steampunk and organic styles shared a slug and
@@ -3420,6 +3480,11 @@ identical in shape and every one silent:
 - `_KIND_FRAMING.get(kind, ...CREATURE)` framed a **mesh reference** — an
   instrument reading nobody ever looks at — as "dynamic pose, menacing
   presence", then argued with sixty words of careful framing after it.
+- `_ARCH_LOOK.get(archetype, "dungeon")` drew **`terraces`** — stacked plateaus
+  whose own description is "dry rock, flats of scree and scrub" — with a crypt's
+  floor, rubble and stairs. The one archetype with no entry, and the pair is in
+  the register now: every archetype the generator can make must have a look, and
+  every look it names must be one the catalogue holds.
 
 None raised. Every one resolved to something plausible and wrong, and each was
 found only by going looking. **`scripts/vocab_audit.py` is the standing
