@@ -93,23 +93,16 @@ const DEPTH_STEPS = 8;
  *  Merging matters: a 40x30 board is 1200 floor tiles, and 1200 meshes is 1200
  *  draw calls, which is the difference between a board that runs on a phone
  *  inside a Discord webview and one that does not. */
-/** The four corner UVs of a quad, in the vertex order `quad` takes them. */
-const UV_SQUARE: readonly [number, number][] = [[0, 0], [0, 1], [1, 1], [1, 0]];
-
-/** One square's UVs, turned and flipped by its own coordinates.
- *
- *  Every tile of a kind gets the same swatch, so a plain mapping tiles the room
- *  with one picture repeated in lockstep and the eye reads the repeat instantly.
- *  Rotating and mirroring per square gives eight arrangements from one texture
- *  for free, and doing it from the coordinates rather than at random keeps a
- *  room looking the same every time it is drawn. */
-function tileUVs(x: number, z: number): readonly [number, number][] {
-  const h = ((x * 73856093) ^ (z * 19349663)) >>> 0;
-  const turns = h & 3;
-  const flip = (h >>> 2) & 1;
-  const out = UV_SQUARE.map((_, i) => UV_SQUARE[(i + turns) % 4]);
-  return flip ? out.map(([u, v]) => [1 - u, v] as [number, number]) : out;
-}
+/* A square used to take its UVs TURNED AND FLIPPED by its own coordinates —
+ * eight arrangements of one swatch, so the eye would not read the repeat. What
+ * it actually bought was that no surface on the board was continuous: rotation
+ * breaks the seamlessness a tiling swatch is drawn for, so every square met its
+ * neighbours along a mismatched edge and the grid showed as a lattice of
+ * chevrons over grass, sand and stone alike. On anything with a GRAIN it was
+ * ruinous — a ship's deck came back as basketwork and a taproom's boarded walls
+ * and floor as a maze of nested outlines, which is not a deck or a floor that
+ * anybody laid. Deleted rather than made conditional: the variety it gave was
+ * variety of ORIENTATION, on materials that have one. See `quad`. */
 
 class MeshBuilder {
   private pos: number[] = [];
@@ -124,21 +117,37 @@ class MeshBuilder {
 
   get empty(): boolean { return this.pos.length === 0; }
 
-  /** One quad, wound counter-clockwise as seen from the side the normal faces. */
+  /** One quad, wound counter-clockwise as seen from the side the normal faces.
+   *
+   *  UVs come from the WORLD: one unit is one square, on a face of any size and
+   *  at any angle. The unit square was the default everywhere but the roof, and
+   *  it means "this face, whatever its size, shows exactly one copy of the
+   *  picture" — so a sixteen-foot tower face and a four-foot crate face were
+   *  drawn at four times the scale of each other, a wall's boards stopped and
+   *  restarted at every square, and the BEVEL round every block top squeezed a
+   *  whole swatch into a sliver. Same fix and the same sentence as the roof
+   *  quad: one unit is one square. */
   quad(a: THREE.Vector3Like, b: THREE.Vector3Like, c: THREE.Vector3Like,
        d: THREE.Vector3Like, color: THREE.Color,
-       uvs: readonly [number, number][] = UV_SQUARE): void {
+       uvs?: readonly [number, number][]): void {
     const nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
     const ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
     const nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     const len = Math.hypot(nx, ny, nz) || 1;
+    // A face lying flat is read off the floor plan; an upright one along its
+    // own run and up its own height, so two coplanar neighbours continue each
+    // other instead of each starting the picture again.
+    const flat = Math.abs(ny) >= Math.max(Math.abs(nx), Math.abs(nz));
+    const tan = Math.hypot(nx, nz) || 1;
     for (const [i, j, k] of [[0, 1, 2], [0, 2, 3]] as const) {
       for (const idx of [i, j, k]) {
         const v = [a, b, c, d][idx];
         this.pos.push(v.x, v.y, v.z);
         this.norm.push(nx / len, ny / len, nz / len);
         this.col.push(color.r, color.g, color.b);
-        this.uv.push(uvs[idx][0], uvs[idx][1]);
+        const [u, w] = uvs ? uvs[idx]
+          : flat ? [v.x, v.z] : [(-nz * v.x + nx * v.z) / tan, v.y];
+        this.uv.push(u, w);
         this.owner.push(this.at);
       }
     }
@@ -860,7 +869,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // this a pillar's base is a hole in the ground. Cut to the outline, so
         // a hull that steps a square at a time is drawn as the diagonal it
         // means rather than as a staircase.
-        const uv = tileUVs(x, z);
         // The surface, not the plate. Elevation is stored per square as whole
         // feet, so a hillside drawn at one height per square is a flight of
         // terraces — which is most of why an outdoor board reads as stacked
@@ -875,7 +883,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
                   v3(x + pts[k + 1][0], ground(pts[k + 1][0], pts[k + 1][1]),
                      z + pts[k + 1][1]),
                   v3(x + pts[0][0], ground(pts[0][0], pts[0][1]), z + pts[0][1]),
-                  color, uv);
+                  color);
         }
         for (let k = 0; k < pts.length; k++) {
           if (!edgeEnds[k]) continue;

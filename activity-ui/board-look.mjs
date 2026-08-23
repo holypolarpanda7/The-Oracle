@@ -70,7 +70,17 @@ const white = await page.evaluate(async (b64) => {
   return (n * 10000) / (d.length / 4) / 100;
 }, shot.toString("base64"));
 console.log(`near-white: ${white.toFixed(2)}% of the board`);
-if (white > 0.15) {
+// The measurement is about SCENERY, so it is only an answer on a board that
+// has some. A taproom's limewashed boarding and a street of plastered houses
+// are legitimately near-white over most of their area — both sat at ~1.5%
+// with every tint correct — and a guard that fails there teaches whoever runs
+// it to ignore the line. The wild boards are the ones `decor` scatters its
+// per-piece tints over, which is what `reshade` overwrote.
+const SCENERY = new Set(["swamp", "forest", "open", "clearing", "camp",
+                         "bridge", "ruins", "mountain-pass", "terraces"]);
+if (!SCENERY.has(TAG)) {
+  console.log(`NOTE  ${TAG} carries no scattered scenery worth measuring`);
+} else if (white > 0.15) {
   console.log("FAIL  the scenery is being painted white — see reshade/tints");
   process.exitCode = 1;
 } else {
