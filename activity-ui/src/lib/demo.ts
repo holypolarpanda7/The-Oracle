@@ -2,6 +2,7 @@ import type { ActionBarData, ArenaEnv, ArenaEquipLine, ArenaOutfitLine,
               ArenaShop, ArenaState,
               ArenaStockItem, ChronicleData, CombatState, ServerEvent, VttEffect,
               VttScene, VttToken } from "./types";
+import { tileHeightFt, tileStyle } from "./boardView";
 
 /** Standalone demo feed — lets the whole UI run with no backend, and doubles
     as living documentation of the event protocol. */
@@ -309,7 +310,8 @@ function ring(cx: number, cy: number, r: number): [number, number][] {
 
 /** Real swatches, if a harness staged some. See `demoVtt`. */
 const DEMO_SURFACES: { materials?: Record<string, number>;
-                       surfaces?: VttScene["surfaces"] } | null =
+                       surfaces?: VttScene["surfaces"];
+                       terrain?: string[] } | null =
   (globalThis as unknown as { __ORACLE_DEMO_SURFACES?: never })
     .__ORACLE_DEMO_SURFACES ?? null;
 
@@ -483,10 +485,23 @@ const DEMO_COST: Record<string, number | null> = {
 };
 
 function demoTileCost(x: number, y: number): number | null {
-  const row = DEMO_TERRAIN[y];
+  // The board on SCREEN, not the mill: a harness may have staged a real
+  // generated board over this seam, and reading the module constant costed the
+  // wash against the mill's floor plan projected over whatever is actually
+  // there — a reachable-range wash hanging in the open sky between two
+  // floating islands, which is a probe showing something the app never would.
+  const row = (DEMO_SURFACES?.terrain ?? DEMO_TERRAIN)[y];
   if (!row || x < 0 || x >= row.length) return null;
   const code = row[x];
-  return code in DEMO_COST ? DEMO_COST[code] : 5;
+  if (code in DEMO_COST) return DEMO_COST[code];
+  // A staged board brings codes the demo's own room never had, and "anything
+  // unknown is open floor at 5 ft" makes sky and rock walkable. The client
+  // already knows enough to answer: nothing stands ON a void square, and a
+  // tile drawn standing up is not one you walk through.
+  const fam = tileStyle(code).family;
+  if (fam === "void" || fam === "solid" || tileHeightFt(code) > 0) return null;
+  if (fam === "water") return code === "W" ? null : 10;
+  return 5;
 }
 
 /** Dijkstra over the demo grid — the client-side stand-in for the server's
