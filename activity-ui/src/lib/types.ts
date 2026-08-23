@@ -490,6 +490,10 @@ export interface VttScene {
   height: number;
   square_ft: number;
   lighting: string;        // bright | dim | dark
+  /** What a creature has to do to be here: walk | swim | fly. The server has
+   *  shipped it since boards gained a medium; the geometry only started
+   *  reading it when a reef turned out to be drawn as dry land. */
+  mode?: string | null;
   revision: number;
   active: boolean;
   round: number;

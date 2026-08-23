@@ -157,6 +157,10 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
         # is written; the client builds its own slots from `skins`.
         "_slots": sorted(slots),
         "width": w, "height": h,
+        # What a creature has to do to be here. The browser puts the water
+        # column back on a swim board, so a staged reef without this is a reef
+        # drawn as dry land — which is exactly what it looked like.
+        "mode": gen.mode,
         "terrain": rows,
         "levels": [{"name": "Ground", "base_ft": 0, "terrain": rows,
                     "elevation": dict(gen.elevation or {}),

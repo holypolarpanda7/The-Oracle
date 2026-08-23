@@ -308,6 +308,21 @@ const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
  *  and is not what looking at water looks like. */
 const WATER_TINT = new THREE.Color("#3f6f86");
 
+/** The water COLUMN, on a board fought inside it.
+ *
+ *  Every other thing a board draws is decided per square — a tile, a skin, a
+ *  swatch — and the one thing that makes a reef read as a reef is a property of
+ *  none of them: the water in front of all of them. The painted layer has put
+ *  it back since the reef pass (`art._underwater_grade`), and the GEOMETRY
+ *  never did, so an unpainted swim board — which is every swim board until its
+ *  picture lands, and every one of them offline — was a dry seabed. Open water
+ *  came back as a corrugated beige plain with pale patches on it.
+ *
+ *  It is fog, because fog is what a water column IS: tinted toward the sea's
+ *  own colour, DARKER with distance, since water absorbs — a grade that pales
+ *  with distance reads as mist, which is a thing that happens in air. */
+const SEA_COLUMN = new THREE.Color("#12414f");
+
 const PANEL_THICKNESS = 0.46;
 
 /** Apertures — a gap in a wall rather than a block filling a square. */
@@ -1553,6 +1568,30 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       camera.up.set(cam.UP[0], cam.UP[1], cam.UP[2]);
       camera.lookAt(target);
       camera.updateProjectionMatrix();
+
+      // The water column, measured against the board rather than guessed: the
+      // four corners' depths along the view axis say where the near and far
+      // edges of the picture are, whatever the camera has been turned to. The
+      // far edge keeps some of itself (the margin), because a board whose back
+      // half is solid sea colour is a board you cannot fight on.
+      if (scene.mode === "swim") {
+        // All THREE components: the lens looks DOWN as well as along, so
+        // dropping the y term loses a constant the size of the camera's own
+        // height and puts the whole board past the far plane — which is a
+        // board drawn as one flat slab of sea colour.
+        const depth = (x: number, z: number) =>
+          (x - camera.position.x) * cam.FORWARD[0]
+          + (0 - camera.position.y) * cam.FORWARD[1]
+          + (z - camera.position.z) * cam.FORWARD[2];
+        const ds = [depth(0, 0), depth(scene.width, 0),
+                    depth(0, scene.height), depth(scene.width, scene.height)];
+        const near = Math.min(...ds);
+        const far = Math.max(...ds);
+        scene3.fog = new THREE.Fog(SEA_COLUMN, near - (far - near) * 0.35,
+                                   far + (far - near) * 0.55);
+      } else {
+        scene3.fog = null;
+      }
 
       // One pass. The painting is a DOM layer BEHIND this canvas (see
       // `backdropRect`), which is why the canvas is alpha and why the geometry
