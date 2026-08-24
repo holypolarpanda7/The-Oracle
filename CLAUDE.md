@@ -1082,6 +1082,49 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   The variety it gave was variety of ORIENTATION, on materials that have one.
   The cost is honest and worth stating: the repeat is now visible as a rhythm at
   five feet, where before it was visible as a lattice.
+- **A board that reads as a TILE SET is a rendering problem, not a swatch
+  problem.** Reported in four words — "8-bit Mario bad" — and it was three
+  things, none of them the pictures.
+  **Nothing cast a shadow.** A directional light with `castShadow` off draws a
+  diagram of a room: nothing is attached to the ground it stands on, and every
+  block is lit purely by which way it faces. The trap on the way in is worth
+  more than the fix: for a FrontSide material three renders BACK faces into the
+  shadow map — right for closed solids, silently wrong for everything here,
+  because this board is built out of open single-sided SHEETS and the face a
+  sheet turns to the sun is exactly the one that gets culled. `shadowSide =
+  DoubleSide`. It is nearly free at this camera: the sun never moves and the
+  board is static, so the map is rendered once per REBUILD, and panning,
+  zooming and turning cost nothing. Fill light came down from 1.25 to 0.55 to
+  let the shadows read, and `ACESFilmicToneMapping` went on — without it every
+  colour is its raw sRGB value clipped at white, which is why lit stone read as
+  paper.
+  **And the picture repeated at the pitch of the grid, which is the definition
+  of a tile.** A swatch is a photograph of a surface at some SCALE, and the
+  scale is a fact about the picture rather than about the square:
+  `surface.SURFACE_TILE_FT` says how many feet one repeat covers. A plank
+  swatch shows eight boards, so five feet is a seven-inch board and right; a
+  dungeon floor shows five stones across, so five feet was a ONE-FOOT
+  flagstone and a great hall came back tiled in bathroom tile. Broad ground
+  fifteen feet, rock in the mass twelve, a floor twelve, made things five.
+  `macroAt` varies the albedo slowly over about seven squares on top, because
+  real ground is not the same brightness everywhere and the eye finds a perfect
+  repeat instantly. Two things measurement changed my mind about: a PATCH is
+  not ground (a stand of undergrowth is three to nine squares, so a fifteen-foot
+  repeat shows an arbitrary crop of a swatch with big structure in it, and the
+  meadow came back strewn with pale smears), and the same substance answers
+  both ways — granite is a cliff face AND a field stone — so `Skin.standalone`
+  marks the skins that clothe one thing standing on one square.
+  **Contact shading is the half a cast shadow cannot give you**: the inside of
+  a corner is dark because most of the SKY is blocked from it, whichever way
+  the sun points. An upright face darkens toward its own bottom edge (always
+  true of a real wall, and it needs nothing but the quad); a floor darkens by
+  how boxed-in it is, sampled at the four squares meeting at the nearest grid
+  CORNER so two squares sharing an edge agree — the `corner_lift_ft` rule.
+  **No standing guard for the shadows, and that is measured too**: a dark-tail
+  histogram reads 16% with the sun casting and 27% with it OFF, because
+  switching casting off also brightens every lit face and moves the median. It
+  cannot tell a cast shadow from diffuse shading, and a check that cannot fail
+  is worse than none.
 - **A MESH cannot wear a swatch, so it takes the colour of the stuff it is made
   of.** Everything out of a FILE — a landmark, a furniture model — has no uvs,
   because the OBJ readers this project ships take `v` and `f` and nothing else.
