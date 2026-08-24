@@ -1259,6 +1259,7 @@ class VttEngine:
         from .art import SUBSTANCE
 
         out: dict[str, dict] = {}
+        square_ft = float(getattr(self.get_scene(map_id), "square_ft", 5) or 5)
         for slot, image_id in (self.materials_for(map_id) or {}).items():
             code, _, skin = slot.partition("@")
             sk = _skins.skin(skin) if skin else None
@@ -1269,6 +1270,20 @@ class VttEngine:
                 "substance": substance,
                 "roughness": round(rough, 3),
                 "metalness": round(metal, 3),
+                # How much WORLD one repeat of the picture covers. A swatch
+                # tiled once per square repeats at the exact pitch of the grid,
+                # and a picture that repeats at the pitch of the grid is a
+                # TILE — see surface.SURFACE_TILE_FT.
+                # Keyed on the material's own NAME where no skin declared a
+                # substance, which is most of the ground on an outdoor board:
+                # `g`, `"`, `,` and `~` have none, and they are exactly the
+                # surfaces that must not repeat at the pitch of the grid.
+                "tile_ft": round(
+                    square_ft
+                    if (code in SUBSTANCE
+                        or (sk is not None and sk.standalone))
+                    else _surface.tile_ft(
+                        substance or tile(code).name.replace(" ", "-")), 2),
                 "normal": f"/imagery/surface/{image_id}/normal",
                 "rough_map": (f"/imagery/surface/{image_id}/rough"
                               + (f"?substance={quote(substance)}" if substance else "")),

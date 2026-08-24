@@ -37,6 +37,7 @@ from imagery import ImageStore                            # noqa: E402
 from imagery.models import ImageKind, context_key, slugify  # noqa: E402
 from vtt import skins as _skins                          # noqa: E402
 from vtt import surface as S                              # noqa: E402
+from vtt.art import SUBSTANCE as _art_substance                # noqa: E402
 from vtt.art import (board_look, material_look, material_ref,
                      material_subject)  # noqa: E402
 
@@ -112,10 +113,20 @@ def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "",
             if data:
                 (out / chan).write_bytes(data)
         rough, metal = S.properties_for(substance)
+        # The material's own name where no skin declares a substance — the
+        # same fallback `scene.surfaces_for` makes, or a staged meadow would
+        # be the one place still tiling at the pitch of the grid.
+        # A thing that IS one square gets exactly one square of picture; only
+        # ground and rock in the mass take a bigger repeat. The same substance
+        # answers both ways — granite is a cliff AND a field stone — so the
+        # SKIN decides, exactly as `scene.surfaces_for` has it.
+        one_square = code in _art_substance or (
+            _skins.skin(skin).standalone if _skins.skin(skin) else False)
+        tiling = 5.0 if one_square else S.tile_ft(substance)
         materials[slot] = image_id
         surfaces[slot] = {
             "substance": substance, "roughness": round(rough, 3),
-            "metalness": round(metal, 3),
+            "metalness": round(metal, 3), "tile_ft": round(tiling, 2),
             "normal": f"/imagery/surface/{image_id}/normal",
             "rough_map": f"/imagery/surface/{image_id}/rough",
         }

@@ -267,6 +267,17 @@ class Skin:
     #: Where the eaves sit, as a fraction of the drawn height. Below this the
     #: square draws its own wall; above it the traced roof takes over.
     roof_at: float = 1.0
+    #: Does this skin clothe ONE THING standing on a square, rather than the
+    #: ground or a mass?
+    #:
+    #: It decides how much world one repeat of the swatch covers. Ground and
+    #: rock in the mass want a big repeat, or the picture lands at the pitch of
+    #: the grid and the board reads as a tile set; a thing that IS one square
+    #: wants exactly one square of picture, or it is drawn a smeared fraction
+    #: of one. The same substance answers both ways — granite is a cliff face
+    #: AND a field stone — which is why this is on the skin and not on the
+    #: substance table.
+    standalone: bool = False
     #: What the ROOF is made of, when that is not the wall.
     #:
     #: The traced roof wore the building's own material, on the reasoning that
@@ -972,7 +983,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "raw grey granite, close-up of the bare fractured rock face",
          words="fallen boulders lie about the track, rounded and weathered, "
                "each one a separate stone",
-         variants=_BOULDER, height_ft=8),
+         variants=_BOULDER, height_ft=8,
+         standalone=True),
     # A ruined wall is a RUBBLE COURSE, not a panel. The first version was a
     # long thin slab with a coping on top, drawn along the run — which is a
     # fence, and is what came back painted: a garden fence around a ruin. What
@@ -1011,7 +1023,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "sandy grey with ochre weathering",
          words="the columns are snapped off at different heights, weathered "
                "drums of pale stone with fallen sections lying beside them",
-         variants=_SNAPPED_COLUMN),
+         variants=_SNAPPED_COLUMN,
+         standalone=True),
     # NB the swatch prompt is nearly all STONE. The first one said "grass and
     # weeds forcing up through the joints" and the swatch came back mostly
     # green, so the terrain image was green, so the board was a lawn — the
@@ -1027,7 +1040,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "raw grey granite, close-up of the bare fractured rock face",
          words="the low rocks are lichened granite boulders, waist high",
          misread="crates, boxes, chests, barrels",
-         variants=_FIELD_STONE),
+         variants=_FIELD_STONE,
+         standalone=True),
     Skin("scree", "scree",
          "close-up of loose shale and broken slate scree",
          words="the ground is loose shale and scree", soft=True),
@@ -1073,7 +1087,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "green weed, filling the whole frame",
          words="the columns are ancient, SNAPPED OFF and toppled, furred with "
                "weed and barnacle — a drowned ruin, nothing intact",
-         variants=_BROKEN_COLUMN, height_ft=9),
+         variants=_BROKEN_COLUMN, height_ft=9,
+         standalone=True),
     # No height override: a low wall screens three feet and that is a number a
     # player reads off the board. The SHAPE says it is a ruin — an eroded,
     # broken-topped stub instead of a tidy waist-high course — and the height
@@ -1198,7 +1213,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="square oak posts carry the ceiling beams, chamfered and dark "
                "with smoke, a brace out to the beam at the head of each",
          misread="candles, candlestick, candelabra, lit candle, wax candle",
-         variants=_POST, exact=True),
+         variants=_POST, exact=True,
+         standalone=True),
     # What a watchtower is BUILT of, and the DM's narration decides which — a
     # crossing in deep forest gets a timber tower and a mountain road a stone
     # one. See building_material: the board reads it off the biome the DM
@@ -1331,7 +1347,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "way, no corners and no edges",
          words="a single mast steps amidships, yard crossed and rigging set up "
                "to the rails",
-         variants=_MAST, height_ft=26, body="ship", exact=True),
+         variants=_MAST, height_ft=26, body="ship", exact=True,
+         standalone=True),
     Skin("railing", "spar-timber",
          "a flat expanse of oiled timber, straight close grain all running one "
          "way, no corners and no edges",

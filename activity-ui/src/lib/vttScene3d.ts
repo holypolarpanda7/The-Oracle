@@ -104,6 +104,43 @@ const DEPTH_STEPS = 8;
  * anybody laid. Deleted rather than made conditional: the variety it gave was
  * variety of ORIENTATION, on materials that have one. See `quad`. */
 
+/** A slow, smooth variation over the whole board, as a multiplier near 1.
+ *
+ *  The other half of why a board read as a tile engine. A seamless swatch laid
+ *  at one scale over a whole meadow is the SAME picture at the same brightness
+ *  in every square, and the eye finds that instantly however good the picture
+ *  is. Real ground varies over yards: damp patches, wear, where the light has
+ *  bleached it. Two octaves of value noise — one about seven squares across and
+ *  one about two and a half — sampled at the vertex rather than the square, so
+ *  it crosses square boundaries smoothly and never draws the grid it is there
+ *  to hide.
+ *
+ *  Deterministic in world coordinates, like every other derived look on this
+ *  board: the same square shades the same way every time it is drawn. */
+function macroAt(x: number, z: number): number {
+  const lattice = (ix: number, iz: number): number => {
+    const h = Math.imul(ix | 0, 374761393) ^ Math.imul(iz | 0, 668265263);
+    const m = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((m ^ (m >>> 16)) >>> 0) / 4294967296;
+  };
+  const octave = (period: number): number => {
+    const u = x / period;
+    const v = z / period;
+    const ix = Math.floor(u);
+    const iz = Math.floor(v);
+    const fx = u - ix;
+    const fz = v - iz;
+    // Smoothstep, or the lattice shows as a diamond grid of its own — which
+    // would be the tile problem again at a different pitch.
+    const sx = fx * fx * (3 - 2 * fx);
+    const sz = fz * fz * (3 - 2 * fz);
+    const a = lattice(ix, iz), b = lattice(ix + 1, iz);
+    const c = lattice(ix, iz + 1), d = lattice(ix + 1, iz + 1);
+    return (a + (b - a) * sx) + ((c + (d - c) * sx) - (a + (b - a) * sx)) * sz;
+  };
+  return 1 + (octave(7.3) - 0.5) * 0.20 + (octave(2.6) - 0.5) * 0.09;
+}
+
 class MeshBuilder {
   private pos: number[] = [];
   private norm: number[] = [];
@@ -114,6 +151,14 @@ class MeshBuilder {
   private owner: number[] = [];
   /** The square subsequent geometry belongs to. */
   at = 0;
+  /** How many times this material's picture repeats per square. One is the
+   *  pitch of the grid, which is what made a board look like a tile set; the
+   *  server decides it per substance (vtt/surface.SURFACE_TILE_FT). */
+  uvScale = 1;
+  /** Vary the albedo slowly across the board — see `macroAt`. Off for anything
+   *  drawn in its own colour on purpose, where a variation would read as the
+   *  thing being a different thing. */
+  macro = true;
 
   get empty(): boolean { return this.pos.length === 0; }
 
@@ -144,10 +189,11 @@ class MeshBuilder {
         const v = [a, b, c, d][idx];
         this.pos.push(v.x, v.y, v.z);
         this.norm.push(nx / len, ny / len, nz / len);
-        this.col.push(color.r, color.g, color.b);
+        const m = this.macro ? macroAt(v.x, v.z) : 1;
+        this.col.push(color.r * m, color.g * m, color.b * m);
         const [u, w] = uvs ? uvs[idx]
           : flat ? [v.x, v.z] : [(-nz * v.x + nx * v.z) / tan, v.y];
-        this.uv.push(u, w);
+        this.uv.push(u * this.uvScale, w * this.uvScale);
         this.owner.push(this.at);
       }
     }
@@ -571,6 +617,22 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   // an opaque canvas would hide it.
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setClearColor(0x000000, 0);
+  // A rendered image rather than a diagram. Without tone mapping every colour
+  // is its raw sRGB value clipped at white, which is why lit stone read as
+  // flat paper — highlights have nowhere to roll off and the midtones sit dead
+  // flat. ACES is the film curve everything modern uses; the exposure is above
+  // one because the board is lit from a long way off and the curve pulls the
+  // mids down.
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  // SHADOWS. The single largest difference between a diorama of flat tiles and
+  // a room with things standing in it: without them nothing on the board is
+  // attached to the ground it stands on. Cheap here for a reason peculiar to
+  // this camera — the sun never moves and the board is static, so the map is
+  // rendered once per rebuild rather than once per frame (see `sunlight`).
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.autoUpdate = false;
 
   const scene3 = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, CAMERA_DISTANCE * 2);
@@ -579,11 +641,24 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   // faces of every corner differ, which is what makes a block read as a block.
   const sun = new THREE.DirectionalLight(0xfff2dc, 2.1);
   sun.position.set(-0.4, 1, 0.65);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  // A thin wall lit almost edge-on is the classic acne case, and `normalBias`
+  // is the fix that does not also detach every shadow from the thing casting
+  // it — which is what a large depth bias does, and what makes a shadow read
+  // as a decal lying beside the object.
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.03;
   scene3.add(sun);
+  scene3.add(sun.target);
   // A cool fill from BELOW as well as above: a hemisphere light is what stops
   // the underside of every ledge, rail and hull going to flat black now that
   // the surfaces respond to light instead of merely being tinted by it.
-  scene3.add(new THREE.HemisphereLight(0xb9c8ff, 0x3a3326, 1.25));
+  // Lowered from 1.25 when the sun learned to cast: fill that high is what
+  // washed a shadow out to nothing, and the underside of a ledge going flat
+  // black — the thing this light exists to prevent — is a question of it being
+  // present at all, not of it being strong.
+  scene3.add(new THREE.HemisphereLight(0xb9c8ff, 0x3a3326, 0.55));
 
   // Metalness is a switch, not a dial — a brass fitting either conducts or it
   // does not — and a metal with nothing to reflect renders BLACK. So the scene
@@ -592,7 +667,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   const pmrem = new THREE.PMREMGenerator(renderer);
   try {
     scene3.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    scene3.environmentIntensity = 0.35;
+    scene3.environmentIntensity = 0.2;
   } catch {
     // An environment is a luxury; a board that will not start is not.
   }
@@ -735,7 +810,16 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     const waterMb = new MeshBuilder();
     const builderFor = (slot: string) => {
       let b = byCode.get(slot);
-      if (!b) { b = new MeshBuilder(); byCode.set(slot, b); }
+      if (!b) {
+        b = new MeshBuilder();
+        // How often this material's picture repeats, in squares. The server
+        // says how much WORLD one repeat covers (vtt/surface.tile_ft): ground
+        // is fifteen feet and made things are five, so a meadow stops
+        // repeating at the pitch of the grid and a plank stays a plank.
+        const ft = scene.surfaces?.[slot]?.tile_ft;
+        if (ft && ft > 0) b.uvScale = (scene.square_ft || 5) / ft;
+        byCode.set(slot, b);
+      }
       return b;
     };
     const gridPts: number[] = [];
@@ -1275,10 +1359,65 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       shadeTargets.push({
         geom, owners: mb.owners(),
         base: new THREE.Color(textured.has(code) ? "#ffffff" : tileStyle(code).fill),
+        // The colours as BUILT, because they are no longer one colour per
+        // mesh: `macroAt` varies every vertex a little. Same reason the
+        // scenery builder needed them — shading multiplies a tint rather than
+        // replacing it, and without this the first shading pass would flatten
+        // the variation straight back out.
+        tints: Float32Array.from(
+          (geom.getAttribute("color") as THREE.BufferAttribute)
+            .array as Float32Array),
       });
       terrainGroup.add(new THREE.Mesh(geom, terrainMaterial(code)));
     }
     shadeKey = "";      // force a tint pass over the new geometry
+
+    // THE SUN, fitted to this board. A directional light shadows through an
+    // orthographic camera of its own, and one sized to the board keeps the
+    // texels dense — about six to the foot at 2048 — where a fixed generous
+    // box would spend most of its map on empty space and give every edge a
+    // staircase.
+    const span = Math.max(scene.width, scene.height);
+    const dir = new THREE.Vector3(-0.4, 1, 0.65).normalize();
+    sun.position.set(scene.width / 2 + dir.x * span, dir.y * span,
+                     scene.height / 2 + dir.z * span);
+    sun.target.position.set(scene.width / 2, base, scene.height / 2);
+    sun.target.updateMatrixWorld();
+    const shadowCam = sun.shadow.camera as THREE.OrthographicCamera;
+    // Three quarters of the long side covers the DIAGONAL, which is what a
+    // light coming in across the corner actually has to reach.
+    const reach = span * 0.75;
+    shadowCam.left = -reach;
+    shadowCam.right = reach;
+    shadowCam.top = reach;
+    shadowCam.bottom = -reach;
+    shadowCam.near = 0.5;
+    shadowCam.far = span * 2.5;
+    shadowCam.updateProjectionMatrix();
+    // Everything with a real material casts and receives. The washes, the
+    // markers and the grid are MeshBasicMaterial and are skipped by that test,
+    // which is right: a movement range is a diagram drawn ON the floor, and a
+    // diagram that cast a shadow would be a thing in the room.
+    terrainGroup.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const mat = m.material as THREE.Material & { isMeshStandardMaterial?: boolean };
+      if (!mat?.isMeshStandardMaterial) return;
+      m.castShadow = true;
+      m.receiveShadow = true;
+      // THE reason the first attempt cast nothing at all. For a FrontSide
+      // material three renders BACK faces into the shadow map, which is the
+      // right default for closed solids and silently wrong for everything
+      // here: this board is built out of open single-sided SHEETS — a roof
+      // pitch, a floor quad, a wall face — and the face a sheet turns to the
+      // sun is exactly the one that gets culled. Nothing looks broken; there
+      // are simply no shadows.
+      mat.shadowSide = THREE.DoubleSide;
+    });
+    // Once per rebuild, never per frame: the sun does not move and the board
+    // is static, so panning and turning the camera cost no shadow work at all.
+    renderer.shadowMap.needsUpdate = true;
+
     if (gridPts.length) {
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.Float32BufferAttribute(gridPts, 3));
@@ -1332,6 +1471,17 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           // white and applied as a factor.
           const i = v * 3;
           const k = _shadeKey(scene, owners[v], w, fog, sight, light);
+          // WATCHED BUT UNLIT is the one shade that is not a multiplier: the
+          // rule is that darkvision is greyscale, and a factor computed
+          // against white cannot take the colour out of a tint — it would
+          // claim a colour nobody in the room can make out. Done per vertex,
+          // off the vertex's own tint.
+          if ((k >> 2) === Seen.Watched && (k & 3) === 2) {
+            const y = (tints[i] * 0.299 + tints[i + 1] * 0.587
+                       + tints[i + 2] * 0.114) * 0.55;
+            arr[i] = y; arr[i + 1] = y; arr[i + 2] = y;
+            continue;
+          }
           let f = cache.get(k);
           if (!f) { f = shade(WHITE, (k >> 2) as Seen, "bdx"[k & 3] ?? "b");
                     cache.set(k, f); }

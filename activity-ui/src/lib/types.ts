@@ -577,6 +577,10 @@ export interface VttScene {
     substance?: string;
     roughness: number;
     metalness: number;
+    /** How many FEET of the world one repeat of this swatch covers. Ground is
+     *  fifteen and made things are five; one square would be the pitch of the
+     *  grid, which is what makes a board read as a tile set. */
+    tile_ft?: number;
     normal: string;
     rough_map: string;
   }>;

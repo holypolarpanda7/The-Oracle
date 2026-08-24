@@ -124,6 +124,84 @@ SURFACE_PROPERTIES: dict[str, tuple[float, float]] = {
 #: reason the table above stays short.
 DEFAULT_PROPERTIES = (0.84, 0.0)
 
+#: How many FEET of the world one repeat of this substance's swatch covers.
+#:
+#: A swatch tiled once per five-foot square repeats in lock-step at the exact
+#: pitch of the grid, and a picture that repeats at the pitch of the grid IS a
+#: tile — which is what makes a board read as a 1990s tile engine however good
+#: the swatch and however modern the lighting. Reported by a player in those
+#: words, and it is the swatch's own SCALE that decides it: how much of the
+#: world the photograph is a photograph of.
+#:
+#: Made things keep the square, because their scale is real and readable: a
+#: plank swatch shows about eight boards, which over five feet is a seven-inch
+#: board, and stretching it to fifteen feet would be a two-foot plank. Ground
+#: has no such scale — nobody can say how wide a tuft of grass is at a glance —
+#: so it takes three squares, and the repeat stops landing on the grid.
+#: Keyed on the SUBSTANCE where a skin declares one and on the material's own
+#: name where it does not — which is most of the ground on an outdoor board,
+#: since `g`, `"`, `,` and `~` carry no substance at all. Both spellings are in
+#: the table for anything that has two.
+SURFACE_TILE_FT: dict[str, float] = {
+    # The BROAD grounds — the surface most of a board is made of, laid
+    # square after square across the whole of it. Those are the ones the eye
+    # reads the repeat in, and the only ones with room to show a whole repeat.
+    "grass": 15.0, "scree": 15.0, "sand": 15.0, "dirt": 15.0, "earth": 15.0,
+    "silt": 15.0, "snow": 15.0, "ash": 15.0,
+    "water": 15.0, "shallow-water": 15.0, "deep-water": 15.0, "seabed": 15.0,
+    "open-sea": 15.0, "sea": 15.0, "shallows": 15.0, "channel": 15.0,
+    # Rock in the MASS — a cliff face, a cave wall. Its features really are
+    # metres across. (A boulder is the same granite and is standalone, so it
+    # takes its square; see Skin.standalone.)
+    "granite": 12.0, "limestone": 12.0, "basalt": 12.0, "rock": 12.0,
+    "rock-face": 12.0, "ice": 12.0, "sludge": 12.0,
+    # PATCHES keep the square, and this is measured rather than reasoned: a
+    # stand of undergrowth is three to nine squares, so a repeat three squares
+    # wide shows an arbitrary CROP of one — and every one of these swatches has
+    # big low-frequency structure in it, which magnified came back as pale
+    # smears lying on the grass. Enlarging a picture only helps where there is
+    # room to see the whole of it.
+    "undergrowth": 5.0, "rubble": 5.0, "mud": 5.0, "moss": 5.0, "coral": 5.0,
+    # MADE things, where the scale is the one thing you really can measure:
+    # count what the picture shows and ask how big that is. A plank swatch
+    # shows about eight boards, so five feet is a seven-inch board and right;
+    # a dungeon floor shows five stones across, and five feet would be a
+    # ONE-FOOT flagstone, which is why a great hall came back looking tiled in
+    # bathroom tile. Twelve feet makes them two and a half — a flagstone.
+    "floor": 12.0, "flagstone": 12.0, "wet-flagstone": 12.0,
+    "wall": 10.0, "masonry": 10.0, "dressed-stone": 10.0,
+    "ruined-masonry": 10.0, "ruined-paving": 10.0,
+    "planking": 5.0, "timber": 5.0, "wood": 5.0, "plaster": 5.0,
+    "brick": 5.0, "tile": 5.0,
+    "cobbles": 5.0, "canvas": 5.0, "thatch": 5.0, "iron": 5.0, "metal": 5.0,
+    "road": 5.0, "bridge": 5.0, "stairs": 5.0,
+    # Fire and lava are LOOKED at rather than stood on, and both are already
+    # drawn small; webs are strung between two things a square apart.
+    "fire": 5.0, "lava": 5.0, "webs": 5.0, "foliage": 5.0,
+}
+
+#: One repeat per square, which is what every surface did before scale existed.
+DEFAULT_TILE_FT = 5.0
+
+
+def tile_ft(substance: str) -> float:
+    """How many feet one repeat of this substance's swatch covers.
+
+    Matched whole-slug first and then on WORDS, exactly as
+    :func:`properties_for` is — so ``seabed-shallow`` and ``field-stone`` find
+    an answer without either needing an entry of its own.
+    """
+    s = (substance or "").strip().lower()
+    if not s:
+        return DEFAULT_TILE_FT
+    if s in SURFACE_TILE_FT:
+        return SURFACE_TILE_FT[s]
+    words = {w for w in s.replace("_", "-").split("-") if w}
+    for key, val in SURFACE_TILE_FT.items():
+        if key in words:
+            return val
+    return DEFAULT_TILE_FT
+
 
 def properties_for(substance: str) -> tuple[float, float]:
     """``(roughness, metalness)`` for a substance slug.
