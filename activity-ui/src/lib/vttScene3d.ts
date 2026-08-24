@@ -141,6 +141,13 @@ function macroAt(x: number, z: number): number {
   return 1 + (octave(7.3) - 0.5) * 0.20 + (octave(2.6) - 0.5) * 0.09;
 }
 
+/** How dark the foot of an upright face goes, and over how much of a square. */
+const CONTACT_AO = 0.34;
+const CONTACT_FT = 0.55;
+
+/** How dark a floor goes in the crease of a corner. */
+const CREASE_AO = 0.42;
+
 class MeshBuilder {
   private pos: number[] = [];
   private norm: number[] = [];
@@ -174,7 +181,8 @@ class MeshBuilder {
    *  quad: one unit is one square. */
   quad(a: THREE.Vector3Like, b: THREE.Vector3Like, c: THREE.Vector3Like,
        d: THREE.Vector3Like, color: THREE.Color,
-       uvs?: readonly [number, number][]): void {
+       uvs?: readonly [number, number][],
+       aos?: readonly number[]): void {
     const nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
     const ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
     const nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
@@ -184,12 +192,23 @@ class MeshBuilder {
     // other instead of each starting the picture again.
     const flat = Math.abs(ny) >= Math.max(Math.abs(nx), Math.abs(nz));
     const tan = Math.hypot(nx, nz) || 1;
+    // CONTACT SHADING. A cast shadow only darkens what the sun can see past;
+    // the inside of every corner stays exactly as bright as open floor, which
+    // is what leaves geometry looking like it is lying ON the ground rather
+    // than standing in it. An upright face is darkened toward its own bottom
+    // edge — always true of a real wall, needs nothing but the quad itself,
+    // and it is what actually plants a thing on the floor.
+    const footY = Math.min(a.y, b.y, c.y, d.y);
     for (const [i, j, k] of [[0, 1, 2], [0, 2, 3]] as const) {
       for (const idx of [i, j, k]) {
         const v = [a, b, c, d][idx];
         this.pos.push(v.x, v.y, v.z);
         this.norm.push(nx / len, ny / len, nz / len);
-        const m = this.macro ? macroAt(v.x, v.z) : 1;
+        let m = this.macro ? macroAt(v.x, v.z) : 1;
+        if (aos) m *= aos[idx];
+        else if (!flat) {
+          m *= 1 - CONTACT_AO * Math.max(0, 1 - (v.y - footY) / CONTACT_FT);
+        }
         this.col.push(color.r * m, color.g * m, color.b * m);
         const [u, w] = uvs ? uvs[idx]
           : flat ? [v.x, v.z] : [(-nz * v.x + nx * v.z) / tan, v.y];
@@ -915,6 +934,37 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       });
     };
 
+    /** How boxed-in a point on the floor is, in [0, 1].
+     *
+     *  The other half of contact shading, and the half a cast shadow cannot
+     *  give you: a corner is dark because most of the SKY is blocked from it,
+     *  which is true whichever way the sun happens to be pointing. Sampled at
+     *  the four squares meeting at the nearest grid corner, so it is a
+     *  property of the corner and two squares sharing an edge agree about it —
+     *  the same rule `corner_lift_ft` follows for the ground itself.
+     *
+     *  Memoised per corner: a 46x34 board has 1,600 of them and every vertex
+     *  of every floor lands on one. */
+    const occCache = new Map<number, number>();
+    const occAt = (px: number, pz: number): number => {
+      const ix = Math.round(px);
+      const iz = Math.round(pz);
+      const key = iz * 4096 + ix;
+      const got = occCache.get(key);
+      if (got !== undefined) return got;
+      let n = 0;
+      for (const [dx, dz] of [[-1, -1], [0, -1], [-1, 0], [0, 0]] as const) {
+        const c = at(ix + dx, iz + dz);
+        // Off the board is open sky, not a wall — a board's own rim must not
+        // come back with a dark border painted round it.
+        if (c === null) continue;
+        if (STRUCTURE_CODES.has(c) || tileHeightFt(c) > 0) n++;
+      }
+      const occ = n / 4;
+      occCache.set(key, occ);
+      return occ;
+    };
+
     /** Floor a creature could stand on — not structure, not off the board.
      *  Void counts as closed: on an upper storey it is open air, and a wall
      *  should not grow a face onto a hole. Mirrors is_open in vtt/isocam.py. */
@@ -1017,13 +1067,18 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // still keeps its vertical face.
         const ground = (u: number, w: number) =>
           base + heightUnits(scene, surfaceLiftFt(scene, x, z, u, w, level));
+        const crease = (u: number, w: number) =>
+          1 - CREASE_AO * occAt(x + u, z + w);
         for (let k = 1; k < pts.length - 1; k++) {
           mb.quad(v3(x + pts[0][0], ground(pts[0][0], pts[0][1]), z + pts[0][1]),
                   v3(x + pts[k][0], ground(pts[k][0], pts[k][1]), z + pts[k][1]),
                   v3(x + pts[k + 1][0], ground(pts[k + 1][0], pts[k + 1][1]),
                      z + pts[k + 1][1]),
                   v3(x + pts[0][0], ground(pts[0][0], pts[0][1]), z + pts[0][1]),
-                  color);
+                  color, undefined,
+                  [crease(pts[0][0], pts[0][1]), crease(pts[k][0], pts[k][1]),
+                   crease(pts[k + 1][0], pts[k + 1][1]),
+                   crease(pts[0][0], pts[0][1])]);
         }
         for (let k = 0; k < pts.length; k++) {
           if (!edgeEnds[k]) continue;

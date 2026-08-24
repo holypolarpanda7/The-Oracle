@@ -86,6 +86,15 @@ if (!SCENERY.has(TAG)) {
 } else {
   console.log("PASS  scenery keeps its own colours through shading");
 }
+// NO GUARD FOR THE SHADOWS, and the attempt is worth recording. The first
+// shadow pass cast nothing at all while looking perfectly correct in code
+// (three renders BACK faces into the shadow map for a FrontSide material,
+// which drops every single-sided sheet, and this board is built out of
+// sheets) — so a standing check would be worth having. A dark-tail histogram
+// is not it: measured on this board it reads 16% with the sun casting and
+// 27% with it off, because switching casting off also brightens every lit
+// face and moves the median. It cannot tell a cast shadow from ordinary
+// diffuse shading, and a check that cannot fail is worse than none.
 const turn = page.locator(".vtt-icon", { hasText: "⟳" });
 if (await turn.count()) {
   await turn.first().click();
