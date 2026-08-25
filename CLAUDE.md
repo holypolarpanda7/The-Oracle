@@ -1735,6 +1735,26 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   ground-floor; not survivable once the cutaway started deciding what to DRAW
   from it. `drawnTopFt`, `cutAwayAt`, `occludedAt` and `squareUnderRay` all take
   the level now.
+  **A ROOF COMES OFF WHEN THE NEAR WALLS DO**, and it took a player to say
+  so: cutting the walls away buys nothing while the lid is on. It began to
+  matter when a town became somewhere you go IN — those houses have real
+  floor, a doorway and stairs, so a fight happens inside one and nobody could
+  watch it. Everything else on the board already agreed you could see in:
+  occlusion has never counted a roof, so a creature under one is not marked
+  hidden; `squareUnderRay` has never counted one, so a click on what looks
+  like a roof already selects the floor beneath it; and the rules have never
+  known roofs exist. Only the drawing said otherwise. To NOTHING rather than
+  to a stub — the opposite of the wall rule and for the reason that rule
+  gives: a wall is stubbed because a floor with no edge hangs in space, and
+  nothing hangs when a roof goes, since the walls that make a room read as a
+  room are still standing. An eaves FRINGE was tried and is worse twice over
+  (at the eaves line, which is 0.70 of the wall's height, the terrace stands
+  proud of its own roofs; at the wall head it is a tile band hanging over the
+  stubs the cutaway just made). `hull.roofs` decides with `hollow`, asked of
+  what the traced outline ENCLOSES and never of the region's own squares —
+  without `footprints` a region is the wall RING, so a roof reporting on its
+  own masonry would leave every lone hut with its lid on, and with footprints
+  the two agree, which is why looking at a street would never have caught it.
   `awayDir` is one of EIGHT directions on purpose: the exact
   direction changes with every degree of a drag and the set of squares it picks
   out does not, so the mesh rebuilds eight times in a full turn instead of on
