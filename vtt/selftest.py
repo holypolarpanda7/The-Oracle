@@ -1529,6 +1529,37 @@ def test_vessels() -> None:
           all(b["w"] >= 3 and b["h"] >= 3 for b in _town.buildings))
     check("...and a way in", sum(r.count("/") for r in _rows5) >= 6,
           f"{sum(r.count('/') for r in _rows5)} doorways")
+    # A MARKET SQUARE. A grid of equal roads between equal blocks is a CITY,
+    # and this is a town — reported in those words, along with the forty-foot
+    # gate tower that was standing free in the middle of a carriageway because
+    # the widest clear ground on the board was the road. What a town has that a
+    # grid has not is one open PLACE where the roads meet, with the monument in
+    # the middle of it and the houses drawn back around the edge.
+    check("a town opens out where its roads cross", bool(_town.focus),
+          f"{_town.focus}")
+    if _town.focus:
+        _cx, _cy = _town.focus[0]
+        _span = [(x, y)
+                 for y in range(_cy - 5, _cy + 6) for x in range(_cx - 5, _cx + 6)
+                 if 0 <= y < len(_rows5) and 0 <= x < len(_rows5[y])
+                 and _rows5[y][x] in "=,on"]
+        check("...into a square, not a wide bit of road",
+              len(_span) >= 70, f"{len(_span)} open squares within 25 ft")
+        # The middle of a market place is kept clear, which is most of what
+        # makes it one — and it is also what lets the landmark stand there:
+        # `setpieces.fits` wants a clear margin all round, so one barrel inside
+        # a five-by-five box sent the tower back out to the rim of the board.
+        check("...and its middle is kept clear for the monument",
+              all(_rows5[y][x] == "=" for y in range(_cy - 1, _cy + 2)
+                  for x in range(_cx - 1, _cx + 2)
+                  if 0 <= y < len(_rows5) and 0 <= x < len(_rows5[y])
+                  and _rows5[y][x] not in "O"),
+              "".join(_rows5[_cy][_cx - 2:_cx + 3]))
+        _mark = [p for p in (_town.setpieces or [])]
+        check("...and that is where the landmark stands",
+              bool(_mark) and any(abs(p["x"] + 2 - _cx) <= 2
+                                  and abs(p["y"] + 2 - _cy) <= 2 for p in _mark),
+              f"{[(p['slug'], p['x'], p['y']) for p in _mark]}")
     # Every inside must be REACHABLE. A house with its door opening into the
     # neighbour's masonry is a sealed box, which is what a door rolled onto a
     # random side gives you in a terrace.

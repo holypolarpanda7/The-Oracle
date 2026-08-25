@@ -32,7 +32,8 @@ from typing import Callable, Iterable, Optional, Sequence
 
 from . import skins as _skins
 from .skins import SKYSHIP_STYLES
-from .terrain import APERTURES, FLOOR, VOID, WALL, Grid, aperture_axis
+from .terrain import (APERTURES, DECOR_CODES, FLOOR, VOID, WALL, Grid,
+                      aperture_axis)
 
 Square = tuple[int, int]
 
@@ -93,6 +94,13 @@ class GeneratedMap:
     # one HOUSE with its own inside — the roof tracer needs them one at a time
     # or a terrace comes back under a single roof, which is a warehouse.
     buildings: list[dict] = field(default_factory=list)
+
+    #: Where a LANDMARK belongs, if this board has an opinion about it. A
+    #: market square is the one place in a town a forty-foot tower could stand;
+    #: without somewhere to nominate it, `setpieces_for` scans for whatever fits
+    #: and puts it in the middle of a carriageway. Empty means no opinion, which
+    #: is every other archetype.
+    focus: list[Square] = field(default_factory=list)
     # The level sheet over each pool, {"x,y": feet} — sparse, and DERIVED from
     # the grid plus the elevation the sink cut (see vtt.water). Traced on this
     # side because a pool's surface is a property of the whole POOL and no
@@ -800,6 +808,17 @@ STREET_FT = 25
 
 #: How deep a block of houses is, front to back — a room and a half and a yard.
 BLOCK_FT = 40
+
+#: How far the middle of a market square is kept clear of barrows and crates,
+#: in squares. Enough to stand the biggest thing the town pool offers and leave
+#: the margin `setpieces.fits` asks for all round it.
+MARKET_CLEAR = 3
+
+#: How far a MARKET SQUARE stands back from the crossroads it opens out of, on
+#: each side. Fifteen feet a side against a twenty-five-foot roadway gives a
+#: place about fifty-five across — big enough to hold a market, a well or a
+#: tower and still be bounded by the houses round it rather than by the board.
+MARKET_SETBACK_FT = 15
 
 #: A big coaching inn's public room, front to back. Past this it is a hall.
 TAPROOM_FT = 70
@@ -1614,6 +1633,69 @@ def _terrace_houses(g: Grid, rng: random.Random, out: GeneratedMap,
     out.buildings = placed
 
 
+def _market_square(g: Grid, out: GeneratedMap, blocks: list[tuple[int, int, int, int]],
+                   hlanes: list[int], vlanes: list[int],
+                   road: int) -> tuple[list[tuple[int, int, int, int]], list[Square]]:
+    """Open the most central crossroads out into a MARKET SQUARE.
+
+    A grid of equal roads between equal blocks is a CITY, and this is meant to
+    be a town. What a town has that a grid has not is one open PLACE where the
+    roads meet, with the cross or the well or the belfry standing in the middle
+    of it and the houses drawn back around the edge — and it is the only honest
+    spot on the whole board for the forty-foot tower the landmark pool offers.
+    Free-standing in a carriageway that tower is a building nobody could have
+    built, which is exactly how a player reported it.
+
+    The blocks stay RECTANGLES, which is what lets `_terrace_houses` go on
+    knowing nothing about this: each of the four blocks meeting at the crossing
+    gives up its corner, and a rectangle minus a corner is two rectangles. The
+    plaza is then the junction plus those four corners — cut back to an OCTAGON,
+    because a square opening on a square grid is another block, and the corner
+    a cart actually rounds is chamfered.
+
+    Returns the blocks to build on and the squares the square itself covers.
+    """
+    if not hlanes or not vlanes:
+        return blocks, []
+    # The most central crossing. One at the rim is half a square and reads as
+    # a gap in the frontage rather than as a place.
+    hy = min(hlanes, key=lambda y: abs(y + road / 2 - g.height / 2))
+    vx = min(vlanes, key=lambda x: abs(x + road / 2 - g.width / 2))
+    cx, cy = vx + road // 2, hy + road // 2
+    bite = max(1, _sq(MARKET_SETBACK_FT))
+    reach = road // 2 + bite
+
+    kept: list[tuple[int, int, int, int]] = []
+    for x0, y0, x1, y1 in blocks:
+        # Only a block whose CORNER is the crossing gives anything up.
+        near_x = x1 == vx - 1 or x0 == vx + road
+        near_y = y1 == hy - 1 or y0 == hy + road
+        if not (near_x and near_y):
+            kept.append((x0, y0, x1, y1))
+            continue
+        gx0, gx1 = ((x1 - bite + 1, x1) if x1 == vx - 1 else (x0, x0 + bite - 1))
+        gy0, gy1 = ((y1 - bite + 1, y1) if y1 == hy - 1 else (y0, y0 + bite - 1))
+        # The block minus that corner, as rectangles — never as an L.
+        left = (x0, y0, gx0 - 1, y1) if gx0 > x0 else None
+        right = (gx1 + 1, y0, x1, y1) if gx1 < x1 else None
+        rest = (gx0, y0, gx1, gy0 - 1) if gy0 > y0 else (
+            (gx0, gy1 + 1, gx1, y1) if gy1 < y1 else None)
+        for r in (left, right, rest):
+            if r and r[2] >= r[0] and r[3] >= r[1]:
+                kept.append(r)
+
+    cells: list[Square] = []
+    for y in range(cy - reach, cy + reach + 1):
+        for x in range(cx - reach, cx + reach + 1):
+            dx, dy = abs(x - cx), abs(y - cy)
+            # A rounded square: the octagon a cart would actually wear into it.
+            if max(dx, dy) > reach or dx + dy > reach + bite:
+                continue
+            if g.in_bounds(x, y):
+                cells.append((x, y))
+    out.focus = [(cx, cy)]
+    return kept, cells
+
 def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     # A town is BLOCKS with HOUSES on them, and every number here is a real
     # measurement: a roadway a cart and two people can pass on, a block of
@@ -1633,6 +1715,16 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
         while at + road + block <= span:
             out_.append(at)
             at += block * 2 + road
+        # A LAST ROAD down the far side of the last block, when there is room
+        # for the roadway but not for another block behind it. Without it the
+        # remainder — up to two blocks and a road deep — stayed one solid mass,
+        # because `_terrace_houses` only builds along a side that FACES a road:
+        # a 46x34 board came back 61% impassable, and the half of it nobody
+        # could enter read as the monolithic city block a player reported. It
+        # is also the `_for_area` rule arriving here, since quadrupling the
+        # area had been taking a town from seven buildings to ten.
+        if out_ and at + road <= span:
+            out_.append(at)
         return out_ or ([max(0, (span - road) // 2)] if span >= road + 2 else [])
 
     hlanes = _lanes(g.height)
@@ -1660,7 +1752,10 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     blocks = [(x0, y0, x1, y1)
               for x0, x1 in _spans(vlanes, g.width)
               for y0, y1 in _spans(hlanes, g.height)]
+    blocks, plaza = _market_square(g, out, blocks, hlanes, vlanes, road)
     _terrace_houses(g, rng, out, blocks)
+    for x, y in plaza:
+        g.set(x, y, "=")
 
     # A TOWN IS ON GROUND, and ground is not a billiard table. The roadway was
     # dead flat, which is what made a street read as a diagram: nothing to
@@ -1697,8 +1792,29 @@ def _gen_street(g: Grid, rng: random.Random, out: GeneratedMap) -> None:
     _scatter(g, rng, "o", 0.05, only_on=("=",))
     _scatter(g, rng, "n", 0.02, only_on=("=",))
     _scatter(g, rng, ",", 0.04, only_on=("=",))
+    # THE MIDDLE OF A MARKET PLACE IS KEPT CLEAR, which is most of what makes
+    # it one — and it is also the difference between the landmark standing
+    # where the board asked for it and standing wherever else it fitted. The
+    # scatter lays crates and barrels on every roadway square including this
+    # one, and `setpieces.fits` wants a clear margin all round, so a single
+    # barrel inside a five-by-five box was enough to send the tower back out
+    # to the rim of the board. Swept AFTER, because a scatter that had to know
+    # about the square would be the square's rule living somewhere else.
+    for cx, cy in out.focus:
+        for y in range(cy - MARKET_CLEAR, cy + MARKET_CLEAR + 1):
+            for x in range(cx - MARKET_CLEAR, cx + MARKET_CLEAR + 1):
+                if (g.in_bounds(x, y) and g.get(x, y) in DECOR_CODES
+                        and abs(x - cx) + abs(y - cy) <= MARKET_CLEAR + 1):
+                    g.set(x, y, "=")
     out.lighting = rng.choice(["bright", "dim"])
-    out.description = "a narrow city street between shuttered buildings, crates stacked at the walls"
+    # NOT "a narrow city street", which is what this said and what the board
+    # looked like: the prompt was telling the painter the same wrong thing the
+    # grid was telling the eye.
+    out.description = (
+        "a town street of close-packed houses, shutters and doors onto the "
+        "roadway, crates stacked at the walls"
+        + (", opening onto the market square where the roads cross"
+           if plaza else ""))
     # ROOFS. A street fight with archers above it is the asymmetric fight, and
     # the buildings were solid blocks with nothing on top. The roof level is
     # laid over the building squares only, so the street itself stays open sky
@@ -3287,7 +3403,15 @@ _SETPIECES: dict[str, tuple[str, ...]] = {
     "cave": ("cave-pillar", "boulder-heap"),
     "mountain-pass": ("boulder-heap", "standing-stone"),
     "terraces": ("standing-stone", "boulder-heap", "ruined-arch"),
-    "street": ("village-fountain", "gatehouse-tower"),
+    # A GATE TOWER BELONGS AT A GATE. Free-standing in the middle of a
+    # twenty-five-foot carriageway it is forty feet of masonry nobody could
+    # have built, which is how a player reported it, and no placement rule
+    # fixes that — the piece is a bit of a town's WALL and this board has no
+    # wall on it. It keeps its home on `bridge`, where a tower at the
+    # bridgehead is exactly what it is for, and a DM who names one still gets
+    # it (the pool is a default, not a permission) standing in the market
+    # square, which is the one open place a town has.
+    "street": ("village-fountain",),
     "camp": ("standing-stone", "boulder-heap"),
     "arena": ("great-statue", "temple-plinth"),
     "bridge": ("gatehouse-tower",),
@@ -3407,6 +3531,7 @@ def _place_setpieces(grid: Grid, rng: random.Random, out: GeneratedMap,
 
     for placed in _sp.setpieces_for(grid, want, seed=out.seed, mode=out.mode,
                                     joins=_joins,
+                                    prefer=out.focus,
                                     clear=asked):
         rec = {"slug": placed.slug, "x": placed.x,
                "y": placed.y, "yaw": placed.yaw}
