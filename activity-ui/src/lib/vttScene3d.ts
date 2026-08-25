@@ -161,6 +161,32 @@ const CREASE_AO = 0.42;
  *  is lit at, and for this reason. */
 const SUN_DIR = new THREE.Vector3(-0.46, 0.60, 0.75);
 
+/** The KEY LIGHT for a board's own ambient level — `TacticalMap.lighting`,
+ *  which `state()` has shipped since boards were opened and which this
+ *  renderer had never once read.
+ *
+ *  It matters more than it used to. When the board was flat tinting, the sun
+ *  was a shading convention and the light MAP was the whole statement about
+ *  how lit a room is; now the sun is 2.9 of warm daylight with real cast
+ *  shadows, and a crypt whose ambient is `dark` was being rendered as a
+ *  sunlit hall with a blue-grey filter over it. The rules said the party were
+ *  standing in the dark and the picture said late afternoon.
+ *
+ *  A key light survives at every level on purpose — form is a drawing
+ *  convention here, like the camera, and a board lit only by flat ambient is
+ *  the coloured cardboard this whole pass exists to get away from. What
+ *  changes is how much, and what colour: daylight is warm and strong, a dim
+ *  room is weaker and neutral, and an unlit one gets a cold, low key that
+ *  says which way a wall faces and nothing about the time of day. Dropping
+ *  the sun also drops the whole board down the tone curve, where the light
+ *  map's own tiers — a torch's bright core against the dim room around it —
+ *  stop being squeezed together in the shoulder and can actually be seen. */
+const KEY_LIGHT: Record<string, { colour: number; sun: number; fill: number }> = {
+  bright: { colour: 0xfff2dc, sun: 2.9, fill: 0.28 },
+  dim:    { colour: 0xe8ecf4, sun: 1.5, fill: 0.24 },
+  dark:   { colour: 0xbcccec, sun: 0.85, fill: 0.18 },
+};
+
 class MeshBuilder {
   private pos: number[] = [];
   private norm: number[] = [];
@@ -455,6 +481,20 @@ const APERTURES: ReadonlySet<string> = new Set(["+", "/", "p"]);
  *  party forgets the map every time it turns around. */
 const enum Seen { Never = 0, Remembered = 1, Watched = 2 }
 
+/** How far a DIM square falls short of a lit one.
+ *
+ *  It was 0.72, which on a board that also carries a torch is a step of about
+ *  a tenth on screen — a bright core you can find by knowing where the torch
+ *  is and not by looking. Dim light is a rules line (lightly obscured:
+ *  disadvantage on anything you do by sight), so drawing it faintly is not
+ *  neutral, it is a board that declines to say something the rules say.
+ *
+ *  It is ONE number for two tiers on purpose, and the rule is what pairs
+ *  them: darkvision lets you treat darkness as dim light, in greyscale. So a
+ *  dim square and a dark square seen by darkvision are the same brightness by
+ *  the book, and the only honest difference between them is the colour. */
+const DIM = 0.55;
+
 /** Dim and tint a tile for what can be seen of it and how lit it is.
  *
  *  Baked into the mesh rather than laid over it, because an overlay quad on the
@@ -474,9 +514,9 @@ function shade(base: THREE.Color, seen: Seen, light: string): THREE.Color {
     // is that darkvision is greyscale. Rendering it merely dim would claim a
     // colour nobody in the room can actually make out.
     const g = c.r * 0.299 + c.g * 0.587 + c.b * 0.114;
-    return c.setRGB(g, g, g).multiplyScalar(0.55);
+    return c.setRGB(g, g, g).multiplyScalar(DIM);
   }
-  return light === "d" ? c.multiplyScalar(0.72) : c;
+  return light === "d" ? c.multiplyScalar(DIM) : c;
 }
 
 /** A block with a chamfered top, emitting only the side faces that show.
@@ -706,7 +746,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   // eye, and is exactly what the first pass shipped. The underside of a ledge
   // going flat black is what this light exists to prevent, and that is a
   // question of its being present at all rather than of its being strong.
-  scene3.add(new THREE.HemisphereLight(0xb9c8ff, 0x3a3326, 0.28));
+  const fill = new THREE.HemisphereLight(0xb9c8ff, 0x3a3326, 0.28);
+  scene3.add(fill);
 
   // Metalness is a switch, not a dial — a brass fitting either conducts or it
   // does not — and a metal with nothing to reflect renders BLACK. So the scene
@@ -1467,6 +1508,15 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
                      scene.height / 2 + dir.z * span);
     sun.target.position.set(scene.width / 2, base, scene.height / 2);
     sun.target.updateMatrixWorld();
+    // What the ROOM is lit like, which is the board's to say and not this
+    // renderer's to assume. See KEY_LIGHT. The fallback is not a silent one:
+    // it is the SAME coercion `VttEngine.light_map` makes of the same column
+    // ("bright" for anything outside the three), so a word neither of them
+    // knows lights the picture exactly as it lights the rules.
+    const key = KEY_LIGHT[scene.lighting] ?? KEY_LIGHT.bright;
+    sun.color.setHex(key.colour);
+    sun.intensity = key.sun;
+    fill.intensity = key.fill;
     const shadowCam = sun.shadow.camera as THREE.OrthographicCamera;
     // Three quarters of the long side covers the DIAGONAL, which is what a
     // light coming in across the corner actually has to reach.

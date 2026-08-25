@@ -30,6 +30,7 @@ Exits non-zero on any gap, so it can be a gate.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -138,6 +139,20 @@ covers("every archetype has a LOOK to draw its surfaces in",
             "plateaus of dry rock, was lit and floored like a crypt")
 covers("...and every look an archetype names is one the catalogue holds",
        vart._ARCH_LOOK.values(), vart.BOARD_LOOKS)
+
+# The board's own AMBIENT light, which crosses a language boundary: mapgen
+# rolls it, `VttEngine.light_map` reads it as the floor every square starts
+# from, `state()` ships it, and the isometric renderer sets its key light off
+# it (KEY_LIGHT in vttScene3d.ts). A word one side coerces and the other does
+# not is a crypt drawn in daylight, which is exactly what shipped for as long
+# as the browser ignored the column.
+_KEYS = set(re.findall(r"^  (\w+):\s*\{ colour:",
+                       (ROOT / "activity-ui/src/lib/vttScene3d.ts")
+                       .read_text(encoding="utf-8"), re.M))
+covers("every ambient light level the board can carry is one the renderer draws",
+       {"bright", "dim", "dark"}, _KEYS,
+       note="`light_map` coerces anything else to bright, and so must the "
+            "browser, or the picture and the rules disagree about the room")
 
 print(f"\n{BOLD}what the picture is of{OFF}")
 from imagery import prompt_build as pb
