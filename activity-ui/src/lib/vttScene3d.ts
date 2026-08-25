@@ -148,6 +148,19 @@ const CONTACT_FT = 0.55;
 /** How dark a floor goes in the crease of a corner. */
 const CREASE_AO = 0.42;
 
+/** Which way the sun comes in, in board units — ONE definition, because it is
+ *  read twice: once to point the light and once to place it and its shadow
+ *  camera against the board being built.
+ *
+ *  The elevation is the dial that decides whether a shadow is readable at all.
+ *  It was 52 degrees, where a ten-foot wall throws seven and a half feet — a
+ *  band a square and a half wide, tucked against the wall's own foot, which is
+ *  where an isometric camera looks at it most steeply and sees least of it.
+ *  At 34 it throws fifteen: three squares of shadow lying out across the floor
+ *  where the eye actually is. Late afternoon, which is the hour every diorama
+ *  is lit at, and for this reason. */
+const SUN_DIR = new THREE.Vector3(-0.46, 0.60, 0.75);
+
 class MeshBuilder {
   private pos: number[] = [];
   private norm: number[] = [];
@@ -650,7 +663,15 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   // this camera — the sun never moves and the board is static, so the map is
   // rendered once per rebuild rather than once per frame (see `sunlight`).
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // VSM rather than PCF, and not for the reason it is usually chosen. PCF
+  // takes a fixed few taps in TEXEL space, so its penumbra is the width of a
+  // few texels however far the shadow has travelled — which at this map
+  // density is about an inch, and an inch-wide penumbra on a diorama reads as
+  // a sticker cut out with scissors. VSM blurs the depth distribution itself,
+  // so `shadow.radius` is a real dial and the edge softens as a shadow runs
+  // away from the thing casting it. (It also stops being a deprecation
+  // warning: three 0.185 quietly downgrades `PCFSoftShadowMap` to `PCFShadowMap`.)
+  renderer.shadowMap.type = THREE.VSMShadowMap;
   renderer.shadowMap.autoUpdate = false;
 
   const scene3 = new THREE.Scene();
@@ -658,26 +679,34 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
 
   // Form only — see the header. Angled off the camera axis so the two visible
   // faces of every corner differ, which is what makes a block read as a block.
-  const sun = new THREE.DirectionalLight(0xfff2dc, 2.1);
-  sun.position.set(-0.4, 1, 0.65);
+  const sun = new THREE.DirectionalLight(0xfff2dc, 2.9);
+  sun.position.copy(SUN_DIR);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   // A thin wall lit almost edge-on is the classic acne case, and `normalBias`
   // is the fix that does not also detach every shadow from the thing casting
   // it — which is what a large depth bias does, and what makes a shadow read
-  // as a decal lying beside the object.
-  sun.shadow.bias = -0.0004;
+  // as a decal lying beside the object. VSM wants no negative depth bias of
+  // its own: it compares against a blurred DISTRIBUTION, and pulling the
+  // occluder toward the light there eats the near end of every shadow.
+  sun.shadow.bias = 0;
   sun.shadow.normalBias = 0.03;
+  sun.shadow.radius = 3.5;
+  sun.shadow.blurSamples = 12;
   scene3.add(sun);
   scene3.add(sun.target);
   // A cool fill from BELOW as well as above: a hemisphere light is what stops
   // the underside of every ledge, rail and hull going to flat black now that
   // the surfaces respond to light instead of merely being tinted by it.
-  // Lowered from 1.25 when the sun learned to cast: fill that high is what
-  // washed a shadow out to nothing, and the underside of a ledge going flat
-  // black — the thing this light exists to prevent — is a question of it being
-  // present at all, not of it being strong.
-  scene3.add(new THREE.HemisphereLight(0xb9c8ff, 0x3a3326, 0.55));
+  // Lowered from 1.25 when the sun learned to cast, and from 0.55 when the
+  // shadows were finally MEASURED. A shadow's readability is the sun's share
+  // of the light, and the display's own gamma works against you: encoding
+  // halves every ratio, so a 3:1 radiance ratio arrives on screen as 1.6:1 —
+  // which is a shadow you can find with a difference image and not with your
+  // eye, and is exactly what the first pass shipped. The underside of a ledge
+  // going flat black is what this light exists to prevent, and that is a
+  // question of its being present at all rather than of its being strong.
+  scene3.add(new THREE.HemisphereLight(0xb9c8ff, 0x3a3326, 0.28));
 
   // Metalness is a switch, not a dial — a brass fitting either conducts or it
   // does not — and a metal with nothing to reflect renders BLACK. So the scene
@@ -1433,7 +1462,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     // box would spend most of its map on empty space and give every edge a
     // staircase.
     const span = Math.max(scene.width, scene.height);
-    const dir = new THREE.Vector3(-0.4, 1, 0.65).normalize();
+    const dir = SUN_DIR.clone().normalize();
     sun.position.set(scene.width / 2 + dir.x * span, dir.y * span,
                      scene.height / 2 + dir.z * span);
     sun.target.position.set(scene.width / 2, base, scene.height / 2);

@@ -86,15 +86,26 @@ if (!SCENERY.has(TAG)) {
 } else {
   console.log("PASS  scenery keeps its own colours through shading");
 }
-// NO GUARD FOR THE SHADOWS, and the attempt is worth recording. The first
-// shadow pass cast nothing at all while looking perfectly correct in code
-// (three renders BACK faces into the shadow map for a FrontSide material,
-// which drops every single-sided sheet, and this board is built out of
-// sheets) — so a standing check would be worth having. A dark-tail histogram
-// is not it: measured on this board it reads 16% with the sun casting and
-// 27% with it off, because switching casting off also brightens every lit
+// NO GUARD FOR THE SHADOWS, and both attempts are worth recording, because
+// the first shadow pass cast nothing at all while looking perfectly correct
+// in code (three renders BACK faces into the shadow map for a FrontSide
+// material, which drops every single-sided sheet, and this board is built
+// out of sheets).
+//
+// A dark-tail histogram is not the guard: it reads 16% with the sun casting
+// and 27% with it off, because switching casting off also brightens every lit
 // face and moves the median. It cannot tell a cast shadow from ordinary
 // diffuse shading, and a check that cannot fail is worse than none.
+//
+// What DOES measure a shadow is an A/B: shoot the board twice, once with
+// `sun.castShadow` off, and difference the two. It is a one-line source edit
+// and two builds, so it is not standing here — but it is the only honest
+// number, and it is the one that showed the shadows had shipped and were
+// unreadable. On this street board, before the sun was lowered and the fill
+// cut: 3.0% of the board differed at all and by 28%. After: 8.4% of the
+// board, by 32% — three squares of shadow lying out across the roadway
+// instead of a band tucked against the wall's own foot, which is where this
+// camera looks most steeply and sees least.
 const turn = page.locator(".vtt-icon", { hasText: "⟳" });
 if (await turn.count()) {
   await turn.first().click();
