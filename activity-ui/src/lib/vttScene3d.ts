@@ -1345,7 +1345,36 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     // `roofs` for why a gable per square makes a terrace into a row of huts.
     // Drawn into the SKIN's own builder, so a roof wears the material of the
     // building under it rather than a colour of its own.
+    // A ROOF COMES OFF WHEN THE NEAR WALLS DO. The cutaway exists so you can
+    // see into a room, and a lid over that room makes the whole affordance
+    // worthless — which is what a town looked like: the near walls of every
+    // house were being cut to a stub, correctly, and you still saw nothing but
+    // tiles. A town's houses are ENTERABLE (real floor, a doorway, stairs to
+    // the storey above), so a fight can happen inside one.
+    //
+    // Everything else on the board already agreed you could see in. Occlusion
+    // has never counted a roof, so a creature under one is not marked hidden;
+    // `squareUnderRay` has never counted one either, so a click on what looks
+    // like a roof already selects the floor beneath it; and the rules have
+    // never known roofs exist at all. Only the drawing said otherwise.
+    //
+    // To NOTHING rather than to a stub, which is the opposite of the near-wall
+    // rule and for the reason that rule gives: a wall is cut to a stub because
+    // a floor with no edge looks like it is hanging in space. Nothing hangs
+    // when a roof goes — the walls are still standing and they are what makes
+    // a room read as a room. An eaves fringe was tried first and is worse: it
+    // sits at 0.70 of the wall's height, so the whole terrace stood proud of
+    // its own roofs, and moving it up to the wall head left a tile band
+    // hanging over the stub walls the cutaway had just taken down.
+    //
+    // The painted board keeps its roofs, which is right and is the same
+    // sentence as the near walls: where a painting is showing this is not
+    // cutting anything, and a picture of a town has roofs on it.
+    const roofsOff = cuttingAway(scene, yawDeg);
     for (const roof of scene.roofs ?? []) {
+      // `hollow` is the server's answer to "is there anywhere under this you
+      // could stand". A cap over solid masonry hides nothing and stays.
+      if (roofsOff && roof.hollow !== false) continue;
       const eaves = roof.eaves ?? [];
       const ridge = roof.ridge ?? eaves;
       if (eaves.length < 3 || ridge.length !== eaves.length) continue;

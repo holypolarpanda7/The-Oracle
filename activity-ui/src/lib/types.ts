@@ -557,6 +557,12 @@ export interface VttScene {
     ridge_ft: number;
     eaves: [number, number][];
     ridge: [number, number][];
+    /** Is there anywhere under this roof a creature could stand? A roof over
+     *  a solid block is a cap and stays; a roof over a ROOM is a lid, and it
+     *  comes off whenever the near walls are being cut away. Answered by the
+     *  server, which knows the building's squares — the browser has a traced
+     *  outline and no way back to what is inside it. */
+    hollow?: boolean;
   }[];
   /** Discrete things standing on squares — read off the grid by the server. */
   objects?: VttObject[];

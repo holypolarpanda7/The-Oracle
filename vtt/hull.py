@@ -32,6 +32,7 @@ import math
 from typing import Callable, Optional, Sequence
 
 from . import skins as _skins
+from . import terrain as _terrain
 
 Pt = tuple[float, float]
 
@@ -335,6 +336,33 @@ def _offset_loop(loop: Sequence[Pt], d: float) -> list[Pt]:
     return list(loop)
 
 
+def _inside(loop: Sequence[Sequence[float]], px: float, pz: float) -> bool:
+    """Ray casting, the standard way. Used to ask what a roof covers."""
+    hit = False
+    n = len(loop)
+    for i in range(n):
+        x1, z1 = loop[i][0], loop[i][1]
+        x2, z2 = loop[(i + 1) % n][0], loop[(i + 1) % n][1]
+        if (z1 > pz) != (z2 > pz):
+            cut = x1 + (pz - z1) * (x2 - x1) / ((z2 - z1) or 1e-12)
+            if px < cut:
+                hit = not hit
+    return hit
+
+
+def _encloses_floor(rows: Sequence[str], loop: Sequence[Sequence[float]]) -> bool:
+    """Is there a square under this outline a creature could stand on?"""
+    xs = [p[0] for p in loop]
+    zs = [p[1] for p in loop]
+    for z in range(max(0, int(min(zs))), min(len(rows), int(max(zs)) + 1)):
+        row = rows[z]
+        for x in range(max(0, int(min(xs))), min(len(row), int(max(xs)) + 1)):
+            if (_terrain.code_cost(row[x], "walk") is not None
+                    and _inside(loop, x + 0.5, z + 0.5)):
+                return True
+    return False
+
+
 def roofs(rows: Sequence[str], skin_of: Optional[Callable] = None,
           elevation: Optional[dict] = None,
           footprints: Optional[Sequence[dict]] = None) -> list[dict]:
@@ -419,6 +447,21 @@ def roofs(rows: Sequence[str], skin_of: Optional[Callable] = None,
                 ridge = list(reversed(ridge))
             out.append({
                 "skin": name,
+                # Is there anywhere UNDER this roof a creature could stand?
+                # A roof over a solid block is a cap and belongs on the board;
+                # a roof over a ROOM is a lid, and the renderer takes it off so
+                # that the cutaway which already took the near walls down is
+                # worth something. Answered here because this is where the
+                # building is known — the browser has a traced outline and no
+                # way back to what is under it.
+                #
+                # Asked of what the OUTLINE ENCLOSES, not of the region's own
+                # squares. Without `footprints` a region is the contiguous run
+                # of roofed skin — the wall RING and nothing else — so a house
+                # would report its own masonry and never the room inside it,
+                # and every lone hut would keep its lid. With footprints the
+                # two agree, which is why this was not caught by looking.
+                "hollow": _encloses_floor(rows, eaves),
                 # The material this roof wears, when it is not the building's.
                 # `slot` has been in this record since roofs were traced and
                 # nothing ever filled it; the client falls back to the wall's

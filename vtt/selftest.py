@@ -2427,6 +2427,37 @@ def test_vessels() -> None:
              for r in _roofs]
     check("the eaves stand proud of the wall they cover",
           all(w > 1.0 for w in _wide), f"widest {max(_wide):.1f} squares")
+    # A ROOF OVER A ROOM IS A LID. A town's houses are enterable — real floor,
+    # a doorway, stairs — so a fight can happen inside one, and the renderer
+    # takes the roof off whenever it is cutting the near walls away. That
+    # decision is the SERVER'S, because the browser has a traced outline and no
+    # way back to the squares inside it; `hollow` is the answer, and a roof
+    # that stopped reporting it would put the lid back on with nothing failing.
+    _per_house = _hl.roofs(_rows3, _skin3, _st.elevation,
+                           footprints=_st.buildings or None)
+    check("a house's roof knows there is a room under it",
+          bool(_per_house) and all(r.get("hollow") for r in _per_house),
+          f"{sum(1 for r in _per_house if r.get('hollow'))}/{len(_per_house)}")
+    _solid = ["#" * 8 for _ in range(8)]
+    _cap = _hl.roofs(_solid, lambda c, x, z: "townhouse", None,
+                     footprints=[{"x": 1, "y": 1, "w": 6, "h": 6}])
+    check("...and a cap over solid masonry knows there is not",
+          bool(_cap) and not any(r.get("hollow") for r in _cap),
+          f"{len(_cap)} roof(s)")
+    # Asked of what the OUTLINE ENCLOSES, never of the region's own squares —
+    # which is the whole reason this is not a one-liner. Without `footprints`
+    # a region is the contiguous run of roofed skin, which for a house is the
+    # wall RING and nothing else, so a roof reporting on its own masonry would
+    # leave every lone hut with its lid on. With footprints the two agree,
+    # which is exactly why looking at a street would never have caught it.
+    _hut = (["........"] + ["." + "#" * 6 + "."]
+            + ["." + "#" + "." * 4 + "#" + "."] * 3
+            + ["." + "#" * 6 + "."] + ["........"])
+    _hut_roof = _hl.roofs(_hut, lambda c, x, z: "townhouse" if c == "#" else "",
+                          None)
+    check("...and a hut traced with no footprint at all still knows",
+          bool(_hut_roof) and all(r.get("hollow") for r in _hut_roof),
+          f"{len(_hut_roof)} roof(s)")
     # Winding is NORMALIZED, never trusted: a loop traced the other way round
     # shades the near pitch as though it faced away and, in the browser, culls
     # the roof outright — the building comes back with no top and neither
