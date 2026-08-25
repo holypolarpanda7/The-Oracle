@@ -1124,7 +1124,67 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   histogram reads 16% with the sun casting and 27% with it OFF, because
   switching casting off also brightens every lit face and moves the median. It
   cannot tell a cast shadow from diffuse shading, and a check that cannot fail
-  is worse than none.
+  is worse than none. What DOES measure one is an A/B — shoot the board twice,
+  once with `sun.castShadow` off, and difference the two — and it is written
+  down in `board-look.mjs` rather than standing, because it costs a source edit
+  and two builds.
+- **The shadows had SHIPPED, and nobody could see them.** The A/B above is what
+  found it: they were being cast, correctly, over 3% of the board at a 28%
+  drop, which is a shadow you find with a difference image and not with your
+  eye. Three causes, and the one usually blamed is only the third.
+  **The sun was too HIGH.** At 52 degrees a ten-foot wall throws seven and a
+  half feet: a band a square and a half wide lying against the wall's own foot,
+  which is exactly where an isometric camera looks most steeply and sees least
+  of it. At 34 it throws fifteen — three squares out across the floor, where
+  the eye is. `SUN_DIR` is ONE constant now; it was written twice, once to
+  point the light and once to place it, and two spellings of one direction is
+  how a light ends up shading one thing and shadowing another.
+  **The FILL was too strong for a shadow to read, and the display's own gamma
+  makes that worse than it looks**: sRGB encoding halves every ratio, so 3:1 of
+  radiance arrives on screen as 1.6:1. Hemisphere 0.55 -> 0.28 with the sun up
+  to 2.9, which leaves a lit floor at almost exactly the brightness it had —
+  the board is not darker, the shadows are deeper. Measured after: 8.4% of the
+  board at a 32% drop.
+  **And `PCFSoftShadowMap` has been a NO-OP since three 0.185**, which quietly
+  downgrades it to `PCFShadowMap` with a console warning nobody reads. PCF
+  takes its taps in TEXEL space, so the penumbra is a few texels wide however
+  far the shadow has run — about an inch at this map density, which reads as a
+  sticker cut out with scissors. VSM blurs the depth distribution, so `radius`
+  is a real dial; it wants no negative depth bias of its own, since pulling the
+  occluder toward the light eats the near end of every shadow.
+- **The board says what the ROOM is lit like, and the renderer never asked.**
+  `TacticalMap.lighting` is the AMBIENT level — what the room is like with
+  nobody in it. `light_map` reads it as the floor every square starts from,
+  `state()` has shipped it since boards were opened, and `vttScene3d.ts` had
+  never touched the field: a crypt whose ambient is `dark` was drawn as a
+  sunlit hall with a blue-grey filter over it. It only began to matter when the
+  sun did — while the board was flat tinting the sun was a shading convention
+  and the light MAP was the whole statement about how lit a room is. `KEY_LIGHT`
+  is the table, and a key light survives at every level ON PURPOSE: form is a
+  drawing convention here, like the camera, and a board lit only by flat
+  ambient is the coloured cardboard this whole pass exists to get away from.
+  What changes is how much and what colour — and dropping it also drops the
+  board down the tone curve, where a torch's bright core stops being squeezed
+  against the dim room around it in the shoulder.
+  **`DIM` went 0.72 -> 0.55, and it is ONE number for two tiers because the
+  RULES pair them.** A tenth of a step on screen is a bright core you find by
+  knowing where the torch is rather than by looking, and dim light is a rules
+  line (lightly obscured: disadvantage on anything done by sight), so drawing
+  it faintly is a board declining to say something the rules say. Darkvision
+  lets you treat darkness as dim light, in greyscale — so a dim square and a
+  dark square seen by darkvision are the same brightness by the book, and the
+  only honest difference between them is the colour.
+  **The per-square STEP is not a defect to smooth away**: every boundary
+  `reshade` draws is a rules line — never-seen against remembered, remembered
+  against watched, bright against dim — and a 20-ft torch really is a 9x9
+  SQUARE under the 5-5-5 diagonal rule. The answer to a step that reads badly
+  is to make it honest and legible, never to blur it.
+  **Fog, live sight and the light map are the three per-square facts a
+  GENERATED board does not carry**, so every browser harness had looked at
+  boards with all three off and `reshade` had never been in front of a browser.
+  `demo_textures.py --dark` opens the same archetype, seed and size in a real
+  engine on a scratch database, unlit and fogged, and stages what `state()`
+  says — the engine's answer, not a second implementation of it in a probe.
 - **A MESH cannot wear a swatch, so it takes the colour of the stuff it is made
   of.** Everything out of a FILE — a landmark, a furniture model — has no uvs,
   because the OBJ readers this project ships take `v` and `f` and nothing else.
