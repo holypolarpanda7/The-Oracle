@@ -1438,19 +1438,30 @@ def _count(sums: list[list[int]], x0: int, y0: int, x1: int, y1: int) -> int:
     return sums[y1][x1] - sums[y0][x1] - sums[y1][x0] + sums[y0][x0]
 
 
-def _spots(g: Grid, p: SetPiece, rng: random.Random) -> Iterable[tuple[int, int, int]]:
-    """Every square this piece could stand on, inner ground first.
+def _spots(g: Grid, p: SetPiece, rng: random.Random,
+           prefer: Sequence[tuple[int, int]] = ()) -> Iterable[tuple[int, int, int]]:
+    """Every square this piece could stand on, best ground first.
 
-    Two passes rather than one shuffle, because where a landmark goes is not a
-    uniform question. A set piece is something a fight happens AROUND, and one
-    shoved against the edge of the board is scenery you can only ever have
+    Three passes rather than one shuffle, because where a landmark goes is not
+    a uniform question. A set piece is something a fight happens AROUND, and
+    one shoved against the edge of the board is scenery you can only ever have
     behind you — the edge is also where it fits most easily, since ``fits``
     skips the margin ring where it runs off the board. So the inner two thirds
-    are offered first and the rim is the fallback.
+    are offered before the rim.
+
+    ``prefer`` is the board saying it has an OPINION: a town's market square is
+    the one place in it a forty-foot tower could stand, and without somewhere to
+    nominate, the scan finds the widest clear ground — which in a town is the
+    middle of a carriageway. A piece is centred on a preferred square, not
+    merely overlapping it, and preference is only ever an ORDER: everything
+    still has to pass ``fits``, so a board that nominates somewhere impossible
+    falls through to the ordinary scan rather than losing its landmark.
     """
     tiles, _e, _f = _turned(p, 0)
     inset_x = max(1, (g.width - len(tiles[0])) // 6)
     inset_y = max(1, (g.height - len(tiles)) // 6)
+    wanted = set(prefer)
+    first: list[tuple[int, int, int]] = []
     inner: list[tuple[int, int, int]] = []
     rim: list[tuple[int, int, int]] = []
     for yaw in p.turns:
@@ -1458,13 +1469,17 @@ def _spots(g: Grid, p: SetPiece, rng: random.Random) -> Iterable[tuple[int, int,
         w, d = len(t[0]), len(t)
         for y in range(0, max(1, g.height - d + 1)):
             for x in range(0, max(1, g.width - w + 1)):
+                if wanted and (x + w // 2, y + d // 2) in wanted:
+                    first.append((x, y, yaw))
+                    continue
                 bucket = (inner if (inset_x <= x and x + w <= g.width - inset_x
                                     and inset_y <= y and y + d <= g.height - inset_y)
                           else rim)
                 bucket.append((x, y, yaw))
+    rng.shuffle(first)
     rng.shuffle(inner)
     rng.shuffle(rim)
-    return inner + rim
+    return first + inner + rim
 
 
 def suits_climate(slug: str, climate: str = "") -> bool:
@@ -1486,6 +1501,7 @@ def suits_climate(slug: str, climate: str = "") -> bool:
 def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
                   mode: str = "walk",
                   clear: Sequence[str] = (),
+                  prefer: Sequence[tuple[int, int]] = (),
                   joins=None) -> list[Placed]:
     """Place the named landmarks on this board, deterministically.
 
@@ -1502,6 +1518,10 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
     three forests refused a pyramid the DM had already narrated; scanning
     finds one on nearly every board, and where it still finds none, that is now
     a real answer rather than bad luck.
+
+    ``prefer`` is where the BOARD would like a landmark to stand, if it has an
+    opinion — a town's market square. See :func:`_spots`; it reorders the scan
+    and never overrules ``fits``.
 
     ``joins(grid, cells) -> bool`` is asked after each piece is stamped and the
     placement is UNDONE if it says no. Landmarks are laid after the
@@ -1539,7 +1559,7 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
                                                  and tile(c).traversable_flying)))
         off_ground = (_prefix(g, lambda c: c not in p.on and not _swept(c))
                       if p.on else None)
-        for x0, y0, yaw in _spots(g, p, rng):
+        for x0, y0, yaw in _spots(g, p, rng, prefer):
             tiles, _e, _f = _turned(p, yaw)
             w, d = len(tiles[0]), len(tiles)
             if _count(blocked, x0 - 1, y0 - 1, x0 + w + 1, y0 + d + 1):
