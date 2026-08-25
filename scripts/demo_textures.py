@@ -199,6 +199,11 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
         # column back on a swim board, so a staged reef without this is a reef
         # drawn as dry land — which is exactly what it looked like.
         "mode": gen.mode,
+        # What the ROOM is lit like. The renderer sets its key light from this
+        # (KEY_LIGHT in vttScene3d.ts), so a staged board without it inherits
+        # the demo tavern's own "dim" and a street at noon is lit like a
+        # taproom — a probe quietly showing something other than the app.
+        "lighting": gen.lighting,
         "terrain": rows,
         "levels": [{"name": "Ground", "base_ft": 0, "terrain": rows,
                     "elevation": dict(gen.elevation or {}),
@@ -226,6 +231,56 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
     }
 
 
+def gloom(arch: str, seed: int, size: tuple[int, int], made: dict) -> dict:
+    """The board as it looks by TORCHLIGHT, from a real engine.
+
+    Fog, live sight and the light map are the three per-square facts a
+    generated layout does not carry — a board arrives fully lit and fully
+    known — so every harness in `activity-ui/` has looked at boards with all
+    three switched off, and the shading path that reads them (`reshade`, nine
+    tiers of visibility by light) has never been in front of a browser.
+
+    So this asks the ENGINE rather than working them out here: same archetype,
+    same seed, same size, opened dark with fog, walked into from the middle
+    with a torch lit. Generation is deterministic in (archetype, seed, size),
+    so the grid it lays is the grid already staged, and `state()` is the same
+    dict the Activity is served in play. A scratch database, because the world
+    one must never be written to by a probe.
+    """
+    import tempfile
+    from vtt.scene import EffectKind, VttEngine
+
+    w, h = size
+    with tempfile.TemporaryDirectory() as tmp:
+        eng = VttEngine(database_url=f"sqlite:///{Path(tmp) / 'probe.db'}")
+        eng.create_tables()
+        row = eng.open_scene("probe:gloom", archetype=arch, seed=seed,
+                             width=w, height=h, lighting="dark", fog=True,
+                             render_art=False, reuse_place=False,
+                             auto_close=False)
+        mid = (w // 2, h // 2)
+        # Somewhere a creature could actually be standing, or the torch is
+        # inside a wall and lights one square of masonry.
+        from vtt.terrain import code_cost
+        rows = made["terrain"]
+        walkable = lambda x, z: code_cost(rows[z][x], "walk") is not None
+        if not walkable(*mid):
+            mid = next(((x, z) for z in range(h) for x in range(w)
+                        if walkable(x, z)), mid)
+        # A PC on the board, because live sight is computed from who is
+        # standing where — without one every square is "remembered" and the
+        # third tier, the one that says what you can see RIGHT NOW, never
+        # appears. It is what the party's own torch is attached to besides.
+        eng.add_token(row.id, "Probe", kind="pc", team="party",
+                      x=mid[0], y=mid[1])
+        eng.reveal(row.id, mid[0], mid[1], radius_ft=60)
+        eng.add_effect(row.id, "Torch", kind=EffectKind.LIGHT,
+                       x=mid[0], y=mid[1], radius_ft=20, permanent=True)
+        st = eng.state(row.id)
+    return {"fog": st.get("fog"), "sight": st.get("sight"),
+            "light": st.get("light"), "_torch": list(mid)}
+
+
 def clear() -> int:
     shutil.rmtree(DIST, ignore_errors=True)
     SEAM.unlink(missing_ok=True)
@@ -243,6 +298,10 @@ if __name__ == "__main__":
                          "in a browser")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--size", default="24x18")
+    ap.add_argument("--dark", action="store_true",
+                    help="stage the board unlit and unexplored, with one torch "
+                         "— the only way to look at fog, live sight and the "
+                         "light map in a browser")
     a = ap.parse_args()
     if a.clear:
         raise SystemExit(clear())
@@ -254,12 +313,15 @@ if __name__ == "__main__":
         # street lit by a taproom's floorboards is a probe of nothing.
         rc = stage(tuple(sorted({c for r in made["terrain"] for c in r})),
                    arch=a.board, slots=made.pop("_slots"))
+        if a.dark:
+            made.update(gloom(a.board, a.seed, (w, h), made))
         got = _json.loads(SEAM.read_text(encoding="utf-8")) if SEAM.exists() else {}
         got.update(made)
         SEAM.write_text(_json.dumps(got), encoding="utf-8")
         print(f"staged the {a.board} board ({w}x{h}, seed {a.seed}): "
               f"{len(got.get('roofs') or [])} roof(s), "
-              f"{len(got.get('shells') or [])} hull(s)")
+              f"{len(got.get('shells') or [])} hull(s)"
+              + (f", torch at {got.get('_torch')}" if a.dark else ""))
     else:
         rc = stage()
     raise SystemExit(rc)
