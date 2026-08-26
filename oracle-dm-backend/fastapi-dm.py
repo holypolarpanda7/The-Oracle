@@ -8530,20 +8530,14 @@ def _vtt_render_art(map_id: int) -> None:
         # into a gallery and never wired into play, so every board an Activity
         # opened came back as bare geometry.
         # A landmark the DM INVENTED has no mesh in any pack, and until it has
-        # one it stands as the box its tiles describe. Asked for BEFORE the
-        # painting on purpose: the depth map the painter is conditioned on
-        # rasterizes these meshes, so a picture baked while the sow is still a
-        # box paints a box, and the player then looks at a sow standing in
-        # front of it. Same rule as everywhere else — the picture may not
-        # contradict what the board actually holds.
+        # one it stands as the box its tiles describe. It is now the ONLY
+        # thing this pass does for the isometric board: the painted layer that
+        # used to follow it is gone, because a painting is a photograph from
+        # one place and the camera turns.
         try:
             _landmark_meshes(map_id)
         except Exception as e:  # noqa: BLE001
             print(f"[vtt] landmark mesh pass failed: {e}")
-        try:
-            vtt_engine.render_iso_art(map_id, extra=look, conditions=cond)
-        except Exception as e:  # noqa: BLE001
-            print(f"[vtt] isometric render failed: {e}")
     except Exception as e:
         print(f"[vtt] battlemap render failed: {e}")
         return

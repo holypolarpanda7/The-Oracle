@@ -2401,7 +2401,7 @@ def test_vessels() -> None:
     # height per square is a flight of terraces. The corner average bends the
     # SURFACE between square centres and changes no rule — but two things have
     # to hold or it is a lie rather than a drawing.
-    from .isocam import corner_lift_ft as _lift
+    from .boardshapes import corner_lift_ft as _lift
     from .terrain import GROUND_RIPPLE_FT as _RIP, SMOOTH_STEP_FT as _STEP
 
     _flat = ["ggg", "ggg", "ggg"]

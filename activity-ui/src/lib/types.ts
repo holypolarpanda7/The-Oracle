@@ -625,11 +625,7 @@ export interface VttScene {
   /** What broke, and what it left. */
   debris?: VttDebris[];
   background_image_id?: number | null;
-  /** The painted ISOMETRIC view of this board, conditioned on a depth map of
-   *  the geometry the Activity draws. Absent means the board shows clean
-   *  geometry, which is a supported state rather than a degraded one. */
-  iso_image_id?: number | null;
-  iso_art_status?: string;   // none | pending | ready | offline
+    iso_art_status?: string;   // none | pending | ready | offline
   /** The route the most recent walk actually took — the server's own A*, which
    *  goes through the door rather than across the corner. Animated along, so a
    *  creature is never drawn strolling through masonry. */

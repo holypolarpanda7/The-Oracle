@@ -259,7 +259,7 @@ def decor_for(rows: Sequence[str], *, seed: int = 0,
         for x, code in enumerate(row):
             if code == " " or stands(code):
                 continue
-            from .isocam import HOLE_CODES
+            from .boardshapes import HOLE_CODES
             if code in HOLE_CODES:
                 continue
             t = tile(code)

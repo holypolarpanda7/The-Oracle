@@ -21,17 +21,13 @@ const { occludedAt } = await import(pathToFileURL(out).href);
 
 /** A board is one string per row; `extra` carries elevation or landmarks.
  *
- *  PAINTED by default (`iso_image_id`), and that is not incidental. On an
- *  UNPAINTED board the near walls are cut away — see `cutAwayAt` — and a wall
- *  that has been cut to a stub correctly stops hiding anything, which would
- *  make half the cases below assert the opposite of what they mean. Under a
- *  painting the wall is a thing in the picture and the geometry is a
- *  depth-only proxy for exactly this question, so these are the walls the
- *  march is really about. The cutaway's own consequence is asserted at the
- *  bottom of this file. */
+ *  Near walls are CUT on every board now — the painted layer that used to
+ *  suppress the cutaway is gone — so a wall between the lens and a creature
+ *  stops hiding it, and the cases below say so. What still occludes is
+ *  furniture, raised ground, upper storeys and landmark meshes. */
 const board = (rows, extra = {}) => ({
   width: rows[0].length, height: rows.length, square_ft: 5,
-  terrain: rows, elevation: {}, iso_image_id: 7, ...extra,
+  terrain: rows, elevation: {}, ...extra,
 });
 
 let fails = 0;
@@ -43,13 +39,21 @@ const check = (ok, what) => {
 // The camera sits over the +x/+z corner, so anything in the way is at GREATER
 // x and z. Every board below puts the creature at 2,2.
 const plain = (rows, extra) => board(rows, extra);
+// A NEAR WALL IS CUT, AND SO IT NO LONGER HIDES ANYTHING. It used not to be,
+// wherever a painting was showing — under a painting the wall was a thing in
+// the picture, so the geometry stayed whole and occluded. The painted layer is
+// gone (a photograph of the room from one place, against a camera that turns),
+// so the cutaway is unconditional and this is the standing truth: what hides a
+// creature is the FURNITURE, the ground and the far geometry, never the room's
+// own near walls. The picture and the board's account of who is hidden agree,
+// which is the only invariant that was ever load-bearing here.
 const WALL_NEAR = plain([".....", ".....", ".....", "...#.", "....."]);
 const WALL_FAR = plain([".....", ".....", ".....", ".....", "....#"]);
 
-check(occludedAt(WALL_NEAR, 2, 2, 1, 0),
-      "a 10-ft wall one square toward the camera hides a creature");
+check(!occludedAt(WALL_NEAR, 2, 2, 1, 0),
+      "a near wall is CUT, so it hides nothing — you can see over the stub");
 check(!occludedAt(WALL_FAR, 2, 2, 1, 0),
-      "the same wall two squares away does not — the ray has climbed past it");
+      "a wall two squares away does not either — the ray has climbed past it");
 check(!occludedAt(plain([".....", ".....", "...o.", ".....", "....."]), 2, 2, 1, 0),
       "a 4-ft crate never hides a standing creature");
 check(!occludedAt(plain([".....", ".#...", ".....", ".....", "....."]), 2, 2, 1, 0),
@@ -69,7 +73,7 @@ const LEDGE = board([".....", ".....", ".....", ".....", "....."],
                     { elevation: { "3,3": 15 } });
 check(occludedAt(LEDGE, 2, 2, 1, 0), "raised GROUND occludes");
 check(!occludedAt(LEDGE, 3, 3, 1, 15), "the creature standing ON it sees out");
-check(!occludedAt(WALL_NEAR, 2, 2, 1, 20), "a wyvern 20 ft up clears the wall");
+check(!occludedAt(WALL_NEAR, 2, 2, 1, 20), "a wyvern 20 ft up clears it too");
 
 // A landmark's mesh, at the height it declares rather than at its tiles'.
 check(occludedAt(board([".....", ".....", ".....", ".....", "....."],

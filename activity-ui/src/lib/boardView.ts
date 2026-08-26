@@ -53,7 +53,7 @@ import type { Part } from "./boardShapes.generated";
 // The camera, for the one question that needs it here: which way a view ray
 // travels. Not a renderer import — isocam is arithmetic, and both renderers
 // already sit on top of it.
-import { VERTICAL_SQUEEZE, YAW_DEG, basis, paintOpacity } from "./isocam";
+import { VERTICAL_SQUEEZE, YAW_DEG, basis } from "./isocam";
 
 /** A stable 32-bit hash of a square. Mirrors `_hash` in vtt/isocam.py.
  *
@@ -781,14 +781,21 @@ export function awayDir(yawDeg: number = YAW_DEG): readonly [number, number] {
   return _COMPASS[i];
 }
 
-/** Is the board showing a PAINTING at this angle? */
-function painted(scene: VttScene, yawDeg: number): boolean {
-  return !!scene.iso_image_id && paintOpacity(yawDeg) > 0;
-}
-
-/** Are near walls being cut away on this board, at this angle? */
-export function cuttingAway(scene: VttScene, yawDeg: number = YAW_DEG): boolean {
-  return !painted(scene, yawDeg);
+/** Are near walls being cut away on this board?
+ *
+ *  Always, now. It used to be "only where no PAINTING is showing", because
+ *  under a painting the wall is a thing in the picture and not drawing the
+ *  geometry removed nothing anybody could see. The painted layer is gone —
+ *  it was a photograph of the room from one place and the camera turns — so
+ *  the geometry IS the picture, everywhere, at every angle.
+ *
+ *  Kept as a function rather than folded away: what "in the way" means is
+ *  about to change. At a fixed angle it is the two walls nearest the lens; with
+ *  a camera the player can swing, it becomes whatever stands between the lens
+ *  and the thing being looked at, which is a different question with the same
+ *  name. */
+export function cuttingAway(_scene: VttScene, _yawDeg: number = YAW_DEG): boolean {
+  return true;
 }
 
 /** Is this square a near wall — one standing between the lens and open floor?
@@ -1056,9 +1063,6 @@ export interface BoardView {
    *  rectangle is the only placement that keeps it on the geometry, and the
    *  same View affine carries it through every pan and zoom. It is stored with
    *  the surround already cut away, so the corners need no clipping here. */
-  backdropRect(view: View, scene: VttScene):
-    { left: number; top: number; width: number; height: number } | null;
-
   /** Draw one frame. `w`/`h` are CSS pixels; device-pixel-ratio is the
    *  renderer's own business. */
   draw(st: PaintState, w: number, h: number): void;

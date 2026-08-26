@@ -194,8 +194,6 @@ class VttEngine:
     #: graph and the rules ingest already use.
     _LATE_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
         "vtt_map": (
-            ("iso_image_id", "INTEGER"),
-            ("iso_art_status", "VARCHAR"),
             ("skins", "JSON"),
             ("board_style", "VARCHAR"),
             ("setpieces", "JSON"),
@@ -954,51 +952,6 @@ class VttEngine:
                                  if code in APERTURES else ""),
                         "image_id": sprites.get(tile(code).name)})
         return out
-
-    def render_iso_art(self, map_id: int, gen: Optional[GeneratedMap] = None,
-                       *, extra: str = "", conditions: str = "") -> Optional[int]:
-        """Paint the isometric view of this board (blocking; run it in a task).
-
-        The counterpart to :meth:`render_art`, and deliberately separate: that
-        one is the top-down picture a Discord table looks at, this one is the
-        painted layer the Activity lays over its geometry. A board can have
-        either, both or neither, and neither is required for play.
-        """
-        from .art import render_iso_board
-
-        row = self.get_scene(map_id)
-        if row is None:
-            return None
-        if gen is None:
-            gen = self.regenerate(row)
-        cn, strength = "", 0.55
-        union, seg_cn, seg_str, regional = "", "", 0.45, False
-        try:
-            from game_config import get_config
-            _img = get_config().imagery
-            cn = getattr(_img, "isoboard_controlnet", "") or ""
-            strength = float(getattr(_img, "isoboard_controlnet_strength", 0.55))
-            union = getattr(_img, "isoboard_controlnet_union_type", "") or ""
-            seg_cn = getattr(_img, "isoboard_seg_controlnet", "") or ""
-            seg_str = float(getattr(_img, "isoboard_seg_strength", 0.45))
-            regional = bool(getattr(_img, "isoboard_regional_prompt", False))
-        except Exception as e:
-            print(f"[vtt] isoboard controlnet config unavailable: {e}")
-        if not cn:
-            # No depth model, no painting. Refused rather than faked — see
-            # render_iso_board.
-            self._set_fields(map_id, iso_art_status="offline")
-            return None
-        self._set_fields(map_id, iso_art_status="pending")
-        art = render_iso_board(
-            gen, store=self.image_store, name=row.name, biome=row.biome,
-            lighting=row.lighting, extra=extra, conditions=conditions,
-            controlnet=cn, controlnet_strength=strength,
-            controlnet_union_type=union,
-            seg_controlnet=seg_cn, seg_strength=seg_str, regional=regional)
-        self._set_fields(map_id, iso_image_id=art.image_id,
-                         iso_art_status=("ready" if art.image_id else "offline"))
-        return art.image_id
 
     def decor_for(self, map_id: int) -> list[dict]:
         """Scenery on this board — drawn, and mechanically inert.
@@ -3973,8 +3926,6 @@ class VttEngine:
             # baked at. The client needs both: the picture, and where on its own
             # projection to lay it. Sent as squares (not pixels) because zoom is
             # the viewer's business and the framing is not.
-            "iso_image_id": row.iso_image_id,
-            "iso_art_status": row.iso_art_status,
             "description": (row.notes or {}).get("description", ""),
             # Named compartments: [{"name","level","x","y","w","h"}]. A label,
             # never a rule — the bulkheads around one are ordinary walls.

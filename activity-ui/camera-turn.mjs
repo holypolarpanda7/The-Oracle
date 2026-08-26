@@ -120,15 +120,18 @@ check(cam.wrapYaw(-315) === 45 && cam.wrapYaw(405) === 45 && cam.wrapYaw(45) ===
 // exactly this question. (Unpainted, the same wall is cut away and correctly
 // stops hiding anything; that is section 6.)
 const board = (rows) => ({ width: rows[0].length, height: rows.length,
-                           square_ft: 5, terrain: rows, elevation: {},
-                           iso_image_id: 7 });
+                           square_ft: 5, terrain: rows, elevation: {} });
 // A wall on the +x/+z side of the creature at 2,2 — in the way at 45°, and
 // behind it once the camera has come round to the far corner.
 const WALL = board([".....", ".....", ".....", "...#.", "....."]);
-check(occludedAt(WALL, 2, 2, 1, 0, 45),
-      "a wall between the creature and the lens hides it");
+// A near wall is CUT on every board now, so it hides nothing from either side
+// — and that is the point rather than a loss: the board's account of who is
+// hidden follows what it DREW. What still occludes is furniture, raised ground
+// and the far geometry, and the pillar below is the case that proves it.
+check(!occludedAt(WALL, 2, 2, 1, 0, 45),
+      "a near wall is cut, so it hides nothing at the angle it is near");
 check(!occludedAt(WALL, 2, 2, 1, 0, 225),
-      "...and the same wall, seen from the other side, hides nothing");
+      "...and nothing from the other side either, where it never did");
 check(occludedAt(WALL, 2, 2, 1, 0) === occludedAt(WALL, 2, 2, 1, 0, 45),
       "the default answer is still the canonical one");
 // Turned the other way the ray leaves by the NEAR edges, which the march used
@@ -137,28 +140,7 @@ check(ANGLES.every((a) => typeof occludedAt(WALL, 2, 2, 1, 0, a) === "boolean"),
       "the march terminates whichever way the ray runs off the board");
 
 // ---------------------------------------------------------------------------
-console.log("\n5. the painting knows it is a photograph of one place");
-
-check(cam.paintOpacity(cam.YAW_DEG) === 1, "at the baked angle it is all there");
-check(cam.paintOpacity(cam.YAW_DEG + cam.PAINT_HOLD_DEG) === 1,
-      "...and a nudge does not touch it — a picture that flickers reads as a bug");
-check(cam.paintOpacity(cam.YAW_DEG + cam.PAINT_FADE_DEG) === 0
-      && cam.paintOpacity(cam.YAW_DEG - cam.PAINT_FADE_DEG) === 0,
-      "...gone by the fade angle, on both sides");
-const mid = cam.paintOpacity(
-  cam.YAW_DEG + (cam.PAINT_HOLD_DEG + cam.PAINT_FADE_DEG) / 2);
-check(mid > 0 && mid < 1, "...and it DISSOLVES rather than switching off",
-      mid.toFixed(3));
-check(cam.paintOpacity(cam.YAW_DEG + 7) === cam.paintOpacity(cam.YAW_DEG - 7),
-      "the fade is symmetric about the angle it was baked at");
-check(cam.paintOpacity(cam.YAW_DEG + 360) === 1
-      && cam.paintOpacity(cam.YAW_DEG - 359) === cam.paintOpacity(cam.YAW_DEG + 1),
-      "...and measured the SHORT way round, so 359° off is 1° off");
-check(cam.paintOpacity(cam.YAW_DEG + 180) === 0,
-      "from behind, there is no painting at all");
-
-// ---------------------------------------------------------------------------
-console.log("\n6. the near walls come down");
+console.log("\n5. the near walls come down");
 
 // A room is a box and the camera looks into it over a corner, so the two walls
 // nearest the lens stand between the viewer and the fight. Turning made that
@@ -209,15 +191,6 @@ check(!cutAwayAt(MASS, 7, 7, 45) && !cutAwayAt(MASS, 6, 6, 45),
 check(cutAwayAt(MASS, 3, 2, 45),
       "...but the rock actually leaning over the track does come down");
 
-// Where a painting is showing, the wall is a thing in that PICTURE, and not
-// drawing the geometry removes nothing anybody can see — the geometry there is
-// a depth-only proxy, so cutting it would only delete the occlusion.
-const PAINTED = room(["########", "#......#", "#......#", "#......#", "########"],
-                     { iso_image_id: 7 });
-check(!cuttingAway(PAINTED, cam.YAW_DEG) && !cutAwayAt(PAINTED, 7, 2, cam.YAW_DEG),
-      "a painted board at its baked angle cuts nothing");
-check(cuttingAway(PAINTED, cam.YAW_DEG + 90),
-      "...and starts cutting exactly when the painting has gone");
 
 // The board's own account of who is hidden has to follow what it DREW, or the
 // cutaway reveals a creature the board still calls hidden — which is the same
@@ -231,10 +204,6 @@ check(cutAwayAt(NEARWALL, 2, 2, 45) && !occludedAt(NEARWALL, 1, 1, 1, 0, 45),
 const PILLAR = room([".....", ".....", ".....", "...O.", "....."]);
 check(!cutAwayAt(PILLAR, 3, 3, 45) && occludedAt(PILLAR, 2, 2, 1, 0, 45),
       "...and a pillar, which is never cut, still does");
-// A painted board cuts nothing, so a painted wall hides exactly what it did.
-const PAINTWALL = room(["....", "....", "..#.", "...."], { iso_image_id: 7 });
-check(occludedAt(PAINTWALL, 1, 1, 1, 0, cam.YAW_DEG),
-      "and under a painting the wall is in the picture, so it hides as it always did");
 
 // A board with STOREYS asks the same question per floor, and `scene.terrain`
 // is the ground floor and always has been. Reading it for an upper storey cuts

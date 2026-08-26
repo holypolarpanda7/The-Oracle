@@ -69,8 +69,6 @@ export const YAW_DEG = 45;
  *  picture that vanishes at a threshold reads as a bug and a picture that fades
  *  reads as the room turning. Full strength within `PAINT_HOLD_DEG`, gone by
  *  `PAINT_FADE_DEG`. */
-export const PAINT_HOLD_DEG = 3;
-export const PAINT_FADE_DEG = 16;
 
 /** How much a viewer may turn per notch of the control. A whole quarter is the
  *  useful unit on a square grid — it swaps which two faces of every corner you
@@ -241,26 +239,6 @@ export function boundsOf(w: number, h: number, tallest: number, baseY = 0,
   return { minX, maxX, minY, maxY };
 }
 
-
-/** How much of the painted layer survives at this angle, 0..1.
- *
- *  The painting is baked against a depth map rasterized at `YAW_DEG` — a
- *  photograph of the room from one place — and no transform makes it a
- *  photograph from another, so turning away from canonical has to give it up.
- *  A fade rather than a switch: a picture that vanishes at a threshold reads as
- *  a bug, and one that dissolves reads as the room turning under you.
- *
- *  Symmetric about the canonical angle, and measured the SHORT way round, so
- *  359 degrees is one degree off canonical rather than 314. */
-export function paintOpacity(yawDeg: number): number {
-  // ((d % 360) + 540) % 360 - 180 is the SIGNED short way round; its magnitude
-  // is how far off canonical we are, and 359 degrees is one degree off rather
-  // than 314.
-  const off = Math.abs((((yawDeg - YAW_DEG) % 360) + 540) % 360 - 180);
-  if (off <= PAINT_HOLD_DEG) return 1;
-  if (off >= PAINT_FADE_DEG) return 0;
-  return 1 - (off - PAINT_HOLD_DEG) / (PAINT_FADE_DEG - PAINT_HOLD_DEG);
-}
 
 /** Normalize an angle to [0, 360). */
 export function wrapYaw(yawDeg: number): number {

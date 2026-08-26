@@ -206,7 +206,7 @@ def shells(rows: Sequence[str], skin_of: Optional[Callable] = None,
             if body and _skins.skirt_of(name)[0]:
                 by_body.setdefault(body, set()).add((x, z))
 
-    from .isocam import _outline_bottoms
+    from .boardshapes import _outline_bottoms
 
     out: list[dict] = []
     for body, cells in sorted(by_body.items()):

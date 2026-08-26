@@ -127,7 +127,7 @@ def main() -> int:
           f'{tim["b"]} / {steam["b"]} / {org["b"]}')
 
     head(5, "a shape may be a POLYGON, not only a box")
-    from vtt.isocam import footprint, rotate_part
+    from vtt.boardshapes import footprint, rotate_part
     solids = [n for n, sk in S.SKINS.items() if sk.variants
               and any(S.is_solid(p) for parts in sk.variants for p in parts)]
     check(bool(solids), "skins are authored with prismatoid parts",

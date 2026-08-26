@@ -2438,7 +2438,7 @@ def _hull(g: Grid, rng: random.Random, surround: str, deck: str = "b",
     a lot of sea rather than a small ship stretched to the edges.
 
     Either way the outline is a staircase, because it is carved out of squares.
-    What stops it LOOKING like one is `isocam.footprint`, which cuts every outer
+    What stops it LOOKING like one is `boardshapes.footprint`, which cuts every outer
     corner so a one-square step is drawn as the diagonal it means.
     """
     from . import vessels as _v

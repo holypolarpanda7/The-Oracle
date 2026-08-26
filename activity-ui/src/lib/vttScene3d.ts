@@ -52,7 +52,7 @@ import {
   type BoardView, type Part, type PaintState, type TokenPlacement, type View,
 } from "./boardView";
 import {
-  FRAME_PAD_SQUARES, YAW_DEG, basis, boundsOf, paintOpacity, project,
+  FRAME_PAD_SQUARES, YAW_DEG, basis, boundsOf, project,
   unproject,
 } from "./isocam";
 
@@ -69,20 +69,6 @@ const CAMERA_DISTANCE = 500;
  *  built thing. Cheap: four quads and a smaller top face per block. */
 const BEVEL = 0.06;
 
-/** Whether the painted layer is laid over the board.
- *
- *  ON. It was off for a while, and the reason is worth keeping: the painting
- *  was a screen-space quad rendered by a second WebGL camera, and that pass
- *  never drew — a correct rectangle, a loaded texture, no stencil, and not even
- *  a plain red quad appeared. Because a board WITH a painting switches its
- *  geometry to depth-only, the failure was not "no picture" but "no board".
- *
- *  The fix was to stop rendering it: the painting is a DOM image BEHIND an
- *  alpha canvas (see `backdropRect` and `VttOverlay`), which needs no second
- *  camera and no stencil, since it already carries its own alpha. Turning this
- *  off still restores the plain geometry board, which stays good,
- *  terrain-accurate and offline-safe. */
-const PAINTED_BACKDROP = true;
 
 /** Depth is a sort key for `z-index`, not a distance. Scaled up so that two
  *  creatures a single square apart still land on different integers. */
@@ -848,7 +834,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   }
 
   /** Is a painting being drawn behind the geometry this frame? */
-  let backdrop = false;
 
   /** Per code-mesh: which square each vertex belongs to, and the untinted
    *  colour that shading multiplies. Kept so fog, sight and light can be
@@ -1023,7 +1008,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // answering "is a wall in front of this creature". That is precisely
         // what Baldur's Gate shipped beside each of its backgrounds, and it is
         // why the geometry is not thrown away once the picture arrives.
-        ...(backdrop ? { colorWrite: false } : {}),
       });
     };
 
@@ -1307,7 +1291,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
                   // multiplies a picture this mesh has no uvs to carry.
                   color: swatchTint(swatches[slot]) ?? color,
                   roughness: 0.86, metalness: 0.0,
-                  ...(backdrop ? { colorWrite: false } : {}),
                 }));
                 const k = model.unit_scale * heightUnits(scene, h);
                 const [px, py, pz] = model.pivot;
@@ -1484,7 +1467,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         color: swatchTint(swatches[spSlot])
                ?? new THREE.Color(tileStyle(sp.code || "#").fill),
         roughness: 0.86, metalness: 0.0,
-        ...(backdrop ? { colorWrite: false } : {}),
       }));
       const [px, py, pz] = sp.pivot ?? [0, 0, 0];
       // scale -> centre on the footprint -> yaw -> stand on the floor.
@@ -1519,7 +1501,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       });
       terrainGroup.add(new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
         vertexColors: true, roughness: 0.92, metalness: 0.0,
-        ...(backdrop ? { colorWrite: false } : {}),
       })));
     }
     if (!waterMb.empty) {
@@ -1532,7 +1513,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
         vertexColors: true, roughness: 0.18, metalness: 0.0,
         transparent: true, opacity: 0.72, depthWrite: false,
-        ...(backdrop ? { colorWrite: false } : {}),
       }));
       mesh.renderOrder = 2;
       terrainGroup.add(mesh);
@@ -1846,24 +1826,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
                yaw: view.yaw };
     },
 
-    backdropRect(view: View, scene: VttScene) {
-      if (!PAINTED_BACKDROP || !scene.iso_image_id) return null;
-      // A painting is a photograph of the room from ONE place, and turning the
-      // camera away from that place makes it a picture of somewhere else. It
-      // fades out rather than being clipped or stretched — see paintOpacity.
-      if (paintOpacity(view.yaw ?? YAW_DEG) <= 0) return null;
-      const k = CELL * view.scale;
-      // At the CANONICAL yaw, always: the rectangle the picture was baked to
-      // is a fact about the bake, not about where the viewer is looking now.
-      const b = boundsOf(scene.width, scene.height, tallestUnits(scene));
-      const p = FRAME_PAD_SQUARES;
-      return {
-        left: view.ox + k * (b.minX - p),
-        top: view.oy + k * (b.minY - p),
-        width: k * (b.maxX - b.minX + p * 2),
-        height: k * (b.maxY - b.minY + p * 2),
-      };
-    },
 
     draw(st: PaintState, w: number, h: number): void {
       lastFrame = { st, w, h };
@@ -1888,13 +1850,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
 
-      // The painted layer. Only the ground floor has one — an upper storey is
-      // its own room and would need its own painting, so peeking upstairs falls
-      // back to geometry rather than showing the hall's picture on a gallery.
-      const isoId = level === 0 ? scene.iso_image_id ?? 0 : 0;
-      const isoTex = isoId ? TEXTURES.get(isoId) : null;
-      if (isoId && isoTex === undefined) requestTexture(isoId, invalidate);
-      backdrop = PAINTED_BACKDROP && isoTex instanceof THREE.Texture;
 
       // Fog, live sight and light are baked into the mesh (see `shade`), so
       // they belong in the key. They change on a MOVE, not on a pointer flick,
@@ -1909,7 +1864,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const away = awayDir(view.yaw ?? YAW_DEG);
       const cutting = cuttingAway(scene, view.yaw ?? YAW_DEG);
       const key = [
-        scene.id, level, st.show.grid, st.show.terrain, backdrop,
+        scene.id, level, st.show.grid, st.show.terrain,
         cutting ? `${away[0]},${away[1]}` : "-",
         // The cut set is read off THIS storey's tiles; `level` is already in
         // the key above, which is what keeps a gallery from being cut to the

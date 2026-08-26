@@ -104,7 +104,7 @@ export function isSolid(part: Part): part is SolidPart {
 
 def render() -> str:
     from vtt.art import STRUCTURE_CODES
-    from vtt.isocam import (
+    from vtt.boardshapes import (
         HEIGHT_JITTER, HOLE_CODES, OBJECT_VARIANTS,
         SKIRT_FT, SKIRT_INSET, WALL_THICKNESS,
     )

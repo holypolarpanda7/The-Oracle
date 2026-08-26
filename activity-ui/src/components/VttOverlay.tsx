@@ -7,7 +7,7 @@ import type {
 import { SPRITES, loadSprites } from "../lib/boardSprites";
 import { useResizable } from "../lib/useResizable";
 import { CELL, pathFromCosts, type BoardView, type View } from "../lib/boardView";
-import { YAW_DEG, YAW_STEP_DEG, paintOpacity, project, wrapYaw } from "../lib/isocam";
+import { YAW_DEG, YAW_STEP_DEG, project, wrapYaw } from "../lib/isocam";
 import { createCanvasBoardView } from "../lib/canvasBoardView";
 import { createIsoBoardView } from "../lib/vttScene3d";
 
@@ -412,7 +412,6 @@ export function VttOverlay(p: VttProps) {
   }, [walk]);
 
   /** Where the painted layer sits this frame, if there is one. */
-  const backdrop = view && board ? board.backdropRect(view, floor) : null;
 
   /** Turn the camera, keeping the middle of the viewport looking at the same
    *  square. Without that the board swings out of frame on the first press:
@@ -899,26 +898,6 @@ export function VttOverlay(p: VttProps) {
         onWheel={onWheel}
         onContextMenu={onContextMenu}
       >
-        {/* The painted board, BEHIND the canvas. Stored with its surround
-            already cut away, so the corners need no clipping here — and the
-            canvas is alpha, so the geometry (which stops drawing colour once a
-            painting exists) lets it through while still occluding the decals. */}
-        {backdrop && scene.iso_image_id && (
-          <img
-            className="vtt-backdrop"
-            src={`/imagery/image/${scene.iso_image_id}`}
-            alt=""
-            draggable={false}
-            style={{ left: backdrop.left, top: backdrop.top,
-                     width: backdrop.width, height: backdrop.height,
-                     // A painting is a photograph of the room from ONE place.
-                     // Turned away from it, it dissolves rather than being
-                     // stretched into a picture of somewhere else — and it
-                     // fades rather than switching off, because a picture that
-                     // vanishes at a threshold reads as a bug.
-                     opacity: paintOpacity(view?.yaw ?? YAW_DEG) }}
-          />
-        )}
         <canvas key={mode} data-mode={mode} ref={setCanvasEl} />
         <div className="vtt-tokens">{tokenNodes}</div>
         {p.error && (

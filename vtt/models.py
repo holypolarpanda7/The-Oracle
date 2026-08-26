@@ -204,8 +204,6 @@ class TacticalMap(SQLModel, table=True):
     # of the same room for different clients, and a Discord table still wants
     # the top-down one. Absent = the board shows clean geometry, which is a
     # supported state and not a degraded one.
-    iso_image_id: Optional[int] = Field(default=None, sa_column=Column(Integer))
-    iso_art_status: str = Field(default="none", sa_column=Column(String))
     # pending | ready | offline | none — lets the UI show tiles while art renders.
     art_status: str = Field(default="none", sa_column=Column(String))
     art_prompt: Optional[str] = Field(default=None, sa_column=Column(String))
