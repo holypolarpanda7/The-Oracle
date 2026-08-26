@@ -1417,6 +1417,24 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   as one wood come back the same colour; foliage is darker and bluer than
   turf, since a canopy and a lawn both asked for as "green" landed eight
   apart, which is a tree granting THREE-QUARTERS cover reading as grass.
+  **THE GROUND UNDER AN OBJECT IS NOT MADE OF THE OBJECT**, and that was the
+  next report once the crates could be seen at all: one builder per square,
+  chosen from the square's own code, with the floor fan drawn into it — so
+  every crate came with a square yard of pine floor around it and every pillar
+  stood on a disc of its own granite. The tile code says a crate stands here
+  and says NOTHING about what it stands on, so the answer comes from the
+  NEIGHBOURS: the commonest floor among the four squares around it, which
+  costs no new data because that neighbour is already contributing its slot to
+  the board's material list. Things that FILL their square are left alone — a
+  wall covers its own ground, so there is nothing visible to get wrong.
+  **A swatch prompt that draws a SURFACE is fragile, and the colour is the
+  safest thing to change about it.** Granite took three goes: "warm pink-grey
+  speckled with black mica and quartz" put the colour on the BACKGROUND and
+  turned one fractured face into separate stones with gaps (a cave full of
+  pink boulders), and "an unbroken granite surface filling the whole frame …
+  flecked all over" came back as white terrazzo flakes at (187,188,188). What
+  worked was the MINIMAL edit — keep the sentence that was already producing a
+  surface and append a colour to it, nothing else.
   **`material_prerender.py --contrast` is the standing guard**: it generates
   every archetype and compares only the cover/floor pairs that ACTUALLY MEET
   on a board — crossing the catalogue with itself gives 1,176 pairs against 97
