@@ -231,6 +231,57 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
     }
 
 
+def paint(arch: str, seed: int, size: tuple[int, int]) -> dict:
+    """PAINT the staged board, and stage the picture with it.
+
+    The board has two layers: a painted picture, and a mesh under it that is a
+    depth proxy for occlusion and picking. A generated layout carries no
+    painting, so every harness in `activity-ui/` — and every board anybody has
+    looked at while judging how this thing LOOKS — has been the proxy. The
+    tell is in the pictures themselves: the near-wall cutaway and the roof
+    removal only fire when there is no painting, so a board with its roofs off
+    is a board nobody has painted.
+
+    Needs ComfyUI, so this half runs under the WINDOWS interpreter:
+
+        DATABASE_URL="sqlite:///D:/Projects/The Oracle/oracle-dm-backend/oracle.db" \
+          WSLENV=DATABASE_URL ./.venv/Scripts/python.exe \
+          scripts/demo_textures.py --board street --seed 3 --size 46x34 --paint
+
+    Uncached it is about a minute a board. The picture is cached by the same
+    layout signature the engine uses, so a second run of the same board is a
+    lookup — which is what makes it reasonable to paint every board in a sweep.
+    """
+    import tempfile
+
+    from imagery import ImageStore
+    from vtt.scene import VttEngine
+
+    w, h = size
+    with tempfile.TemporaryDirectory() as tmp:
+        eng = VttEngine(database_url=f"sqlite:///{Path(tmp) / 'paint.db'}")
+        eng.create_tables()
+        row = eng.open_scene("probe:paint", archetype=arch, seed=seed,
+                             width=w, height=h, render_art=False,
+                             reuse_place=False, auto_close=False)
+        image_id = eng.render_iso_art(row.id)
+        # Windows will not delete a file SQLite still has open, and the
+        # TemporaryDirectory teardown raises straight past the staging below.
+        eng.engine.dispose()
+    if not image_id:
+        print("  no painting came back — is ComfyUI up, and is this the "
+              "Windows interpreter?")
+        return {}
+    data = ImageStore().get_image_bytes(int(image_id))
+    if not data:
+        return {}
+    # Served the way the client asks for it: /imagery/image/<id>.
+    out = DIST / "image" / str(int(image_id))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    print(f"  painted: image {image_id} ({len(data) // 1024} KB)")
+    return {"iso_image_id": int(image_id)}
+
 def gloom(arch: str, seed: int, size: tuple[int, int], made: dict) -> dict:
     """The board as it looks by TORCHLIGHT, from a real engine.
 
@@ -277,6 +328,7 @@ def gloom(arch: str, seed: int, size: tuple[int, int], made: dict) -> dict:
         eng.add_effect(row.id, "Torch", kind=EffectKind.LIGHT,
                        x=mid[0], y=mid[1], radius_ft=20, permanent=True)
         st = eng.state(row.id)
+        eng.engine.dispose()          # see `paint` — Windows holds the file
     return {"fog": st.get("fog"), "sight": st.get("sight"),
             "light": st.get("light"), "_torch": list(mid)}
 
@@ -298,6 +350,11 @@ if __name__ == "__main__":
                          "in a browser")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--size", default="24x18")
+    ap.add_argument("--paint", action="store_true",
+                    help="paint the board and stage the picture, so the "
+                         "harness shows the END PRODUCT rather than the depth "
+                         "proxy under it. Needs ComfyUI: run it under the "
+                         "Windows interpreter (see `paint`).")
     ap.add_argument("--dark", action="store_true",
                     help="stage the board unlit and unexplored, with one torch "
                          "— the only way to look at fog, live sight and the "
@@ -315,6 +372,8 @@ if __name__ == "__main__":
                    arch=a.board, slots=made.pop("_slots"))
         if a.dark:
             made.update(gloom(a.board, a.seed, (w, h), made))
+        if a.paint:
+            made.update(paint(a.board, a.seed, (w, h)))
         got = _json.loads(SEAM.read_text(encoding="utf-8")) if SEAM.exists() else {}
         got.update(made)
         SEAM.write_text(_json.dumps(got), encoding="utf-8")
