@@ -376,7 +376,12 @@ MATERIAL_SUBJECT: dict[str, str] = {
     ".": "the bare ground underfoot, close-up of the paving or packed earth",
     "=": "close-up of a cobbled road surface, the cobbles themselves",
     "b": "close-up of weathered wooden deck planking",
-    "u": "close-up of worn stone step treads",
+    # WARM, and named — `u` said only "worn stone step treads" and came back
+    # a cold grey that sat 12 from the blue-grey granite standing on it and 21
+    # from a ruin's masonry. A tread is the one stone on a board that has been
+    # rubbed by feet, so warm and polished is what it should look like anyway.
+    "u": "close-up of worn stone step treads, warm buff limestone rubbed "
+         "smooth and hollowed in the middle of each tread",
     "g": "close-up of grass turf, bright sunlit yellow-green blades",
     # `m` had no entry, so it fell through to the tile's own `art` — the words
     # "sucking mud", which name no colour and no surface. It came back GREEN

@@ -975,14 +975,14 @@ _SEABED_NEG = (
 SKINS: dict[str, Skin] = {s.name: s for s in (
     # --- rock, in its several honest forms -------------------------------
     Skin("cliff", "granite",
-         "raw granite, close-up of the bare fractured rock face, warm pink-grey "
-         "speckled with black mica and quartz",
+         "raw granite, close-up of the bare fractured rock face, cold "
+         "blue-grey stone",
          words="the rock is a natural granite cliff face, fractured and "
                "weathered, not built masonry and not brickwork",
          variants=_CLIFF, height_ft=14, smooth=True),
     Skin("boulder", "granite",
-         "raw granite, close-up of the bare fractured rock face, warm pink-grey "
-         "speckled with black mica and quartz",
+         "raw granite, close-up of the bare fractured rock face, cold "
+         "blue-grey stone",
          words="fallen boulders lie about the track, rounded and weathered, "
                "each one a separate stone",
          variants=_BOULDER, height_ft=8,
@@ -1039,8 +1039,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
                "flagstones and fallen masonry heaved apart, weeds in the "
                "joints; it is not a lawn and not open grass"),
     Skin("field-stone", "granite",
-         "raw granite, close-up of the bare fractured rock face, warm pink-grey "
-         "speckled with black mica and quartz",
+         "raw granite, close-up of the bare fractured rock face, cold "
+         "blue-grey stone",
          words="the low rocks are lichened granite boulders, waist high",
          misread="crates, boxes, chests, barrels",
          variants=_FIELD_STONE,
