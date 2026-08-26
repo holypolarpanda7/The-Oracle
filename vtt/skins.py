@@ -1300,7 +1300,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # different skin again, had no side at all, so the outermost strake of every
     # vessel was a sheet of paper.
     Skin("hull", "tarred-planking",
-         "close-up of tarred ship planking, caulked seams and iron nail heads",
+         "close-up of tarred ship planking, dark pitch-black boards running one "
+         "way with caulked seams and iron nail heads",
          words="the hull is tarred carvel planking with caulked seams",
          body="ship", exact=True),
     # The sea a ship SAILS ON, and it is not the sea a reef sits under. `W` is
@@ -1338,7 +1339,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # the inside is its own squares, and it starts well clear of the floor so
     # occludes_floor passes it.
     Skin("cabin-roof", "tarred-planking",
-         "close-up of tarred ship planking, caulked seams and iron nail heads",
+         "close-up of tarred ship planking, dark pitch-black boards running one "
+         "way with caulked seams and iron nail heads",
          words="the deckhouse is roofed in tarred planking, a low coaming "
                "round its edge",
          variants=_v((

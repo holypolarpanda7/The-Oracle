@@ -282,6 +282,20 @@ MATERIAL_REV = 2
 #: key on the axes that actually change the picture and no others.
 LOOK_AGNOSTIC: frozenset[str] = frozenset({
     "~", "W", "l", "x", "i", "%", "m", "f",
+    # DECK PLANKING, SAND AND BARE ROCK joined the list once the swatches were
+    # measured rather than glanced at. The look reaches the prompt as the
+    # literal words "in {look}" — a SCENE instruction — and against a subject
+    # that names a made thing standing on ground, the model paints the join:
+    # `b` in the snow look came back as a corner of decking meeting a
+    # snowfield along a diagonal, `s` in the wetland look as a pond in a sand
+    # frame, `R` in the snow look as a rock ledge with drifts on it. Tiled,
+    # each of those is a lattice of boundaries.
+    #
+    # They belong here on the merit anyway, by this module's own sentence: a
+    # plank deck is a plank deck in a cavern and in a snowfield, and the room
+    # it stands in is the board's LIGHTING job rather than the swatch's. It
+    # takes 33 swatches out of the catalogue.
+    "b", "s", "R",
 })
 
 #: The look bucket a material with no setting of its own is filed under.
@@ -380,14 +394,23 @@ MATERIAL_SUBJECT: dict[str, str] = {
     # a cold grey that sat 12 from the blue-grey granite standing on it and 21
     # from a ruin's masonry. A tread is the one stone on a board that has been
     # rubbed by feet, so warm and polished is what it should look like anyway.
-    "u": "close-up of worn stone step treads, warm buff limestone rubbed "
-         "smooth and hollowed in the middle of each tread",
+    # NOT "step treads": that is a noun that means an elevation, and it drew
+    # four flights of steps in perspective — one of them with a man's legs in
+    # it — while the view was only ever asked for in the negative prompt.
+    "u": "close-up of worn stone paving, warm buff limestone rubbed smooth "
+         "and hollowed by feet",
+    # `R` had no entry and fell through to its tile art — the two words "rough
+    # rock face" — which is the under-specified frame this table exists for. It
+    # came back as a dark pool in a ring of slabs: handed almost nothing, the
+    # model composes.
+    "R": "close-up of bare rock, rough grey-brown stone broken into angular "
+         "facets, dry and spotted with lichen",
     "g": "close-up of grass turf, bright sunlit yellow-green blades",
     # `m` had no entry, so it fell through to the tile's own `art` — the words
     # "sucking mud", which name no colour and no surface. It came back GREEN
     # (67,84,53), which is within thirty of the grass beside it.
-    "m": "close-up of wet churned mud, glossy chocolate-brown ooze with "
-         "standing water in the hollows",
+    "m": "close-up of thick wet mud, churned and rutted all over, dark "
+         "grey-brown ooze",
     "s": "close-up of rippled packed sand",
 }
 
@@ -399,7 +422,29 @@ MATERIAL_SUBJECT: dict[str, str] = {
 #: nothing composed in the middle, which is what a swatch needs. The board
 #: handles the rest by giving each square its own copy and varying the UVs, so
 #: an imperfect edge reads as grout between flagstones rather than as a seam.
+#:
+#: THE VIEW IS SAID IN THE POSITIVE, and it leads. The same lesson the wreckage
+#: sprites already carry — "name the VIEW before the thing, because the model's
+#: prior for any object is its ELEVATION and a trailing modifier loses to it" —
+#: and it had never been applied here, where the negative prompt was left to
+#: carry it alone. It cannot: `MATERIAL_NEGATIVE` has forbidden perspective,
+#: horizons and vanishing points since it was written, and the catalogue still
+#: held a landscape with a sky in it (grass), a snowy roof with icicles
+#: (bridge), breaking waves (open sea), and a flight of steps with A PERSON'S
+#: LEGS walking down it (stairs). A negative is a nudge; the subject noun is
+#: the instruction, and "stair treads" means an elevation to a model unless
+#: something says otherwise first.
+#: ONE MATERIAL, EDGE TO EDGE is the other half, and it is what the LOOK
+#: makes necessary. A swatch is rendered per (subject, look), and the look's
+#: own words are a second material standing next to the first: "deck planking"
+#: in the SNOW look came back as a corner of decking meeting a snowfield along
+#: a diagonal, which is a picture of a boundary and tiles into a lattice of
+#: them. Sand in the wetland look came back as a pond, the open sea as
+#: breaking waves, sludge as a green medallion in a ring of moss. Saying the
+#: frame holds one substance is what stops the look becoming a SCENE.
 _MATERIAL_STYLE = (
+    "seen from directly overhead looking straight down, flat-on surface, "
+    "one single material filling the entire frame edge to edge, "
     "hand-painted texture, rich painterly surface detail, honest materials, "
     "muted natural palette, even flat lighting"
 )

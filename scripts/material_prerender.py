@@ -261,6 +261,103 @@ def _contrast(store) -> int:
     return 0
 
 
+#: Above this, a swatch has too much LARGE-SCALE structure to be a surface.
+#:
+#: Measured, and the number means something concrete: it is the standard
+#: deviation of the picture reduced to 8x8 — everything but the big shapes
+#: thrown away — over the standard deviation of what a heavy blur leaves
+#: behind, which is the detail. A material is detail nearly everywhere and
+#: has little big structure; a PICTURE OF A PLACE is one big shape with detail
+#: on it.
+#:
+#: The line sits in a real gap, measured after the catalogue was cleaned: the
+#: median is 0.46, the blobbiest honest swatch is FIRE at 1.30 (flame is big
+#: soft shapes and there is nothing to be done about that), and the least bad
+#: of the compositions was tarred planking at 1.41. Everything above the line
+#: so far has been a boundary between two materials or a subject too vague to
+#: paint — never a material that simply has large features.
+SURFACE_MAX = 1.40
+
+
+def _surface(store) -> int:
+    """Is every swatch a picture of a SURFACE, or is one a picture of a PLACE?
+
+    A swatch is tiled across the board, so a composition tiles too: the mud
+    swatch was one dark pool in the middle of a cracked plain, which came back
+    on a swamp as a regular grid of salmon-pink pills. The average colour was a
+    perfectly reasonable brown the whole time, so `--contrast` passed it — a
+    material can be exactly the right colour and still be the wrong picture.
+
+    Measured across the catalogue this found eight, and the four worst were
+    prompts asking for "stair treads", which is a noun that means an
+    ELEVATION: four flights of steps drawn in perspective, one of them with a
+    man's legs walking down it. The others were a green field under a SKY, a
+    snowy roof with icicles, breaking waves, and a stream between rocks.
+
+    `MATERIAL_NEGATIVE` has forbidden perspective, horizons and vanishing
+    points since it was written and none of that stopped any of them, which is
+    the finding: a negative is a nudge and the subject noun is the
+    instruction. The fix is in `_MATERIAL_STYLE`, which now says the view in
+    the POSITIVE and says it first.
+    """
+    import io as _io
+
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    from imagery.models import ImageKind, context_key, slugify
+    from vtt.art import BOARD_LOOKS, material_look, material_ref, material_subject
+    from vtt.skins import SKINS
+    from vtt.terrain import TILES
+
+    seen: set = set()
+    rows: list = []
+
+    def look_at(code: str, skin: str, look: str) -> None:
+        ref = material_ref(code, skin)
+        lk = material_look(code, skin) or look
+        if (ref, lk) in seen:
+            return
+        seen.add((ref, lk))
+        found = store.list_for(ImageKind.MATERIAL, slugify(ref), context_key(lk))
+        if not found:
+            return
+        raw = store.get_image_bytes(found[0]["image_id"])
+        if not raw:
+            return
+        im = Image.open(_io.BytesIO(raw)).convert("L")
+        arr = np.asarray(im, dtype=float)
+        blob = np.asarray(im.resize((8, 8), Image.BOX), dtype=float).std()
+        detail = (arr - np.asarray(im.filter(ImageFilter.GaussianBlur(8)),
+                                   dtype=float)).std()
+        rows.append((blob / max(detail, 1e-6), ref.split("-", 2)[-1], lk))
+
+    for code in sorted(TILES):
+        if not material_subject(code):
+            continue
+        agnostic = material_look(code)
+        for look in ([agnostic] if agnostic else BOARD_LOOKS):
+            look_at(code, "", look)
+    for name in sorted(SKINS):
+        look_at(".", name, material_look(".", name))
+
+    rows.sort(reverse=True)
+    bad = [r for r in rows if r[0] > SURFACE_MAX]
+    vals = [r[0] for r in rows]
+    print(f"\n{len(rows)} swatches; big-structure over detail, "
+          f"median {np.median(vals):.2f}, worst {vals[0]:.2f}")
+    if not bad:
+        for r, ref, lk in rows[:3]:
+            print(f"    {r:5.2f}  {ref:26} @{lk}")
+        print(f"  nothing above {SURFACE_MAX:.2f} — every swatch is a surface")
+        return 0
+    print(f"  {len(bad)} above {SURFACE_MAX:.2f} — a picture of a PLACE, not a "
+          f"material. Look at them:")
+    for r, ref, lk in bad:
+        print(f"    {r:5.2f}  {ref:26} @{lk}")
+    return 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -273,6 +370,9 @@ def main(argv=None) -> int:
                     help="check a player can tell a square that gives COVER "
                          "from the floor it stands on, on every archetype. "
                          "Exits non-zero on a pair too close to call.")
+    ap.add_argument("--surface", action="store_true",
+                    help="check every swatch is a picture of a SURFACE rather "
+                         "than of a place. Exits non-zero on a composition.")
     ap.add_argument("--prune", action="store_true",
                     help="delete stored swatches no longer in the catalogue "
                          "(after a MATERIAL_REV bump, or a probe's leftovers)")
@@ -287,7 +387,8 @@ def main(argv=None) -> int:
                          "changed one was to rename the substance — which "
                          "renames it in the code forever to fix a picture.")
     a = ap.parse_args(argv)
-    if not (a.audit or a.render or a.sheet or a.prune or a.contrast):
+    if not (a.audit or a.render or a.sheet or a.prune or a.contrast
+            or a.surface):
         a.audit = True
 
     from imagery import ImageStore
@@ -390,9 +491,12 @@ def main(argv=None) -> int:
         print("\ncontact sheets:")
         if not _sheet(store, jobs):
             print("  nothing drawn yet — run --render first")
+    rc = 0
     if a.contrast:
-        return _contrast(store)
-    return 0
+        rc |= _contrast(store)
+    if a.surface:
+        rc |= _surface(store)
+    return rc
 
 
 if __name__ == "__main__":
