@@ -1405,6 +1405,27 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   (`material_prerender.py --redraw <substance>` exists for this: the swatch
   PROMPT is the thing you iterate on, and before it the only way to see a
   changed one was to rename the substance in the code forever.)
+  **And the rule was broken four more times in the table that states it**, one
+  of them found by a player: "the tables and crates are basically the same
+  colour as the road" — measured, thirteen out of 255 between a square that
+  gives half cover and the roadway under it, because `wood` named its grain
+  and named no colour and the sampler chose grey-green. `iron` came back steel
+  BLUE, `granite` asked for "raw GREY granite" (a request for nothing), and
+  `m` had no entry at all, fell through to the tile's own two words and came
+  back a green mud. Wood is PINE and deliberately not oak, since
+  `taproom-boards` is already a dark waxed oak floor and two woods described
+  as one wood come back the same colour; foliage is darker and bluer than
+  turf, since a canopy and a lawn both asked for as "green" landed eight
+  apart, which is a tree granting THREE-QUARTERS cover reading as grass.
+  **`material_prerender.py --contrast` is the standing guard**: it generates
+  every archetype and compares only the cover/floor pairs that ACTUALLY MEET
+  on a board — crossing the catalogue with itself gives 1,176 pairs against 97
+  real ones and buries them. Under 30 is worth looking at; under 14 is a
+  prompt at fault, and that line sits in a measured gap between the reported
+  bug at 12.7 and the closest legitimately-similar pair (a pale limestone
+  pillar on sand) at 14.8. Same-substance pairs are listed apart and never
+  fail — a wooden crate on a wooden deck IS one material, and geometry and
+  shading are what tell those apart.
   Two more traps worth remembering: a material swatch is a sample of a SURFACE
   and whatever it averages to is where the painter starts, so asking for "weeds
   forcing up through the joints" made a green swatch and the ruin stayed a lawn;
