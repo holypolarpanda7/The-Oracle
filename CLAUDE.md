@@ -454,6 +454,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - NPC combat AI: `uv run python scripts/ai_arena.py --board <archetype> --bouts 6
   --rounds 120 --quiet` — it attaches a real board, so fights take the turns
   real geometry costs; a 40-turn cap reads as "never resolves" and is not.
+- Ground-under-an-object arithmetic: `node activity-ui/ground-check.mjs` —
+  no browser and no build (it bundles `boardView.ts` out of src with esbuild),
+  because `groundSlot` is pure arithmetic over the grid.
 - Token-occlusion arithmetic: `node activity-ui/occlusion-check.mjs` — needs no
   preview server and no build (it bundles `boardView.ts` out of src with
   esbuild), because `occludedAt` is pure grid arithmetic over a camera that
@@ -901,6 +904,23 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   any GOOD — a pedestal that is a perfectly correct altar is the wrong thing in
   a crypt full of coffins, and no measurement catches that. The committed set
   is empty until a person has looked.
+- **A LANDMARK MAY NOT BE TALLER THAN THE SPACE IT STANDS IN IS WIDE.**
+  `setpieces.standing_room`. Reported about one board — a forty-foot gate
+  tower standing free in the middle of a twenty-five-foot carriageway, which
+  is a building nobody could have built — and fixed for all of them, because
+  `fits` asked for one clear square all round and one clear square is what a
+  road has. The margin is derived from the piece's HEIGHT instead, measured
+  across the NARROW side of its footprint since that is where a thing is
+  cramped. It is a rule about the SPACE rather than about the piece, which is
+  exactly why it does not belong in a per-archetype pool: the same tower is
+  right at a bridgehead, in a market square and on open moor, and absurd in a
+  lane or a corridor — and the twenty-one archetypes nobody had looked at get
+  it for free. It changes almost nothing for pieces that were already
+  reasonable (a nine-square jungle giant wants two squares where it wanted
+  one; a five-square fountain still wants one; the tower goes one to three),
+  and every archetype still stands its landmarks. The gate tower went back
+  into the street pool once the rule existed: offered on every town, placed on
+  none, and standing in the market square for a DM who asks for it by name.
 - **A landmark that GROWS belongs to a latitude.** Reported by a player: a
   temperate northern wood came back with a sixty-foot PALM standing in it.
   `SetPiece.on` says what GROUND a piece may stand on and has nothing to say
@@ -1422,11 +1442,18 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   chosen from the square's own code, with the floor fan drawn into it — so
   every crate came with a square yard of pine floor around it and every pillar
   stood on a disc of its own granite. The tile code says a crate stands here
-  and says NOTHING about what it stands on, so the answer comes from the
-  NEIGHBOURS: the commonest floor among the four squares around it, which
-  costs no new data because that neighbour is already contributing its slot to
-  the board's material list. Things that FILL their square are left alone — a
-  wall covers its own ground, so there is nothing visible to get wrong.
+  and says NOTHING about what it stands on, so `boardView.groundSlot` asks the
+  board in two tiers. NEIGHBOURS first, because the local truth beats the
+  average: a crate on a road through a meadow is on the road. Then the
+  STOREY'S OWN commonest floor — and that tier is not a nicety. Measured over
+  every archetype at two seeds, **28.6% of object squares have no floor
+  touching them at all and 796 of those 861 are on a CLEARING**: a tree in the
+  middle of a stand is ringed by trees, so every tree in every wood in the
+  game was drawn standing on a square of its own foliage. With both tiers, 0
+  of 3,011 fall through. Things that FILL their square are left alone — a wall
+  covers its own ground, so there is nothing visible to get wrong. It lives in
+  `boardView.ts` because that is the shared answer both renderers meet at, and
+  being pure grid arithmetic is what makes `ground-check.mjs` possible.
   **A swatch prompt that draws a SURFACE is fragile, and the colour is the
   safest thing to change about it.** Granite took three goes: "warm pink-grey
   speckled with black mica and quartz" put the colour on the BACKGROUND and
