@@ -23,8 +23,8 @@ Three rules it keeps, all of them the project's already:
   TRELLIS nodes, a failed render, a mesh that comes back empty — every one of
   those leaves the stamped box exactly where it was. A landmark is never
   missing, only plainer.
-* **It is a BACKGROUND job.** An isoboard painting is ~58s on this rig and a
-  mesh is minutes; a fight does not wait for either.
+* **It is a BACKGROUND job.** A mesh is minutes on this rig; a fight does not
+  wait for one.
 * **The file is written atomically.** ``_obj_bounds`` measures whatever is on
   disk, so a half-written OBJ would be measured, cached, and stand the landmark
   at a confidently wrong size.

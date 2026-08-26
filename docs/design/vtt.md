@@ -225,46 +225,24 @@ cd activity-ui && npm run build && node vtt-shot.mjs   # screenshot the overlay
   them with a hook.
 * **No token drag-and-drop** — click to select, click to move (touch-friendly);
   drag is a later nicety.
-* **Art alignment is approximate** by design; a wall painted at the wrong square
-  is cosmetic, but a fussy DM will notice.
 
-## Conditioning the painted board: the arms, and how to run them
+## The painted board: removed
 
-Three channels now condition an isometric board, and they fail on different
-axes — which is why they are measured apart before being measured together.
+There used to be a painted layer over the geometry — a diffusion render
+conditioned on a depth map (and, briefly, an ADE20K segmentation map and
+per-region prompts) rasterized from the same board in Python.
 
-| channel | says | strong at | weak at |
-|---|---|---|---|
-| depth (`isocam.depth_image`) | where and how tall | everything geometric | what a thing IS |
-| segmentation (`vtt/segmap.py`) | which of ADE20K's 150 classes | small scattered objects, pixel-exact | anything outside those 150 nouns |
-| regions (`vtt/regions.py`) | this skin's own sentence, here | large contiguous areas, unlimited vocabulary | small scattered squares (attention masking works on the latent) |
+It is gone, and the reason is the camera. A painting is a photograph of the
+room from ONE place; the board's camera turns a full circle, and no transform
+makes a picture taken at 45 degrees into a picture taken at 137. The painted
+layer could only ever be seen in a narrow cone, so every board a player saw
+while actually using the rotation was the geometry underneath it — and
+maintaining it cost a second implementation of the whole board in Python plus
+a gate to stop the two drifting apart.
 
-The arms, each a single command. `--force` is not optional — the art cache is
-keyed on the LAYOUT and knows nothing about conditioning, so a second arm is
-otherwise served the first arm's picture. Flags rather than environment
-variables on purpose: this runs under the Windows interpreter, and an env var
-that does not cross gives you arms that are bit-identical and look like a
-result.
+What replaced it is nothing yet, and that is deliberate: the board is drawn
+from real geometry, real materials and real meshes, and the direction is more
+of those rather than a picture laid over them.
 
-```bash
-P=./.venv/Scripts/python.exe
-S=scripts/scene_probe.py
-U=controlnet-union-promax-sdxl.safetensors
-ONLY="--only taproom,crypt,mountain-road,market --limit 4 --paint --force"
-
-$P $S $ONLY --tag base                          # today's shipping config
-$P $S $ONLY --tag union   --union $U            # the model swap, alone
-$P $S $ONLY --tag seg     --union $U --seg      # + what each square IS
-$P $S $ONLY --tag reg     --regional            # + a sentence per region
-$P $S $ONLY --tag both    --union $U --seg --regional
-```
-
-`union` exists to keep the comparison honest: swapping a dedicated depth net
-for a union model changes the depth conditioning too, so without that arm a
-better `seg` render could be the segmentation OR the different model.
-
-What each arm has to answer, on the taproom: are the posts still candles, is
-the bar visible, is the hearth a fireplace, and is the floor boards rather than
-flagstone. The crypt and the mountain pass are the regression guards — an
-interior that was already good, and the board that has historically punished
-every conditioning change.
+The TOP-DOWN battlemap for a Discord table is a different thing and stays: no
+camera to turn, so a painted picture is the whole of what it looks at.

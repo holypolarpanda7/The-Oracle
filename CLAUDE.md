@@ -578,28 +578,26 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   orthographic and never MOVES, so for any one angle the ray back to the lens
   is a fixed direction that climbs `RAY_RISE` (tan of the pitch, which no
   amount of turning changes) per foot it crosses the floor, and a square's drawn height is the same arithmetic the geometry is
-  built from. Grid, not picture — the same rule as cover and sight, and the only
-  answer available on a painted board, where the geometry draws no colour at all
-  and a depth-buffer readback would stall the frame besides. The point tested is
+  built from. Grid, not picture — the same rule as cover and sight, and a
+  depth-buffer readback would stall the frame besides. The point tested is
   the creature's CHEST: a wall that hides the boots is not worth marking, and at
   this pitch a ten-foot wall one square in front leaves exactly the head
   showing. An occluded token is drawn HOLLOW — bright rim, quiet inside — never
   hidden, because a token that vanished would be indistinguishable from a bug.
   The flat canvas reports `false` and always will; nothing on it can stand in
   front of anything.
-- **Python owns the board's SHAPES; the TypeScript is generated.** Once objects
-  stopped being plain boxes, their shapes became as load-bearing as the camera:
-  `vtt/isocam.py` rasterizes them into the depth map the painted layer is
-  conditioned on, and `vttScene3d.ts` builds them as the geometry the player
-  looks at. A hand-mirrored table drifts, and the failure is INVISIBLE — the
-  painting simply lands on furniture nobody is looking at.
-  `scripts/gen_board_shapes.py` writes `boardShapes.generated.ts`, and
-  `iso_alignment_check.py` runs it in `--check` mode, so a change to one side
-  that never reached the other fails at the gate. The per-instance rules
-  (variant, quarter-turn, height jitter) are functions rather than tables, so
-  the gate runs the same squares through BOTH languages — with big coordinates
-  on purpose, since the hash multiplies and the two only diverge once the
-  product passes 2^32 and JavaScript's bitwise operators wrap it.
+- **Python owns the board's SHAPES; the TypeScript is generated.** Every
+  silhouette the board draws — how thick a wall is, how a tent's canvas leans,
+  which of four crowns a tree wears — is DATA, authored in
+  `vtt/boardshapes.py` and written into `boardShapes.generated.ts` by
+  `scripts/gen_board_shapes.py`. One source, one direction, a file the browser
+  never edits; `--check` fails if it is stale.
+  It used to be a MIRROR rather than a generator's source, and that is worth
+  remembering as the thing not to rebuild: the same shapes were also
+  rasterized in Python, for a depth map a ControlNet was conditioned on, and
+  `iso_alignment_check.py` existed purely to catch two implementations of one
+  board drifting apart. The painted layer is gone (see below) and so is the
+  drift it could suffer.
 - **A wall is a thin skin where solid meets open floor, not a five-foot cube.**
   Drawn as a full cube it presents an enormous top face; a ring of them is a
   rim, and a rim around a floor is a TRAY, which is what every enclosed room
@@ -662,7 +660,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   rungs — because a square top face is most of what this camera sees, and it
   says "sawn" however loudly the prompt says "split log". `ring`, `rect`,
   `inset` and `slab` live in `skins.py` beside `solid`, not in the renderer
-  that happened to need them first: skins is imported BY isocam, so a skin
+  that happened to need them first: skins is imported BY boardshapes, so a skin
   cannot reach the other way.
 - **A part may be a PRISMATOID, and that is what stops everything being a
   cube.** A part was six numbers — an axis-aligned box — so every silhouette
@@ -703,7 +701,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   blocks. Only rock bordering open floor is drawn, so a one-square shell whose
   every square chose its own height has nothing left to connect it. Three more
   things the mountain pass needed, all measured: the shell must be judged on
-  all EIGHT neighbours (`isocam.exposed`), because a wandering track steps
+  all EIGHT neighbours (`boardshapes.exposed`), because a wandering track steps
   diagonally as often as squarely and a square whose only open neighbour was a
   diagonal was drawn as buried, notching the face into separate towers; the
   blocks must overhang their squares by about a tenth, because two diagonal
@@ -749,13 +747,10 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   boundary — two neighbours both tapering in leave a wedge between them. Where
   a shape belongs to something bigger than a square, the square is the wrong
   place to put it, which is the same sentence the traced roof answers.
-  Two tools came out of doing this and are worth knowing about:
-  `scripts/shape_probe.py` draws any archetype's GEOMETRY in colour with no GPU
-  and no browser (the rasterizer already took a `_colour_of` and nothing had
-  ever passed one, so the only way to look at a silhouette was to build the
-  app), and `scripts/demo_textures.py --board <archetype>` stages a REAL
-  generated board over the offline demo so the browser can be pointed at a
-  street or a reef without a backend or a session.
+  `scripts/demo_textures.py --board <archetype>` came out of doing this and is
+  how a silhouette gets looked at: it stages a REAL generated board over the
+  offline demo, so the browser can be pointed at a street or a reef without a
+  backend or a session.
 - **A thing bigger than a square cannot be drawn a square at a time.** A
   vessel's deck is carved out of a grid, so its outline is a staircase, and
   cutting each step's outer corner within its own square joins the steps into a
@@ -826,7 +821,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 - **A hillside was a flight of stairs, because elevation is stored per SQUARE.**
   Whole feet per square drawn at one height per square is a terrace, and the
   terracing is most of what makes an outdoor board read as stacked blocks — a
-  meadow with a knoll on it came out a wedding cake. `isocam.corner_lift_ft`
+  meadow with a knoll on it came out a wedding cake. `boardshapes.corner_lift_ft`
   (mirrored by `boardView.cornerLiftFt`, and now compared by the alignment
   gate) bends the SURFACE between square centres by averaging the shared
   CORNERS. **A corner's height must be a property of the CORNER**: anything
@@ -1013,14 +1008,13 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   square to `(-z, x)` at 90°; three.js `rotation.y` is the other handedness and
   sends it to `(z, -x)`. Applied naively the picture rotates and the cover does
   not, and both programs look correct in isolation — so the handedness lives in
-  `setpieces.rotate_xz` / `boardView.setpieceRotate` and is gated by
-  `iso_alignment_check.py`. The FIT (`mesh_fit`: scale + pivot) is measured on
+  `setpieces.rotate_xz` / `boardView.setpieceRotate`. The FIT
+  (`mesh_fit`: scale + pivot) is measured on
   the server and shipped in `state()`, never recomputed in the browser: it is a
   measurement of a FILE, so the only way two languages cannot disagree is for
-  one of them to do it. All three renderers stay in step — the isometric board
-  draws the mesh, the depth map rasterizes it (a 40-line OBJ reader: `v` and
-  `f`, nothing else), and the Discord PNG draws no mesh at all but NAMES the
-  landmark, since its stamped tiles were always on that board already.
+  one of them to do it. Both renderers stay in step — the isometric board draws
+  the mesh, and the Discord PNG draws no mesh at all but NAMES the landmark,
+  since its stamped tiles were always on that board already.
 - **A landmark has to be ASKED for, and a place is read in three tiers.**
   `[[VTT: open | … | landmark=a stepped ziggurat]]` is the channel between the
   fiction and the catalogue, and without it the model narrated a ziggurat the
@@ -1225,61 +1219,28 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   field since roofs were traced (the hole was already the right shape), and
   `materials_for` walks SQUARES — a roof's material belongs to no square, so
   without a pass for it the slot resolves to nothing and falls back to flat.
-- **A board fought INSIDE the water gets the water back.** The painted layer has
-  put the column back since the reef pass (`art._underwater_grade`) and the
-  GEOMETRY never did, so an unpainted swim board — every one of them until its
-  picture lands, every one offline, and every one at an angle away from the bake
-  — was a dry seabed: open water came back a corrugated beige plain. It is fog,
+- **A board fought INSIDE the water gets the water back.** The geometry used to
+  draw a dry seabed — open water came back a corrugated beige plain — because
+  the water column was put back by the PAINTING, which is gone. It is fog,
   because a water column is what fog IS, ranged off the four corners' depths
   along the view axis so it follows the camera wherever it is turned. `state()`
   had shipped the board's MEDIUM since boards gained one and the client never
   declared it. The depth must use all THREE components of FORWARD — the lens
   looks down as well as along, and dropping the y term loses a constant the size
   of the camera's own height and draws the board as one flat slab of sea.
-- **The cache key must name everything the picture depends on.** `isoboard_ref`
-  hashed the tile grid, and a skin changes materials without changing one
-  tile — so a skyship's timber, steampunk and organic styles shared a slug and
-  the first render was served to all three. They came back identical because
-  they *were* one picture. Worse than the wasted work: it looked like evidence
-  for a limit that does not exist, and "a depth ControlNet cannot convey a
-  material" got written down as measured when it was a cache bug. With the
-  skins in the key the same denoise gives three plainly different vessels. Same
-  lesson as `layout_signature` following the CURRENT grid — **when two renders
-  should differ and don't, suspect the key before the technique.**
-- **The built-up rule survived being second-guessed.** A skinned board was
-  given its terrain image regardless of how built up it is, on the theory that
-  a skin is the board saying "not the default material". Measured across the
-  gallery it cost six boards their painted detail to help one, and dropping the
-  denoise to 0.60 to compensate turned everything into flat tinted geometry —
-  exactly what `ISO_DENOISE_FLAT` already warns about. Both reverted; the
-  reasoning is kept in `iso_denoise_for` so it isn't re-derived.
-- **The model paints the SILHOUETTE it is handed, and no knob on the painter
-  outranks it.** A mountain pass came back as a snowy village with wooden
-  doors, and four attempts to argue the model out of it from the painter's side
-  all measured WORSE than the disease: judging "built up" by BUILT codes so raw
-  country gets its terrain image (village gone, board back as grey cubes — the
-  flat tinted diagram again, and the cave took the same loss), 0.85 as a middle
-  ground (architecture straight back), and forbidding houses and doors in the
-  negative — tried once against the old shapes (it built carved stone pilasters
-  instead) and once against the new (worse still: a timber shrine and a gilded
-  stupa; naming a thing a dozen times to forbid it is still naming it). The
-  fault was the shape both times. **A cliff square is a PRISMATOID**, battered
-  and canted with no flat top or right angle in plan — it was a full-square box
-  at one of six heights, and a field of flat-topped boxes at varied heights is
-  a hill town. Only the buried bottoms stay square, which keeps the merging
-  rule that stops a rock face breaking into towers. **A tree is a crown on a
-  trunk** (`isocam.OBJECT_VARIANTS["T"]`, four crowns), stands 18 ft rather
-  than 12 because a crown needs room above head height, and its swatch is
-  FOLIAGE not bark — one swatch colours the whole square, and what a square of
-  tree shows a camera on the ceiling is leaves. Painted brown they came back
-  violet; painted green the forest is a forest instead of a field of sawn-off
-  stumps. It also had to MOVE into the generated table: the old tree was two
-  cylinders written by hand in each language and they had already drifted, so
-  the depth map carried a different tree from the one the player saw.
-  `scripts/scene_probe.py --paint --force --tag <arm>` is how an arm of such an
-  experiment is measured: **`--force` is not optional**, since the art cache is
-  keyed on the layout and knows nothing about denoise or negatives, so a second
-  arm is otherwise served the first arm's picture.
+- **A cliff is a PRISMATOID and a tree is a crown on a trunk.** Both were
+  found the long way round, arguing with a painter that kept drawing a snowy
+  village on a mountain pass: four attempts from the painter's side all
+  measured WORSE, and the fault was the SHAPE both times. A cliff square was a
+  full-square box at one of six heights, and a field of flat-topped boxes at
+  varied heights is a hill town; battered and canted with no flat top or right
+  angle in plan, it is rock. Only the buried bottoms stay square, which keeps
+  the merging rule that stops a rock face breaking into towers. A tree
+  (`boardshapes.OBJECT_VARIANTS["T"]`, four crowns) stands 18 ft rather than 12
+  because a crown needs room above head height, and its swatch is FOLIAGE not
+  bark — one swatch colours the whole square, and what a square of tree shows
+  an overhead camera is leaves. Painted brown they came back violet; painted
+  green the forest is a forest instead of a field of sawn-off stumps.
 - **A landmark may be one the DM INVENTED, and the name is its identity.** The
   catalogue is a fixed list of meshes so a model cannot ask for one nobody
   shipped — a guarantee about MESHES, which says nothing about a thing the board
@@ -1317,10 +1278,9 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   already makes for every catalogue item and every wreck, and nothing turned one
   into a shape. TRELLIS.2 does, and what comes back is a mesh like any other —
   fitted by `setpieces.mesh_fit` on the server, drawn by the isometric board,
-  rasterized into the depth map, carrying NO mechanical content. The tiles the
-  piece stamps stay its entire rules meaning. OBJ, because all three readers
-  already speak it (the browser's `OBJLoader`, `_obj_bounds`, `isocam`'s
-  rasterizer); a GLB would need three new readers to buy nothing. Off by default
+  carrying NO mechanical content. The tiles the piece stamps stay its entire
+  rules meaning. OBJ, because the readers already speak it (the browser's
+  `OBJLoader`, `_obj_bounds`); a GLB would need new readers to buy nothing. Off by default
   (`ORACLE_LANDMARK_MESH`) — minutes of GPU on a card already shared with SDXL
   and the local LLM — and every failure leaves the box exactly where it was.
   **Two roots, searched COLLECTED FIRST** (`MESH_ROOT`, then `GENERATED_ROOT`,
@@ -1361,9 +1321,7 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   asked about the slug, and a remembered `None` would leave the landmark flat
   for the life of the run (`forget_mesh` drops it when a mesh lands mid-session); the file is written ATOMICALLY, because
   `_obj_bounds` measures whatever is on disk and a half-written OBJ measures,
-  fits and stands the landmark at a confidently wrong size; and the mesh is asked
-  for BEFORE the painting, since the depth map the painter is conditioned on
-  rasterizes these meshes. **`Trellis2ExportTrimesh` reports `outputs: {}`** —
+  fits and stands the landmark at a confidently wrong size. **`Trellis2ExportTrimesh` reports `outputs: {}`** —
   measured: the file was written, the job reported success, and the history said
   nothing — so `_poll` returning None is normal and `_locate` finds the file
   under the prefix we chose.
@@ -1628,16 +1586,6 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   BOARD last wrote (in `sync_bands`), so a band somebody deliberately changed
   is told apart from one that drifted. Pinned in the selftest, which fails by
   exactly two squares without it.
-- **The painted isometric board was built, probed, prerendered into a gallery —
-  and never called.** `VttEngine.render_iso_art` had NO callers, so every board
-  an Activity opened came back as bare geometry while `iso_art_status` sat at
-  `"none"` on every row in the database. `render_art` (the top-down picture a
-  Discord table looks at) was wired from the first day and its isometric
-  counterpart never was. They are two views of the same room and a board can
-  have either, both or neither, so nothing failed — it just quietly never
-  happened. Measured on this rig: **an uncached isoboard painting is ~58s**,
-  which is why it is a background task and the fight runs on geometry until it
-  lands.
 - **A fight gets its own PAGE, because the board was a fifth of the screen.**
   `BattleSurface.tsx` replaces the play surface whenever a board is out. The old
   layout spent its height on a status bar, an initiative carousel of CARDS, a
@@ -1765,18 +1713,21 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   field — the same shape of bug as `_cc_request`.
 - **The near walls are CUT AWAY, and the rule is one sentence.** A room is a
   box and an isometric camera looks into it over a corner, so the two walls
-  nearest the lens stand between the viewer and the fight. At the canonical
-  angle that was survivable because the wall is IN the painting; it stopped
-  being survivable the moment the camera could turn, since a quarter turn puts
-  what used to be the far wall across the front of the board. `boardView.
-  cutAwayAt`: **cut the near walls exactly when you are looking at the geometry
-  rather than at a painting of the room.** Where a painting is showing, the
-  wall is a thing in that picture and not drawing the geometry removes nothing
-  anybody can see — the geometry there is a depth-only proxy, so cutting it
-  would only delete the occlusion. Where none is (art not drawn yet, offline,
-  or any angle away from the bake) the geometry IS the picture and the walls
-  come down to a stub, never to nothing: a floor with no edge at all looks like
-  it is hanging in space.
+  nearest the lens stand between the viewer and the fight, and a quarter turn
+  puts what used to be the far wall across the front of the board.
+  `boardView.cutAwayAt` takes them down — always, now. The rule used to be
+  "exactly when you are looking at the geometry rather than at a painting of
+  the room", because under a painting the wall was a thing in the picture and
+  not drawing the geometry removed nothing anybody could see. There is no
+  painting any more, so the geometry IS the picture at every angle, and the
+  walls come down to a STUB, never to nothing: a floor with no edge at all
+  looks like it is hanging in space. **The consequence, and the harnesses
+  assert it: a near wall no longer hides anybody.** What occludes is furniture,
+  raised ground, upper storeys and landmark meshes.
+  **And "in the way" is about to change meaning.** At a fixed angle it is the
+  two walls nearest the lens; with a camera the player can swing to any pitch
+  it becomes whatever stands between the lens and the thing being looked at,
+  which is a different question wearing the same name.
   **STRUCTURE only**, which turns out to be the same thing as "never vary a
   height the rules quote" arrived at from the other side — a crate, a low wall,
   a table and an altar are OBJECTS, and every one of them has a quoted cover
@@ -1837,35 +1788,33 @@ Players create a character, "enter the world," and adventure while an LLM narrat
   `rayRise` is tan(pitch) and does NOT depend on yaw, only which way the ray
   runs across the floor does — and it had to start testing the NEAR edges of the
   board, which it never did when the ray could only run one way.
-  **The PAINTING is the real price, and it is paid honestly.** A picture baked
-  against a depth map rasterized at one angle is a photograph of the room from
-  one place, and no transform makes it a photograph from another. So the SERVER
-  still works at exactly one angle — `YAW_DEG`, the canonical yaw, which
-  `vtt/isocam.py` mirrors and `iso_alignment_check.py` compares — and the client
-  FADES the painting out as it turns away (`paintOpacity`, full within 3°, gone
-  by 16°, measured the short way round). A picture that vanished at a threshold
-  would read as a bug; one that dissolves reads as the room turning. Off-axis
-  you are looking at the geometry, which is exactly why the surfaces had to
-  learn to answer to light before this was worth offering — the two changes are
-  one change in the right order.
+  **The PAINTING was the real price, and it was not worth paying.** A picture
+  baked against a depth map rasterized at one angle is a photograph of the room
+  from one place, and no transform makes it a photograph from another — so for
+  a while the server worked at exactly one angle and the client faded the
+  painting out as it turned away. That is gone: a board you can walk round is
+  worth more than a picture you can only look at from one chair, and the
+  painted layer took a second implementation of the whole board in Python with
+  it. Off-axis or on, you are looking at the geometry, which is exactly why the
+  surfaces had to learn to answer to light before turning was worth offering —
+  the two changes were one change in the right order.
   `camera-turn.mjs` holds the arithmetic with no browser (canonical projection
   unchanged to the bit, every basis orthonormal, the inverse exact at every
   angle, a full turn returning exactly); `turn-shot.mjs` holds the look in a
   real WebGL context. The flat canvas answers `canTurn: false` and shows no
   control — looking straight down there is nothing a rotation would reveal.
-- **The isometric camera is ORTHOGRAPHIC, and that buys three things.** The projection is a plain affine map, so it inverts in closed
-  form and picking is arithmetic; pan and zoom are a translate-and-scale, so
-  one `View` (`scale`/`ox`/`oy`) drives both browser renderers and the camera
-  needs no state of its own; and a painting baked at one framing stays aligned
-  at every other FRAMING — which is why turning it costs the painting and
-  nothing else (see above).
+- **The isometric camera is ORTHOGRAPHIC, and that buys two things.** The
+  projection is a plain affine map, so it inverts in closed form and picking is
+  arithmetic; and pan and zoom are a translate-and-scale, so one `View`
+  (`scale`/`ox`/`oy`) drives both browser renderers and the camera needs no
+  state of its own. It used to buy a third — a painting baked at one framing
+  stayed aligned at every other framing — and that one died with the painting.
   `activity-ui/src/lib/isocam.ts` is the only place the camera is defined, and
-  `vtt/isocam.py` mirrors it so the server can rasterize a depth map of the
-  SAME view for a depth ControlNet. **Change one and you must change the
-  other** — a degree of drift puts every painted shadow beside the thing
-  casting it. Winding is load-bearing in the mesh builder for a related reason:
-  normals are derived from vertex order, so a reversed face gets a normal
-  pointing into the block and the light finds nothing to catch.
+  it is now the ONLY place — there used to be a Python mirror of it so a depth
+  map could be rasterized of the same view, and that file is gone. Winding is still
+  load-bearing in the mesh builder for a related reason: normals are derived
+  from vertex order, so a reversed face gets a normal pointing into the block
+  and the light finds nothing to catch.
 - **Fog is MEMORY; sight is LIVE. Both, or a door means nothing.**
   `TacticalMap.fog` records everywhere the party has ever seen and never dims
   — right for "have we been here", useless for "can we see it now".

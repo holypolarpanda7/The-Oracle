@@ -419,50 +419,15 @@ class ImageryConfig:
     # decorate. Drop the model file in ComfyUI/models/controlnet/.
     map_controlnet: str = ""
     map_controlnet_strength: float = 0.8
-    # The ISOMETRIC board's painted layer is conditioned on a DEPTH map of the
-    # geometry the player is already looking at (vtt/isocam.py), which needs a
-    # depth model — a different file and a different job from the scribble
-    # above, so it gets its own key rather than sharing one. Pointing the map
-    # kind at a depth model would wreck the top-down battlemaps, which want the
-    # floorplan scribble.
-    #
-    # Empty = no painted layer at all, and the board stays clean geometry over
-    # catalogue materials, which is playable and offline-safe by design.
-    # Strength is lower than the scribble's on purpose: depth conditioning is
-    # very strong, and at 0.8 it flattens the model's own material invention
-    # into a plain grey massing model.
-    isoboard_controlnet: str = ""
-    isoboard_controlnet_strength: float = 0.55
-    # Which condition the board's ControlNet is being handed, when it is a
-    # UNION model. ComfyUI's own strings — see comfy/cldm/control_types.py —
-    # so "depth" and "segment", never "seg".
-    #
-    # LEAVE THIS EMPTY. Measured 2026-08-15 with xinsir ControlNet-Union ProMax
-    # on ComfyUI 0.27: setting it makes the sampler diverge into rainbow noise
-    # at every type and every strength (six renders, one variable). Leaving it
-    # empty renders cleanly — the opposite of the received wisdom.
-    isoboard_controlnet_union_type: str = ""
-    # A SECOND conditioning image for the board: what each square IS, painted
-    # in ADE20K class colours (see vtt/segmap.py). Depth says where a thing is
-    # and how tall; only this says whether the two-foot shaft is a timber post
-    # or a candle. Needs a net that can take `segment` — the union model can.
-    # Empty = off, and the board conditions on depth alone exactly as before.
-    #
-    # It stays empty for now, and the reason is the CARRIER rather than the
-    # idea. The only SDXL net that can take `segment` is the union model, and
-    # measured on this rig it has two disqualifying modes: typed, it produces
-    # noise; untyped, it ignores the depth conditioning and paints a handsome
-    # tavern that is not THIS tavern — which is the one failure the whole
-    # grid-is-truth doctrine exists to prevent. The seg map itself is built,
-    # guarded and correct; it is waiting for a net that will carry it.
-    isoboard_seg_controlnet: str = ""
-    isoboard_seg_strength: float = 0.45
-    # Bind each skin's own sentence to the squares wearing it, instead of
-    # concatenating all of them into one clause where they compete (see
-    # vtt/regions.py). Complementary to the seg map rather than an alternative:
-    # this is unlimited in vocabulary and weak on small scattered regions,
-    # segmentation is the reverse. Off = the single global clause, unchanged.
-    isoboard_regional_prompt: bool = False
+    # THE ISOMETRIC BOARD'S PAINTED LAYER WAS CONFIGURED HERE, AND IT IS GONE.
+    # A depth ControlNet, a segmentation net beside it, and per-region prompts,
+    # all so a diffusion render could be laid over the geometry the player was
+    # already looking at. A painting is a photograph of the room from ONE
+    # place, and the board's camera turns a full circle — it could only ever be
+    # seen in a narrow cone, and it cost a second implementation of the whole
+    # board in Python to condition. The `map_controlnet` above is NOT this: it
+    # conditions the TOP-DOWN battlemap a Discord table looks at, which has no
+    # camera to turn and where the picture is the whole product.
     # RescaleCFG (0..1) lets you raise `cfg_scale` without the blown-out colour
     # high CFG normally causes. MEASURED WORSE for this pipeline: on the
     # goliath probe, cfg 10 + rescale 0.7 pushed the render further toward a

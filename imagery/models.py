@@ -66,13 +66,15 @@ class ImageKind:
     #                          HadesLevel@0.9 doing exactly what they are for.
     #                          No wording survives a LoRA at that strength.
 
-    ISOBOARD = "isoboard"  # -> a painted ISOMETRIC view of one tactical board,
-    #                          conditioned on a depth map of the very geometry
-    #                          the player is looking at (see vtt/isocam.py).
-    #                          MAP is the same room seen from straight overhead
-    #                          and conditioned on a floorplan scribble; this is
-    #                          the Baldur's-Gate layer, and the two want
-    #                          different framing and a different ControlNet.
+    ISOBOARD = "isoboard"  # -> RETIRED: a painted ISOMETRIC view of one board,
+    #                          conditioned on a depth map of the geometry the
+    #                          player was looking at. A painting is a
+    #                          photograph of the room from one place and the
+    #                          camera turns, so it could only be seen in a
+    #                          narrow cone. Kept as a NAME so stored rows still
+    #                          resolve; nothing renders it. MAP — the same room
+    #                          from straight overhead, for a Discord table with
+    #                          no camera to turn — is alive and unrelated.
 
     MESHREF = "meshref"    # -> the reference PHOTOGRAPH a mesher is given for a
     #                          landmark the DM invented (imagery/landmark3d.py).
