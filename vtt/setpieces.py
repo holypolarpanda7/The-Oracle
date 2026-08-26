@@ -1302,13 +1302,48 @@ def _turned(p: SetPiece, yaw: int) -> tuple[tuple[str, ...], dict[str, int],
     return tiles, elev, fills
 
 
+def standing_room(p: SetPiece, square_ft: int = 5) -> int:
+    """How much clear ground this landmark needs around its footprint, in
+    squares.
+
+    A LANDMARK MAY NOT BE TALLER THAN THE SPACE IT STANDS IN IS WIDE. That is
+    the whole rule, and it is the general form of something a player reported
+    about one board: a forty-foot gate tower standing free in the middle of a
+    twenty-five-foot carriageway, which is a building nobody could have built.
+    Nothing about the old test could catch it — ``fits`` asked for one clear
+    square all round, and one clear square is what a road has.
+
+    It is a rule about the SPACE and not about the piece, which is why it
+    belongs here rather than in a per-archetype pool: the same tower is fine at
+    a town gate, in a market square, on open moor and at a bridgehead, and
+    absurd in a lane, a corridor or a clearing barely wider than itself. Every
+    archetype gets it for free, including the twenty-one that were never
+    looked at.
+
+    Measured across the NARROW side of the footprint, because that is where a
+    thing is cramped, and it changes almost nothing for the pieces that were
+    already reasonable: a nine-square jungle giant sixty feet tall wants two
+    squares where it wanted one, a five-square fountain six feet tall still
+    wants one, and the gate tower goes from one to three.
+    """
+    tall = float(p.height_ft) / float(square_ft or 5)
+    across = min(p.width, p.depth)
+    return max(1, math.ceil((tall - across) / 2.0))
+
+
 def fits(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0,
-         margin: int = 1, mode: str = "walk", clear: bool = False) -> bool:
+         margin: Optional[int] = None, mode: str = "walk",
+         clear: bool = False) -> bool:
     """Room for this landmark here, on ground it may stand on?
 
-    The margin is the same precaution :func:`vtt.structures.shelter` takes and
-    for the same reason: a landmark jammed against a wall seals a pocket, and
-    the generator's connectivity net then carves a corridor through it.
+    The margin defaults to :func:`standing_room` — as much clear ground as the
+    piece is TALL, which is what stops a forty-foot tower being placed in a
+    twenty-five-foot street. Pass one explicitly only to ask a different
+    question.
+
+    A margin at all is the same precaution :func:`vtt.structures.shelter` takes
+    and for the same reason: a landmark jammed against a wall seals a pocket,
+    and the generator's connectivity net then carves a corridor through it.
 
     "Clear" is judged in the board's own MEDIUM, exactly as ``_connect_regions``
     judges connectivity. Deep water is impassable to a walker and is the entire
@@ -1325,6 +1360,8 @@ def fits(g: Grid, p: SetPiece, x0: int, y0: int, yaw: int = 0,
     """
     tiles, _elev, _fills = _turned(p, yaw)
     w, d = len(tiles[0]), len(tiles)
+    if margin is None:
+        margin = standing_room(p, g.square_ft if hasattr(g, "square_ft") else 5)
     if x0 < 0 or y0 < 0 or x0 + w > g.width or y0 + d > g.height:
         return False
     for y in range(y0 - margin, y0 + d + margin):
@@ -1559,10 +1596,14 @@ def setpieces_for(g: Grid, slugs: Sequence[str], *, seed: int = 0,
                                                  and tile(c).traversable_flying)))
         off_ground = (_prefix(g, lambda c: c not in p.on and not _swept(c))
                       if p.on else None)
+        room = standing_room(p, getattr(g, "square_ft", 5))
         for x0, y0, yaw in _spots(g, p, rng, prefer):
             tiles, _e, _f = _turned(p, yaw)
             w, d = len(tiles[0]), len(tiles)
-            if _count(blocked, x0 - 1, y0 - 1, x0 + w + 1, y0 + d + 1):
+            # The prefilter's box is the one `fits` will check, so it stays a
+            # "definitely not" and never a second opinion.
+            if _count(blocked, x0 - room, y0 - room,
+                      x0 + w + room, y0 + d + room):
                 continue
             if off_ground is not None and _count(off_ground, x0, y0,
                                                  x0 + w, y0 + d):

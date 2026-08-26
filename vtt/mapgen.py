@@ -3403,15 +3403,13 @@ _SETPIECES: dict[str, tuple[str, ...]] = {
     "cave": ("cave-pillar", "boulder-heap"),
     "mountain-pass": ("boulder-heap", "standing-stone"),
     "terraces": ("standing-stone", "boulder-heap", "ruined-arch"),
-    # A GATE TOWER BELONGS AT A GATE. Free-standing in the middle of a
-    # twenty-five-foot carriageway it is forty feet of masonry nobody could
-    # have built, which is how a player reported it, and no placement rule
-    # fixes that — the piece is a bit of a town's WALL and this board has no
-    # wall on it. It keeps its home on `bridge`, where a tower at the
-    # bridgehead is exactly what it is for, and a DM who names one still gets
-    # it (the pool is a default, not a permission) standing in the market
-    # square, which is the one open place a town has.
-    "street": ("village-fountain",),
+    # The gate tower is back, and the rule that makes it safe is a GENERAL one
+    # rather than this list: `setpieces.standing_room` will not stand a piece
+    # anywhere the clear ground is narrower than the piece is tall, so forty
+    # feet of masonry needs forty-five feet of open place and a carriageway is
+    # twenty-five. On a town that leaves the market square, which is the one
+    # spot where it makes architectural sense.
+    "street": ("village-fountain", "gatehouse-tower"),
     "camp": ("standing-stone", "boulder-heap"),
     "arena": ("great-statue", "temple-plinth"),
     "bridge": ("gatehouse-tower",),

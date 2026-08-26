@@ -1161,6 +1161,35 @@ def test_setpieces() -> None:
           abs(rx - u2) < 1e-9 and abs(rz - v2) < 1e-9,
           f"mesh ({rx:.3f},{rz:.3f}) vs tiles ({u2},{v2})")
 
+    # --- a landmark may not be taller than the space it stands in -------
+    # Reported about one board and fixed for all of them: a forty-foot gate
+    # tower standing free in the middle of a twenty-five-foot carriageway,
+    # which is a building nobody could have built. Nothing in the old test
+    # could catch it — `fits` asked for one clear square all round, and one
+    # clear square is what a road has. It is a rule about the SPACE and not
+    # about the piece, which is why it lives in `standing_room` rather than in
+    # a per-archetype pool: the same tower is right at a bridgehead, in a
+    # market square and on open moor.
+    eq("a tower forty feet tall wants three clear squares all round",
+       sp.standing_room(sp.CATALOGUE["gatehouse-tower"]), 3)
+    eq("...and a six-foot fountain still wants only the one",
+       sp.standing_room(sp.CATALOGUE["village-fountain"]), 1)
+    _lane = Grid.blank(31, 31, "#")
+    for _y in range(13, 18):            # a 25-ft roadway through solid rock
+        for _x in range(31):
+            _lane.set(_x, _y, "=")
+    check("a gate tower will not stand in a 25-ft street",
+          not sp.setpieces_for(_lane, ["gatehouse-tower"], seed=3))
+    check("...and a twelve-foot broken pillar in the same street still will",
+          len(sp.setpieces_for(_lane, ["broken-pillar"], seed=3)) == 1,
+          "the rule is about HEIGHT — a low thing may stand in a lane")
+    _place = Grid.blank(31, 31, "#")
+    for _y in range(8, 23):             # open it out to 75 ft: a market square
+        for _x in range(8, 23):
+            _place.set(_x, _y, "=")
+    check("...and the tower stands the moment the street opens into a place",
+          len(sp.setpieces_for(_place, ["gatehouse-tower"], seed=3)) == 1)
+
     # --- stamping, and what it deliberately does NOT stamp ---------------
     g = Grid.blank(20, 16, "g")
     placed, = sp.setpieces_for(g, ["jungle-giant"], seed=5)
