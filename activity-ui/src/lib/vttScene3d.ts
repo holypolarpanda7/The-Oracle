@@ -42,7 +42,7 @@ import {
   SKIRT_FT, SKIRT_INSET,
   STRUCTURE_CODES, awayDir, cutawayHeightScale, cuttingAway, exposedRock,
   hullFootprint, squareUnderRay, surfaceLiftFt,
-  isSetpieceSkin, isSolid, materialSlot,
+  groundSlot, isSetpieceSkin, isSolid, materialSlot,
   outAxis, outCorner, occludedAt, runAxis, setpieceYaw,
   sameBody,
   skinAt, skinHeightScale, variantSmooth,
@@ -937,24 +937,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
      *  covers its own ground, so there is nothing visible to get wrong there,
      *  and leaving structure alone keeps the buried-face rules as they were.
      */
-    const floorSlotAt = (x: number, z: number, code: string,
-                         own: string): string => {
-      if (STRUCTURE_CODES.has(code) || tileHeightFt(code) <= 0) return own;
-      const tally = new Map<string, number>();
-      for (const [nx, nz] of [[x - 1, z], [x + 1, z], [x, z - 1], [x, z + 1]]) {
-        const c = at(nx, nz);
-        if (c === null || HOLE_CODES.has(c)) continue;
-        // A floor, not another object: a crate beside a crate says nothing
-        // about the ground, and a wall says less.
-        if (STRUCTURE_CODES.has(c) || tileHeightFt(c) > 0) continue;
-        const sl = materialSlot(c, skinOf(nx, nz));
-        tally.set(sl, (tally.get(sl) ?? 0) + 1);
-      }
-      if (!tally.size) return own;
-      // Ties broken by name, so the same board draws the same way twice.
-      return [...tally].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0][0];
-    };
-
     /** What this square is MADE of. Material and silhouette only — no rule
      *  reads a skin. See vtt/skins.py. */
     const skinOf = (x: number, z: number): string => {
@@ -1127,7 +1109,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         const mb = builderFor(slot);
         // The GROUND's material, which is the object's own everywhere but
         // under something that stands on a square rather than filling it.
-        const fslot = floorSlotAt(x, z, code, slot);
+        const fslot = groundSlot(scene, x, z, level);
         const fmb = fslot === slot ? mb : builderFor(fslot);
         const fcol = fslot === slot ? color : new THREE.Color(
           textured.has(fslot) ? "#ffffff"
