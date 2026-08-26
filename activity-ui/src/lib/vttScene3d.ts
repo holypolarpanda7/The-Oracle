@@ -914,6 +914,47 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     const gridPts: number[] = [];
     const swatches = scene.materials ?? {};
 
+    /** What the GROUND under this square is made of.
+     *
+     *  THE GROUND UNDER AN OBJECT IS NOT MADE OF THE OBJECT. There was one
+     *  builder per square, chosen from the square's own code, and the floor
+     *  fan went into it — so a crate square was drawn in the crate's material
+     *  right out to its edges. A crate came with a square yard of pine floor
+     *  around it, a pillar stood on a disc of its own granite, and an altar on
+     *  a slab of itself. Invisible while the wood swatch was the same
+     *  grey-green as the road, and reported the moment it was not: "it paints
+     *  the ground and the crate".
+     *
+     *  The tile code says a crate stands here and says NOTHING about what it
+     *  stands on, so the answer comes from the neighbours: the commonest floor
+     *  among the four squares around it. That is right in every case the board
+     *  can produce — crates on a road are on cobbles, crates in a taproom are
+     *  on its boards, a pillar in a hall is on the hall's floor — and it costs
+     *  no new data, because the neighbour is already contributing that slot to
+     *  the board's own material list.
+     *
+     *  Only for things that do not FILL their square. A wall or a rock face
+     *  covers its own ground, so there is nothing visible to get wrong there,
+     *  and leaving structure alone keeps the buried-face rules as they were.
+     */
+    const floorSlotAt = (x: number, z: number, code: string,
+                         own: string): string => {
+      if (STRUCTURE_CODES.has(code) || tileHeightFt(code) <= 0) return own;
+      const tally = new Map<string, number>();
+      for (const [nx, nz] of [[x - 1, z], [x + 1, z], [x, z - 1], [x, z + 1]]) {
+        const c = at(nx, nz);
+        if (c === null || HOLE_CODES.has(c)) continue;
+        // A floor, not another object: a crate beside a crate says nothing
+        // about the ground, and a wall says less.
+        if (STRUCTURE_CODES.has(c) || tileHeightFt(c) > 0) continue;
+        const sl = materialSlot(c, skinOf(nx, nz));
+        tally.set(sl, (tally.get(sl) ?? 0) + 1);
+      }
+      if (!tally.size) return own;
+      // Ties broken by name, so the same board draws the same way twice.
+      return [...tally].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0][0];
+    };
+
     /** What this square is MADE of. Material and silhouette only — no rule
      *  reads a skin. See vtt/skins.py. */
     const skinOf = (x: number, z: number): string => {
@@ -1084,9 +1125,16 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // the board's account of who is hidden follows what it drew.
         const h = full * cutawayHeightScale(scene, x, z, yawDeg, full, level);
         const mb = builderFor(slot);
+        // The GROUND's material, which is the object's own everywhere but
+        // under something that stands on a square rather than filling it.
+        const fslot = floorSlotAt(x, z, code, slot);
+        const fmb = fslot === slot ? mb : builderFor(fslot);
+        const fcol = fslot === slot ? color : new THREE.Color(
+          textured.has(fslot) ? "#ffffff"
+            : tileStyle(fslot.split("@")[0] || code).fill);
         // Everything emitted from here belongs to this square, so `reshade` can
         // find its vertices again without rebuilding anything.
-        mb.at = z * scene.width + x;
+        mb.at = fmb.at = z * scene.width + x;
 
         // Three ways a floor can END, and it needs a side or it is a sheet of
         // paper hanging in nothing. Against a HOLE, which gives an island its
@@ -1140,12 +1188,12 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         const crease = (u: number, w: number) =>
           1 - CREASE_AO * occAt(x + u, z + w);
         for (let k = 1; k < pts.length - 1; k++) {
-          mb.quad(v3(x + pts[0][0], ground(pts[0][0], pts[0][1]), z + pts[0][1]),
+          fmb.quad(v3(x + pts[0][0], ground(pts[0][0], pts[0][1]), z + pts[0][1]),
                   v3(x + pts[k][0], ground(pts[k][0], pts[k][1]), z + pts[k][1]),
                   v3(x + pts[k + 1][0], ground(pts[k + 1][0], pts[k + 1][1]),
                      z + pts[k + 1][1]),
                   v3(x + pts[0][0], ground(pts[0][0], pts[0][1]), z + pts[0][1]),
-                  color, undefined,
+                  fcol, undefined,
                   [crease(pts[0][0], pts[0][1]), crease(pts[k][0], pts[k][1]),
                    crease(pts[k + 1][0], pts[k + 1][1]),
                    crease(pts[0][0], pts[0][1])]);
@@ -1165,11 +1213,11 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           // vertex — offsetting each side along its own normal keeps a straight
           // run coplanar and opens a wedge of daylight wherever the outline
           // turns, which on a hull is every corner of the bow.
-          mb.quad(v3(x + ax, ground(ax, az), z + az),
+          fmb.quad(v3(x + ax, ground(ax, az), z + az),
                   v3(x + low[k][0], drop, z + low[k][1]),
                   v3(x + low[m][0], drop, z + low[m][1]),
                   v3(x + bx, ground(bx, bz), z + bz),
-                  color);
+                  fcol);
         }
 
         // The water over this square, if it is under any. Flush to the
