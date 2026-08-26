@@ -332,11 +332,36 @@ SUBSTANCE: dict[str, str] = {
 SUBSTANCE_ART: dict[str, str] = {
     "stone": "close-up of cut limestone blocks, warm pale sandy grey with "
              "ochre and buff weathering",
-    "wood": "old planked timber, close-up of the boards and their grain",
-    "iron": "dark pitted wrought iron, close-up of the bare metal",
-    "bark": "rough tree bark, close-up of the bark itself",
-    "foliage": "dense green leaf canopy seen from directly above, close-up of "
-               "the leaves themselves",
+    # `bark` USED TO BE HERE AND NOTHING RENDERED IT: a tree is FOLIAGE (see
+    # above), and no tile or skin names bark as its substance, so the entry was
+    # a prompt nobody could reach — and it was a prompt with the same fault as
+    # the two below it, which is how it was found.
+    #
+    # WOOD AND IRON BOTH BROKE THE RULE WRITTEN DIRECTLY ABOVE THEM, and
+    # a player found the first of them: the crates and tables on a street were
+    # "basically the same colour as the road". Measured, the wood swatch
+    # averaged (116,133,121) — a grey-GREEN — against cobbles at (112,121,119),
+    # which is a difference of thirteen out of 255 between a square that gives
+    # half cover and the road it stands on. Bark came back (53,58,50), a
+    # near-black grey; iron came back steel BLUE. Named grain, named pitting,
+    # named no colour, and the sampler picked one.
+    # PINE, and specifically not oak: crates, doors and furniture are the
+    # cheap timber, and `taproom-boards` is already a dark waxed oak floor. Two
+    # different woods described as one wood come back the same colour, and a
+    # crate standing on a taproom floor is then the same complaint one room
+    # over from the street.
+    "wood": "close-up of pale sawn pine boards, resinous yellow-white timber "
+            "with a strong straight grain and dark knots",
+    "iron": "dark pitted wrought iron, close-up of the bare metal, near-black "
+            "with a warm rust bloom at the edges",
+    # DARKER AND BLUER THAN TURF, deliberately. A canopy and a lawn are both
+    # "green", and asked for as both they came back within eight of each other
+    # — which is a tree that gives THREE-QUARTERS cover and reads as grass. A
+    # canopy really is the darker of the two: it is deep in its own shadow
+    # between the leaves, where turf is lit all over.
+    "foliage": "dense leaf canopy seen from directly above, close-up of the "
+               "leaves themselves, deep blue-green in heavy shade with "
+               "near-black gaps between the crowns",
 }
 
 #: Concrete nouns for surfaces whose `tile.art` is too vague to render.
@@ -352,7 +377,12 @@ MATERIAL_SUBJECT: dict[str, str] = {
     "=": "close-up of a cobbled road surface, the cobbles themselves",
     "b": "close-up of weathered wooden deck planking",
     "u": "close-up of worn stone step treads",
-    "g": "close-up of grass turf",
+    "g": "close-up of grass turf, bright sunlit yellow-green blades",
+    # `m` had no entry, so it fell through to the tile's own `art` — the words
+    # "sucking mud", which name no colour and no surface. It came back GREEN
+    # (67,84,53), which is within thirty of the grass beside it.
+    "m": "close-up of wet churned mud, glossy chocolate-brown ooze with "
+         "standing water in the hollows",
     "s": "close-up of rippled packed sand",
 }
 
