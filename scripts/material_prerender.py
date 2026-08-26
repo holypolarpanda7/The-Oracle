@@ -142,6 +142,125 @@ def _sheet(store, jobs) -> int:
     return written
 
 
+#: Under this, a cover square and the floor it stands on are worth LOOKING at:
+#: reported, not failed. The median pair that actually co-occurs on a board is
+#: about 70 apart, so thirty is already unusual.
+CONTRAST_MIN = 30.0
+
+#: Under this, two DIFFERENT materials have come out the same colour and a
+#: prompt is at fault. Measured rather than chosen, and the line sits in a real
+#: gap: the wood swatch a player reported — "the tables and crates are
+#: basically the same colour as the road" — was 12.7 from cobbles, and the
+#: closest pair that is legitimately similar is a pale limestone pillar on sand
+#: at 14.8. Everything below the line has been a prompt that named a material
+#: and named no COLOUR; everything above it is two things genuinely made of
+#: much the same stuff, which is a question for a skin and not for a prompt.
+CONTRAST_FAIL = 14.0
+
+
+def _contrast(store) -> int:
+    """Can a player tell COVER from the floor it stands on, on a real board?
+
+    A crate is half cover and four feet tall, a low wall is three, a tree is
+    three-quarters — and a player deciding whether they can break line of sight
+    reads that off the board. When the crate and the road under it average the
+    same colour, that decision is being made on shading alone. It is the exact
+    complaint `SUBSTANCE_ART` already answers for hue drift, arriving from the
+    other side: `wood` named its grain and named no colour, so the sampler
+    picked one, and it picked grey-green.
+
+    Only pairs that ACTUALLY MEET are compared, which is why this generates
+    boards rather than crossing the catalogue with itself: a tree on sand and a
+    crate on snow are pairs no archetype can produce, and reporting them buries
+    the ones that matter. Same-substance pairs are reported separately — a
+    wooden crate on a wooden deck IS one material, and the answer there is a
+    skin rather than a prompt.
+    """
+    import io as _io
+
+    import numpy as np
+    from PIL import Image
+
+    from imagery.models import ImageKind, context_key, slugify
+    from vtt import skins as _sk
+    from vtt.art import board_look, material_look, material_ref, material_subject
+    from vtt.mapgen import ARCHETYPES, generate_map
+    from vtt.terrain import APERTURES, tile
+
+    cache: dict[tuple[str, str], object] = {}
+
+    def avg(code: str, skin: str, look: str):
+        ref = material_ref(code, skin)
+        key = (ref, material_look(code, skin) or look)
+        if key in cache:
+            return cache[key]
+        found = store.list_for(ImageKind.MATERIAL, slugify(key[0]),
+                               context_key(key[1]))
+        val = None
+        if found:
+            raw = store.get_image_bytes(found[0]["image_id"])
+            if raw:
+                val = np.asarray(Image.open(_io.BytesIO(raw)).convert("RGB")
+                                 ).reshape(-1, 3).mean(axis=0)
+        cache[key] = val
+        return val
+
+    worst: dict[tuple, tuple] = {}
+    for arch in sorted(ARCHETYPES):
+        look = board_look(archetype=arch)
+        for seed in (1, 4):
+            gen = generate_map(arch, width=46, height=34, seed=seed)
+            codes = _sk.skins_for(arch, style=gen.style or "")
+            squares = dict(gen.skins or {})
+            here = {(c, _sk.skin_at(c, x, z, codes=codes, squares=squares))
+                    for z, row in enumerate(gen.grid.to_rows())
+                    for x, c in enumerate(row)}
+            here = {(c, k) for c, k in here
+                    if c not in APERTURES and material_subject(c, k)}
+            cover = [(c, k) for c, k in here
+                     if tile(c).cover in ("half", "three-quarters")]
+            floor = [(c, k) for c, k in here if tile(c).move_cost_ft is not None]
+            for c, ck in cover:
+                a = avg(c, ck, look)
+                if a is None:
+                    continue
+                for f, fk in floor:
+                    b = avg(f, fk, look)
+                    if b is None:
+                        continue
+                    d = float(np.linalg.norm(a - b))
+                    key = (look, material_ref(c, ck), material_ref(f, fk))
+                    if key not in worst or d < worst[key][0]:
+                        worst[key] = (d, arch, c, ck, f, fk)
+
+    same = [(d, *rest) for (lk, ra, rb), (d, *rest) in worst.items() if ra == rb]
+    thin = sorted((d, lk, *rest) for (lk, ra, rb), (d, *rest) in worst.items()
+                  if ra != rb and d < CONTRAST_MIN)
+    print(f"\n{len(worst)} cover/floor pairs actually meet on a generated board")
+    if same:
+        print(f"  {len(same)} of them are the SAME material — geometry and "
+              f"shading are all that tell them apart:")
+        for d, arch, c, ck, f, fk in sorted(same)[:6]:
+            print(f"    {arch:14} {c}{'@' + ck if ck else '':18} on "
+                  f"{f}{'@' + fk if fk else ''}")
+    if thin:
+        print(f"  {len(thin)} pair(s) under {CONTRAST_MIN:.0f} — worth looking "
+              f"at; a * is below {CONTRAST_FAIL:.0f} and is a prompt at fault:")
+        for d, look, arch, c, ck, f, fk in thin:
+            print(f"   {'*' if d < CONTRAST_FAIL else ' '}{d:5.1f}  {look:10} "
+                  f"{arch:14} "
+                  f"{tile(c).name} ({material_ref(c, ck).split('-')[-1]}) on "
+                  f"{tile(f).name} ({material_ref(f, fk).split('-')[-1]})")
+    bad = [t for t in thin if t[0] < CONTRAST_FAIL]
+    if bad:
+        print(f"\n  {len(bad)} pair(s) below {CONTRAST_FAIL:.0f}: two different "
+              f"materials the same colour")
+        return 1
+    print(f"  nothing below {CONTRAST_FAIL:.0f} — every pair that close is two "
+          f"things made of the same stuff")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -150,6 +269,10 @@ def main(argv=None) -> int:
     ap.add_argument("--render", action="store_true", help="draw the gaps")
     ap.add_argument("--sheet", action="store_true",
                     help="write contact sheets of what has been drawn")
+    ap.add_argument("--contrast", action="store_true",
+                    help="check a player can tell a square that gives COVER "
+                         "from the floor it stands on, on every archetype. "
+                         "Exits non-zero on a pair too close to call.")
     ap.add_argument("--prune", action="store_true",
                     help="delete stored swatches no longer in the catalogue "
                          "(after a MATERIAL_REV bump, or a probe's leftovers)")
@@ -164,7 +287,7 @@ def main(argv=None) -> int:
                          "changed one was to rename the substance — which "
                          "renames it in the code forever to fix a picture.")
     a = ap.parse_args(argv)
-    if not (a.audit or a.render or a.sheet or a.prune):
+    if not (a.audit or a.render or a.sheet or a.prune or a.contrast):
         a.audit = True
 
     from imagery import ImageStore
@@ -267,6 +390,8 @@ def main(argv=None) -> int:
         print("\ncontact sheets:")
         if not _sheet(store, jobs):
             print("  nothing drawn yet — run --render first")
+    if a.contrast:
+        return _contrast(store)
     return 0
 
 
