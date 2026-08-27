@@ -187,7 +187,7 @@ export function VttOverlay(p: VttProps) {
   const [measure, setMeasure] = useState<[[number, number], [number, number]] | null>(null);
   const [pings, setPings] = useState<{ x: number; y: number; label?: string; at: number }[]>([]);
   const [show, setShow] = useState({ grid: true, terrain: true, effects: true, fog: true });
-  const [drag, setDrag] = useState<{ kind: "pan"; x: number; y: number; ox: number; oy: number }
+  const [drag, setDrag] = useState<{ kind: "pan"; x: number; y: number; from: View }
     | { kind: "turn"; x: number; from: number }
     | { kind: "token"; id: number } | null>(null);
 
@@ -413,27 +413,12 @@ export function VttOverlay(p: VttProps) {
 
   /** Where the painted layer sits this frame, if there is one. */
 
-  /** Turn the camera, keeping the middle of the viewport looking at the same
-   *  square. Without that the board swings out of frame on the first press:
-   *  the pan is a translate of the PROJECTED image, so a different projection
-   *  puts a different part of the room under the same offset. */
+  /** Turn the camera. Which point it pivots about, and what that costs the
+   *  rest of the view, is the RENDERER's business — see `BoardView.turnTo`. */
   const turn = useCallback((byDeg: number) => {
     if (!board || !view || !size[0]) return;
-    const from = view.yaw ?? YAW_DEG;
-    const to = wrapYaw(from + byDeg);
-    const k = CELL * view.scale;
-    // The CONTINUOUS ground point, never a square: a square is what you are
-    // looking AT, which legitimately changes as the camera comes round on a
-    // board with any height, and pivoting about a moving target means a whole
-    // turn does not come back to where it started.
-    const [cx, cz] = board.groundAt(view, floor, size[0] / 2, size[1] / 2, level);
-    const before = project(cx, 0, cz, from);
-    const after = project(cx, 0, cz, to);
-    setView({
-      ...view, yaw: to,
-      ox: view.ox + k * (before.x - after.x),
-      oy: view.oy + k * (before.y - after.y),
-    });
+    setView(board.turnTo(view, wrapYaw((view.yaw ?? YAW_DEG) + byDeg),
+                         size[0], size[1], floor, level));
   }, [board, view, size, floor, level]);
 
   /** Where a token should be DRAWN — mid-walk if it is the one walking. */
@@ -585,7 +570,7 @@ export function VttOverlay(p: VttProps) {
       setDrag({ kind: "turn", x: e.clientX, from: view.yaw ?? YAW_DEG });
       return;
     }
-    setDrag({ kind: "pan", x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy });
+    setDrag({ kind: "pan", x: e.clientX, y: e.clientY, from: view });
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -595,12 +580,16 @@ export function VttOverlay(p: VttProps) {
       if (sq) setMeasure([measure[0], sq]);
       return;
     }
-    if (drag?.kind === "pan" && view) {
-      setView({ ...view, ox: drag.ox + (e.clientX - drag.x), oy: drag.oy + (e.clientY - drag.y) });
-    } else if (drag?.kind === "turn" && view) {
+    if (drag?.kind === "pan" && view && board) {
+      // From the view the drag STARTED at, so the gesture is absolute and a
+      // renderer whose pan is not a plain translate cannot accumulate error.
+      setView(board.panBy(drag.from, e.clientX - drag.x, e.clientY - drag.y,
+                          floor, level));
+    } else if (drag?.kind === "turn" && view && board) {
       // A third of a degree per pixel: a full turn is about a thousand pixels,
       // which is a deliberate drag rather than a flick.
-      setView({ ...view, yaw: wrapYaw(drag.from + (e.clientX - drag.x) * 0.36) });
+      setView(board.turnTo(view, wrapYaw(drag.from + (e.clientX - drag.x) * 0.36),
+                           size[0], size[1], floor, level));
     }
   };
 

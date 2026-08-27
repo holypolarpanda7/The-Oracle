@@ -54,6 +54,7 @@ import {
 import {
   FRAME_PAD_SQUARES, YAW_DEG, basis, boundsOf, project,
   unproject,
+  wrapYaw,
 } from "./isocam";
 
 /** How far back the camera sits. Orthographic, so this changes nothing about
@@ -1846,6 +1847,27 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       return { scale, ox: px - (px - view.ox) * k, oy: py - (py - view.oy) * k,
                yaw: view.yaw };
     },
+    panBy(view: View, dxPx: number, dyPx: number): View {
+      return { ...view, ox: view.ox + dxPx, oy: view.oy + dyPx };
+    },
+
+    turnTo(view: View, yawDeg: number, w: number, h: number,
+           scene: VttScene, level: number): View {
+      const from = view.yaw ?? YAW_DEG;
+      const to = wrapYaw(yawDeg);
+      const k = CELL * view.scale;
+      // The CONTINUOUS ground point under the middle of the frame — see the
+      // interface for why it may not be a square.
+      const [cx, cz] = this.groundAt(view, scene, w / 2, h / 2, level);
+      const before = project(cx, 0, cz, from);
+      const after = project(cx, 0, cz, to);
+      return {
+        ...view, yaw: to,
+        ox: view.ox + k * (before.x - after.x),
+        oy: view.oy + k * (before.y - after.y),
+      };
+    },
+
 
 
     draw(st: PaintState, w: number, h: number): void {

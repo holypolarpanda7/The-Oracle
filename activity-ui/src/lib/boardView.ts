@@ -1055,6 +1055,29 @@ export interface BoardView {
   /** Zoom about a screen point, so the square under it stays put. */
   zoomAt(view: View, px: number, py: number, factor: number): View;
 
+  /** Slide the view by a drag, in screen pixels.
+   *
+   *  Behind the interface because a `View` is about to stop being an affine
+   *  pan-and-zoom over a fixed projection: the flat board translates its
+   *  image, an orbit camera moves its TARGET across the ground, and those are
+   *  the same gesture and different arithmetic. The shell used to reach in and
+   *  add to `ox`/`oy` itself, which made every renderer's camera the shell's
+   *  business. */
+  panBy(view: View, dxPx: number, dyPx: number,
+        scene: VttScene, level: number): View;
+
+  /** Turn the camera to an absolute yaw, keeping the same point of GROUND
+   *  under the middle of the viewport.
+   *
+   *  The pivot is the continuous ground point and never a square: a square is
+   *  what you are looking AT, which legitimately changes as the camera comes
+   *  round on a board with any height, and pivoting about a moving target
+   *  means a whole turn does not come back where it started.
+   *
+   *  A renderer that cannot turn returns the view unchanged. */
+  turnTo(view: View, yawDeg: number, w: number, h: number,
+         scene: VttScene, level: number): View;
+
   /** Where the painted layer belongs on screen, in CSS pixels, or null if this
    *  renderer has no painted layer.
    *

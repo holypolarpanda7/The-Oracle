@@ -58,6 +58,17 @@ export function createCanvasBoardView(canvas: HTMLCanvasElement): BoardView {
       // Zoom about the cursor so the square under it stays put.
       return { scale, ox: px - (px - view.ox) * k, oy: py - (py - view.oy) * k };
     },
+    /** A flat board pans by translating its own image. */
+    panBy(view: View, dxPx: number, dyPx: number): View {
+      return { ...view, ox: view.ox + dxPx, oy: view.oy + dyPx };
+    },
+
+    /** ...and never turns. Looking straight down there is nothing a rotation
+     *  would reveal, which is what `canTurn: false` says. */
+    turnTo(view: View): View {
+      return view;
+    },
+
 
 
 
