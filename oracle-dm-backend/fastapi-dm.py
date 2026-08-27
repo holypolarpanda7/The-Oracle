@@ -20001,6 +20001,12 @@ async def vtt_furniture_mesh(filename: str):
                     headers={"Cache-Control": "public, max-age=31536000"})
 
 
+#: What each mesh format is called on the wire. glTF-Binary has a registered
+#: type; OBJ does not, and ``model/obj`` is what this route has always sent.
+_MESH_MEDIA = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json",
+               ".obj": "model/obj"}
+
+
 @app.get("/vtt/setpiece/{filename}")
 async def vtt_setpiece_mesh(filename: str):
     """A landmark mesh this installation MADE, for the browser to draw.
@@ -20015,7 +20021,11 @@ async def vtt_setpiece_mesh(filename: str):
     never be able to say is ``../``.
     """
     from imagery import landmark3d
-    slug = filename[:-4] if filename.lower().endswith(".obj") else filename
+    slug = filename
+    for ext in landmark3d.MESH_EXTS:
+        if slug.lower().endswith(f".{ext}"):
+            slug = slug[: -(len(ext) + 1)]
+            break
     path = landmark3d.mesh_file(slug)
     if path is None:
         raise HTTPException(status_code=404, detail="No such landmark mesh.")
@@ -20025,7 +20035,8 @@ async def vtt_setpiece_mesh(filename: str):
         raise HTTPException(status_code=404, detail="No such landmark mesh.")
     # Immutable once written (the writer replaces atomically under a slug that
     # is a digest of the phrase), so it can be cached hard.
-    return Response(content=data, media_type="model/obj",
+    return Response(content=data,
+                    media_type=_MESH_MEDIA.get(path.suffix.lower(), "model/obj"),
                     headers={"Cache-Control": "public, max-age=31536000"})
 
 

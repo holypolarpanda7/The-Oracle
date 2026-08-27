@@ -64,9 +64,11 @@ every entry — footprint, tiles, height — is authored and exact.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import random
 import re
+import struct
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -129,6 +131,12 @@ KEEP = "-"
 #: parses in a few dozen lines of Python with no new dependency, where glTF
 #: would mean adding one server-side. Every pack in :data:`PACKS` offers OBJ.
 FORMATS = ("obj", "glb", "gltf", "fbx")
+
+#: The formats this file can MEASURE, which is what decides whether a mesh can
+#: be fitted to its squares at all. A pack may ship an FBX and the browser may
+#: even draw it; without a bounding box the server cannot say how big to draw
+#: it, and a landmark at an unknown scale is worse than the stamped box.
+MEASURABLE = (".obj", ".glb", ".gltf")
 
 
 # --------------------------------------------------------------------------
@@ -1057,6 +1065,173 @@ def _obj_bounds(path: Path) -> Optional[tuple[tuple[float, float, float],
     return (tuple(lo), tuple(hi)) if seen else None   # type: ignore[return-value]
 
 
+#: The two chunk types a binary glTF is made of.
+GLB_JSON_CHUNK = 0x4E4F534A
+GLB_BIN_CHUNK = 0x004E4942
+
+
+def glb_span(data: bytes) -> Optional[tuple[int, int]]:
+    """Where the JSON chunk of a binary glTF starts and how long it is.
+
+    Public because :mod:`imagery.landmark3d` REWRITES that chunk (it stands a
+    Z-up mesh upright by adding a node), and two modules each carrying their
+    own idea of the container layout is exactly the drift this project keeps
+    one answer for. Deliberately not a glTF loader: the header is twelve bytes
+    and the chunk table is eight per entry.
+    """
+    if len(data) < 12 or data[:4] != b"glTF":
+        return None
+    off = 12
+    try:
+        while off + 8 <= len(data):
+            length, kind = struct.unpack_from("<II", data, off)
+            off += 8
+            if kind == GLB_JSON_CHUNK:
+                return (off, length) if off + length <= len(data) else None
+            off += length
+    except struct.error:
+        return None
+    return None
+
+
+def glb_document(data: bytes) -> Optional[dict]:
+    """The JSON document of a binary glTF, or None if this is not one."""
+    span = glb_span(data)
+    if span is None:
+        return None
+    off, length = span
+    try:
+        doc = json.loads(data[off:off + length].decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _node_matrix(node: dict) -> list[float]:
+    """One node's local transform, column-major, as glTF writes it."""
+    m = node.get("matrix")
+    if isinstance(m, list) and len(m) == 16:
+        return [float(v) for v in m]
+    t = node.get("translation") or [0.0, 0.0, 0.0]
+    r = node.get("rotation") or [0.0, 0.0, 0.0, 1.0]
+    s = node.get("scale") or [1.0, 1.0, 1.0]
+    x, y, z, w = (float(v) for v in r)
+    # Quaternion to a 3x3 basis, then scaled columns and the translation.
+    rot = [
+        1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w),
+        2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w),
+        2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y),
+    ]
+    out = [0.0] * 16
+    for c in range(3):
+        for r_ in range(3):
+            out[c * 4 + r_] = rot[c * 3 + r_] * float(s[c])
+    out[12], out[13], out[14] = (float(v) for v in t)
+    out[15] = 1.0
+    return out
+
+
+def _mat_mul(a: list[float], b: list[float]) -> list[float]:
+    """``a`` then ``b`` — parent times child, both column-major."""
+    out = [0.0] * 16
+    for c in range(4):
+        for r in range(4):
+            out[c * 4 + r] = sum(a[k * 4 + r] * b[c * 4 + k] for k in range(4))
+    return out
+
+
+def _mat_apply(m: list[float], p: tuple[float, float, float]) -> tuple[float, float, float]:
+    x, y, z = p
+    return (m[0] * x + m[4] * y + m[8] * z + m[12],
+            m[1] * x + m[5] * y + m[9] * z + m[13],
+            m[2] * x + m[6] * y + m[10] * z + m[14])
+
+
+def _glb_bounds(path: Path) -> Optional[tuple[tuple[float, float, float],
+                                              tuple[float, float, float]]]:
+    """The mesh's bounding box, read out of a binary glTF's JSON alone.
+
+    A POSITION accessor MUST carry ``min`` and ``max`` — the spec requires it,
+    precisely so a reader can know a mesh's extent without decoding a single
+    vertex — so this never touches the BIN chunk. What it does have to do that
+    the OBJ reader does not is walk the SCENE GRAPH: a primitive's box is in
+    its node's local space, and TRELLIS wraps its output in nodes of its own.
+    (Our normalizer adds one more, for Z-up -> Y-up.)
+
+    A transformed box is re-bounded from its eight CORNERS. Transforming min
+    and max alone is right only for an axis permutation and quietly wrong for
+    any rotation that is not a quarter turn.
+    """
+    try:
+        doc = glb_document(path.read_bytes())
+    except OSError:
+        return None
+    if doc is None:
+        return None
+    return glb_bounds_of(doc)
+
+
+def glb_bounds_of(doc: dict) -> Optional[tuple[tuple[float, float, float],
+                                               tuple[float, float, float]]]:
+    """The same measurement, taken on an already-parsed document."""
+    nodes = doc.get("nodes") or []
+    meshes = doc.get("meshes") or []
+    accessors = doc.get("accessors") or []
+    scenes = doc.get("scenes") or []
+    idx = doc.get("scene", 0)
+    roots = []
+    if isinstance(scenes, list) and 0 <= idx < len(scenes):
+        roots = list((scenes[idx] or {}).get("nodes") or [])
+    if not roots:
+        roots = list(range(len(nodes)))
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    seen = False
+    ident = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
+    stack = [(int(n), ident) for n in roots]
+    guard = 0
+    while stack:
+        guard += 1
+        if guard > 20_000:                      # a cyclic node graph is invalid
+            break
+        ni, parent = stack.pop()
+        if not (0 <= ni < len(nodes)):
+            continue
+        node = nodes[ni] or {}
+        world = _mat_mul(parent, _node_matrix(node))
+        for child in (node.get("children") or []):
+            stack.append((int(child), world))
+        mi = node.get("mesh")
+        if mi is None or not (0 <= int(mi) < len(meshes)):
+            continue
+        for prim in ((meshes[int(mi)] or {}).get("primitives") or []):
+            ai = ((prim or {}).get("attributes") or {}).get("POSITION")
+            if ai is None or not (0 <= int(ai) < len(accessors)):
+                continue
+            acc = accessors[int(ai)] or {}
+            amin, amax = acc.get("min"), acc.get("max")
+            if not (isinstance(amin, list) and isinstance(amax, list)
+                    and len(amin) >= 3 and len(amax) >= 3):
+                continue
+            for cx in (float(amin[0]), float(amax[0])):
+                for cy in (float(amin[1]), float(amax[1])):
+                    for cz in (float(amin[2]), float(amax[2])):
+                        p = _mat_apply(world, (cx, cy, cz))
+                        seen = True
+                        for i in range(3):
+                            lo[i] = min(lo[i], p[i])
+                            hi[i] = max(hi[i], p[i])
+    return (tuple(lo), tuple(hi)) if seen else None   # type: ignore[return-value]
+
+
+def _mesh_bounds(path: Path) -> Optional[tuple[tuple[float, float, float],
+                                               tuple[float, float, float]]]:
+    """The bounding box of whatever kind of mesh file this is."""
+    if path.suffix.lower() in (".glb", ".gltf"):
+        return _glb_bounds(path)
+    return _obj_bounds(path)
+
+
 def mesh_path(slug: str, root: Optional[Path] = None) -> Optional[Path]:
     """The mesh for this piece, or None if there isn't one on this machine.
 
@@ -1126,7 +1301,7 @@ def mesh_fit(slug: str, square_ft: int = 5) -> Optional[dict]:
     if p is None:
         return None
     path = mesh_path(slug)
-    if path is None or path.suffix.lower() != ".obj":
+    if path is None or path.suffix.lower() not in MEASURABLE:
         return None
     # A piece that declares no source draws itself from its tiles — UNLESS this
     # machine has actually made a mesh for it. That is the whole of the
@@ -1163,7 +1338,7 @@ def _measure_fit(path_s: str, height_ft: float, up: str, square_ft: int,
     direction the ``KEEP`` rule exists to prevent, and being four feet shorter
     is the cheaper of the two prices.
     """
-    bounds = _obj_bounds(Path(path_s))
+    bounds = _mesh_bounds(Path(path_s))
     if bounds is None:
         return None
     (x0, y0, z0), (x1, y1, z1) = bounds

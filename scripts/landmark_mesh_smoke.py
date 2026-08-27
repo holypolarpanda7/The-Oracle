@@ -31,8 +31,10 @@ code does with a file:
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -163,6 +165,107 @@ solid = "".join(f"v {x} {y} {z}\n" for x in (0.0, 1.0)
                 for y in (0.0, 0.9) for z in (0.0, 1.0)).encode()
 check("...while a thing with real volume passes", L._too_flat(solid) is None)
 
+
+# ---------------------------------------------------------------------------
+# The format a landmark actually arrives in
+# ---------------------------------------------------------------------------
+print(f"\n{BOLD}3a. a textured GLB, stood up without being taken apart{OFF}")
+
+
+def tiny_glb(sx: float = 1.0, sy: float = 2.0, sz: float = 3.0) -> bytes:
+    """A minimal but VALID binary glTF: one box, with UVs and a material.
+
+    Hand-built because the point of this section is that our normalizer edits
+    the container correctly, and a fixture that came out of the mesher would
+    make the test depend on a GPU.
+    """
+    verts = [(x * sx, y * sy, z * sz)
+             for x in (0.0, 1.0) for y in (0.0, 1.0) for z in (0.0, 1.0)]
+    blob = b"".join(struct.pack("<fff", *v) for v in verts)
+    blob += b"\x00" * (-len(blob) % 4)
+    doc = {
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0},
+                                    "material": 0}]}],
+        "materials": [{"pbrMetallicRoughness": {"baseColorFactor":
+                                                [1, 1, 1, 1]}}],
+        "accessors": [{"bufferView": 0, "componentType": 5126,
+                       "count": len(verts), "type": "VEC3",
+                       "min": [0.0, 0.0, 0.0], "max": [sx, sy, sz]}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0,
+                         "byteLength": len(blob)}],
+        "buffers": [{"byteLength": len(blob)}],
+    }
+    body = json.dumps(doc, separators=(",", ":")).encode()
+    body += b" " * (-len(body) % 4)
+    total = 12 + 8 + len(body) + 8 + len(blob)
+    return (b"glTF" + struct.pack("<II", 2, total)
+            + struct.pack("<II", len(body), 0x4E4F534A) + body
+            + struct.pack("<II", len(blob), 0x004E4942) + blob)
+
+
+raw = tiny_glb()
+check("the format is judged on the BYTES, not on what we asked for",
+      L.mesh_format(raw) == "glb" and L.mesh_format(b"v 0 0 0\n") == "obj"
+      and L.mesh_format(b"") is None)
+stood = L._normalize(raw, "glb")
+check("a glTF is stood up rather than rewritten", stood is not None)
+# The whole argument for expressing the rotation instead of applying it: the
+# BIN chunk is the texture, the uvs and the normals, and a normalizer that
+# rewrote vertices would have to decode and re-encode all of it.
+check("...and the BIN chunk is not touched at all — texture, uvs and normals "
+      "are the payload",
+      stood[-len(raw.split(b"BIN")[-1]):] == raw[-len(raw.split(b"BIN")[-1]):]
+      if b"BIN" in raw else True)
+doc_before = sp.glb_document(raw)
+doc_after = sp.glb_document(stood)
+check("...and it is still a document we can read", doc_after is not None)
+lo0, hi0 = sp.glb_bounds_of(doc_before)
+lo1, hi1 = sp.glb_bounds_of(doc_after)
+# Z-up to Y-up is (x, y, z) -> (x, z, -y), the same mapping the OBJ path bakes
+# into its vertices. A box maps to a box, so the corners are exact.
+want_lo = (lo0[0], lo0[2], -hi0[1])
+want_hi = (hi0[0], hi0[2], -lo0[1])
+check("the mesh is Y-UP afterwards — the same rotation the OBJ path bakes in",
+      all(abs(lo1[i] - want_lo[i]) < 1e-6 and abs(hi1[i] - want_hi[i]) < 1e-6
+          for i in range(3)),
+      f"{[round(v, 3) for v in lo1]} .. {[round(v, 3) for v in hi1]}")
+check("...and its own materials survived, which is the entire point",
+      bool((doc_after or {}).get("materials")))
+check("a POSITION accessor's stated extent is what gets measured",
+      sp.glb_bounds_of(sp.glb_document(tiny_glb(1.0, 5.0, 1.0)))[1][1] == 5.0)
+check("a sheet in GLB is refused exactly as a sheet in OBJ is",
+      L._too_flat(tiny_glb(1.0, 0.01, 1.0), "glb") is not None
+      and L._too_flat(raw, "glb") is None)
+check("something that is not a glTF at all is declined, not guessed at",
+      L._normalize_glb(b"glTFnonsense") is None
+      and L._normalize_glb(b"") is None)
+
+# And the round trip through the writer: the extension, the URL and the fit all
+# follow the format, or a textured landmark is stored somewhere nothing serves.
+tex_piece = sp.named_feature("an iron-banded packing crate")
+gout = L._write(tex_piece.slug, tex_piece.name, raw, seed=1, seconds=1.0)
+check("the writer stores it as a GLB", gout is not None and gout.suffix == ".glb",
+      str(gout))
+check("...and finds it again whatever format it is in",
+      L.has_mesh(tex_piece.slug) and L.mesh_file(tex_piece.slug) == gout)
+sp.forget_mesh()
+check("...and the board ships it over the backend's route, as a GLB",
+      sp.Placed(slug=tex_piece.slug, x=4, y=4, yaw=0).instance().get("mesh")
+      == f"/vtt/setpiece/{tex_piece.slug}.glb",
+      str(sp.Placed(slug=tex_piece.slug, x=4, y=4, yaw=0).instance().get("mesh")))
+# An installation that generated landmarks under the old workflow still has
+# them, and they are still perfectly good geometry.
+(gen_root / f"{tex_piece.slug}.obj").write_text(cube_obj(4.0))
+(gen_root / f"{tex_piece.slug}.glb").unlink()
+sp.forget_mesh()
+check("an OBJ from the old workflow is still found, served and fitted",
+      sp.Placed(slug=tex_piece.slug, x=4, y=4, yaw=0).instance().get("mesh")
+      == f"/vtt/setpiece/{tex_piece.slug}.obj")
+
 # The fit is cached on the reasoning that meshes are immutable within a run —
 # which a mesh that lands three minutes into a session breaks.
 stale = sp.mesh_fit(piece.slug)
@@ -250,7 +353,7 @@ check("a Z-up mesh is stood up: (x, y, z) -> (x, z, -y)",
       vs[3] == (0.0, 9.0, 0.0) and vs[2] == (2.0, 0.0, -3.0), str(vs))
 check("...and the rotation is PROPER, so face winding survives it",
       [ln for ln in text.splitlines() if ln.startswith("f ")] == ["f 1 2 3"])
-check("only geometry is kept — our three readers want v and f",
+check("only geometry is kept — an OBJ carries no texture to lose",
       "vt " not in text and "mtllib" not in text and "usemtl" not in text)
 check("...which is also why the mtllib goes: it names a file no route serves",
       "material.mtl" not in text)
@@ -306,10 +409,40 @@ bad = [f"{nid}.{k}" for nid, node in g.items()
        for k, v in node["inputs"].items()
        if isinstance(v, list) and (str(v[0]) not in g)]
 check("...and every wire lands on a node that exists", not bad, str(bad))
-check("it asks for an OBJ, which all three of our readers speak",
+check("it asks for an OBJ, which both of our geometry readers speak",
       any(n["inputs"].get("file_format") == "obj" for n in g.values()))
 check("...and exports, or the job produces nothing to collect",
       any(n["class_type"].startswith("Trellis2Export") for n in g.values()))
+
+# The graph a landmark ACTUALLY gets. The geometry-only one above is still the
+# contract for anything that wants bare shape; this is the one `generate` sends,
+# and the difference between them is the whole reason a generated landmark
+# stopped being drawn in one flat averaged colour.
+tg = TrellisClient(resolution="512", face_count=40000).build_textured_graph(
+    "sow.png", seed=7)
+check("the textured graph is API format too",
+      all(isinstance(k, str) and "class_type" in v and "inputs" in v
+          for k, v in tg.items()), f"{len(tg)} nodes")
+bad = [f"{nid}.{k}" for nid, node in tg.items()
+       for k, v in node["inputs"].items()
+       if isinstance(v, list) and (str(v[0]) not in tg)]
+check("...and every wire lands on a node that exists", not bad, str(bad))
+check("it PAINTS — a shape pass alone is what left every landmark flat",
+      any(n["class_type"] == "Trellis2ShapeToTexturedMesh" for n in tg.values()))
+check("...onto an atlas, because a texture with no uvs addresses nothing",
+      any(n["class_type"] == "Trellis2UVUnwrap" for n in tg.values()))
+check("...baked by the rasterizer, which is what joins the two",
+      any(n["class_type"] == "Trellis2RasterizePBR" for n in tg.values()))
+check("it exports GLB, the only format here that can carry a texture at all",
+      any(n["inputs"].get("file_format") == "glb" for n in tg.values()))
+# The export must read the BAKED mesh. Wired to the decimated one instead it
+# would produce a perfectly good untextured mesh and report success — which is
+# exactly the shape of failure this whole pipeline keeps being bitten by.
+exp = [n for n in tg.values() if n["class_type"].startswith("Trellis2Export")]
+rast = [nid for nid, n in tg.items() if n["class_type"] == "Trellis2RasterizePBR"]
+check("...and the export reads what was BAKED, not what was decimated",
+      len(exp) == 1 and str(exp[0]["inputs"]["trimesh"][0]) in rast,
+      str(exp[0]["inputs"]["trimesh"]) if exp else "no export")
 check("the mask is the alpha INVERTED, which is what LoadImage emits",
       g["2"]["class_type"] == "InvertMask" and g["2"]["inputs"]["mask"] == ["1", 1])
 check("the seed reaches the shape model",

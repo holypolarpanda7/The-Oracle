@@ -177,13 +177,58 @@ class TrellisClient:
                              "file_format": fmt}},
         }
 
+    def build_textured_graph(self, image_name: str, *, seed: int = 0,
+                             prefix: str = "oracle_mesh",
+                             texture_size: int = 1024) -> dict[str, Any]:
+        """The same pipeline, but the mesh comes back WEARING something.
+
+        The geometry-only graph above was written when a mesh's only consumers
+        were a browser that read positions and a Python rasterizer that read
+        positions — so a texture would have been bytes nobody could use. Both
+        of those reasons are gone, and what is left is the reason it matters:
+        an untextured mesh has no uvs, so the board draws it in ONE FLAT
+        AVERAGED COLOUR, and a beautifully modelled column reads as painted
+        cardboard standing on a PBR floor.
+
+        Four more nodes and one more model. `ShapeToTexturedMesh` takes the
+        shape latent and the subdivision the shape pass already produced and
+        paints a coloured VOXEL GRID; `UVUnwrap` gives the decimated mesh an
+        atlas to receive it; `RasterizePBR` bakes the one onto the other; and
+        the export writes GLB, which is the only format here that can carry a
+        texture at all.
+        """
+        g = self.build_graph(image_name, seed=seed, fmt="glb", prefix=prefix)
+        g["8"] = {"class_type": "Trellis2UVUnwrap",
+                  "inputs": {"trimesh": ["6", 0],
+                             "chart_cone_angle": 90.0,
+                             "chart_refine_iterations": 1,
+                             "chart_global_iterations": 1,
+                             "chart_smooth_strength": 1}}
+        g["9"] = {"class_type": "Trellis2ShapeToTexturedMesh",
+                  "inputs": {"model_config": ["3", 0], "conditioning": ["4", 0],
+                             "shape_slat": ["5", 1], "subs": ["5", 2],
+                             "seed": int(seed) & 0x7FFFFFFF,
+                             "tex_guidance_strength": 3.0,
+                             "tex_guidance_rescale": 0.2,
+                             "tex_sampling_steps": 12}}
+        g["10"] = {"class_type": "Trellis2RasterizePBR",
+                   "inputs": {"trimesh": ["8", 0], "voxelgrid": ["9", 0],
+                              "texture_size": int(texture_size)}}
+        g["7"] = {"class_type": "Trellis2ExportTrimesh",
+                  "inputs": {"trimesh": ["10", 0], "filename_prefix": prefix,
+                             "file_format": "glb"}}
+        return g
+
     # -- the call ----------------------------------------------------------
     def image_to_mesh(self, png_bytes: bytes, *, seed: int = 0,
-                      fmt: str = "obj", name_hint: str = "landmark") -> bytes:
+                      fmt: str = "obj", name_hint: str = "landmark",
+                      textured: bool = False) -> bytes:
         """Turn one cut-out picture into mesh bytes. Raises, never returns None."""
         up = self._upload(png_bytes, f"{name_hint}-{seed}.png")
-        graph = self.build_graph(up, seed=seed, fmt=fmt,
-                                 prefix=f"oracle_mesh/{name_hint}")
+        prefix = f"oracle_mesh/{name_hint}"
+        graph = (self.build_textured_graph(up, seed=seed, prefix=prefix)
+                 if textured
+                 else self.build_graph(up, seed=seed, fmt=fmt, prefix=prefix))
         try:
             resp = requests.post(f"{self.base_url}/prompt",
                                  json={"prompt": graph, "client_id": self.client_id},

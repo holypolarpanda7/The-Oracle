@@ -140,7 +140,8 @@ def stage(codes: tuple[str, ...] = DEMO_CODES, arch: str = "",
     return 0
 
 
-def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
+def board(arch: str, seed: int, size: tuple[int, int],
+          landmark: str = "") -> dict:
     """A REAL generated board, in the shape `state()` ships.
 
     The demo is a tavern, so judging how a STREET or a REEF looks in the
@@ -159,7 +160,11 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
     from vtt.terrain import tile, tile_height_ft
 
     w, h = size
-    gen = generate_map(arch, width=w, height=h, seed=seed)
+    # Resolved through the SAME door a DM's `landmark=` goes through, so this
+    # probe cannot show a piece the engine would never have placed.
+    from vtt.scene import _landmarks_from
+    marks = _landmarks_from(landmark, invent=True) if landmark else ()
+    gen = generate_map(arch, width=w, height=h, seed=seed, landmarks=marks)
     codes = _skins.skins_for(arch, style=gen.style or "")
     squares = dict(gen.skins or {})
 
@@ -186,9 +191,21 @@ def board(arch: str, seed: int, size: tuple[int, int]) -> dict:
         slug = str(rec.get("slug") or "")
         if _sp.piece(slug, str(rec.get("name") or "")) is None:
             continue
-        pieces.append(_sp.Placed(slug=slug, x=int(rec.get("x") or 0),
-                                 y=int(rec.get("y") or 0),
-                                 yaw=int(rec.get("yaw") or 0)).instance())
+        inst = _sp.Placed(slug=slug, x=int(rec.get("x") or 0),
+                          y=int(rec.get("y") or 0),
+                          yaw=int(rec.get("yaw") or 0)).instance()
+        # A GENERATED mesh is served by the backend, and this probe exists so a
+        # board can be looked at with no backend running. Staged into `dist`
+        # beside the swatches, exactly as the swatches themselves are.
+        url = str(inst.get("mesh") or "")
+        if url.startswith("/vtt/setpiece/"):
+            got = _sp.mesh_path(slug)
+            if got is not None:
+                dest = DIST.parent / "setpieces"
+                dest.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(got, dest / got.name)
+                inst["mesh"] = f"/setpieces/{got.name}"
+        pieces.append(inst)
     return {
         # Every (code, skin) actually standing on this board, so the staging
         # pass asks for what the renderer will ask for. Popped before the seam
@@ -299,6 +316,11 @@ if __name__ == "__main__":
                          "in a browser")
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--size", default="24x18")
+    ap.add_argument("--landmark", default="",
+                    help="ask the board for this landmark by name, the way a "
+                         "DM's [[VTT: open | ... | landmark=]] does — which is "
+                         "the only way to look at an INVENTED one, since it is "
+                         "registered when its phrase is first seen")
     ap.add_argument("--dark", action="store_true",
                     help="stage the board unlit and unexplored, with one torch "
                          "— the only way to look at fog, live sight and the "
@@ -309,7 +331,7 @@ if __name__ == "__main__":
     if a.board:
         import json as _json
         w, h = (int(v) for v in a.size.lower().split("x"))
-        made = board(a.board, a.seed, (w, h))
+        made = board(a.board, a.seed, (w, h), landmark=a.landmark)
         # The swatches for THIS board's codes, not the tavern's — a staged
         # street lit by a taproom's floorboards is a probe of nothing.
         rc = stage(tuple(sorted({c for r in made["terrain"] for c in r})),

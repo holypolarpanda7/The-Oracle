@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import struct
 import threading
 import time
 from pathlib import Path
@@ -106,10 +107,39 @@ def root() -> Path:
     return sp.generated_root()
 
 
+#: What the mesher is asked for now, and what a new landmark is stored as.
+#:
+#: GLB, because it is the only format in this pipeline that can carry a
+#: TEXTURE. The geometry-only workflow that came before wrote OBJ on the
+#: reasoning that a mesh's readers wanted positions and nothing else — and the
+#: cost of that was every generated landmark being drawn in ONE FLAT AVERAGED
+#: COLOUR, a carefully modelled thing standing on a PBR floor looking like
+#: painted cardboard.
+MESH_EXT = "glb"
+
+#: Read in this order. An installation that generated landmarks under the old
+#: workflow still has them, and they are still perfectly good geometry — the
+#: new format is preferred where both exist, and the old one is never thrown
+#: away for being old.
+MESH_EXTS = ("glb", "obj")
+
+
+def _existing(slug: str) -> Optional[Path]:
+    """The mesh already on disk for this landmark, whatever format it is in."""
+    d = root()
+    for ext in MESH_EXTS:
+        p = d / f"{slug}.{ext}"
+        try:
+            if p.is_file() and p.stat().st_size > 0:
+                return p
+        except OSError:
+            continue
+    return None
+
+
 def has_mesh(slug: str) -> bool:
     """Is there already a generated mesh for this landmark?"""
-    p = root() / f"{slug}.obj"
-    return p.is_file() and p.stat().st_size > 0
+    return _existing(slug) is not None
 
 
 def mesh_file(slug: str) -> Optional[Path]:
@@ -120,7 +150,9 @@ def mesh_file(slug: str) -> Optional[Path]:
     """
     if not SLUG_RE.match(slug or ""):
         return None
-    p = root() / f"{slug}.obj"
+    p = _existing(slug)
+    if p is None:
+        return None
     try:
         p = p.resolve()
         if p.parent != root().resolve() or not p.is_file():
@@ -245,8 +277,9 @@ def generate(slug: str, phrase: str, *, store=None, seed: int = 0,
     if not SLUG_RE.match(slug or ""):
         print(f"[landmark3d] refusing an unusable slug: {slug!r}")
         return None
-    if has_mesh(slug):
-        return root() / f"{slug}.obj"
+    got = _existing(slug)
+    if got is not None:
+        return got
     if client is None:
         url = base_url or _configured_url()
         client = TrellisClient(base_url=url)
@@ -264,8 +297,8 @@ def generate(slug: str, phrase: str, *, store=None, seed: int = 0,
     started = time.time()
     with _LOCK:                     # one card, one mesh at a time
         try:
-            mesh = client.image_to_mesh(picture, seed=seed, fmt="obj",
-                                        name_hint=slug)
+            mesh = client.image_to_mesh(picture, seed=seed, fmt=MESH_EXT,
+                                        name_hint=slug, textured=True)
         except MeshServiceUnavailable as e:
             print(f"[landmark3d] {slug}: {e}")
             return None
@@ -293,11 +326,17 @@ def _write(slug: str, phrase: str, mesh: bytes, *, seed: int = 0,
     the landmark at a confidently wrong size, which is exactly the kind of
     silent wrongness the grid-is-truth rule exists to prevent.
     """
-    if not mesh or b"v " not in mesh[:200_000]:
-        print(f"[landmark3d] {slug}: the mesher returned no vertices")
+    kind = mesh_format(mesh)
+    if kind is None:
+        print(f"[landmark3d] {slug}: the mesher returned nothing readable")
         return None
-    mesh = _normalize_obj(mesh)
-    thin = _too_flat(mesh)
+    stood = _normalize(mesh, kind)
+    if stood is None:
+        print(f"[landmark3d] {slug}: the {kind.upper()} could not be stood "
+              f"upright, and a landmark lying on its side is worse than a box")
+        return None
+    mesh = stood
+    thin = _too_flat(mesh, kind)
     if thin is not None:
         # A mesher can only build what the picture SHOWS it, and the first real
         # run proved how that fails: asked for a gilded sow, the reference came
@@ -313,16 +352,29 @@ def _write(slug: str, phrase: str, mesh: bytes, *, seed: int = 0,
     d = root()
     try:
         d.mkdir(parents=True, exist_ok=True)
-        tmp = d / f".{slug}.obj.part"
+        tmp = d / f".{slug}.{kind}.part"
         tmp.write_bytes(mesh)
-        final = d / f"{slug}.obj"
+        final = d / f"{slug}.{kind}"
         os.replace(tmp, final)
+        # An older run may have left a geometry-only mesh under the same slug.
+        # Both would be found by `_existing`, and the newer one wins there, but
+        # a stale file that nothing will ever open again is a trap for whoever
+        # reads this directory next.
+        for other in MESH_EXTS:
+            if other != kind:
+                try:
+                    (d / f"{slug}.{other}").unlink()
+                except OSError:
+                    pass
         (d / f"{slug}.json").write_text(json.dumps({
             "slug": slug, "phrase": phrase, "seed": seed,
             "seconds": round(seconds, 1), "bytes": len(mesh),
             "made": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "source": "TRELLIS.2 (image->shape) from a rendered reference",
-            "normalized": "Z-up -> Y-up, geometry only",
+            "format": kind,
+            "normalized": ("Z-up -> Y-up via a root node; materials, UVs and "
+                           "normals kept" if kind == "glb"
+                           else "Z-up -> Y-up, geometry only"),
         }, indent=2), encoding="utf-8")
     except OSError as e:
         print(f"[landmark3d] could not store {slug}: {e}")
@@ -345,6 +397,90 @@ def _write(slug: str, phrase: str, mesh: bytes, *, seed: int = 0,
 TRELLIS_UP = "z"
 
 
+def mesh_format(mesh: bytes) -> Optional[str]:
+    """Which of our formats these bytes are, judged on the bytes themselves.
+
+    On the CONTENT rather than on what was asked for, because the export node
+    is the thing that decides and it has surprised us before — this is the same
+    node that reports ``outputs: {}`` for a file it definitely wrote.
+    """
+    if not mesh:
+        return None
+    if mesh[:4] == b"glTF":
+        return "glb"
+    if b"v " in mesh[:200_000]:
+        return "obj"
+    return None
+
+
+#: Stand a Z-up mesh on its feet: a rotation of -90 degrees about X, which is
+#: exactly the ``(x, y, z) -> (x, z, -y)`` the OBJ path bakes into its
+#: vertices, written as the quaternion glTF wants.
+_Y_UP_QUAT = [-0.7071067811865476, 0.0, 0.0, 0.7071067811865476]
+
+
+def _normalize(mesh: bytes, kind: str) -> Optional[bytes]:
+    """Put the mesh into the form the rest of the project assumes."""
+    if kind == "glb":
+        return _normalize_glb(mesh)
+    return _normalize_obj(mesh)
+
+
+def _normalize_glb(mesh: bytes) -> Optional[bytes]:
+    """Stand a binary glTF up, and CHANGE NOTHING ELSE ABOUT IT.
+
+    The OBJ path rewrites vertices and throws the rest away. Doing that here
+    would defeat the entire reason for moving to this format: the texture, the
+    UVs that address it and the normals that light it are the payload, and a
+    normalizer that dropped them would hand back the flat-shaded mesh we came
+    here to stop drawing.
+
+    So the rotation is expressed rather than applied — a new node above each
+    scene's roots, carrying the quaternion. Every reader that walks the node
+    hierarchy honours it for free, which is both of ours: three.js's
+    ``GLTFLoader`` in the browser, and ``setpieces.glb_bounds_of`` on the
+    server. The BIN chunk is not touched at all, so no accessor is decoded, no
+    ``min``/``max`` goes stale, and 4 MB of mesh and texture are copied once.
+
+    Returns None if the container is not one we can read, which the writer
+    treats as a refusal — a mesh we cannot stand up arrives on the board lying
+    on its side, correctly scaled and silently wrong, and that is the shape of
+    failure this project refuses rather than ships.
+    """
+    from vtt import setpieces as sp
+    doc = sp.glb_document(mesh)
+    span = sp.glb_span(mesh)
+    if doc is None or span is None:
+        return None
+    off, length = span
+    if off != 12 + 8:
+        # The JSON chunk is the first one by spec. If it is not, anything ahead
+        # of it would be dropped by the repack below, so decline instead.
+        return None
+    nodes = doc.get("nodes")
+    scenes = doc.get("scenes")
+    if not isinstance(nodes, list) or not isinstance(scenes, list) or not scenes:
+        return None
+    # One wrapper PER SCENE: a node may not be the child of two parents, so a
+    # single shared wrapper would be invalid glTF the moment there were two.
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            return None
+        roots = scene.get("nodes")
+        if not isinstance(roots, list) or not roots:
+            continue
+        nodes.append({"name": "oracle-y-up",
+                      "rotation": list(_Y_UP_QUAT),
+                      "children": list(roots)})
+        scene["nodes"] = [len(nodes) - 1]
+    body = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+    body += b" " * (-len(body) % 4)             # chunks are 4-byte aligned
+    rest = mesh[off + length:]
+    total = 12 + 8 + len(body) + len(rest)
+    return (b"glTF" + struct.pack("<II", 2, total)
+            + struct.pack("<II", len(body), sp.GLB_JSON_CHUNK) + body + rest)
+
+
 def _normalize_obj(mesh: bytes) -> bytes:
     """Stand the mesh up, and strip it to what our three readers actually use.
 
@@ -355,14 +491,16 @@ def _normalize_obj(mesh: bytes) -> bytes:
     determinant is +1), so face winding — and therefore every normal the
     renderer derives from it — is unchanged.
 
-    **v and f only**: the browser keeps position and drops materials, normals
-    and UVs; ``_obj_bounds`` reads ``v`` lines; ``isocam``'s rasterizer reads
-    ``v`` and ``f``. Nothing anywhere wants the ``vt`` block or the ``mtllib``
-    line, and the ``mtllib`` is worse than dead weight — it names a file beside
-    the mesh in ComfyUI's output that this route does not serve, so a loader
-    that did resolve materials would fetch a 404 on every landmark. Dropping
-    the UVs means the face lines have to be rewritten to bare vertex indices,
-    which is the whole of why this is a rewrite rather than a filter.
+    **v and f only**, and this is the path for a mesh that has nothing else to
+    lose. It was once the only path, on the reasoning that a mesh's readers
+    wanted positions and nothing more — and the cost of that reasoning was
+    every generated landmark being drawn in one flat averaged colour, which is
+    why :func:`_normalize_glb` exists and why it strips nothing. Here the
+    ``mtllib`` line is still worse than dead weight: it names a file beside the
+    mesh in ComfyUI's output that this route does not serve, so a loader that
+    did resolve materials would fetch a 404 on every landmark. Dropping the UVs
+    means the face lines have to be rewritten to bare vertex indices, which is
+    the whole of why this is a rewrite rather than a filter.
     """
     out: list[bytes] = [b"# normalized by imagery/landmark3d.py: Z-up -> Y-up, "
                         b"geometry only\n"]
@@ -389,25 +527,36 @@ def _normalize_obj(mesh: bytes) -> bytes:
 MIN_THICKNESS = 0.08
 
 
-def _too_flat(mesh: bytes) -> Optional[str]:
+def _too_flat(mesh: bytes, kind: str = "obj") -> Optional[str]:
     """A description of the flatness, or None if the mesh has real volume."""
     lo = [float("inf")] * 3
     hi = [float("-inf")] * 3
     seen = 0
-    for line in mesh.splitlines():
-        if not line.startswith(b"v "):
-            continue
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        try:
-            xyz = [float(parts[1]), float(parts[2]), float(parts[3])]
-        except ValueError:
-            continue
-        seen += 1
-        for i in range(3):
-            lo[i] = min(lo[i], xyz[i])
-            hi[i] = max(hi[i], xyz[i])
+    if kind == "glb":
+        from vtt import setpieces as sp
+        doc = sp.glb_document(mesh)
+        bounds = sp.glb_bounds_of(doc) if doc is not None else None
+        if bounds is None:
+            return "no measurable geometry"
+        (lo, hi) = ([*bounds[0]], [*bounds[1]])
+        # A glTF POSITION accessor states its own extent, so there is nothing
+        # to count — the box either exists or it does not.
+        seen = 8
+    else:
+        for line in mesh.splitlines():
+            if not line.startswith(b"v "):
+                continue
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                xyz = [float(parts[1]), float(parts[2]), float(parts[3])]
+            except ValueError:
+                continue
+            seen += 1
+            for i in range(3):
+                lo[i] = min(lo[i], xyz[i])
+                hi[i] = max(hi[i], xyz[i])
     if seen < 8:
         return f"only {seen} vertices"
     span = [hi[i] - lo[i] for i in range(3)]

@@ -34,6 +34,7 @@
  *  would let the picture disagree with the grid about who can see whom. */
 import * as THREE from "three";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { VttObject, VttScene } from "./types";
@@ -372,15 +373,24 @@ function requestSurface(url: string, settled: () => void): void {
   );
 }
 
+/** What a landmark's file turned out to hold: either geometry the board has to
+ *  clothe itself, or a whole object that arrived already dressed. */
+type SetpieceMesh =
+  | { kind: "geometry"; geom: THREE.BufferGeometry }
+  | { kind: "object"; obj: THREE.Object3D };
+
 /** Landmark meshes, by URL. Module-level for the same reason as `TEXTURES`:
  *  one shipwreck serves every board in every session, and the file is
  *  committed and immutable so the cache can never go stale.
  *
- *  Only the GEOMETRY is kept — materials, normals and UVs in the file are
- *  discarded. A set piece contributes volume and silhouette; once the painted
- *  layer lands it is a depth occluder and draws no colour at all, which is
- *  what makes a stranger's art style cost so little here. */
-const SETPIECE_MESHES = new Map<string, THREE.BufferGeometry | null | undefined>();
+ *  Two shapes, because the files are two kinds of thing. An OBJ from a pack is
+ *  bare geometry — the loader keeps position and the board tints it with the
+ *  average colour of the stuff the tile says it is made of, which is the right
+ *  answer for a mesh that carries no colour of its own. A generated GLB is not
+ *  that: it arrives with UVs, normals, a base-colour map and a
+ *  metallic-roughness map, and tinting THAT would throw away the entire reason
+ *  the pipeline produces it. */
+const SETPIECE_MESHES = new Map<string, SetpieceMesh | null | undefined>();
 
 /** Fetch a landmark's mesh, and tell the caller when its fate is decided.
  *
@@ -392,6 +402,7 @@ const SETPIECE_MESHES = new Map<string, THREE.BufferGeometry | null | undefined>
 function requestSetpiece(url: string, settled: () => void): void {
   if (SETPIECE_MESHES.has(url)) return;        // resolved, or already in flight
   SETPIECE_MESHES.set(url, undefined);
+  if (/\.gl(b|tf)(\?|$)/i.test(url)) { requestSetpieceGltf(url, settled); return; }
   new OBJLoader().load(
     url,
     (group) => {
@@ -416,12 +427,61 @@ function requestSetpiece(url: string, settled: () => void): void {
       if (!geoms.length) { SETPIECE_MESHES.set(url, null); settled(); return; }
       const merged = mergeGeometries(geoms, false);
       if (merged) merged.computeVertexNormals();
-      SETPIECE_MESHES.set(url, merged ?? geoms[0]);
+      SETPIECE_MESHES.set(url, { kind: "geometry", geom: merged ?? geoms[0] });
       settled();
     },
     undefined,
     // No asset server, or a pack nobody collected. Remembered as bad so it is
     // asked for once, and the board falls back to the tiles the piece stamped.
+    () => { SETPIECE_MESHES.set(url, null); settled(); },
+  );
+}
+
+/** A generated landmark, kept WHOLE.
+ *
+ *  The OBJ path above reduces a file to positions, and that reduction is why
+ *  every generated landmark used to be drawn in one flat averaged colour: with
+ *  no UVs there is nothing for a texture to address, so the best the board
+ *  could do was tint the silhouette with the substance underneath it.
+ *
+ *  A GLB from our own mesher carries what that was missing — an atlas, a
+ *  base-colour map and a metallic-roughness map baked from the same reference
+ *  picture the shape came from — so the whole scene graph is kept and its own
+ *  materials are what get drawn. The only edits are the two the board makes to
+ *  everything it draws: shadows, and the colour space of a map that is NOT
+ *  colour. */
+function requestSetpieceGltf(url: string, settled: () => void): void {
+  new GLTFLoader().load(
+    url,
+    (gltf) => {
+      const obj = gltf.scene;
+      let meshes = 0;
+      obj.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        meshes += 1;
+        m.castShadow = true;
+        m.receiveShadow = true;
+        for (const mat of (Array.isArray(m.material) ? m.material : [m.material])) {
+          const s = mat as THREE.MeshStandardMaterial;
+          if (!s) continue;
+          // A shadow map rendered from BACK faces is right for closed solids
+          // and silently wrong for anything single-sided — the same trap the
+          // board's own sheets fell into.
+          s.shadowSide = THREE.DoubleSide;
+          // Read through the sRGB curve, a roughness map lights as the
+          // material being subtly the wrong colour: nobody can point at it and
+          // everybody can see it. Base colour IS colour and stays sRGB.
+          if (s.metalnessMap) s.metalnessMap.colorSpace = THREE.NoColorSpace;
+          if (s.roughnessMap) s.roughnessMap.colorSpace = THREE.NoColorSpace;
+          if (s.normalMap) s.normalMap.colorSpace = THREE.NoColorSpace;
+        }
+      });
+      if (!meshes) { SETPIECE_MESHES.set(url, null); settled(); return; }
+      SETPIECE_MESHES.set(url, { kind: "object", obj });
+      settled();
+    },
+    undefined,
     () => { SETPIECE_MESHES.set(url, null); settled(); },
   );
 }
@@ -1401,15 +1461,21 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
               // rather than out of the shape tables, so it is placed with a
               // transform like a landmark rather than emitted vertex by vertex.
               requestSetpiece(model.mesh, invalidate);
-              const geom = SETPIECE_MESHES.get(model.mesh);
-              if (geom) {
-                const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
-                  // Its own material's colour, never the square's `color` —
-                  // that is white wherever the square is textured, because it
-                  // multiplies a picture this mesh has no uvs to carry.
-                  color: swatchTint(swatches[slot]) ?? color,
-                  roughness: 0.86, metalness: 0.0,
-                }));
+              const got = SETPIECE_MESHES.get(model.mesh);
+              if (got) {
+                // Dressed if the file carried a texture, tinted with the
+                // substance of the square if it did not — the landmark rule,
+                // and for the same reason.
+                const mesh: THREE.Object3D = got.kind === "object"
+                  ? got.obj.clone(true)
+                  : new THREE.Mesh(got.geom, new THREE.MeshStandardMaterial({
+                      // Its own material's colour, never the square's `color`
+                      // — that is white wherever the square is textured,
+                      // because it multiplies a picture this mesh has no uvs
+                      // to carry.
+                      color: swatchTint(swatches[slot]) ?? color,
+                      roughness: 0.86, metalness: 0.0,
+                    }));
                 const k = model.unit_scale * heightUnits(scene, h);
                 const [px, py, pz] = model.pivot;
                 mesh.scale.setScalar(k);
@@ -1577,15 +1643,27 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     for (const sp of scene.setpieces ?? []) {
       if (!sp.mesh || !sp.scale) continue;
       requestSetpiece(sp.mesh, invalidate);
-      const geom = SETPIECE_MESHES.get(sp.mesh);
-      if (!geom) continue;                     // in flight, or never collected
-      const spSlot = materialSlot(sp.code || "#",
-                                  skinAt(scene, sp.code || "#", sp.x, sp.y));
-      const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
-        color: swatchTint(swatches[spSlot])
-               ?? new THREE.Color(tileStyle(sp.code || "#").fill),
-        roughness: 0.86, metalness: 0.0,
-      }));
+      const got = SETPIECE_MESHES.get(sp.mesh);
+      if (!got) continue;                      // in flight, or never collected
+      let mesh: THREE.Object3D;
+      if (got.kind === "object") {
+        // Already dressed. Cloned rather than shared, because two of the same
+        // landmark on one board need two transforms — the materials and their
+        // textures are shared by `clone()`, which is the half that costs.
+        mesh = got.obj.clone(true);
+      } else {
+        // Bare geometry, so the board says what it is made of. The tile's own
+        // substance, because a mesh with no colour standing on a PBR floor has
+        // to get its colour from somewhere and the stuff it was cut from is
+        // the only honest answer available.
+        const spSlot = materialSlot(sp.code || "#",
+                                    skinAt(scene, sp.code || "#", sp.x, sp.y));
+        mesh = new THREE.Mesh(got.geom, new THREE.MeshStandardMaterial({
+          color: swatchTint(swatches[spSlot])
+                 ?? new THREE.Color(tileStyle(sp.code || "#").fill),
+          roughness: 0.86, metalness: 0.0,
+        }));
+      }
       const [px, py, pz] = sp.pivot ?? [0, 0, 0];
       // scale -> centre on the footprint -> yaw -> stand on the floor.
       // Half a square per unit of width is what puts an even-sided landmark on
