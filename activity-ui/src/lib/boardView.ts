@@ -361,6 +361,26 @@ export interface View {
    *  A viewer may put this anywhere; nothing that has to agree with the server
    *  may. */
   yaw?: number;
+  /** How far ABOVE the ground the camera looks from, in degrees, for a
+   *  renderer whose lens can be raised and lowered. Absent = `PITCH_DEG`, the
+   *  angle the board was drawn at for as long as the camera was fixed.
+   *
+   *  The flat canvas ignores it, as it ignores yaw, and for the same reason. */
+  pitch?: number;
+  /** What the camera is looking AT, on the ground, in squares. The orbit
+   *  target: a pan slides it, a turn pivots about it, a zoom moves toward it.
+   *
+   *  It replaces `ox`/`oy` for a camera that orbits, rather than joining them.
+   *  Those two are a translate of a PROJECTED image, which is the right model
+   *  for a flat board and meaningless for a lens that can be anywhere; both
+   *  are carried so a view persisted by either renderer still means what it
+   *  meant. Absent = the middle of the board. */
+  tx?: number;
+  tz?: number;
+  /** How far back the lens stands, in squares. A dolly rather than a scale:
+   *  under perspective they are not the same thing, because moving the camera
+   *  changes the convergence and multiplying an image does not. */
+  dist?: number;
 }
 
 /** Screen pixels per square at zoom 1. The base unit both renderers scale from. */
@@ -1077,6 +1097,14 @@ export interface BoardView {
    *  A renderer that cannot turn returns the view unchanged. */
   turnTo(view: View, yawDeg: number, w: number, h: number,
          scene: VttScene, level: number): View;
+
+  /** Raise or lower the lens, in degrees above the ground.
+   *
+   *  Clamped by the renderer, not by the caller: straight down is a floorplan
+   *  and the board's whole vocabulary of height stops reading, while at the
+   *  horizon the floor compresses to a line and you are looking at wall tops.
+   *  A renderer that cannot turn cannot tilt either. */
+  tiltTo(view: View, pitchDeg: number): View;
 
   /** Where the painted layer belongs on screen, in CSS pixels, or null if this
    *  renderer has no painted layer.

@@ -7,7 +7,7 @@ import type {
 import { SPRITES, loadSprites } from "../lib/boardSprites";
 import { useResizable } from "../lib/useResizable";
 import { CELL, pathFromCosts, type BoardView, type View } from "../lib/boardView";
-import { YAW_DEG, YAW_STEP_DEG, project, wrapYaw } from "../lib/isocam";
+import { PITCH_DEG, YAW_DEG, YAW_STEP_DEG, wrapYaw } from "../lib/isocam";
 import { createCanvasBoardView } from "../lib/canvasBoardView";
 import { createIsoBoardView } from "../lib/vttScene3d";
 
@@ -188,7 +188,7 @@ export function VttOverlay(p: VttProps) {
   const [pings, setPings] = useState<{ x: number; y: number; label?: string; at: number }[]>([]);
   const [show, setShow] = useState({ grid: true, terrain: true, effects: true, fog: true });
   const [drag, setDrag] = useState<{ kind: "pan"; x: number; y: number; from: View }
-    | { kind: "turn"; x: number; from: number }
+    | { kind: "turn"; x: number; y: number; from: number; fromPitch: number }
     | { kind: "token"; id: number } | null>(null);
 
   // Which floor you are STANDING on. Not the same question as which floor is
@@ -567,7 +567,8 @@ export function VttOverlay(p: VttProps) {
     // the arithmetic supports any angle and a board you can only see from
     // twenty-four places is a worse board than one you can see from anywhere.
     if (e.shiftKey && board?.canTurn) {
-      setDrag({ kind: "turn", x: e.clientX, from: view.yaw ?? YAW_DEG });
+      setDrag({ kind: "turn", x: e.clientX, y: e.clientY,
+                from: view.yaw ?? YAW_DEG, fromPitch: view.pitch ?? PITCH_DEG });
       return;
     }
     setDrag({ kind: "pan", x: e.clientX, y: e.clientY, from: view });
@@ -588,8 +589,14 @@ export function VttOverlay(p: VttProps) {
     } else if (drag?.kind === "turn" && view && board) {
       // A third of a degree per pixel: a full turn is about a thousand pixels,
       // which is a deliberate drag rather than a flick.
-      setView(board.turnTo(view, wrapYaw(drag.from + (e.clientX - drag.x) * 0.36),
-                           size[0], size[1], floor, level));
+      // Sideways turns, up and down TILTS — one gesture, because they are one
+      // camera. A third of a degree per pixel across (a full turn is about a
+      // thousand pixels, a deliberate drag rather than a flick) and a quarter
+      // down, since the usable pitch range is much shorter than a circle.
+      const turned = board.turnTo(view,
+        wrapYaw(drag.from + (e.clientX - drag.x) * 0.36),
+        size[0], size[1], floor, level);
+      setView(board.tiltTo(turned, drag.fromPitch - (e.clientY - drag.y) * 0.25));
     }
   };
 

@@ -54,7 +54,7 @@ import {
 import {
   FRAME_PAD_SQUARES, YAW_DEG, basis, boundsOf, project,
   unproject,
-  wrapYaw,
+  PITCH_DEG, wrapYaw,
 } from "./isocam";
 
 /** How far back the camera sits. Orthographic, so this changes nothing about
@@ -671,6 +671,53 @@ function disposeTree(obj: THREE.Object3D): void {
   });
 }
 
+/** THE ORBIT CAMERA.
+ *
+ *  The board's lens can now be anywhere: yaw all the way round, pitch from
+ *  nearly overhead to nearly level, and a distance you dolly rather than a
+ *  scale you multiply. That is a different model from the one this renderer
+ *  was born with — an ORTHOGRAPHIC projection with a fixed pitch, panned and
+ *  zoomed as a 2D image — and the difference is not cosmetic: an affine map
+ *  inverts in closed form, so picking was arithmetic, and a perspective one
+ *  does not, so picking is a ray cast against the geometry that is actually
+ *  there. The second is simpler to read and answers a harder question.
+ *
+ *  What it cost was the painted layer, which was a photograph of the room from
+ *  one place, and what it bought is a board you can walk round.
+ *
+ *  Pitch is CLAMPED. Straight down is a floorplan and the board's whole
+ *  vocabulary of height stops reading; at the horizon the floor compresses to
+ *  a line and you are looking at wall tops. Neither is a view anybody wants to
+ *  fight from, so the dial stops short of both. */
+const PITCH_MIN = 12;
+const PITCH_MAX = 78;
+const FOV_DEG = 32;
+const DIST_MIN = 6;
+const DIST_MAX = 220;
+
+/** Where the camera stands, given what it is looking at and from where. */
+function orbitEye(target: THREE.Vector3, yawDeg: number, pitchDeg: number,
+                  dist: number): THREE.Vector3 {
+  const yaw = (yawDeg * Math.PI) / 180;
+  const pitch = (clampPitch(pitchDeg) * Math.PI) / 180;
+  return new THREE.Vector3(
+    target.x + dist * Math.cos(pitch) * Math.cos(yaw),
+    target.y + dist * Math.sin(pitch),
+    target.z + dist * Math.cos(pitch) * Math.sin(yaw),
+  );
+}
+
+function clampPitch(deg: number): number {
+  return Math.max(PITCH_MIN, Math.min(PITCH_MAX, deg));
+}
+
+/** How far back the lens stands. Carried as `scale` so that one number still
+ *  means "how big is the board on screen" for every caller that persists a
+ *  view, and so the flat renderer's own use of it is untouched. */
+function distOf(view: View): number {
+  return Math.max(DIST_MIN, Math.min(DIST_MAX, view.dist ?? 40));
+}
+
 export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   // `alpha` matters: the painted layer is a DOM image BEHIND this canvas, and
   // an opaque canvas would hide it.
@@ -701,29 +748,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   renderer.shadowMap.type = THREE.VSMShadowMap;
   renderer.shadowMap.autoUpdate = false;
 
-  // ---------------------------------------------------------------------
-  // ORBIT SPIKE. Read from `globalThis.__ORACLE_ORBIT = {pitch, yaw, fov}`;
-  // absent, nothing below runs and the board is the orthographic one it has
-  // always been.
-  //
-  // Here to answer ONE question before the interaction shell is rewritten
-  // around a free camera: what breaks when you swing the pitch down? Several
-  // drawing rules were justified by the fixed 40-degree pitch and are expected
-  // to fail — a wall is drawn as a THIN SKIN because a ring of full cubes read
-  // as a tray from up here, and a rock face's buried sides are not drawn at
-  // all. Both are invisible at 40 degrees and holes at 20.
-  //
-  // Deliberately does NOT touch `View`, picking or token placement: those live
-  // in a 2D pan-and-zoom over an affine projection, and a perspective orbit
-  // replaces that model rather than extending it. Tokens will be wrong in
-  // these shots. That is the point of it being a spike.
-  const orbit = () => (globalThis as unknown as {
-    __ORACLE_ORBIT?: { pitch?: number; yaw?: number; fov?: number };
-  }).__ORACLE_ORBIT;
-  const orbitCam = new THREE.PerspectiveCamera(35, 1, 0.5, CAMERA_DISTANCE * 2);
-
   const scene3 = new THREE.Scene();
-  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, CAMERA_DISTANCE * 2);
+  const camera = new THREE.PerspectiveCamera(FOV_DEG, 1, 0.5, CAMERA_DISTANCE * 3);
 
   // Form only — see the header. Angled off the camera axis so the two visible
   // faces of every corner differ, which is what makes a block read as a block.
@@ -773,6 +799,76 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   const terrainGroup = new THREE.Group();
   const decalGroup = new THREE.Group();
   scene3.add(terrainGroup, decalGroup);
+
+  // What the last frame was drawn with. The camera methods are called from
+  // React between frames and need the viewport and the scene to answer, and
+  // threading those through every signature would be six more parameters for
+  // one fact each caller already has.
+  let lastSize: [number, number] = [1, 1];
+  let lastScene: VttScene | null = null;
+  let lastLevel = 0;
+
+  /** Point the camera for this view. Idempotent, and cheap enough to call
+   *  from a picking path as well as from the frame. */
+  const aimCamera = (view: View, scene: VttScene, level: number,
+                     w: number, h: number): void => {
+    const target = new THREE.Vector3(view.tx ?? scene.width / 2,
+                                     baseUnits(scene, level),
+                                     view.tz ?? scene.height / 2);
+    const eye = orbitEye(target, view.yaw ?? YAW_DEG,
+                         view.pitch ?? PITCH_DEG, distOf(view));
+    camera.aspect = Math.max(0.05, w / Math.max(1, h));
+    camera.fov = FOV_DEG;
+    camera.position.copy(eye);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(target);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+  };
+
+  /** A ray from the lens through a CSS pixel. */
+  const rayThrough = (view: View, scene: VttScene, px: number, py: number,
+                      level: number): THREE.Raycaster => {
+    const [w, h] = lastSize;
+    aimCamera(view, scene, level, w, h);
+    const ndc = new THREE.Vector2((px / Math.max(1, w)) * 2 - 1,
+                                  -(py / Math.max(1, h)) * 2 + 1);
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, camera);
+    return rc;
+  };
+
+  /** Where that ray meets this storey's floor PLANE — continuous, exact, and
+   *  never affected by what happens to be standing there. */
+  const groundHit = (view: View, scene: VttScene, px: number, py: number,
+                     level: number): THREE.Vector3 => {
+    const rc = rayThrough(view, scene, px, py, level);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0),
+                                  -baseUnits(scene, level));
+    const out = new THREE.Vector3();
+    if (rc.ray.intersectPlane(plane, out)) return out;
+    // Looking at or above the horizon: no floor in that direction at all.
+    return new THREE.Vector3(view.tx ?? scene.width / 2,
+                             baseUnits(scene, level),
+                             view.tz ?? scene.height / 2);
+  };
+
+  /** The first thing the ray actually MEETS, or the floor plane if it meets
+   *  nothing. Geometry rather than arithmetic: you pick what you can see. */
+  const raycast = (view: View, scene: VttScene, px: number, py: number,
+                   level: number): THREE.Vector3 | null => {
+    const rc = rayThrough(view, scene, px, py, level);
+    const hits = rc.intersectObjects(terrainGroup.children, true);
+    for (const hit of hits) {
+      // The washes, markers and the grid are drawn ON the floor and are not
+      // things to be picked; only the real surfaces are.
+      const mat = (hit.object as THREE.Mesh).material as THREE.Material & {
+        isMeshStandardMaterial?: boolean };
+      if (mat?.isMeshStandardMaterial) return hit.point;
+    }
+    return groundHit(view, scene, px, py, level);
+  };
+
 
   renderer.autoClear = false;
 
@@ -1768,105 +1864,189 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     canTurn: true,
 
     fit(scene: VttScene, w: number, h: number, yaw: number = YAW_DEG): View {
-      const pad = 18;
-      const b = boundsOf(scene.width, scene.height, tallestUnits(scene), 0, yaw);
-      const spanX = Math.max(1e-6, b.maxX - b.minX);
-      const spanY = Math.max(1e-6, b.maxY - b.minY);
-      const scale = Math.max(0.28, Math.min(
-        (w - pad * 2) / (CELL * spanX),
-        (h - pad * 2) / (CELL * spanY),
-        1.6,
-      ));
-      return {
-        scale,
-        ox: w / 2 - CELL * scale * (b.minX + b.maxX) / 2,
-        oy: h / 2 - CELL * scale * (b.minY + b.maxY) / 2,
-        yaw,
+      // MEASURED, not estimated. Framing off the board's diagonal is the
+      // obvious guess and it is badly conservative: a board yawed 45 degrees
+      // and seen from 40 above is foreshortened to well under half its
+      // diagonal in screen height, so the guess left it filling a third of the
+      // panel. Instead, stand somewhere, project the eight corners of the
+      // board's bounding BOX, and scale the distance by however much of the
+      // frame they actually took. Perspective makes that ratio only
+      // approximately linear in distance, so it runs twice, which lands well
+      // inside a pixel.
+      // `fit` is called BEFORE the first frame, so the viewport cache is still
+      // 1x1 and every ray cast below would be aimed through a one-pixel
+      // camera. Seeding it here is the honest fix: fit is the thing that
+      // decides what the frame will be.
+      lastSize = [w, h];
+      lastScene = scene;
+      lastLevel = 0;
+      const view: View = {
+        scale: 1, ox: w / 2, oy: h / 2,
+        yaw, pitch: PITCH_DEG, dist: Math.hypot(scene.width, scene.height),
+        tx: scene.width / 2, tz: scene.height / 2,
       };
+      const top = tallestUnits(scene, 0);
+      const corners: [number, number, number][] = [];
+      for (const x of [0, scene.width])
+        for (const z of [0, scene.height])
+          for (const y of [0, top]) corners.push([x, y, z]);
+      const box = () => {
+        aimCamera(view, scene, 0, w, h);
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const [cx, cy, cz] of corners) {
+          const p = new THREE.Vector3(cx, cy, cz).project(camera);
+          x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x);
+          y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+        }
+        return { x0, x1, y0, y1 };
+      };
+      for (let pass = 0; pass < 3; pass++) {
+        const b = box();
+        // CENTRE FIRST, then size. The projected board is not symmetric about
+        // the point the camera looks at — the board is a box seen from above
+        // one corner, so its top is thrown further up the frame than its base
+        // is thrown down — and measuring the extent about the centre before
+        // fixing that reads the asymmetry as size and stands the camera too
+        // far back.
+        const mid = groundHit(view, scene, w / 2, h / 2, 0);
+        const cx = ((b.x0 + b.x1) / 2 * 0.5 + 0.5) * w;
+        const cy = (-(b.y0 + b.y1) / 2 * 0.5 + 0.5) * h;
+        const at = groundHit(view, scene, cx, cy, 0);
+        // Look at what the box is CENTRED on, not away from it.
+        view.tx = (view.tx ?? 0) + (at.x - mid.x);
+        view.tz = (view.tz ?? 0) + (at.z - mid.z);
+        // 0.92 of the frame, so the board has air round it rather than
+        // touching the panel's edges.
+        const after = box();
+        const fill = Math.max(after.x1 - after.x0, after.y1 - after.y0) / 2 / 0.92;
+        view.dist = Math.max(DIST_MIN, Math.min(DIST_MAX, (view.dist ?? 40) * fill));
+      }
+      // One last centring, because the loop sizes AFTER it centres and the
+      // last resize leaves the aim a little stale.
+      {
+        const b = box();
+        const mid = groundHit(view, scene, w / 2, h / 2, 0);
+        const at = groundHit(view, scene,
+                             ((b.x0 + b.x1) / 2 * 0.5 + 0.5) * w,
+                             (-(b.y0 + b.y1) / 2 * 0.5 + 0.5) * h, 0);
+        view.tx = (view.tx ?? 0) + (at.x - mid.x);
+        view.tz = (view.tz ?? 0) + (at.z - mid.z);
+      }
+      return view;
     },
+
 
     squareAt(view: View, scene: VttScene, px: number, py: number,
              level: number): [number, number] | null {
-      const k = CELL * view.scale;
-      const yaw = view.yaw ?? YAW_DEG;
-      const [wx, wz] = unproject((px - view.ox) / k, (py - view.oy) / k,
-                                 baseUnits(scene, level), yaw);
-      // Unprojecting answers "which square would be here if the board were
-      // flat", and it has not been flat since elevation went in — so on a dais
-      // or in a channel the square you click is not the square you get. The
-      // ray march is the correction: see squareUnderRay.
-      const [x, y] = squareUnderRay(
-        scene, wx, wz, yaw,
-        (scene.square_ft || 5) * tallestUnits(scene, level),
-        deepestFt(scene, level), level);
-      // Unlike the flat board this CAN miss: the viewport is a rectangle and
-      // the board inside it is a diamond, so a good part of the frame is not
-      // over the board at all. Reporting a square there would let a click on
-      // empty space walk someone off the map.
+      // A RAY CAST against the geometry that is actually there, which is both
+      // simpler and more honest than the closed-form march it replaces: you
+      // pick what you can SEE, so a click on what looks like the top of a wall
+      // selects that wall, and a wall the cutaway took down stops swallowing
+      // clicks meant for the floor behind it — for free, because the cut wall
+      // is not in the scene to be hit.
+      const hit = raycast(view, scene, px, py, level);
+      if (!hit) return null;
+      const x = Math.floor(hit.x);
+      const y = Math.floor(hit.z);
       if (x < 0 || y < 0 || x >= scene.width || y >= scene.height) return null;
       return [x, y];
     },
 
+    groundAt(view: View, scene: VttScene, px: number, py: number,
+             level: number): [number, number] {
+      // The storey's floor PLANE, not the geometry: this is the continuous,
+      // exact answer a pan and a turn pivot about, and it must not jump when
+      // the ray happens to land on a crate.
+      const p = groundHit(view, scene, px, py, level);
+      return [p.x, p.z];
+    },
+
     screenOf(view: View, scene: VttScene, x: number, y: number, squares: number,
              level: number, elevationFt: number): TokenPlacement {
-      const k = CELL * view.scale;
       // The square's own elevation PLUS whatever the creature is doing on top
       // of it: a wyvern hovering over a ledge is above both.
       const footFt = elevFt(scene, x, y, level) + elevationFt;
       const wy = baseUnits(scene, level) + heightUnits(scene, footFt);
-      const p = project(x + squares / 2, wy, y + squares / 2,
-                        view.yaw ?? YAW_DEG);
-      const size = k * squares;
+      aimCamera(view, scene, level, lastSize[0], lastSize[1]);
+      const foot = new THREE.Vector3(x + squares / 2, wy, y + squares / 2)
+        .project(camera);
+      const head = new THREE.Vector3(x + squares / 2,
+                                     wy + squares, y + squares / 2)
+        .project(camera);
+      const [w, h] = lastSize;
+      const fx = (foot.x * 0.5 + 0.5) * w;
+      const fy = (-foot.y * 0.5 + 0.5) * h;
+      const hy = (-head.y * 0.5 + 0.5) * h;
+      // A token is sized by how big its own square comes out on screen, so it
+      // shrinks with distance exactly as the board does. Under perspective
+      // that is no longer one number for the whole board.
+      const size = Math.max(6, Math.abs(fy - hy));
       return {
-        left: view.ox + k * p.x - size / 2,
+        left: fx - size / 2,
         // The token's FOOT sits on the square, not its middle — that is what
         // makes a flat disc read as a figure standing on the board rather than
         // a counter lying on it.
-        top: view.oy + k * p.y - size,
+        top: fy - size,
         size,
-        depth: p.depth * DEPTH_STEPS,
-        // Marched over the grid, not read off the picture — the geometry draws
-        // no colour once a painting lands, so there is nothing to read. Heights
-        // are relative to this STOREY: only one floor is ever drawn, so an
-        // upper gallery is not standing in the hall's way.
+        depth: foot.z * DEPTH_STEPS * 1000,
         occluded: occludedAt(scene, x, y, squares, footFt,
                              view.yaw ?? YAW_DEG, level),
       };
     },
 
-    groundAt(view: View, scene: VttScene, px: number, py: number,
-             level: number): [number, number] {
-      const k = CELL * view.scale;
-      return unproject((px - view.ox) / k, (py - view.oy) / k,
-                       baseUnits(scene, level), view.yaw ?? YAW_DEG);
-    },
-
     zoomAt(view: View, px: number, py: number, factor: number): View {
-      const scale = Math.max(0.2, Math.min(3, view.scale * factor));
-      const k = scale / view.scale;
-      return { scale, ox: px - (px - view.ox) * k, oy: py - (py - view.oy) * k,
-               yaw: view.yaw };
-    },
-    panBy(view: View, dxPx: number, dyPx: number): View {
-      return { ...view, ox: view.ox + dxPx, oy: view.oy + dyPx };
+      // Dolly, and pull the target toward the point under the cursor as it
+      // goes, so zooming in on a corner of the board approaches that corner
+      // instead of the middle. A perspective zoom cannot keep the point
+      // exactly still the way scaling an image can; getting most of the way
+      // there is what makes it feel like the same gesture.
+      const dist = Math.max(DIST_MIN, Math.min(DIST_MAX, distOf(view) / factor));
+      const scn: VttScene | null = lastScene;
+      if (scn === null) return { ...view, dist };
+      const [w, h] = lastSize;
+      const at = groundHit(view, scn, px, py, lastLevel);
+      const tx = view.tx ?? scn.width / 2;
+      const tz = view.tz ?? scn.height / 2;
+      const pull = Math.max(0, Math.min(0.6, 1 - dist / distOf(view)));
+      void w; void h;
+      return { ...view, dist,
+               tx: tx + (at.x - tx) * pull, tz: tz + (at.z - tz) * pull };
     },
 
-    turnTo(view: View, yawDeg: number, w: number, h: number,
-           scene: VttScene, level: number): View {
-      const from = view.yaw ?? YAW_DEG;
-      const to = wrapYaw(yawDeg);
-      const k = CELL * view.scale;
-      // The CONTINUOUS ground point under the middle of the frame — see the
-      // interface for why it may not be a square.
-      const [cx, cz] = this.groundAt(view, scene, w / 2, h / 2, level);
-      const before = project(cx, 0, cz, from);
-      const after = project(cx, 0, cz, to);
-      return {
-        ...view, yaw: to,
-        ox: view.ox + k * (before.x - after.x),
-        oy: view.oy + k * (before.y - after.y),
-      };
+    panBy(view: View, dxPx: number, dyPx: number,
+          scene: VttScene, level: number): View {
+      // A drag slides the TARGET across the ground, which is what a pan means
+      // for a lens that can be anywhere. Measured in ground units per pixel at
+      // the target's own depth, so the board keeps up with the pointer.
+      const [w, h] = lastSize;
+      const perPx = 2 * distOf(view) * Math.tan((FOV_DEG * Math.PI) / 360)
+                    / Math.max(1, h);
+      const yaw = ((view.yaw ?? YAW_DEG) * Math.PI) / 180;
+      const pitch = (clampPitch(view.pitch ?? PITCH_DEG) * Math.PI) / 180;
+      // Screen right and screen "up the board", on the ground plane.
+      const rx = -Math.sin(yaw), rz = Math.cos(yaw);
+      const fx = -Math.cos(yaw), fz = -Math.sin(yaw);
+      // Dragging up the screen walks the target AWAY, and how far depends on
+      // how obliquely the ground is being seen.
+      const fwd = dyPx * perPx / Math.max(0.2, Math.sin(pitch));
+      void w; void scene; void level;
+      return { ...view,
+               tx: (view.tx ?? 0) - dxPx * perPx * rx - fwd * fx,
+               tz: (view.tz ?? 0) - dxPx * perPx * rz - fwd * fz };
     },
+
+    tiltTo(view: View, pitchDeg: number): View {
+      return { ...view, pitch: clampPitch(pitchDeg) };
+    },
+
+    turnTo(view: View, yawDeg: number): View {
+      // The target IS the pivot, so turning is now one assignment. Under the
+      // affine camera this had to recompute the pivot's projected offset and
+      // correct the pan by hand, because "where the camera is" was expressed
+      // as a translate of the image rather than as a place to stand.
+      return { ...view, yaw: wrapYaw(yawDeg) };
+    },
+
 
 
 
@@ -1929,60 +2109,14 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       }
       buildDecals(st, level);
 
-      // Drive the orthographic camera from `View`, so pan and zoom mean exactly
-      // what they mean on the flat board and `screenOf` and the rendered image
-      // cannot drift apart.
-      const k = CELL * view.scale;
-      // Whichever way the viewer has turned. The geometry is real 3D and never
-      // moves; the only thing rotation touches is where the lens is, which is
-      // why turning cost nothing here and everything to the painted layer.
-      const cam = basis(view.yaw ?? YAW_DEG);
-      const halfW = w / 2 / k;
-      const halfH = h / 2 / k;
-      const cx = (w / 2 - view.ox) / k;
-      const cyUp = (view.oy - h / 2) / k;
-      const target = new THREE.Vector3(
-        cam.RIGHT[0] * cx + cam.UP[0] * cyUp,
-        cam.RIGHT[1] * cx + cam.UP[1] * cyUp,
-        cam.RIGHT[2] * cx + cam.UP[2] * cyUp,
-      );
-      camera.left = -halfW;
-      camera.right = halfW;
-      camera.top = halfH;
-      camera.bottom = -halfH;
-      camera.near = 0.1;
-      camera.far = CAMERA_DISTANCE * 2;
-      camera.position.set(
-        target.x - cam.FORWARD[0] * CAMERA_DISTANCE,
-        target.y - cam.FORWARD[1] * CAMERA_DISTANCE,
-        target.z - cam.FORWARD[2] * CAMERA_DISTANCE,
-      );
-      camera.up.set(cam.UP[0], cam.UP[1], cam.UP[2]);
-      camera.lookAt(target);
-      camera.updateProjectionMatrix();
-
-      // ORBIT SPIKE: same scene, same lights, a lens that can look from
-      // anywhere. Framed off the board's own extent rather than off `View`,
-      // because `View`'s scale is an orthographic zoom and means nothing here.
-      const orb = orbit();
-      if (orb) {
-        const mid = new THREE.Vector3(scene.width / 2, baseUnits(scene, level),
-                                      scene.height / 2);
-        const pitch = ((orb.pitch ?? 40) * Math.PI) / 180;
-        const yaw = ((orb.yaw ?? YAW_DEG) * Math.PI) / 180;
-        // Far enough back that the whole board is in frame at this lens.
-        const span = Math.max(scene.width, scene.height);
-        const dist = span / (2 * Math.tan((orbitCam.fov * Math.PI) / 360)) * 1.25;
-        orbitCam.fov = orb.fov ?? 35;
-        orbitCam.aspect = w / h;
-        orbitCam.position.set(
-          mid.x + dist * Math.cos(pitch) * Math.cos(yaw),
-          mid.y + dist * Math.sin(pitch),
-          mid.z + dist * Math.cos(pitch) * Math.sin(yaw));
-        orbitCam.up.set(0, 1, 0);
-        orbitCam.lookAt(mid);
-        orbitCam.updateProjectionMatrix();
-      }
+      // Point the lens. Everything about where it stands is in the View —
+      // target, yaw, pitch, distance — so the frame and every pick agree by
+      // construction rather than by two pieces of arithmetic being kept in
+      // step.
+      lastSize = [w, h];
+      lastScene = scene;
+      lastLevel = level;
+      aimCamera(view, scene, level, w, h);
 
       // The water column, measured against the board rather than guessed: the
       // four corners' depths along the view axis say where the near and far
@@ -1994,10 +2128,12 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         // dropping the y term loses a constant the size of the camera's own
         // height and puts the whole board past the far plane — which is a
         // board drawn as one flat slab of sea colour.
+        const fwd = new THREE.Vector3();
+        camera.getWorldDirection(fwd);
         const depth = (x: number, z: number) =>
-          (x - camera.position.x) * cam.FORWARD[0]
-          + (0 - camera.position.y) * cam.FORWARD[1]
-          + (z - camera.position.z) * cam.FORWARD[2];
+          (x - camera.position.x) * fwd.x
+          + (0 - camera.position.y) * fwd.y
+          + (z - camera.position.z) * fwd.z;
         const ds = [depth(0, 0), depth(scene.width, 0),
                     depth(0, scene.height), depth(scene.width, scene.height)];
         const near = Math.min(...ds);
@@ -2008,17 +2144,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         scene3.fog = null;
       }
 
-      // One pass. The painting is a DOM layer BEHIND this canvas (see
-      // `backdropRect`), which is why the canvas is alpha and why the geometry
-      // stops drawing colour when a painting exists — it stays as a depth-only
-      // proxy so the decals still occlude correctly.
-      //
-      // It was a second WebGL camera rendering a screen-space quad, and that
-      // never drew: the pass was reached with a correct rectangle and a loaded
-      // texture, and a plain red quad with no stencil did not appear either.
-      // A DOM image needs none of that machinery, and the painting already
-      // carries its own alpha, so the corners are handled without a stencil.
       renderer.clear(true, true, true);
-      renderer.render(scene3, orbit() ? orbitCam : camera);
+      renderer.render(scene3, camera);
   }
 }

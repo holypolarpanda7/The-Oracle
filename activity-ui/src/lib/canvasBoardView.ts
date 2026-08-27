@@ -69,6 +69,10 @@ export function createCanvasBoardView(canvas: HTMLCanvasElement): BoardView {
       return view;
     },
 
+    tiltTo(view: View): View {
+      return view;
+    },
+
 
 
 
