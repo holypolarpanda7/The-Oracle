@@ -72,6 +72,14 @@ Players create a character, "enter the world," and adventure while an LLM narrat
 > At 2.58 GB per 1.3B model on a 12.9 GB card that also holds SDXL, it has to
 > time-share the way the local LLM already does.
 >
+> **ONE side at a time on `oracle.db`.** The database lives on a DrvFs mount
+> and the two interpreters reach it as two different operating systems, so a
+> Linux-side reader running while a Windows-side renderer writes gets
+> `sqlite3.OperationalError: disk I/O error` — not `database is locked`, which
+> is what you would go looking for. Nothing is corrupted and the failing side
+> is whichever one you happened to start second. A long render batch owns the
+> file; audit and measure before or after it, not beside it.
+>
 > If ComfyUI really is stopped, start it yourself and wait ~40s:
 > ```bash
 > cd /mnt/d/ComfyUI && nohup ./.venv/Scripts/python.exe main.py --listen 127.0.0.1 --port 8188 > /tmp/comfy.log 2>&1 &
