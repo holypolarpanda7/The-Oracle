@@ -35,6 +35,7 @@
 import * as THREE from "three";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { makeInkPipeline, type InkPipeline } from "./boardInk";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { VttObject, VttScene } from "./types";
@@ -860,6 +861,17 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   const decalGroup = new THREE.Group();
   scene3.add(terrainGroup, decalGroup);
 
+  // The stylised response — ink, rim and grade. Null on a context that cannot
+  // give us the buffers, and then the board is exactly the lit geometry it was
+  // before, which is a real fallback rather than a broken picture.
+  const ink: InkPipeline | null = makeInkPipeline(renderer);
+  // A decal never contributes ink. See `makeInkPipeline`: they are excluded
+  // from the DEPTH buffer already by carrying `depthWrite: false`, and an
+  // override material would otherwise make each of them an opaque up-facing
+  // plane in the normal buffer — a black outline drawn around every square you
+  // can walk to.
+  if (ink) ink.omit.push(decalGroup);
+
   // What the last frame was drawn with. The camera methods are called from
   // React between frames and need the viewport and the scene to answer, and
   // threading those through every signature would be six more parameters for
@@ -954,6 +966,21 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   /** A swatch's fate has been decided: rebuild, because whether a code is
    *  textured changes what its vertex colours have to mean. */
   const invalidate = () => { terrainKey = ""; redraw(); };
+
+  // A tuning seam for the look harnesses, and ONLY where one has already
+  // spoken: `board-style.mjs` sets `__ORACLE_BOARD_STYLE` before the page
+  // runs, and without that this handle is never published. Two shots of the
+  // SAME frame is the whole reason it exists — a fresh page fits the board
+  // afresh, and comparing two slightly different framings is how you convince
+  // yourself of a change that is not there.
+  if (ink && (globalThis as Record<string, unknown>).__ORACLE_BOARD_STYLE) {
+    (globalThis as Record<string, unknown>).__ORACLE_BOARD = {
+      apply: (s: Record<string, unknown>) => {
+        ink.apply(s as never);
+        redraw();
+      },
+    };
+  }
 
   const heightUnits = (scene: VttScene, ft: number) => ft / (scene.square_ft || 5);
   const baseUnits = (scene: VttScene, level: number) =>
@@ -2138,6 +2165,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       if (pending) cancelAnimationFrame(pending);
       lastFrame = null;
       disposeTree(scene3);
+      ink?.dispose();
       renderer.dispose();
     },
   };
@@ -2147,8 +2175,10 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       const { scene, view } = st;
       const level = st.level ?? 0;
 
-      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      renderer.setPixelRatio(dpr);
       renderer.setSize(w, h, false);
+      if (ink) ink.setSize(w, h, dpr);
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
 
@@ -2224,6 +2254,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       }
 
       renderer.clear(true, true, true);
-      renderer.render(scene3, camera);
+      if (ink) ink.render(scene3, camera);
+      else renderer.render(scene3, camera);
   }
 }
