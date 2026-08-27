@@ -54,6 +54,19 @@ check(!occludedAt(WALL_NEAR, 2, 2, 1, 0),
       "a near wall is CUT, so it hides nothing — you can see over the stub");
 check(!occludedAt(WALL_FAR, 2, 2, 1, 0),
       "a wall two squares away does not either — the ray has climbed past it");
+
+// THE PITCH IS A THING THE PLAYER MOVES NOW, so the ray's climb is an argument
+// rather than a constant. Reading it off the canonical basis left a board
+// tilted down to 12 degrees marking creatures hidden behind walls the lens is
+// looking straight over, and one tilted up to 78 marking nobody hidden at all.
+// A PILLAR, not a wall: walls are cut and hide nothing at any angle, and the
+// thing being tested here is the CLIMB rather than the cutaway.
+const PIT_LOW = 14, PIT_HIGH = 74;
+const PILLAR_FAR = plain([".....", ".....", ".....", ".....", "....O"]);
+check(occludedAt(PILLAR_FAR, 2, 2, 1, 0, 45, 0, PIT_LOW),
+      "from low down, a pillar two squares off DOES hide a creature");
+check(!occludedAt(PILLAR_FAR, 2, 2, 1, 0, 45, 0, PIT_HIGH),
+      "...and from nearly overhead it does not");
 check(!occludedAt(plain([".....", ".....", "...o.", ".....", "....."]), 2, 2, 1, 0),
       "a 4-ft crate never hides a standing creature");
 check(!occludedAt(plain([".....", ".#...", ".....", ".....", "....."]), 2, 2, 1, 0),

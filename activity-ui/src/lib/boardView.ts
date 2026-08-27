@@ -53,7 +53,7 @@ import type { Part } from "./boardShapes.generated";
 // The camera, for the one question that needs it here: which way a view ray
 // travels. Not a renderer import — isocam is arithmetic, and both renderers
 // already sit on top of it.
-import { VERTICAL_SQUEEZE, YAW_DEG, basis } from "./isocam";
+import { PITCH_DEG, VERTICAL_SQUEEZE, YAW_DEG, basis } from "./isocam";
 
 /** A stable 32-bit hash of a square. Mirrors `_hash` in vtt/isocam.py.
  *
@@ -945,8 +945,24 @@ const MAX_OCCLUDER_FT = 64;
  *  prevent. */
 export function occludedAt(scene: VttScene, x: number, z: number,
                            squares: number, footFt: number,
-                           yawDeg: number = YAW_DEG, level = 0): boolean {
-  const { rayX, rayZ, rayRise } = basis(yawDeg);
+                           yawDeg: number = YAW_DEG, level = 0,
+                           pitchDeg: number = PITCH_DEG): boolean {
+  const { rayX, rayZ } = basis(yawDeg);
+  // The ray climbs by the tangent of the camera's PITCH, and the camera's
+  // pitch is now a thing the player moves. It used to be a constant because
+  // the lens could only ever be at one height, and reading it off `basis`
+  // — which is built at the canonical pitch — left a board tilted to 12
+  // degrees marking creatures hidden by walls the lens is looking straight
+  // over.
+  //
+  // Still an APPROXIMATION, and worth being plain about: under perspective
+  // the direction back to the lens differs across the board, and this takes
+  // one direction for all of it. The error is second-order next to getting
+  // the pitch wrong outright, and the whole march is a stopgap — a token is a
+  // DOM element over a canvas, so "behind a wall" is something somebody has
+  // to SAY, and the day tokens are drawn in the scene the depth buffer says
+  // it for nothing.
+  const rayRise = Math.tan((pitchDeg * Math.PI) / 180);
   const sqFt = scene.square_ft || 5;
   // A token's DOM box is as tall in pixels as its footprint is wide, so the
   // figure it draws stands this tall in the world. See VERTICAL_SQUEEZE.

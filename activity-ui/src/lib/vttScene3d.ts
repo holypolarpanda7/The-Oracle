@@ -1990,7 +1990,8 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
         size,
         depth: foot.z * DEPTH_STEPS * 1000,
         occluded: occludedAt(scene, x, y, squares, footFt,
-                             view.yaw ?? YAW_DEG, level),
+                             view.yaw ?? YAW_DEG, level,
+                             view.pitch ?? PITCH_DEG),
       };
     },
 
