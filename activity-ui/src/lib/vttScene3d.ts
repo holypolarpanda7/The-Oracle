@@ -700,6 +700,27 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
   renderer.shadowMap.type = THREE.VSMShadowMap;
   renderer.shadowMap.autoUpdate = false;
 
+  // ---------------------------------------------------------------------
+  // ORBIT SPIKE. Read from `globalThis.__ORACLE_ORBIT = {pitch, yaw, fov}`;
+  // absent, nothing below runs and the board is the orthographic one it has
+  // always been.
+  //
+  // Here to answer ONE question before the interaction shell is rewritten
+  // around a free camera: what breaks when you swing the pitch down? Several
+  // drawing rules were justified by the fixed 40-degree pitch and are expected
+  // to fail — a wall is drawn as a THIN SKIN because a ring of full cubes read
+  // as a tray from up here, and a rock face's buried sides are not drawn at
+  // all. Both are invisible at 40 degrees and holes at 20.
+  //
+  // Deliberately does NOT touch `View`, picking or token placement: those live
+  // in a 2D pan-and-zoom over an affine projection, and a perspective orbit
+  // replaces that model rather than extending it. Tokens will be wrong in
+  // these shots. That is the point of it being a spike.
+  const orbit = () => (globalThis as unknown as {
+    __ORACLE_ORBIT?: { pitch?: number; yaw?: number; fov?: number };
+  }).__ORACLE_ORBIT;
+  const orbitCam = new THREE.PerspectiveCamera(35, 1, 0.5, CAMERA_DISTANCE * 2);
+
   const scene3 = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, CAMERA_DISTANCE * 2);
 
@@ -1918,6 +1939,29 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       camera.lookAt(target);
       camera.updateProjectionMatrix();
 
+      // ORBIT SPIKE: same scene, same lights, a lens that can look from
+      // anywhere. Framed off the board's own extent rather than off `View`,
+      // because `View`'s scale is an orthographic zoom and means nothing here.
+      const orb = orbit();
+      if (orb) {
+        const mid = new THREE.Vector3(scene.width / 2, baseUnits(scene, level),
+                                      scene.height / 2);
+        const pitch = ((orb.pitch ?? 40) * Math.PI) / 180;
+        const yaw = ((orb.yaw ?? YAW_DEG) * Math.PI) / 180;
+        // Far enough back that the whole board is in frame at this lens.
+        const span = Math.max(scene.width, scene.height);
+        const dist = span / (2 * Math.tan((orbitCam.fov * Math.PI) / 360)) * 1.25;
+        orbitCam.fov = orb.fov ?? 35;
+        orbitCam.aspect = w / h;
+        orbitCam.position.set(
+          mid.x + dist * Math.cos(pitch) * Math.cos(yaw),
+          mid.y + dist * Math.sin(pitch),
+          mid.z + dist * Math.cos(pitch) * Math.sin(yaw));
+        orbitCam.up.set(0, 1, 0);
+        orbitCam.lookAt(mid);
+        orbitCam.updateProjectionMatrix();
+      }
+
       // The water column, measured against the board rather than guessed: the
       // four corners' depths along the view axis say where the near and far
       // edges of the picture are, whatever the camera has been turned to. The
@@ -1953,6 +1997,6 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
       // A DOM image needs none of that machinery, and the painting already
       // carries its own alpha, so the corners are handled without a stencil.
       renderer.clear(true, true, true);
-      renderer.render(scene3, camera);
+      renderer.render(scene3, orbit() ? orbitCam : camera);
   }
 }
