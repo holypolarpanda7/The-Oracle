@@ -23,6 +23,19 @@ used every session.
   strength is the only dial). All three print a pixel-diff column — 0.00 means
   the LoRA did nothing. `scripts/map_composite_check.py` renders a real drafted
   map, wash and ink together, to check labels stay readable over the paint.
+- Board surface catalogue (**Windows interpreter** to draw, either one to
+  measure): `scripts/material_prerender.py --audit` says what is missing,
+  `--render` fills the gaps and is resumable, `--sheet` writes a contact sheet.
+  Three measurements guard it and they catch different things: `--contrast`
+  asks whether a player can tell COVER from the floor under it, `--surface`
+  asks whether a swatch is a picture of a SURFACE or of a PLACE, and
+  `--palette` asks whether every surface NAMES its colour and whether the
+  unnamed ones drifted cool. Run `--palette` after touching any material
+  prompt; `--contrast` is blind to a whole family drifting together, which is
+  how the board went teal under it. **`--redraw` deletes before it draws**, so
+  it is for a prompt you have already decided on, never for one you are still
+  choosing between — that is what `scripts/material_style_probe.py` is for,
+  which renders to its own `probe-*` slugs and touches the catalogue not at all.
 - Loot / affix demo: `uv run python -m loot.demo`
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Combat-music smoke test: `uv run python scripts/music_smoke.py` (the two

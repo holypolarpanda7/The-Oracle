@@ -27,6 +27,7 @@ sample of a surface is the failure mode here, and it is only visible by eye.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from pathlib import Path
@@ -358,6 +359,114 @@ def _surface(store) -> int:
     return 1
 
 
+#: Words that answer "what colour is it". ACHROMATIC WORDS ARE NOT ON THIS LIST
+#: and that is the entire point — `SUBSTANCE_ART` has said since it was written
+#: that "grey stone" is a REQUEST for an achromatic image, the model obliges,
+#: and a square of dead neutral grey is the one thing the painter feels free to
+#: invent a hue for. So "grey", "black" and "white" count as naming nothing,
+#: because that is what they did: `limestone` said "damp grey limestone" and
+#: came back (119,127,128), cooler than the warm ashlar it shares a wall with.
+HUE_WORDS = (
+    "warm cool cold ochre buff sandy terracotta russet brown umber tan straw "
+    "green red rust yellow golden gold amber olive bronze brass copper "
+    "blue teal violet purple pink orange cream resinous"
+).split()
+
+#: Above this a swatch is measurably COOL: the mean of its green and blue
+#: channels stands this far above its red.
+#:
+#: Measured, not chosen, and the two populations do not overlap. Every subject
+#: in the catalogue that names a warm hue sits between -6 and -88 (`clay-tile`
+#: "warm terracotta" at -88, `dressed-stone` "warm pale sandy grey with ochre"
+#: at -19). Everything that named NO hue and was not obviously coloured by its
+#: own noun sat between +8 and +26: `wall` +21, `road` +19, `rubble` +10,
+#: `limestone` +9, `cobble` +8. Genuinely neutral ground — `floor`, which the
+#: look is allowed to decide — sits at -2.
+PALETTE_COOL = 8.0
+
+
+def _palette(store) -> int:
+    """Does every surface NAME its colour, and did the unnamed ones drift?
+
+    `--contrast` measures pairs that MEET and asks whether a player can tell
+    cover from the floor under it. It cannot see this failure, and that is why
+    this one survived under it for the whole life of the catalogue: when the
+    wall, the road and the rubble all drift the same way together they still
+    contrast with each other perfectly well. The board goes teal and every
+    pairwise check passes.
+
+    The rule being enforced is the one `SUBSTANCE_ART` already states: name the
+    colour, because a subject that names none leaves the sampler to pick, and
+    what it picks is a cold blue-green. Measured across the catalogue that was
+    26 of 47 subjects naming no hue at all, and they were disproportionately
+    the big-area ones -- `#`, the commonest tile on the board, had no
+    `MATERIAL_SUBJECT` entry and fell through to the two words "stone wall".
+
+    A subject that DOES name a hue is never failed however it measures. Water
+    is meant to be blue and a beetle's back is meant to be black-green; the
+    exemption is granted by saying so in the prompt, which is the same edit
+    that fixes a real drift. There is no allowlist to drift out of step.
+    """
+    import io as _io
+
+    import numpy as np
+    from PIL import Image
+
+    from imagery.models import ImageKind, context_key, slugify
+    from vtt.art import material_look, material_ref, material_subject
+
+    rows, unnamed = [], []
+    for code, skin, look in _catalogue(CONTEXTS):
+        ref = material_ref(code, skin)
+        subject = material_subject(code, skin)
+        if not subject:
+            continue
+        named = sorted({w for w in HUE_WORDS if _names(subject, w)})
+        found = store.list_for(ImageKind.MATERIAL, slugify(ref),
+                               context_key(material_look(code, skin) or look))
+        if not found:
+            continue
+        raw = store.get_image_bytes(found[0]["image_id"])
+        if not raw:
+            continue
+        rgb = np.asarray(Image.open(_io.BytesIO(raw)).convert("RGB")
+                         ).reshape(-1, 3).mean(axis=0)
+        cast = float((rgb[1] + rgb[2]) / 2 - rgb[0])
+        rows.append((cast, ref, look, named, rgb))
+        if not named:
+            unnamed.append((cast, ref, look))
+
+    seen: dict[str, list] = {}
+    for cast, ref, _lk, named, _rgb in rows:
+        seen.setdefault(ref, [cast, named])[0] = cast
+    print(f"{len(seen)} subjects, {len(rows)} swatches; "
+          f"cool is +, warm is -\n")
+    drift = sorted({r for c, r, _l in unnamed if c > PALETTE_COOL})
+    quiet = sorted({r for c, r, _l in unnamed if c <= PALETTE_COOL})
+    if quiet:
+        print(f"  {len(quiet)} name no hue but have not drifted (their NOUN "
+              f"carries one): " + ", ".join(quiet))
+    if not drift:
+        print(f"\n  nothing unnamed above +{PALETTE_COOL:.0f} — every surface "
+              f"either names its colour or was never going to be asked")
+        return 0
+    rows_bad = [r for r in unnamed if r[0] > PALETTE_COOL]
+    print(f"\n  {len(drift)} subjects ({len(rows_bad)} swatches) name no "
+          f"colour and drifted COOL past +{PALETTE_COOL:.0f}. The sampler "
+          f"picked, and it picks teal:")
+    for cast, ref, look in sorted(unnamed, reverse=True):
+        if cast > PALETTE_COOL:
+            print(f"    {cast:+6.1f}  {ref:28} @{look}")
+    print("\n  Fix by naming the hue in the subject, not by changing the "
+          "style clause or the LoRA dose — measured, neither one moves this.")
+    return 1
+
+
+def _names(subject: str, word: str) -> bool:
+    """Is this hue word actually in the subject, as a word?"""
+    return re.search(rf"\b{re.escape(word)}\b", subject, re.I) is not None
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -370,6 +479,10 @@ def main(argv=None) -> int:
                     help="check a player can tell a square that gives COVER "
                          "from the floor it stands on, on every archetype. "
                          "Exits non-zero on a pair too close to call.")
+    ap.add_argument("--palette", action="store_true",
+                    help="does every surface NAME its colour, and did the "
+                         "unnamed ones drift cool? --contrast cannot see a "
+                         "whole family drifting together")
     ap.add_argument("--surface", action="store_true",
                     help="check every swatch is a picture of a SURFACE rather "
                          "than of a place. Exits non-zero on a composition.")
@@ -388,12 +501,12 @@ def main(argv=None) -> int:
                          "renames it in the code forever to fix a picture.")
     a = ap.parse_args(argv)
     if not (a.audit or a.render or a.sheet or a.prune or a.contrast
-            or a.surface):
+            or a.surface or a.palette):
         a.audit = True
 
     from imagery import ImageStore
     from imagery.models import ImageKind, context_key, slugify
-    from vtt.art import material_ref, render_material
+    from vtt.art import material_look, material_ref, render_material
     from vtt.terrain import tile
 
     store = ImageStore()
@@ -441,10 +554,18 @@ def main(argv=None) -> int:
         # missing-swatch path and nothing has to know about overwriting.
         from sqlmodel import Session, select
         from imagery.models import EntityImage
-        slugs = {slugify(material_ref(c, k)) for c, k, _l, _lb, _t in again}
+        # SCOPED TO THE (slug, look) PAIRS BEING REDRAWN, not to the slug.
+        # Deleting by slug alone silently destroys every OTHER look of the same
+        # surface: `--redraw road --contexts wetland` dropped all twelve road
+        # swatches and drew back the one, and the audit afterwards is the only
+        # place it shows. `--contexts` narrows what gets DRAWN, so it has to
+        # narrow what gets dropped or the two disagree.
+        pairs = {(slugify(material_ref(c, k)),
+                  context_key(material_look(c, k) or lk))
+                 for c, k, lk, _lb, _t in again}
         with Session(store.engine) as sess:
             for r in sess.exec(select(EntityImage)).all():
-                if r.ref_slug in slugs:
+                if (r.ref_slug, r.context_key) in pairs:
                     sess.delete(r)
             sess.commit()
         print(f"redrawing {len(again)}: "
@@ -494,6 +615,8 @@ def main(argv=None) -> int:
     rc = 0
     if a.contrast:
         rc |= _contrast(store)
+    if a.palette:
+        rc |= _palette(store)
     if a.surface:
         rc |= _surface(store)
     return rc
