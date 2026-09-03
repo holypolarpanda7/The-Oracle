@@ -388,7 +388,27 @@ SUBSTANCE_ART: dict[str, str] = {
 #: to invent.
 MATERIAL_SUBJECT: dict[str, str] = {
     ".": "the bare ground underfoot, close-up of the paving or packed earth",
-    "=": "close-up of a cobbled road surface, the cobbles themselves",
+    # `#` IS THE COMMONEST TILE ON THE BOARD AND HAD NO ENTRY — the third of
+    # four instances of the fault `R` and `m` are annotated with below (`,` is
+    # the fourth), and by far the most expensive of them, because it fell
+    # through to `tile("#").art`: the two
+    # words "stone wall", written for a battlemap prompt where a whole scene
+    # carries them. Measured across the catalogue's thirteen looks it came back
+    # at (84,106,104) — a cold teal grey — while `dressed-stone`, which is the
+    # SAME MATERIAL in the fiction and does name its colour, sits at
+    # (153,142,127). Forty-eight points of cast between a wall and the ashlar
+    # it is built of. Named into the same warm family; the look still shifts it
+    # (`in dungeon` against `in desert`), it just no longer picks the hue.
+    "#": "close-up of a rough stone wall, undressed blocks in washed-out "
+         "mortar, warm pale grey stone with buff and ochre weathering",
+    # Rubble is what fell off the wall, so it is the wall's colour or the two
+    # read as different rock lying against each other. It had no entry either
+    # and came back (95,106,105), cool, against a floor at (92,95,85).
+    ",": "close-up of a bed of loose broken stone, many small angular "
+         "fragments and grit of mixed sizes filling the whole frame evenly, "
+         "warm pale grey and buff, dry and dusty",
+    "=": "close-up of a cobbled road surface, the cobbles themselves, "
+         "warm grey-brown granite setts, dusty",
     "b": "close-up of weathered wooden deck planking",
     # WARM, and named — `u` said only "worn stone step treads" and came back
     # a cold grey that sat 12 from the blue-grey granite standing on it and 21

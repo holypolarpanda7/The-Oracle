@@ -975,14 +975,20 @@ _SEABED_NEG = (
 SKINS: dict[str, Skin] = {s.name: s for s in (
     # --- rock, in its several honest forms -------------------------------
     Skin("cliff", "granite",
-         "raw granite, close-up of the bare fractured rock face, cold "
-         "blue-grey stone",
+         "raw granite, close-up of the bare fractured rock face broken "
+         "into many small angular facets, warm grey stone with an even "
+         "black-and-white speckle across every facet",
+         negative="glowing cracks, glowing veins, lava, molten rock, magma, "
+                  "orange veins, embers",
          words="the rock is a natural granite cliff face, fractured and "
                "weathered, not built masonry and not brickwork",
          variants=_CLIFF, height_ft=14, smooth=True),
     Skin("boulder", "granite",
-         "raw granite, close-up of the bare fractured rock face, cold "
-         "blue-grey stone",
+         "raw granite, close-up of the bare fractured rock face broken "
+         "into many small angular facets, warm grey stone with an even "
+         "black-and-white speckle across every facet",
+         negative="glowing cracks, glowing veins, lava, molten rock, magma, "
+                  "orange veins, embers",
          words="fallen boulders lie about the track, rounded and weathered, "
                "each one a separate stone",
          variants=_BOULDER, height_ft=8,
@@ -1039,18 +1045,22 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
                "flagstones and fallen masonry heaved apart, weeds in the "
                "joints; it is not a lawn and not open grass"),
     Skin("field-stone", "granite",
-         "raw granite, close-up of the bare fractured rock face, cold "
-         "blue-grey stone",
+         "raw granite, close-up of the bare fractured rock face broken "
+         "into many small angular facets, warm grey stone with an even "
+         "black-and-white speckle across every facet",
+         negative="glowing cracks, glowing veins, lava, molten rock, magma, "
+                  "orange veins, embers",
          words="the low rocks are lichened granite boulders, waist high",
          misread="crates, boxes, chests, barrels",
          variants=_FIELD_STONE,
          standalone=True),
     Skin("scree", "scree",
-         "close-up of loose shale and broken slate scree",
+         "close-up of loose shale and broken slate scree, flat angular "
+         "splintered flakes and chips, dull weathered grey-brown",
          words="the ground is loose shale and scree", soft=True),
     Skin("cave-rock", "limestone",
-         "a flat expanse of damp grey limestone rock, mineral streaks and "
-         "flowstone, filling the whole frame",
+         "a flat expanse of damp cave limestone, pale buff-grey with faint "
+         "ochre mineral streaks and flowstone, filling the whole frame",
          words="the walls are living cave rock, damp limestone",
          variants=_CLIFF, height_ft=13, smooth=True),
 
@@ -1119,7 +1129,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          words="the channel runs with foul green-brown effluent, scummed and "
                "littered"),
     Skin("sewer-ledge", "wet-flagstone",
-         "close-up of wet slimed flagstone, standing water in the joints",
+         "close-up of wet slimed flagstone, grey-brown stone under a thin "
+         "green slime film, standing water in the joints",
          words="the ledges are wet slimed flagstone"),
 
     # --- built things -----------------------------------------------------
@@ -1164,8 +1175,9 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          variants=_TOWNHOUSE, height_ft=18, smooth=True,
          roof_ft=4.5, roof_at=0.70),
     Skin("cobbles", "cobble",
-         "close-up of a worn cobbled street surface, rounded granite setts and "
-         "the gaps between them",
+         "close-up of a worn cobbled street surface, irregular rounded "
+         "granite setts of many different sizes packed tight, warm "
+         "grey-brown, the gaps between them",
          words="the roadway is worn granite cobbles, rutted and greasy with use",
          # A road is LAID and it is not FLAT: it is laid over ground, and it
          # follows the ground. The "laid things are flat" rule is about a

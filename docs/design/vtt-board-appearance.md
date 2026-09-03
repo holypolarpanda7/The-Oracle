@@ -456,3 +456,43 @@ of `CLAUDE.md`; read this before touching `vtt/surface.py`, `vtt/decor.py`,
   `state()["last_move"]` carries the newest one and the client animates along
   it. A straight lerp between two squares draws a creature strolling through
   masonry, which was tolerable when walls were flat shading and is not now.
+- **The catalogue went teal because 26 of its 47 subjects named no colour, and
+  `--contrast` could never have seen it.** `SUBSTANCE_ART` has said since it was
+  written that "grey stone" is a REQUEST for an achromatic image, the model
+  obliges, and a square of dead neutral grey is the one thing the painter feels
+  free to invent a hue for — and what it invents is a cold blue-green. The rule
+  was applied to the four substances that a bug had already pointed at and to
+  none of the rest. Measured across the whole shipped catalogue the split is
+  total: every subject naming a WARM hue sits between -6 and -88 on
+  `mean(G,B) - R` (`clay-tile` "warm terracotta" at -88, `dressed-stone` "warm
+  pale sandy grey with ochre" at -19), and every subject naming NO hue that was
+  not coloured by its own noun sat between +8 and +26. **`#` — the commonest
+  tile on the board — had no `MATERIAL_SUBJECT` entry at all** and fell through
+  to `tile("#").art`, the two words "stone wall" written for a battlemap prompt
+  where a whole scene carries them. It rendered at (84,106,104) while the
+  `dressed-stone` ashlar it is built of rendered at (153,142,127): forty-eight
+  points of cast between a wall and its own masonry. `,` (rubble) was the same omission
+  and `=` (road) had an entry that named no colour, which makes four subjects
+  that fell through to a battlemap `art` string — the fault the entry for `R`
+  is annotated with — two of them among the biggest surfaces in the game.
+  **`--contrast` is blind to this by construction** — it measures pairs that
+  MEET, and when the wall, the road and the rubble all drift the same way
+  together they still contrast with each other perfectly well. The board goes
+  teal and every pairwise check passes. `--palette` is the guard that sees it:
+  a subject naming no hue that has drifted past +8 cool. A subject that DOES
+  name a hue is never failed however it measures — water is meant to be blue and
+  a beetle's back is meant to be black-green, and the exemption is granted by
+  saying so in the prompt, which is the same edit that fixes a real drift. There
+  is no allowlist to fall out of step with.
+- **The style clause and the LoRA dose were the wrong suspects, and that was
+  measured before anything was changed.** `scripts/material_style_probe.py`
+  swept nine configurations — the two anti-chroma words out, "deep saturated
+  jewel tones" in, each of the three house LoRAs dropped in turn, Hades at 0.3,
+  the whole stack at half, and the stack removed entirely. Stripping every LoRA
+  made masonry and granite MORE teal, not less. Only foliage answered to the
+  stack. The teal was in the prompts the whole time: `granite` said "cold
+  blue-grey stone" in as many words and was obeyed at +28. A single-sample probe
+  row is also noisy enough to mislead — its foliage row read 83% teal while the
+  same substance across the catalogue's thirteen looks reads 7% and is a real
+  green — so a palette question is settled against the whole rendered
+  catalogue, never against one row of a contact sheet.
