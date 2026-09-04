@@ -496,3 +496,35 @@ of `CLAUDE.md`; read this before touching `vtt/surface.py`, `vtt/decor.py`,
   same substance across the catalogue's thirteen looks reads 7% and is a real
   green — so a palette question is settled against the whole rendered
   catalogue, never against one row of a contact sheet.
+- **The house art direction was on every swatch, and half of it is the exact
+  opposite of what a swatch needs.** `ImageStore` appends `cfg.style_prompt` to
+  every render and it is written for the thing most renders are — a character,
+  a place, an item seen in dramatic light. `render_material` never overrode it,
+  so four of its clauses arrived on every texture in the game as the direct
+  negation of `MATERIAL_NEGATIVE`, in the same render: "dynamic composition"
+  against a negative forbidding composition and focal points, "ornate engraved
+  details" against one forbidding border, ornate border, corner ornament,
+  medallion and cartouche, "high contrast dramatic rim lighting" against one
+  forbidding dramatic lighting, spotlights and directional shadow, and
+  "saturated jewel tones" against the whole palette rule. **A positive and a
+  negative contradicting each other is a fight the positive wins** — the same
+  finding this file already records about the view — and it is why `wood` came
+  back three redraws running as planking inside an ornate teal border while
+  "no border, no frame, no ornament" sat in its negative the whole time.
+  `MATERIAL_STYLE_PROMPT` keeps the half that is about the HAND (painterly, and
+  the bold ink line that is the game's signature and reads correctly on a flat
+  sample of stone) and drops everything about light, composition, ornament and
+  saturation, because a swatch is lit, composed and graded by the BOARD.
+- **This was also the hole in the style probe, and it is why its control column
+  read backwards.** `scripts/material_style_probe.py` swept `_MATERIAL_STYLE`
+  and the LoRA stack across nine configurations, and every one of them still
+  carried the house `style_prompt`. Its `nostyle` column — no LoRAs at all —
+  therefore came back MORE saturated rather than less, which reads from the
+  outside like proof that the stack was innocent and was really the house
+  direction with nothing left to damp it. **A probe is only as good as what it
+  holds constant, and the thing it never varied is the thing it cannot see.**
+  Measured on a fresh probe against `probe-sp-*` slugs: masonry went from a wall
+  of three different stones with a purple course through it, at -3.8 cast, to
+  clean uniform coursed masonry at -10.2. Bump `MATERIAL_REV` when this changes
+  — the slug is the cache, and rev 2 rows survive until `--prune`, so a whole
+  re-render is reversible until you say otherwise.

@@ -1157,8 +1157,14 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "terracotta and weathered russet, moss in the laps",
          words="the roofs are steep and tiled, russet clay darkened by weather"),
     Skin("townhouse", "plaster-timber",
-         "close-up of a timber-framed wall, white lime plaster between dark "
-         "oak beams",
+         # A "timber-framed WALL" is a made object with a head and a sill, and
+         # it drew one: a beam across the top and blank plaster under it, 7.30
+         # on `--surface`, the worst score the catalogue has produced. Two
+         # redraws brought it to 2.14 and no further, because the subject is
+         # the problem — an EXPANSE of framing repeats, a wall does not.
+         "a flat expanse of timber framing filling the whole frame, panels of "
+         "white lime plaster between dark oak studs repeating evenly all over "
+         "it",
          words="the street is walled by the fronts of close-packed two-storey "
                "townhouses — lime plaster and dark timber framing, shuttered "
                "windows, doors onto the street, steep tiled roofs above",
@@ -1214,8 +1220,14 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          "warm mid brown, scuffed and stained, black gaps between the boards",
          words="the floors indoors are plain scrubbed boards"),
     Skin("taproom-wall", "plaster-timber",
-         "close-up of a timber-framed wall, white lime plaster between dark "
-         "oak beams",
+         # A "timber-framed WALL" is a made object with a head and a sill, and
+         # it drew one: a beam across the top and blank plaster under it, 7.30
+         # on `--surface`, the worst score the catalogue has produced. Two
+         # redraws brought it to 2.14 and no further, because the subject is
+         # the problem — an EXPANSE of framing repeats, a wall does not.
+         "a flat expanse of timber framing filling the whole frame, panels of "
+         "white lime plaster between dark oak studs repeating evenly all over "
+         "it",
          words="the walls are lime plaster between dark oak studs, low and "
                "smoke-stained, a shelf and a hook here and there"),
     # The BAR, and it is a skin rather than just a tile because a counter is

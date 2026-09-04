@@ -273,7 +273,8 @@ MATERIAL_RENDER_PX = 512    # SDXL is happiest here, and a swatch stores small
 #: Bump when the FRAMING changes, exactly as with SPRITE_REV — the slug is the
 #: cache, so a reworded prompt reaches nobody who already holds the old swatch.
 #: Rev 2: objects stopped being materials — see SUBSTANCE below.
-MATERIAL_REV = 2
+#: Rev 3: the house art direction came off the swatch — see MATERIAL_STYLE_PROMPT.
+MATERIAL_REV = 3
 
 #: Materials whose look does not depend on the room around them.
 #:
@@ -364,8 +365,32 @@ SUBSTANCE_ART: dict[str, str] = {
     # different woods described as one wood come back the same colour, and a
     # crate standing on a taproom floor is then the same complaint one room
     # over from the street.
-    "wood": "close-up of pale sawn pine boards, resinous yellow-white timber "
-            "with a strong straight grain and dark knots",
+    # ...AND "resinous yellow-white" OVERSHOT INTO LEMON. Naming a hue stops
+    # the sampler inventing one; it does not bound how hard it lays it on. This
+    # came back (182,151,60) — blue at a third of red, which is mustard, not
+    # pine — and since a crate is the commonest object in the game it was 4.5%
+    # of a dungeon board and 3.4% of a street, in gold. The direction was right
+    # and the distance was not, which is the failure mode a warm-side
+    # measurement cannot see: `--palette` only fails a COOL drift, so this sat
+    # at -77 and passed. Pale is now said twice and the hue is named as a
+    # blush rather than as the colour of the wood.
+    # The MINIMAL edit, on the granite lesson: keep the sentence that is
+    # already producing a surface and change only the colour word. The first
+    # attempt rewrote the clause as well ("with only a faint warm blush to it")
+    # and came back as a planked panel inside a floral border — 1.40 on
+    # `--surface`, which is the composition `MATERIAL_NEGATIVE` has forbidden
+    # in as many words since it was written. A negative is a nudge.
+    # "BOARDS" IS A PANEL OF BOARDS, and a panel wants a frame: two redraws
+    # running came back as planking inside an ornate border, the composition
+    # `MATERIAL_NEGATIVE` has forbidden in as many words since it was written
+    # and one that `--surface` scores under its line because the grain supplies
+    # plenty of high-frequency detail. The `u` lesson one noun over — "step
+    # treads" meant an elevation and drew a flight of stairs — so this opens
+    # the way the swatches that have never framed open (`canvas`,
+    # `spar-timber`, `plaster-timber`): a flat EXPANSE, which is a quantity of
+    # stuff and not a made object.
+    "wood": "a flat expanse of pale sawn pine, close straight grain all "
+            "running one way, pale creamy tan softwood with dark knots",
     "iron": "dark pitted wrought iron, close-up of the bare metal, near-black "
             "with a warm rust bloom at the edges",
     # DARKER AND BLUER THAN TURF, deliberately. A canopy and a lawn are both
@@ -482,6 +507,48 @@ MATERIAL_NEGATIVE = (
     "dramatic lighting, strong directional shadow, spotlight, gradient"
 )
 
+
+#: The house art direction, MINUS the half of it that is about a PICTURE.
+#:
+#: `ImageStore` appends `cfg.style_prompt` to every render, and it is written
+#: for the thing most renders are — a character, a place, an item seen in
+#: dramatic light. On a swatch four of its clauses are not merely unhelpful,
+#: they are the exact opposites of what `MATERIAL_NEGATIVE` is asking for IN
+#: THE SAME RENDER:
+#:
+#:   "dynamic composition"          vs  negative: composition, focal point
+#:   "ornate engraved details"      vs  negative: border, ornate border,
+#:                                      corner ornament, medallion, cartouche
+#:   "high contrast dramatic rim
+#:    lighting"                     vs  negative: dramatic lighting, spotlight,
+#:                                      strong directional shadow
+#:   "saturated jewel tones"        vs  the whole palette rule, and the reason
+#:                                      the catalogue over-saturates
+#:
+#: The positive and the negative of one render contradicting each other is a
+#: fight the POSITIVE wins — this file already says so about the view, and it
+#: is why `wood` came back three redraws running as planking inside an ornate
+#: border while "no border, no frame, no ornament" sat in its negative.
+#:
+#: This was also the hole in the style probe. `scripts/material_style_probe.py`
+#: swept `_MATERIAL_STYLE` and the LoRA stack across nine configurations and
+#: every one of them still carried this, which is why its `nostyle` column —
+#: no LoRAs at all — came back MORE saturated rather than less. The house
+#: direction was the constant nobody varied.
+#:
+#: What is KEPT is the half that is about the HAND: painterly, and the bold ink
+#: line that is this game's signature and reads correctly on a flat sample of
+#: stone. What goes is everything about light, composition, ornament and
+#: saturation, because a swatch is lit, composed and graded by the BOARD.
+#: AFFIRMATIVE ONLY. The first version ended "one continuous material, no
+#: composition and no focal point", which restates two clauses the MATERIAL
+#: kind framing in `imagery/prompt_build.py` already carries AND puts them
+#: where they are weakest — a negation in a POSITIVE prompt, which this file
+#: says elsewhere is a nudge at best. What a swatch must not be belongs in
+#: `MATERIAL_NEGATIVE`. This says only what the hand is.
+MATERIAL_STYLE_PROMPT = (
+    "painterly digital illustration, bold ink outlines, flat even illumination"
+)
 
 #: The looks the catalogue is pre-rendered for. Kept in step with
 #: scripts/material_prerender.py's CONTEXTS and debris_prerender.py's, so all
@@ -737,6 +804,8 @@ def render_material(code: str, *, store=None, context: str = "",
             ImageKind.MATERIAL, subject, look="", context=ctx,
             ref_slug=material_ref(code, skin),
             extra=_MATERIAL_STYLE,
+            # The house direction is for pictures. See MATERIAL_STYLE_PROMPT.
+            style_prompt=MATERIAL_STYLE_PROMPT,
             # A skin may add to the negative. See Skin.negative: what a
             # material must NOT be cannot be said in the positive prompt, which
             # is where it kept being attempted.
