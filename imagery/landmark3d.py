@@ -186,6 +186,23 @@ def reference_prompt(phrase: str) -> str:
     return " ".join((phrase or "").strip().split())
 
 
+def _forget_reference(slug: str, *, store=None) -> None:
+    """Delete the cached reference for this slug, so the next one is drawn."""
+    try:
+        if store is None:
+            from . import ImageStore
+            store = ImageStore()
+        from sqlmodel import Session, select
+        from .models import EntityImage
+        with Session(store.engine) as sess:
+            for row in sess.exec(select(EntityImage)).all():
+                if row.ref_slug == f"landmark3d-{slug}":
+                    sess.delete(row)
+            sess.commit()
+    except Exception as e:                                # pragma: no cover
+        print(f"[landmark3d] could not drop the reference for {slug}: {e}")
+
+
 def render_reference(phrase: str, slug: str, *, store=None) -> Optional[bytes]:
     """Draw the thing once, cut it out, and hand back PNG bytes with alpha.
 
@@ -267,13 +284,27 @@ def _matte(image_bytes: bytes) -> Optional[bytes]:
 
 def generate(slug: str, phrase: str, *, store=None, seed: int = 0,
              client: Optional[TrellisClient] = None,
-             base_url: Optional[str] = None) -> Optional[Path]:
+             base_url: Optional[str] = None,
+             refresh: bool = False) -> Optional[Path]:
     """Render, mesh and store one invented landmark. Returns the file or None.
 
     Never raises. Every failure here is a landmark that keeps the shape the
     board has always given it, and stopping play for one would be a far worse
     trade than a plain box.
+
+    ``refresh`` DROPS THE STORED REFERENCE FIRST, and without it a reworded
+    subject cannot reach a pixel. The reference is cached on the SLUG —
+    `ensure_image(ref_slug=..., max_per_bucket=1)` hands back whatever is in
+    that bucket whatever the prompt now says — so re-meshing a kind re-meshed
+    the same old picture. `vtt/furniture.py` carries a note diagnosing "a stack
+    of two crates" and rewording the subject to a single one; the reference row
+    that fix was aimed at is dated 2026-08-21 and still reads "a stack of two
+    wooden packing crates". The wording had been changed three times and drawn
+    zero times, and the mesh was refused for a width nobody could argue with
+    because it was measuring the picture it had always had.
     """
+    if refresh:
+        _forget_reference(slug, store=store)
     if not SLUG_RE.match(slug or ""):
         print(f"[landmark3d] refusing an unusable slug: {slug!r}")
         return None

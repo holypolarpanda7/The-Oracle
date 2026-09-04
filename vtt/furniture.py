@@ -58,9 +58,19 @@ GENERATED_ROOT = "generated/furniture"
 #: off its own square at that height. "A stack of two crates" measured 1.00 x
 #: 0.45 x 0.58 and would have stood nine feet across a five-foot square.
 SUBJECTS: dict[str, str] = {
-    "o": "a single wooden packing crate standing upright, iron-banded, "
-         "lid nailed down, as tall as it is wide",
-    "n": "a small square oak table, four turned legs, planked top",
+    # "AS TALL AS IT IS WIDE" LOST TO THE FRAMING. `ImageKind.MESHREF` asks
+    # for "a product photograph of a museum piece", which is a strong pull
+    # toward things as they are DISPLAYED, and what came back was a wide low
+    # footlocker lying on its long side — 1.00 x 0.45 x 0.57, refused at a
+    # spread of 1.78. The mesher was faithful; the picture was wrong. A
+    # proportion has to be named as a SHAPE, not as a comparison.
+    "o": "a cube-shaped wooden packing box, tall as a stool, its height "
+         "equal to its width and its depth, iron-banded corners, planks",
+    # "a small SQUARE oak table" came back a long refectory trestle, wider
+    # than deep, refused at 1.25. Same fix: say the proportion twice and say
+    # it as a measurement.
+    "n": "a small oak table with a perfectly square top, the top exactly as "
+         "deep as it is wide, four turned legs, planked",
     "A": "a carved stone altar on a stepped plinth, plain mensa slab, "
          "as tall as it is wide",
     "w": "a short section of low drystone wall, one course of coping",
@@ -101,14 +111,26 @@ def mesh_path(code: str) -> Optional[Path]:
     Committed first, then generated — the ``setpieces.mesh_path`` order and the
     same reasoning: a modeller's answer to what a crate looks like outranks a
     diffusion model's guess at one.
+
+        EVERY FORMAT THE MEASURER CAN READ, and `.obj` is no longer the only one
+    this pipeline produces. `imagery.landmark3d` emits GLB now — it has to, or
+    the texture is thrown away — and this searched for `{slug}.obj` alone while
+    `furniture_meshes.py` wrote the generator's bytes under that name whatever
+    they were. The result was a file called `crate.obj` whose first four bytes
+    are `glTF`: `mesh_path` found it, `fit` accepted the suffix, `_obj_bounds`
+    could not parse a word of it and returned None, and the board fell back to
+    the prismatoids without a sound. The client would have failed too — it
+    picks its loader off the same extension.
     """
     if code not in SUBJECTS:
         return None
     slug = slug_for(code)
+    from .setpieces import MEASURABLE
     for base in (root(), generated_root()):
-        p = base / f"{slug}.obj"
-        if p.exists():
-            return p
+        for ext in MEASURABLE:
+            p = base / f"{slug}{ext}"
+            if p.exists():
+                return p
     return None
 
 
@@ -126,10 +148,10 @@ def fit(code: str) -> Optional[dict]:
     and needs to know nothing else.
     """
     path = mesh_path(code)
-    if path is None or path.suffix.lower() != ".obj":
+    from .setpieces import MEASURABLE, _mesh_bounds
+    if path is None or path.suffix.lower() not in MEASURABLE:
         return None
-    from .setpieces import _obj_bounds
-    bounds = _obj_bounds(path)
+    bounds = _mesh_bounds(path)
     if bounds is None:
         return None
     (x0, y0, z0), (x1, y1, z1) = bounds
@@ -160,12 +182,15 @@ def spread(code: str, bounds=None) -> float:
     by its HEIGHT, so a subject that came back wider than it is tall stands
     proportionally wider than its square. Returns 0 when there is no model.
     """
-    from .setpieces import _obj_bounds
+    # `_mesh_bounds`, not `_obj_bounds`: this is the number the AUDIT prints,
+    # and reading it with the OBJ parser alone made every GLB report 0.00 —
+    # which the audit then rendered as a blank column beside a refusal.
+    from .setpieces import _mesh_bounds
     if bounds is None:
         path = mesh_path(code)
         if path is None:
             return 0.0
-        bounds = _obj_bounds(path)
+        bounds = _mesh_bounds(path)
         if bounds is None:
             return 0.0
     (x0, y0, z0), (x1, y1, z1) = bounds

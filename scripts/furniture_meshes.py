@@ -63,7 +63,11 @@ def audit() -> int:
             where = ("committed" if p.parent == F.root() else "generated") \
                 + f"  {p.stat().st_size // 1024} KB"
             if F.fit(code) is None:
-                where += "  REFUSED: wider than its square"
+                # Two different failures wore one message, and the wrong one:
+                # a mesh nothing can MEASURE was reported as too wide, which
+                # sent the last look at this straight to the prompt.
+                where += ("  REFUSED: wider than its square" if sp
+                          else "  UNREADABLE: not a mesh this can measure")
             else:
                 have += 1
         print(f"{code!r:<5} {tile(code).name:<12} "
@@ -95,11 +99,26 @@ def render(only: list[str], force: bool) -> int:
         # The landmark pipeline exactly — a rendered reference photograph with
         # no house style, matted, then meshed and normalized to Y-up geometry.
         # Nothing about furniture needs a second one.
-        got = L.generate(f"furniture-{slug}", subject, seed=7, client=client)
+        # `refresh=force`: --force has to reach the REFERENCE, not just the
+        # mesher. Without it a reworded subject re-meshes the same old picture
+        # and the audit blames the shape. See landmark3d.generate.
+        got = L.generate(f"furniture-{slug}", subject, seed=7, client=client,
+                         refresh=force)
         if got is None:
             print("      (no mesh — the reference or the mesher declined)")
             continue
-        dest = out / f"{slug}.obj"
+        # THE GENERATOR'S OWN EXTENSION, not a hardcoded one. `landmark3d`
+        # emits GLB now — it has to, or the texture is thrown away — and this
+        # line wrote those bytes into `{slug}.obj` regardless. A file called
+        # `crate.obj` whose first four bytes are `glTF` is found by
+        # `mesh_path`, accepted by `fit`'s suffix check, unreadable to
+        # `_obj_bounds`, and handed to the CLIENT's OBJLoader, which picks its
+        # loader off the same extension. Three failures, no error anywhere,
+        # and a board that quietly drew the prismatoids instead.
+        dest = out / f"{slug}{got.suffix.lower()}"
+        for stale in out.glob(f"{slug}.*"):
+            if stale != dest and stale.suffix.lower() != ".json":
+                stale.unlink()
         shutil.move(str(got), dest)
         (got.with_suffix(".json")).replace(dest.with_suffix(".json"))
         made += 1
@@ -118,8 +137,8 @@ def collect(only: list[str]) -> int:
     for code in F.SUBJECTS:
         if only and code not in only:
             continue
-        src = F.generated_root() / f"{F.slug_for(code)}.obj"
-        if not src.exists():
+        src = F.mesh_path(code)
+        if src is None or src.parent != F.generated_root():
             continue
         shutil.copy(src, dest / src.name)
         moved += 1
