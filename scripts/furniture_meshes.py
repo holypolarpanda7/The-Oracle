@@ -51,6 +51,20 @@ from vtt.terrain import cover_height_ft, tile        # noqa: E402
 #: A crate is five feet across at the far end of an overhead camera.
 FACES = 3000
 
+#: The texture atlas a piece of furniture gets, in pixels a side.
+#:
+#: 1024 is the pipeline default and it is sized for a LANDMARK — a gatehouse
+#: tower filling a quarter of the board. A crate is five feet across at the far
+#: end of an overhead camera, about forty pixels, and its two 1024 atlases came
+#: to 1.9 MB against 185 KB of geometry: ninety percent of the file, for
+#: detail nobody can resolve, going down a socket to a Discord webview. The
+#: same trade the decimation above already makes, on the other channel.
+#:
+#: 512 and not less: `Trellis2RasterizePBR` refuses anything under it
+#: ("Value 256 smaller than min of 512"), which is a floor worth knowing
+#: about before reaching for a number. Still a quarter of the pixels.
+TEXTURE_PX = 512
+
 
 def audit() -> int:
     print(f"{'code':<5} {'kind':<12} {'drawn':>7} {'spread':>7}  model")
@@ -103,7 +117,7 @@ def render(only: list[str], force: bool) -> int:
         # mesher. Without it a reworded subject re-meshes the same old picture
         # and the audit blames the shape. See landmark3d.generate.
         got = L.generate(f"furniture-{slug}", subject, seed=7, client=client,
-                         refresh=force)
+                         refresh=force, texture_px=TEXTURE_PX)
         if got is None:
             print("      (no mesh — the reference or the mesher declined)")
             continue

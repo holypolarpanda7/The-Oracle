@@ -285,7 +285,8 @@ def _matte(image_bytes: bytes) -> Optional[bytes]:
 def generate(slug: str, phrase: str, *, store=None, seed: int = 0,
              client: Optional[TrellisClient] = None,
              base_url: Optional[str] = None,
-             refresh: bool = False) -> Optional[Path]:
+             refresh: bool = False,
+             texture_px: int = 1024) -> Optional[Path]:
     """Render, mesh and store one invented landmark. Returns the file or None.
 
     Never raises. Every failure here is a landmark that keeps the shape the
@@ -329,7 +330,8 @@ def generate(slug: str, phrase: str, *, store=None, seed: int = 0,
     with _LOCK:                     # one card, one mesh at a time
         try:
             mesh = client.image_to_mesh(picture, seed=seed, fmt=MESH_EXT,
-                                        name_hint=slug, textured=True)
+                                        name_hint=slug, textured=True,
+                                        texture_px=texture_px)
         except MeshServiceUnavailable as e:
             print(f"[landmark3d] {slug}: {e}")
             return None

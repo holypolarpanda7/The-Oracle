@@ -222,11 +222,13 @@ class TrellisClient:
     # -- the call ----------------------------------------------------------
     def image_to_mesh(self, png_bytes: bytes, *, seed: int = 0,
                       fmt: str = "obj", name_hint: str = "landmark",
-                      textured: bool = False) -> bytes:
+                      textured: bool = False,
+                      texture_px: int = 1024) -> bytes:
         """Turn one cut-out picture into mesh bytes. Raises, never returns None."""
         up = self._upload(png_bytes, f"{name_hint}-{seed}.png")
         prefix = f"oracle_mesh/{name_hint}"
-        graph = (self.build_textured_graph(up, seed=seed, prefix=prefix)
+        graph = (self.build_textured_graph(up, seed=seed, prefix=prefix,
+                                           texture_size=texture_px)
                  if textured
                  else self.build_graph(up, seed=seed, fmt=fmt, prefix=prefix))
         try:
