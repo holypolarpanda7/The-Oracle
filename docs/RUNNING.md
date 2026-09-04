@@ -36,6 +36,21 @@ used every session.
   it is for a prompt you have already decided on, never for one you are still
   choosing between — that is what `scripts/material_style_probe.py` is for,
   which renders to its own `probe-*` slugs and touches the catalogue not at all.
+- Furniture models (**Windows interpreter** — it talks to ComfyUI):
+  `scripts/furniture_meshes.py --audit` prints each kind's spread and whether
+  `furniture.fit` will take it, `--render --only o,n` draws, `--collect` moves
+  the ones you are happy with into the committed tree. `--force` re-renders,
+  and it now drops the cached REFERENCE too — without that a reworded subject
+  re-meshes the same old picture and the audit blames the shape.
+- Canopy lens: `npx node activity-ui/canopy-lens.mjs http://localhost:4190/`
+  against a staged wooded board (`--board forest`). A tree's crown is about as
+  wide as the tree is tall and covers squares that are open, so the board bores
+  a view-aligned shaft through the leaves toward anything standing under them.
+  That hole only appears when a tree happens to stand between the camera and a
+  creature, so the harness widens the lens until it is unmissable and takes the
+  same frame twice, shut and open, from ONE page load — it asserts the board
+  both CHANGED and LOST GREEN, because a hole through a canopy is the second
+  and not merely the first.
 - Loot / affix demo: `uv run python -m loot.demo`
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Combat-music smoke test: `uv run python scripts/music_smoke.py` (the two

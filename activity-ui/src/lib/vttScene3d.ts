@@ -950,6 +950,29 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
    *  smashed pillar rebuilds and a walk does not. */
   let terrainKey = "";
 
+  /** How many things at once the canopy will open a hole for. */
+  const CANOPY_LENSES = 8;
+
+  /** Every canopy material on the board, so the lens uniforms can be refreshed
+   *  each frame. Rebuilt with the terrain — a material outlives one frame and
+   *  not one room. */
+  const canopyMats: THREE.Material[] = [];
+
+  /** The lens radius, in squares, and a seam for the harness that measures it.
+   *
+   *  A hole you can only see when a tree happens to stand between the camera
+   *  and a goblin is a hole nobody can photograph on demand, and "it looked
+   *  fine" is how the first shadow pass shipped casting nothing. Widening the
+   *  radius makes the aperture unmissable on any wooded board, so
+   *  `canopy-lens.mjs` can take the SAME frame twice — closed and open — and
+   *  put a number on the difference. Published only when the harness asks. */
+  let canopyRadius = 0.9;
+  if ((globalThis as Record<string, unknown>).__ORACLE_CANOPY_PROBE) {
+    (globalThis as Record<string, unknown>).__ORACLE_CANOPY = {
+      setRadius: (r: number) => { canopyRadius = r; redraw(); },
+    };
+  }
+
   /** The last frame's arguments, so a swatch arriving late can repaint without
    *  the component being told. A texture fills into a material that is already
    *  on the mesh, so this is a redraw and never a rebuild. */
@@ -1082,6 +1105,7 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     // Keyed by material SLOT, not tile code: a board can carry a log palisade
     // and canvas tents, both of them '#', and merging them into one mesh would
     // give them one swatch between them.
+    canopyMats.length = 0;
     const byCode = new Map<string, MeshBuilder>();
     // The WATER, kept apart from every other builder because it is the one thing
     // on the board you can see THROUGH. See vtt/water.py: the bed is cut into a
@@ -1179,6 +1203,84 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
             && !SURFACE_MAPS.has(url)) requestSurface(url, invalidate);
       }
     }
+
+    /** Bore a view-aligned hole through the leaves toward anything under them.
+     *
+     *  A tree is drawn eighteen feet tall and its crown is now about as wide,
+     *  which is what a broadleaf actually looks like and is the ONE place on
+     *  this board where the picture deliberately overruns the grid: a canopy
+     *  covers squares that are open, walkable and shootable. The rules do not
+     *  change — the tile owns its own square and nothing else — so the only
+     *  thing that can go wrong is that you cannot SEE, and that is what this
+     *  fixes. Without it, widening the crown hides tokens and is a regression.
+     *
+     *  A LENS ALONG THE VIEW RAY, not a disc in screen space and not the whole
+     *  tree. The fragment is faded when it lies BETWEEN the camera and
+     *  something worth seeing, within a short distance of the line joining
+     *  them — so the hole is exactly the shaft you are looking down, it opens
+     *  and closes as the camera orbits, and a tree that is not in the way is
+     *  never touched. Dropping whole trees (the roof cutaway's trick) was the
+     *  alternative and it throws away the wood to see one goblin.
+     *
+     *  Discard rather than blend: this mesh is one merged canopy and a
+     *  transparent material cannot sort against itself. The rim is dithered so
+     *  the aperture has a soft edge without needing a second pass. */
+    const canopyPatch = (mat: THREE.MeshStandardMaterial) => {
+      const u = {
+        uCam: { value: new THREE.Vector3() },
+        uLens: {
+          value: Array.from({ length: CANOPY_LENSES },
+                            () => new THREE.Vector3(0, -1e4, 0)),
+        },
+        uLensN: { value: 0 },
+        uLensR: { value: canopyRadius },
+      };
+      mat.userData.lens = u;
+      mat.onBeforeCompile = (shader) => {
+        Object.assign(shader.uniforms, u);
+        shader.vertexShader = shader.vertexShader
+          .replace("#include <common>",
+                   "#include <common>\nvarying vec3 vCanopyW;")
+          // `transformed` exists by here and `worldpos_vertex` does not always
+          // get included, so this is the dependable seam.
+          .replace("#include <project_vertex>",
+                   "vCanopyW = (modelMatrix * vec4(transformed, 1.0)).xyz;\n"
+                   + "#include <project_vertex>");
+        shader.fragmentShader = shader.fragmentShader
+          .replace("#include <common>", `#include <common>
+            varying vec3 vCanopyW;
+            uniform vec3 uCam;
+            uniform vec3 uLens[${CANOPY_LENSES}];
+            uniform int uLensN;
+            uniform float uLensR;`)
+          .replace("#include <clipping_planes_fragment>",
+                   `#include <clipping_planes_fragment>
+            float canopyOpen = 1.0;
+            for (int i = 0; i < ${CANOPY_LENSES}; i++) {
+              if (i >= uLensN) break;
+              vec3 ray = uLens[i] - uCam;
+              float rr = dot(ray, ray);
+              if (rr < 1e-4) continue;
+              float t = dot(vCanopyW - uCam, ray) / rr;
+              // Only what stands BETWEEN the eye and the thing. Leaves behind
+              // it are not in the way and stay where they are.
+              if (t <= 0.0 || t >= 1.0) continue;
+              float d = length(vCanopyW - (uCam + ray * t));
+              canopyOpen = min(canopyOpen,
+                               smoothstep(uLensR * 0.55, uLensR, d));
+            }
+            if (canopyOpen < 0.999) {
+              float dither = fract(sin(dot(floor(gl_FragCoord.xy),
+                                           vec2(12.9898, 78.233)))
+                                   * 43758.5453);
+              if (canopyOpen < dither) discard;
+            }`);
+      };
+      // Without this every canopy material shares the un-patched program.
+      mat.customProgramCacheKey = () => "oracle-canopy";
+      canopyMats.push(mat);
+      return mat;
+    };
 
     /** The one place a terrain material is built.
      *
@@ -1755,7 +1857,13 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
           (geom.getAttribute("color") as THREE.BufferAttribute)
             .array as Float32Array),
       });
-      terrainGroup.add(new THREE.Mesh(geom, terrainMaterial(code)));
+      const tmat = terrainMaterial(code);
+      // A tree, skinned or not, is the only thing in this slot.
+      if ((code === "T" || code.startsWith("T@"))
+          && (tmat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+        canopyPatch(tmat as THREE.MeshStandardMaterial);
+      }
+      terrainGroup.add(new THREE.Mesh(geom, tmat));
     }
     shadeKey = "";      // force a tint pass over the new geometry
 
@@ -2251,6 +2359,41 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
                                    far + (far - near) * 0.55);
       } else {
         scene3.fog = null;
+      }
+
+      // WHAT THE LEAVES HAVE TO GET OUT OF THE WAY OF. Updated every frame
+      // rather than at build time: the hole is cut along the line from the eye
+      // to the thing, so it has to be recut whenever either moves — which
+      // includes the camera merely orbiting over a board where nothing has
+      // stirred. Mid-walk the lens follows the creature and not the square it
+      // is heading for, the same correction the base decals already make.
+      if (canopyMats.length) {
+        const cam = camera.position;
+        const centres: THREE.Vector3[] = [];
+        const gy = baseUnits(scene, level);
+        for (const t of scene.tokens) {
+          if ((t.level ?? 0) !== level || t.defeated) continue;
+          if (centres.length >= CANOPY_LENSES) break;
+          const wk = st.walking && st.walking.tokenId === t.id
+            ? st.walking : null;
+          const tx = (wk ? wk.x : t.x) + t.squares / 2;
+          const tz = (wk ? wk.y : t.y) + t.squares / 2;
+          // Aimed at the head rather than the feet: it is the creature you are
+          // trying to see, and half a square up keeps the shaft off the floor.
+          centres.push(new THREE.Vector3(
+            tx, gy + heightUnits(scene, elevFt(scene, Math.floor(tx),
+                                               Math.floor(tz), level)) + 0.5,
+            tz));
+        }
+        for (const m of canopyMats) {
+          const u = (m.userData as { lens?: Record<string, { value: unknown }> }).lens;
+          if (!u) continue;
+          (u.uCam.value as THREE.Vector3).copy(cam);
+          u.uLensR.value = canopyRadius;
+          const slots = u.uLens.value as THREE.Vector3[];
+          centres.forEach((c, i) => slots[i].copy(c));
+          u.uLensN.value = centres.length;
+        }
       }
 
       renderer.clear(true, true, true);

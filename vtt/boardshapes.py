@@ -544,34 +544,51 @@ OBJECT_VARIANTS: dict[str, tuple[tuple[Part, ...], ...]] = {
     # rising out of the trunk, widest around two thirds up, closing to a soft
     # top. The last ring is small but never a point — a crown that comes to an
     # apex is a conifer, and only the third arrangement is meant to be one.
+    # THE CROWN IS AS WIDE AS THE TREE IS TALL, and it did not used to be. A
+    # tree is drawn 18 ft — 3.6 squares — and the widest ring here was 0.50,
+    # which is a crown five feet across: a 3.6:1 pole, on a table whose own
+    # comment called it "a round, heavy head". Nobody had put the two numbers
+    # beside each other. A real broadleaf is roughly as wide as it is tall.
+    #
+    # THIS IS THE ONE PLACE THE PICTURE IS ALLOWED TO OVERRUN THE GRID, and it
+    # is a deliberate exception rather than a slip. A canopy covers squares
+    # that are open, walkable and shootable — the rules do not change and the
+    # tile still owns exactly its own square — so the board has to be able to
+    # SEE through it. `vttScene3d` fades the canopy around anything standing
+    # under it; without that fade this change hides tokens and is a
+    # regression. The two go together.
     "T": (
-        # Broadleaf: a round, heavy head.
+        # Broadleaf: a round, heavy head, near enough as broad as it is high.
         (solid(_ring(0.11), _ring(0.075, 0.52, 0.48), 0.00, 0.46),
-         solid(_ring(0.22, 0.52, 0.48, 0.14), _ring(0.50, 0.52, 0.48, 0.10),
+         solid(_ring(0.80, 0.52, 0.48, 0.14), _ring(1.80, 0.52, 0.48, 0.10),
                0.38, 0.68),
-         solid(_ring(0.50, 0.52, 0.48, 0.10), _ring(0.13, 0.54, 0.46),
+         solid(_ring(1.80, 0.52, 0.48, 0.10), _ring(0.46, 0.54, 0.46),
                0.68, 1.00)),
         # Older and leaning, its head thrown off the trunk.
         (solid(_ring(0.12), _ring(0.08, 0.44, 0.56), 0.00, 0.52),
-         solid(_ring(0.20, 0.44, 0.56, 0.16), _ring(0.46, 0.42, 0.58, 0.12),
+         solid(_ring(0.70, 0.40, 0.60, 0.16), _ring(1.60, 0.36, 0.64, 0.12),
                0.44, 0.74),
-         solid(_ring(0.46, 0.42, 0.58, 0.12), _ring(0.11, 0.40, 0.60),
+         solid(_ring(1.60, 0.36, 0.64, 0.12), _ring(0.38, 0.32, 0.68),
                0.74, 1.00)),
-        # A conifer: skirted low, tapering the whole way to a spire.
+        # A conifer: skirted low, tapering the whole way to a spire. Kept
+        # NARROW on purpose — a spruce really is a cone and not a ball, and one
+        # narrow silhouette among three broad ones is what makes a mixed wood
+        # read as a mixed wood.
         (solid(_ring(0.09), _ring(0.07), 0.00, 0.30),
-         solid(_ring(0.42, 0.50, 0.50, 0.10), _ring(0.25, 0.50, 0.50, 0.08),
+         solid(_ring(0.90, 0.50, 0.50, 0.10), _ring(0.52, 0.50, 0.50, 0.08),
                0.24, 0.62),
-         solid(_ring(0.25, 0.50, 0.50, 0.08), _ring(0.04), 0.62, 1.00)),
+         solid(_ring(0.52, 0.50, 0.50, 0.08), _ring(0.06), 0.62, 1.00)),
         # A split crown — two heads off one bole, which is what an old
-        # broadleaf in the open does.
+        # broadleaf in the open does. The heads are pushed a full square apart
+        # so that at this size they read as two and not as one lumpy one.
         (solid(_ring(0.13), _ring(0.09, 0.50, 0.50), 0.00, 0.40),
-         solid(_ring(0.18, 0.38, 0.44, 0.14), _ring(0.34, 0.34, 0.40, 0.12),
+         solid(_ring(0.50, 0.10, 0.30, 0.14), _ring(1.15, 0.02, 0.22, 0.12),
                0.36, 0.66),
-         solid(_ring(0.34, 0.34, 0.40, 0.12), _ring(0.10, 0.32, 0.38),
+         solid(_ring(1.15, 0.02, 0.22, 0.12), _ring(0.34, 0.00, 0.20),
                0.66, 0.94),
-         solid(_ring(0.16, 0.64, 0.58, 0.14), _ring(0.30, 0.68, 0.62, 0.10),
+         solid(_ring(0.44, 0.90, 0.72, 0.14), _ring(1.05, 0.98, 0.80, 0.10),
                0.40, 0.72),
-         solid(_ring(0.30, 0.68, 0.62, 0.10), _ring(0.09, 0.70, 0.64),
+         solid(_ring(1.05, 0.98, 0.80, 0.10), _ring(0.30, 1.00, 0.82),
                0.72, 1.00)),
     ),
     # Sarcophagus / altar: a long chest with an overhanging tapered lid, and a

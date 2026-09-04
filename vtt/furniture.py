@@ -76,7 +76,18 @@ SUBJECTS: dict[str, str] = {
     "w": "a short section of low drystone wall, one course of coping",
     "O": "a single carved stone column, moulded base and capital, "
          "tall and slender",
-    "T": "a broadleaf tree with a heavy round crown and a short bole",
+    # A TREE IS NOT ON THIS LIST, and that is a decision rather than an
+    # omission. Everything else here is a discrete thing that stands ON one
+    # square and fits inside it; a tree is drawn eighteen feet tall with a
+    # crown about as wide, which is the one silhouette on this board allowed to
+    # overrun its own square (see `boardshapes.OBJECT_VARIANTS["T"]` and the
+    # canopy lens in `vttScene3d`). A mesh scaled to fit MAX_SPREAD would
+    # contradict that on purpose, and the two meshes that were generated for it
+    # measured 0.46 x 0.80 x 0.50 and then 0.57 x 0.58 x 0.83 — a bonsai in a
+    # dish and then something lying on its side, because a single reference
+    # photograph gives a mesher nothing to reconstruct depth from. The shape
+    # table draws a better tree than this pipeline can, in both languages, and
+    # it is symmetric, so it survives the camera coming round.
 }
 
 #: How far a model may reach across its square before it is the wrong model.
