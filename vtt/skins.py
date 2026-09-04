@@ -1119,8 +1119,13 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
 
     # --- the underneath ---------------------------------------------------
     Skin("sewer-brick", "sewer-brick",
-         "close-up of slime-blackened brickwork, wet mortar, green-black "
-         "staining and mineral weep",
+         # NAMING THE STAIN AND NOT THE SUBSTRATE lets the stain BECOME the
+         # material: this said "green-black staining" and no brick colour, and
+         # a sewer board came back a solid green box — 95% of its lit pixels
+         # cooler than +8, walls, ledges and all. Same shape as the rule above,
+         # one level in: a surface has a colour BEFORE anything grew on it.
+         "close-up of dark red-brown engineering brickwork under a thin film "
+         "of green-black slime, wet mortar and mineral weep",
          words="the brickwork is filthy — black slime to the tide line, weeping "
                "mortar, rust stains and fungal bloom"),
     Skin("sludge", "sludge",
