@@ -140,6 +140,23 @@ covers("every archetype has a LOOK to draw its surfaces in",
 covers("...and every look an archetype names is one the catalogue holds",
        vart._ARCH_LOOK.values(), vart.BOARD_LOOKS)
 
+# The DM writes a sentence and `archetype_for` picks the layout family from it.
+# The producer here is the GENERATOR REGISTRY — every board the code can make —
+# and the consumer is the three routing tables that turn language into one of
+# them. A generator with no words pointing at it is a board that exists and
+# that nobody can ask for: `dungeon-complex` was in the registry and in no
+# table, so every sentence describing a warren of cells came back a single
+# room, and nothing anywhere failed. Found by writing one plain sentence per
+# archetype and checking where each landed.
+from vtt import mapgen as _mg
+
+covers("every archetype the generator can make is reachable from DM language",
+       ARCHETYPES,
+       {a for _t in (_mg._MEDIUM, _mg._STRUCTURES, _mg._SETTINGS)
+        for _w, a in _t},
+       note="a board with no routing words can only be reached by a DM typing "
+            "its slug, which is not a thing the DM knows to do")
+
 # The board's own AMBIENT light, which crosses a language boundary: mapgen
 # rolls it, `VttEngine.light_map` reads it as the floor every square starts
 # from, `state()` ships it, and the isometric renderer sets its key light off

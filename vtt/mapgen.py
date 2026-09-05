@@ -3251,6 +3251,18 @@ _STRUCTURES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("street", "alley", "market", "plaza", "town square", "city"), "street"),
     (("bridge", "span"), "bridge"),
     (("ship", "deck", "boat", "galley", "vessel"), "ship"),
+    # BEFORE the single-room entry, because these are the words that mean a
+    # WARREN and the generic "dungeon"/"corridor" below would swallow them.
+    # `dungeon-complex` was reachable only by a DM typing its slug: it appeared
+    # in the generator registry and in NO routing table, so every sentence
+    # describing a warren of cells and passages came back a single room. One
+    # of 22 archetypes the board could make and DM language could not ask for
+    # — the producer/consumer gap `scripts/vocab_audit.py` exists to catch, and
+    # it is a pair there now.
+    (("warren", "labyrinth", "maze", "catacomb complex", "many rooms",
+      "cells and passages", "corridors branch", "branching corridors",
+      "complex of rooms", "level of the dungeon", "dungeon level"),
+     "dungeon-complex"),
     (("dungeon", "corridor", "vault", "keep", "castle", "hall", "temple",
       "chamber", "room"), "dungeon-room"),
 )
