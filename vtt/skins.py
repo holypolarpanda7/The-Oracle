@@ -976,8 +976,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
     # --- rock, in its several honest forms -------------------------------
     Skin("cliff", "granite",
          "raw granite, close-up of the bare fractured rock face broken "
-         "into many small angular facets, warm grey stone with an even "
-         "black-and-white speckle across every facet",
+         "into many small angular facets, pale stone with a faint ochre and "
+         "rose tint, darker mineral flecks",
          negative="glowing cracks, glowing veins, lava, molten rock, magma, "
                   "orange veins, embers",
          words="the rock is a natural granite cliff face, fractured and "
@@ -985,8 +985,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          variants=_CLIFF, height_ft=14, smooth=True),
     Skin("boulder", "granite",
          "raw granite, close-up of the bare fractured rock face broken "
-         "into many small angular facets, warm grey stone with an even "
-         "black-and-white speckle across every facet",
+         "into many small angular facets, pale stone with a faint ochre and "
+         "rose tint, darker mineral flecks",
          negative="glowing cracks, glowing veins, lava, molten rock, magma, "
                   "orange veins, embers",
          words="fallen boulders lie about the track, rounded and weathered, "
@@ -1046,8 +1046,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
                "joints; it is not a lawn and not open grass"),
     Skin("field-stone", "granite",
          "raw granite, close-up of the bare fractured rock face broken "
-         "into many small angular facets, warm grey stone with an even "
-         "black-and-white speckle across every facet",
+         "into many small angular facets, pale stone with a faint ochre and "
+         "rose tint, darker mineral flecks",
          negative="glowing cracks, glowing veins, lava, molten rock, magma, "
                   "orange veins, embers",
          words="the low rocks are lichened granite boulders, waist high",
@@ -1154,8 +1154,8 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
          # a sewer board came back a solid green box — 95% of its lit pixels
          # cooler than +8, walls, ledges and all. Same shape as the rule above,
          # one level in: a surface has a colour BEFORE anything grew on it.
-         "close-up of dark red-brown engineering brickwork under a thin film "
-         "of green-black slime, wet mortar and mineral weep",
+         "close-up of dull brown-grey brickwork, sooty and damp, dark stains "
+         "and thin slime in the joints, mineral weep",
          words="the brickwork is filthy — black slime to the tide line, weeping "
                "mortar, rust stains and fungal bloom"),
     Skin("sludge", "sludge",
