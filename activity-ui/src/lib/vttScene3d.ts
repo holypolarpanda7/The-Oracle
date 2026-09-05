@@ -278,11 +278,11 @@ const TEXTURES = new Map<number, THREE.Texture | null | undefined>();
  *  So a texture arriving invalidates the terrain instead, and the next frame
  *  rebuilds knowing the answer. It resolves once per board and a rebuild is
  *  cheap, which makes this the honest trade rather than the clever one. */
-function requestTexture(id: number, settled: () => void): void {
+function requestTexture(id: number, url: string, settled: () => void): void {
   if (TEXTURES.has(id)) return;                // resolved, or already in flight
   TEXTURES.set(id, undefined);
   new THREE.TextureLoader().load(
-    `/imagery/image/${id}`,
+    url,
     (t) => {
       t.wrapS = THREE.RepeatWrapping;
       t.wrapT = THREE.RepeatWrapping;
@@ -1184,7 +1184,16 @@ export function createIsoBoardView(canvas: HTMLCanvasElement): BoardView {
     for (const [code, id] of Object.entries(swatches)) {
       const t = TEXTURES.get(id);
       if (t instanceof THREE.Texture) textured.add(code);
-      else if (t === undefined) requestTexture(id, invalidate);
+      else if (t === undefined) {
+        // THE SERVER'S URL, not one composed here. An image id is not a safe
+        // cache key — the store reuses ids — so the backend only serves a
+        // picture with a long lifetime when the URL quotes the version that id
+        // currently carries, and only the server knows it. Falling back to the
+        // bare path keeps the offline demo and any older payload working; it
+        // just revalidates instead of being cached hard.
+        requestTexture(id, scene.surfaces?.[code]?.albedo ?? `/imagery/image/${id}`,
+                       invalidate);
+      }
     }
     // The relief and the shine. Asked for only where there is a picture to lay
     // them over — a normal map on a flat-coloured tile has no surface to

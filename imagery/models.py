@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 from datetime import datetime, timezone
 
 
@@ -168,6 +169,35 @@ class EntityImage(SQLModel, table=True):
     world_day: int = Field(default=0)
     created_at: datetime = Field(default_factory=_utcnow)
     last_used_at: datetime = Field(default_factory=_utcnow)
+
+
+def cache_token(row: "EntityImage") -> str:
+    """A short token that changes when this ID starts meaning a different picture.
+
+    **AN IMAGE ID IS NOT A SAFE CACHE KEY, because SQLite reuses it.** `id` is
+    an `INTEGER PRIMARY KEY`, which is an alias for the rowid, and without
+    AUTOINCREMENT the next insert takes `max(rowid) + 1` — so deleting the
+    highest row hands its number to the next picture stored. Verified against
+    the schema this table actually has, not assumed. Eviction deletes rows
+    (`_enforce_global_cap`), `invalidate_*` deletes rows, and
+    `material_prerender --redraw/--prune` deletes rows: this database has 1426
+    of them under a max id of 1886, so 460 ids have already been freed at least
+    once.
+
+    On its own that is harmless — the store looks a row up by id and gets
+    whatever is there now. It stops being harmless the moment a URL built from
+    that id is served with a year-long `Cache-Control`, which is what
+    `/imagery/surface/{id}/{channel}` did: a browser holding the old bytes
+    would keep showing them for a picture that no longer exists, and no request
+    would ever be made to find out.
+
+    Derived from `created_at` and `byte_size` rather than from the blob, so it
+    costs no read: a reused id necessarily carries a later `created_at` than
+    the row it replaced, because the replacement was inserted after the delete.
+    """
+    stamp = getattr(row, "created_at", None)
+    raw = f"{stamp.isoformat() if stamp else ''}:{getattr(row, 'byte_size', 0)}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
 
 
 def get_engine(database_url: Optional[str] = None) -> Engine:

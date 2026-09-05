@@ -1,3 +1,4 @@
+import hashlib
 import os
 import dataclasses
 import json
@@ -19897,6 +19898,35 @@ def imagery_temp(req: ImageTempRequest):
     return result.payload()
 
 
+#: How long a version-stamped picture may be held. A year, which is what
+#: "immutable" means on the wire.
+_IMMUTABLE = "public, max-age=31536000, immutable"
+
+#: What an UNSTAMPED picture gets instead: keep it, but ask before reusing it.
+#:
+#: THE ID IS NOT THE CACHE KEY — see `imagery.models.cache_token`. SQLite hands
+#: a deleted row's id to the next insert, and this store deletes rows (LRU
+#: eviction, `invalidate_*`, the prerenderer's `--redraw` and `--prune`), so a
+#: URL built from an id alone can start meaning a different picture. Serving
+#: THAT with a year-long lifetime is how a browser ends up showing art that no
+#: longer exists, with no request to find out. `/imagery/surface/` did exactly
+#: that until this change.
+#:
+#: So the rule is: cache hard IF AND ONLY IF the caller quoted the version this
+#: id currently carries. An old or hand-typed URL still works and still gets a
+#: fast revalidation; it just cannot poison a cache. Safe by construction
+#: rather than by everyone remembering.
+_REVALIDATE = "public, max-age=0, must-revalidate"
+
+
+def _image_cache(image_id: int, asked: str) -> dict:
+    """Cache headers for a stored image, given the ``v`` the caller quoted."""
+    token = image_store.cache_token(image_id)
+    ok = bool(token) and asked == token
+    return {"Cache-Control": _IMMUTABLE if ok else _REVALIDATE,
+            **({"ETag": f'"{token}"'} if token else {})}
+
+
 @app.get("/imagery/entity/{kind}/{ref}")
 async def imagery_list(kind: str, ref: str, context: Optional[str] = None):
     """List stored image metadata for a subject (optionally one context)."""
@@ -19904,16 +19934,23 @@ async def imagery_list(kind: str, ref: str, context: Optional[str] = None):
 
 
 @app.get("/imagery/image/{image_id}")
-async def imagery_image(image_id: int, thumb: bool = False):
-    """Return the raw WebP bytes of a stored image."""
+async def imagery_image(image_id: int, thumb: bool = False, v: str = ""):
+    """Return the raw WebP bytes of a stored image.
+
+    ``v`` is the row's `cache_token`. With it the answer is immutable for a
+    year; without it the client has to ask again. This route serves every
+    portrait, item, drawn map and board swatch in the game and was sending no
+    cache headers at all, so each one was refetched on every load.
+    """
     data = image_store.get_image_bytes(image_id, thumb=thumb)
     if data is None:
         raise HTTPException(status_code=404, detail="Image not found.")
-    return Response(content=data, media_type="image/webp")
+    return Response(content=data, media_type="image/webp",
+                    headers=_image_cache(image_id, v))
 
 
 @app.get("/imagery/sprite/{image_id}")
-async def imagery_sprite(image_id: int):
+async def imagery_sprite(image_id: int, v: str = ""):
     """A board sprite with its background cut away — PNG with alpha.
 
     The Discord board mats its sprites in-process before compositing them; a
@@ -19936,12 +19973,15 @@ async def imagery_sprite(image_id: int):
         print(f"[imagery] sprite matting failed for {image_id}: {e}")
         cut = None
     if cut is None:
-        return Response(content=raw, media_type="image/webp")
-    return Response(content=cut, media_type="image/png")
+        return Response(content=raw, media_type="image/webp",
+                        headers=_image_cache(image_id, v))
+    return Response(content=cut, media_type="image/png",
+                    headers=_image_cache(image_id, v))
 
 
 @app.get("/imagery/surface/{image_id}/{channel}")
-async def imagery_surface(image_id: int, channel: str, substance: str = ""):
+async def imagery_surface(image_id: int, channel: str, substance: str = "",
+                          v: str = ""):
     """A derived surface channel for a board swatch — normal or roughness.
 
     The swatch itself has always been albedo, which is a picture of stone laid
@@ -19973,11 +20013,11 @@ async def imagery_surface(image_id: int, channel: str, substance: str = ""):
         # asking rather than retry every rebuild.
         raise HTTPException(status_code=404, detail="Channel unavailable.")
     return Response(content=out, media_type="image/png",
-                    headers={"Cache-Control": "public, max-age=31536000"})
+                    headers=_image_cache(image_id, v))
 
 
 @app.get("/vtt/furniture/{filename}")
-async def vtt_furniture_mesh(filename: str):
+async def vtt_furniture_mesh(filename: str, v: str = ""):
     """A furniture MODEL this installation rendered but has not committed.
 
     The collected ones live under ``activity-ui/public/assets/furniture`` and
@@ -19987,7 +20027,12 @@ async def vtt_furniture_mesh(filename: str):
     """
     from vtt import furniture as _furn
     name = Path(filename).name
-    if not name.endswith(".obj") or "/" in filename or ".." in filename:
+    # EVERY MESH FORMAT, not just `.obj`. The generator emits GLB now, and this
+    # route rejecting it is the serving-side twin of the writer that used to
+    # save GLB bytes under an `.obj` name: a model rendered five minutes ago
+    # 404s here while the audit happily reports it as present.
+    suffix = Path(name).suffix.lower()
+    if suffix not in _MESH_MEDIA or "/" in filename or ".." in filename:
         raise HTTPException(status_code=404, detail="No such model.")
     path = _furn.generated_root() / name
     try:
@@ -19995,10 +20040,20 @@ async def vtt_furniture_mesh(filename: str):
                 or not path.is_file():
             raise HTTPException(status_code=404, detail="No such model.")
         data = path.read_bytes()
+        stat = path.stat()
     except OSError:
         raise HTTPException(status_code=404, detail="No such model.")
-    return Response(content=data, media_type="model/obj",
-                    headers={"Cache-Control": "public, max-age=31536000"})
+    # NOT immutable the way a setpiece is. That slug is a digest of the phrase
+    # that made it, so the same URL always means the same mesh; this one is the
+    # tile KIND — "crate" — and re-rendering a crate writes a different model
+    # to the same name. Stamped from what is on disk, so a re-render changes
+    # the URL the board asks for.
+    token = hashlib.sha1(
+        f"{stat.st_mtime_ns}:{stat.st_size}".encode()).hexdigest()[:10]
+    return Response(
+        content=data, media_type=_MESH_MEDIA.get(suffix, "model/obj"),
+        headers={"Cache-Control": _IMMUTABLE if v == token else _REVALIDATE,
+                 "ETag": f'"{token}"'})
 
 
 #: What each mesh format is called on the wire. glTF-Binary has a registered

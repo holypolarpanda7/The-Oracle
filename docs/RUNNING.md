@@ -51,6 +51,11 @@ used every session.
   same frame twice, shut and open, from ONE page load — it asserts the board
   both CHANGED and LOST GREEN, because a hole through a canopy is the second
   and not merely the first.
+- Picture caching: `uv run python scripts/cache_smoke.py` — a long
+  `Cache-Control` is served IF AND ONLY IF the URL quotes the version that
+  image id currently carries. An id is not a safe cache key on its own: SQLite
+  reuses it, and this store deletes rows, so an unstamped URL can start meaning
+  a different picture. Run it after touching any `/imagery/*` route.
 - Loot / affix demo: `uv run python -m loot.demo`
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Combat-music smoke test: `uv run python scripts/music_smoke.py` (the two

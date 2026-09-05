@@ -587,6 +587,15 @@ export interface VttScene {
      *  fifteen and made things are five; one square would be the pitch of the
      *  grid, which is what makes a board read as a tile set. */
     tile_ft?: number;
+    /** The swatch picture itself, as a URL the SERVER built.
+     *
+     *  An image id is not a safe cache key: the store reuses ids, so the
+     *  backend serves a long lifetime only when the URL quotes the version
+     *  that id currently carries — and only the server knows it. Optional
+     *  because the offline demo and older payloads have none; without it the
+     *  board falls back to `/imagery/image/{id}`, which still draws and simply
+     *  revalidates. See `imagery.models.cache_token`. */
+    albedo?: string;
     normal: string;
     rough_map: string;
   }>;

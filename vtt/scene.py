@@ -1219,6 +1219,14 @@ class VttEngine:
             substance = (sk.substance if sk is not None
                          else SUBSTANCE.get(code, "") or "")
             rough, metal = _surface.properties_for(substance)
+            token = (self.image_store.cache_token(image_id)
+                     if self.image_store is not None else "")
+            tok = f"?v={token}" if token else ""
+            # Roughness is the one that already had a query string, so its
+            # parameters are assembled rather than concatenated by hand.
+            _q = [p for p in (f"substance={quote(substance)}" if substance
+                              else "", f"v={token}" if token else "") if p]
+            rough_q = ("?" + "&".join(_q)) if _q else ""
             out[slot] = {
                 "substance": substance,
                 "roughness": round(rough, 3),
@@ -1237,9 +1245,22 @@ class VttEngine:
                         or (sk is not None and sk.standalone))
                     else _surface.tile_ft(
                         substance or tile(code).name.replace(" ", "-")), 2),
-                "normal": f"/imagery/surface/{image_id}/normal",
-                "rough_map": (f"/imagery/surface/{image_id}/rough"
-                              + (f"?substance={quote(substance)}" if substance else "")),
+                # VERSIONED, ALL THREE. An image id is not a safe cache key —
+                # SQLite hands a deleted row's id to the next insert, and this
+                # store deletes rows — so a URL built from an id alone can
+                # start meaning a different picture while a browser holds the
+                # old bytes. The backend serves a year-long lifetime only when
+                # the caller quotes the token the row currently carries; see
+                # `imagery.models.cache_token`.
+                #
+                # The ALBEDO is a URL here for the same reason the derived maps
+                # already are, stated above: the client is never in the
+                # position of composing one of these itself. It used to build
+                # `/imagery/image/{id}` by hand, which is exactly the URL that
+                # could not be versioned from where it stood.
+                "albedo": f"/imagery/image/{image_id}{tok}",
+                "normal": f"/imagery/surface/{image_id}/normal{tok}",
+                "rough_map": f"/imagery/surface/{image_id}/rough{rough_q}",
             }
         return out
 

@@ -528,3 +528,29 @@ of `CLAUDE.md`; read this before touching `vtt/surface.py`, `vtt/decor.py`,
   clean uniform coursed masonry at -10.2. Bump `MATERIAL_REV` when this changes
   — the slug is the cache, and rev 2 rows survive until `--prune`, so a whole
   re-render is reversible until you say otherwise.
+- **An image id is not a cache key, and three routes were treating it as one.**
+  `EntityImage.id` is an `INTEGER PRIMARY KEY`, which SQLite aliases to the
+  rowid: delete the highest row and the next insert takes its number. This
+  store deletes rows constantly — LRU eviction, `invalidate_*`, and the
+  prerenderer's `--redraw` and `--prune` — and the live table shows it, with
+  1426 rows under a max id of 1886, so 460 ids have already been freed at least
+  once. On its own that is harmless, because a lookup by id returns whatever is
+  there now. It stopped being harmless where a URL built from an id was served
+  with `max-age=31536000`: a browser would hold bytes for a picture that no
+  longer exists and never ask again. `/imagery/surface/{id}/{channel}` did
+  exactly that. **The rule now is that a long lifetime is served if and only if
+  the caller quoted the version that id currently carries**
+  (`imagery.models.cache_token`, derived from `created_at` and `byte_size` so
+  it costs no blob read) — safe by construction rather than by everyone
+  remembering, since an unstamped URL still works and simply revalidates.
+  Guarded by `scripts/cache_smoke.py`.
+- **The cache header was on three routes and the traffic was on the other one.**
+  `/imagery/image/{id}` serves every portrait, item, drawn map and board swatch
+  in the game and sent no cache headers at all, so a client refetched all of it
+  on every load, while the derived normal and roughness maps beside it were
+  cached for a year. Both halves are stamped now. **The albedo URL is built by
+  the SERVER** and shipped in `surfaces[slot].albedo`, for the reason the
+  derived maps already were: only the server knows the version, so a client
+  composing `/imagery/image/{id}` by hand was composing the one URL that could
+  never be cached. The client falls back to the bare path when the payload has
+  no `albedo`, which keeps the offline demo working — it just revalidates.

@@ -30,6 +30,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+from types import SimpleNamespace
 from typing import Callable, Optional
 
 from sqlmodel import Session, select
@@ -228,6 +229,22 @@ class ImageStore:
             if row is None:
                 return None
             return row.thumb if (thumb and row.thumb) else row.image
+
+    def cache_token(self, image_id: int) -> str:
+        """This id's cache-busting token, or "" if there is no such row.
+
+        See `imagery.models.cache_token`: an id alone cannot be cached safely
+        because SQLite reuses it. Reads two columns, never the blob.
+        """
+        from .models import cache_token as _tok
+        with Session(self.engine) as s:
+            row = s.exec(
+                select(EntityImage.created_at, EntityImage.byte_size)
+                .where(EntityImage.id == image_id)).first()
+            if row is None:
+                return ""
+            stamp, size = row
+            return _tok(SimpleNamespace(created_at=stamp, byte_size=size))
 
     def stats(self) -> dict:
         # Aggregate in SQL — selecting full rows would drag every WebP blob
