@@ -384,6 +384,23 @@ HUE_WORDS = (
 #: look is allowed to decide — sits at -2.
 PALETTE_COOL = 8.0
 
+#: Below this a swatch is measurably TOO WARM, and naming a hue is no defence.
+#:
+#: The other half of the same rule, and it was missing until it bit. Naming a
+#: colour stops the sampler INVENTING one; it does nothing to bound how hard it
+#: lays the named one on. `substance-coral` went from +40 (a teal reef, the
+#: failure this guard was written for) to **-145**: neon orange discs on a
+#: salmon field, which is further from a reef than the teal was, and the guard
+#: passed it because it only ever looked one way. `substance-limestone` did the
+#: same thing on the way to being fixed, and `wood` did it twice.
+#:
+#: Measured, and the line sits in a real gap: the whole catalogue runs from
+#: -89.5 (`spar-timber`, oiled timber, honestly that warm) through -85.6
+#: (`clay-tile`, terracotta pantiles) and there is NOTHING between -90 and
+#: -145. A hue named and obeyed lands in the first group; a hue named and
+#: shouted lands past the gap.
+PALETTE_WARM = -110.0
+
 
 def _palette(store) -> int:
     """Does every surface NAME its colour, and did the unnamed ones drift?
@@ -446,9 +463,24 @@ def _palette(store) -> int:
     if quiet:
         print(f"  {len(quiet)} name no hue but have not drifted (their NOUN "
               f"carries one): " + ", ".join(quiet))
+    # TOO WARM IS A FAILURE TOO, and a named hue does not excuse it — see
+    # PALETTE_WARM. Checked over every swatch rather than only the unnamed
+    # ones, because this is the failure that naming a hue CAUSES.
+    hot = sorted(((c, r, lk) for c, r, lk, _n, _g in rows if c < PALETTE_WARM),
+                 key=lambda t: t[0])
+    if hot:
+        print(f"\n  {len({r for _c, r, _l in hot})} subject(s) are past "
+              f"{PALETTE_WARM:.0f} — a hue named and SHOUTED, which is as wrong "
+              f"as one the sampler picked:")
+        for cast, ref, look in hot:
+            print(f"    {cast:+7.1f}  {ref:28} @{look}")
+
     if not drift:
-        print(f"\n  nothing unnamed above +{PALETTE_COOL:.0f} — every surface "
-              f"either names its colour or was never going to be asked")
+        if hot:
+            return 1
+        print(f"\n  nothing unnamed above +{PALETTE_COOL:.0f} and nothing past "
+              f"{PALETTE_WARM:.0f} — every surface either names its colour or "
+              f"was never going to be asked")
         return 0
     rows_bad = [r for r in unnamed if r[0] > PALETTE_COOL]
     print(f"\n  {len(drift)} subjects ({len(rows_bad)} swatches) name no "

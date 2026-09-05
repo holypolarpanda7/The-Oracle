@@ -457,6 +457,30 @@ MATERIAL_SUBJECT: dict[str, str] = {
     "m": "close-up of thick wet mud, churned and rutted all over, dark "
          "grey-brown ooze",
     "s": "close-up of rippled packed sand",
+    # THE LAST FOUR THAT FELL THROUGH TO A TILE'S OWN `art`, and the same fault
+    # as `R`, `m`, `#` and `,` above: two or three words written for a
+    # battlemap prompt, where a whole scene carries them, standing alone as the
+    # entire subject of a swatch.
+    #
+    # A WATER SQUARE'S SWATCH IS THE BED, NOT THE SURFACE. The board draws the
+    # water itself as a separate translucent sheet in its own colour
+    # (`vttScene3d`'s WATER_TINT at 0.72, depth-write off) over the ground
+    # underneath, so what this picture has to be is the thing you see THROUGH
+    # that — and "shallow water" asks a diffusion model for a photograph of a
+    # pond, which is a picture of a place with a far bank in it. The same
+    # correction `seabed-shallow` already carries one level up.
+    "~": "close-up of a clear streambed of wet pebbles and gravel, warm "
+         "grey-brown stones with pale sand between them",
+    "W": "close-up of a deep riverbed of dark silt and drowned stones, "
+         "cold near-black brown, the detail fading into the dark",
+    # Ice IS the surface here — you stand on it — so this one is the exception
+    # that names the water and not the bed. Cold is correct and is now SAID,
+    # which is what the guard is asking for: the exemption is granted by naming
+    # the hue, never by an allowlist.
+    "i": "close-up of thick cracked lake ice, pale blue-white with white "
+         "fracture lines and frozen bubbles",
+    '"': "close-up of dense low undergrowth and brambles seen from above, "
+         "deep olive and forest green leaves with dark woody stems",
 }
 
 #: The style a swatch is painted in. Deliberately NOT ``_MAP_STYLE``, which

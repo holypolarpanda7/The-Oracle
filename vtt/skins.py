@@ -1066,7 +1066,37 @@ SKINS: dict[str, Skin] = {s.name: s for s in (
 
     # --- the sea ----------------------------------------------------------
     Skin("coral", "coral",
-         "close-up of living reef coral, brain coral and branching polyps",
+         # THREE GOES, and the middle one is the instructive failure. The
+         # original sentence was already producing good coral STRUCTURE —
+         # branching heads filling the frame — and only its colour was wrong
+         # (teal, +40). "warm ochre and dusty pink with rust-red tips" came
+         # back neon at -145, further from a reef than the teal was, which is
+         # why `--palette` is two-sided now. Then "chalky and desaturated"
+         # rewrote the whole clause and lost the structure with it: a flat
+         # beige field with four pink discs in the corners, which is a
+         # medallion and not a reef.
+         #
+         # So: the granite rule. Keep the sentence that is already drawing the
+         # right THING and change only the colour word — and the fourth attempt
+         # said the quiet part, which is that this swatch is COOL ON PURPOSE.
+         # A reef is fought underwater, and `vttScene3d` draws every swim board
+         # through a SEA_COLUMN fog at #12414f; coral really is seen blue-green
+         # down there, and each warm word tried here ("rust-red tips", "dull
+         # ochre") was shouted into neon by the style stack: -145, then -119.
+         # `--palette` asks a subject to NAME its hue, not to be warm. Naming
+         # the cool one is the honest answer here, and it is the same edit that
+         # would have fixed a real drift — which is why the guard has no
+         # allowlist to fall out of step with.
+         # SIX RENDERS, and the fifth is the one kept — recorded because the
+         # useful part is which ones were WORSE. "rust-red tips" -> neon orange
+         # (-145). "chalky and desaturated" -> a beige field with four pink
+         # discs, a medallion. "pale cream and soft pink" -> pink blobs, no
+         # branching left. "dull ochre" -> gold (-119). "pale cream BRANCHES"
+         # -> anemone rosettes on a field, a medallion again. Every one of them
+         # rewrote more of the sentence than the colour, and every one lost the
+         # structure the original already had.
+         "close-up of living reef coral, brain coral and branching polyps, "
+         "muted sea green and pale grey",
          words="the reef heads are living coral in ochre and violet, "
                "encrusted and irregular",
          variants=_CORAL, height_ft=9, smooth=True),

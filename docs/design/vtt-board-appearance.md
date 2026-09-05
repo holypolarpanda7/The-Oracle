@@ -554,3 +554,37 @@ of `CLAUDE.md`; read this before touching `vtt/surface.py`, `vtt/decor.py`,
   composing `/imagery/image/{id}` by hand was composing the one URL that could
   never be cached. The client falls back to the bare path when the payload has
   no `albedo`, which keeps the offline demo working — it just revalidates.
+- **`--palette` was one-sided, and the half it could not see is the half that
+  naming a hue CAUSES.** The guard failed a subject that named no colour and
+  drifted cool, which is the failure it was written for. It said nothing about
+  a subject that named a colour and had it laid on far too hard — and that is
+  the failure the fix itself produces. `substance-coral` went from +40 (a teal
+  reef) to **-145**: neon orange discs on a salmon field, further from a reef
+  than the teal ever was, and the guard passed it. `limestone` did the same on
+  the way to being fixed and `wood` did it twice. `PALETTE_WARM` is -110, and
+  the line sits in a real gap: the catalogue runs to -89.5 (`spar-timber`,
+  oiled timber, honestly that warm) and -85.6 (`clay-tile`, terracotta), with
+  nothing at all between -90 and -145. A hue named and obeyed lands in the
+  first group; a hue named and shouted lands past the gap.
+- **A swatch may be cool ON PURPOSE, and the way to say so is to name it.**
+  Coral took six renders and the useful part is which five were worse:
+  "rust-red tips" gave neon orange, "chalky and desaturated" gave a beige field
+  with four pink discs, "pale cream and soft pink" gave pink blobs with no
+  branching left, "dull ochre" gave gold, and "pale cream BRANCHES" gave
+  anemone rosettes on a field. Every one rewrote more of the sentence than the
+  colour and lost the structure the original already had — the granite rule,
+  ignored five times running. A reef is fought underwater and `vttScene3d`
+  draws every swim board through a `SEA_COLUMN` fog at #12414f, so coral really
+  is seen blue-green down there. `--palette` asks a subject to NAME its hue,
+  not to be warm; naming the cool one is the honest answer and it is the same
+  edit that would have fixed a real drift, which is why the guard needs no
+  allowlist to fall out of step with.
+- **A water square's swatch is the BED, not the surface.** The board draws the
+  water itself as a separate translucent sheet in its own colour (`WATER_TINT`
+  at 0.72 with depth-write off) over the ground underneath, so what the `~` and
+  `W` swatches have to be is the thing you see THROUGH it. Both had fallen
+  through to their tile's own `art` — the words "shallow water" and "deep dark
+  water" — which asks a diffusion model for a photograph of a pond, and a pond
+  has a far bank in it. They are a streambed of wet pebbles and a silted
+  riverbed now. `i` is the exception that names the water rather than the bed,
+  because ice is the surface you stand on.
