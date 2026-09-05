@@ -9,7 +9,9 @@ import { useResizable } from "../lib/useResizable";
 import { CELL, pathFromCosts, type BoardView, type View } from "../lib/boardView";
 import { PITCH_DEG, YAW_DEG, YAW_STEP_DEG, wrapYaw } from "../lib/isocam";
 import { createCanvasBoardView } from "../lib/canvasBoardView";
-import { createIsoBoardView } from "../lib/vttScene3d";
+// `vttScene3d` IS NOT IMPORTED HERE, and that is the whole point — see the
+// dynamic import below. It pulls in three.js, which is two thirds of this
+// application's JavaScript and is needed only once a board is out.
 
 /** The tactical board.
  *
@@ -160,21 +162,54 @@ export function VttOverlay(p: VttProps) {
     // which took the whole board down. Waiting until the element agrees costs
     // one frame and removes the window entirely.
     if (!canvasEl || canvasEl.dataset.mode !== mode) return;
-    let made: BoardView;
-    try {
-      made = mode === "iso" ? createIsoBoardView(canvasEl)
-                            : createCanvasBoardView(canvasEl);
-    } catch (e) {
-      // No usable WebGL — an old phone, a locked-down webview. This is exactly
-      // what the flat board is being kept for, so fall back to it rather than
-      // showing an empty panel.
-      console.warn("[vtt] isometric board unavailable; using the flat board", e);
-      setMode("flat");
-      return;
-    }
-    setBoard(made);
+    // THE 3D BOARD IS FETCHED WHEN A BOARD OPENS, not when the app starts.
+    // three.js is about two thirds of the bundle and nothing before this point
+    // can draw a single triangle: a player picking a character, rolling a
+    // sheet or reading narration has paid for a renderer they may never see.
+    // Measured, one board load was 3.1 MB over the wire and 1.07 MB of it was
+    // this file's dependency.
+    //
+    // Async, so the two things that could go wrong both have to be handled:
+    // the effect can be torn down while the chunk is still in flight (`alive`,
+    // and a view that arrives after that is disposed rather than leaked), and
+    // the FETCH can fail where before only the constructor could — a dropped
+    // connection mid-session lands in the same place as a webview with no
+    // WebGL, which is the flat board.
+    let alive = true;
+    let made: BoardView | null = null;
+    const toFlat = (why: string, e: unknown) => {
+      console.warn(`[vtt] ${why}; using the flat board`, e);
+      if (alive) setMode("flat");
+    };
+    void (async () => {
+      let create: (el: HTMLCanvasElement) => BoardView;
+      if (mode === "iso") {
+        try {
+          create = (await import("../lib/vttScene3d")).createIsoBoardView;
+        } catch (e) {
+          toFlat("could not load the isometric board", e);
+          return;
+        }
+      } else {
+        create = createCanvasBoardView;
+      }
+      if (!alive || canvasEl.dataset.mode !== mode) return;
+      try {
+        made = create(canvasEl);
+      } catch (e) {
+        // No usable WebGL — an old phone, a locked-down webview. This is
+        // exactly what the flat board is being kept for, so fall back to it
+        // rather than showing an empty panel.
+        toFlat("isometric board unavailable", e);
+        return;
+      }
+      // Torn down while the chunk was loading: nobody will ever call the
+      // cleanup for this one, so it has to put itself away.
+      if (!alive) { made.dispose(); made = null; return; }
+      setBoard(made);
+    })();
     // Cleared before disposal so nothing can draw into a released context.
-    return () => { setBoard(null); made.dispose(); };
+    return () => { alive = false; setBoard(null); made?.dispose(); };
   }, [canvasEl, mode]);
 
   const [view, setView] = useState<View | null>(null);

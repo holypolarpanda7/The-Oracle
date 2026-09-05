@@ -56,6 +56,13 @@ used every session.
   image id currently carries. An id is not a safe cache key on its own: SQLite
   reuses it, and this store deletes rows, so an unstamped URL can start meaning
   a different picture. Run it after touching any `/imagery/*` route.
+- First-load budget: `uv run python scripts/bundle_budget.py` (after a
+  `npm run build` in activity-ui) — three.js is two thirds of the application's
+  JavaScript and nothing before a fight can draw a triangle with it, so the
+  isometric board is imported dynamically and gets its own chunk. One
+  top-level `import` of `vttScene3d` anywhere in the eager graph folds it
+  silently back in: the board still works and the app is just heavy again,
+  which is why this is measured off the built output rather than trusted.
 - Loot / affix demo: `uv run python -m loot.demo`
 - Proving Grounds demo: `uv run python -m arena.demo [level] [difficulty]`
 - Combat-music smoke test: `uv run python scripts/music_smoke.py` (the two
